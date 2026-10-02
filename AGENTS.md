@@ -8,7 +8,7 @@ This file has two parts:
 2. **The shared Lattix engineering standard** — identical across every Lattix repo. Canonical source: `LATTIX-IO/lattix-monorepo:AGENTS.md`, bundle `2026.05.05`. When it changes upstream, re-merge that section; do not drift it locally.
 
 ## What this repo is
-Lattix Locus — a secure, local-first multi-agent orchestration platform (AGPL-3.0-or-later). Four layers: LangGraph orchestration → Microsoft Agent Framework guardrails → MAF ChatAgents + A2A execution → infra (Vault, OPA, Envoy, NATS, Biscuit, Presidio). Backend `apps/backend/`, workers `apps/workers/`, frontend `apps/frontend/`, runtime `locus_runtime/`, contracts `packages/contracts/`.
+Lattix Locus (formerly xFrontier) is a local-first personal AI operator with a zero trust core (AGPL-3.0-or-later). **Product intent lives in `docs/product/`**; start with its README for precedence, then 03 (principles), 08 (feature catalog) and 20 (roadmap and decisions). Backend `apps/backend/`, workers `apps/workers/`, frontend `apps/frontend/`, runtime `locus_runtime/`, tooling `locus_tooling/`, desktop `apps/desktop-tauri/`, contracts `packages/contracts/`.
 
 ## Build / test / quality (run before handoff)
 - `make test` — all tests
@@ -19,15 +19,21 @@ Lattix Locus — a secure, local-first multi-agent orchestration platform (AGPL-
 - `make stack-up` / `make stack-down` — full platform stack
 - `make bootstrap` — first-time setup · `make health` — API health
 - Frontend (`apps/frontend/`): `npm run test` (vitest), `npm run lint`, `npm run build`
-- Python 3.12+, hatchling. Issues tracked in Linear (`FRONT-*`).
+- Python 3.12+, hatchling. Issues tracked in Linear project **Locus** (`LOCUS-*`).
 
-Known gate gaps as of 2026-08-10 — several gates are currently **red**; do not assume a clean baseline:
-- `pytest` aborts during collection: `tests/harness/` has an `__init__.py` but `tests/` does not, so `tests.harness` is unimportable.
-- `ruff check .` reports 24 errors, including `F821 Undefined name 'platform'` at `apps/backend/app/main.py:1587` — a latent `NameError`.
-- `make typecheck` covers only `locus_tooling/` and `locus_runtime/`, and reports 38 errors even there. `apps/backend/` is **not** type-checked (491 errors).
-- CI runs `ruff check` but not `ruff format --check`.
+Gate status as of 2026-10-02 (after the H0 main restore, LOCUS-305). Pytest collects and passes, `ruff check .` is clean, and `make typecheck` is clean for `locus_tooling/` and `locus_runtime/`. Known gaps:
+- `apps/backend/` is **not** type-checked yet (LOCUS-61).
+- CI runs `ruff check` but not `ruff format --check` (LOCUS-62).
+- Two publish-activation tests are `xfail(strict=True)` pending a product decision (LOCUS-311).
+- The CodeQL and Lattix pentest/SBOM jobs are switched off unless the repo variables `CODEQL_ENABLED` / `LATTIX_PENTEST_ENABLED` are `true`.
 
 If your change is unrelated to these, say so explicitly in the handoff rather than claiming a green run.
+
+## Merging and conflict resolution
+`main` is protected: pull requests only, the `required-gates` check must pass, and one review is required.
+- Resolve merge conflicts as a **three-way merge, hunk by hunk**, keeping the intent of both sides. Never resolve by taking one side wholesale (`-X ours`/`-X theirs`, "preserve branch state", or copying one side's tree). That is how PR #18 deleted 218 files from main (LOCUS-305).
+- Before merging a long-lived branch, diff its result against both parents and check that nothing either parent added was dropped (`git diff --diff-filter=D <parent> HEAD`).
+- Long-lived branches should merge `main` in regularly rather than once at the end.
 
 See `QUALITY_SCORE.md` for the full evidence table and `WORKFLOW.md` for the executable per-issue contract.
 
