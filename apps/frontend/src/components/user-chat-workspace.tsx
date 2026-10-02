@@ -10,15 +10,26 @@ import { RunArchiveButton } from "@/components/run-archive-button";
 import { RunFollowupComposer, type FollowupComposerStatus } from "@/components/run-followup-composer";
 import { StatusChip } from "@/components/status-chip";
 import { TaskKickoffComposer } from "@/components/task-kickoff-composer";
+import { ConnectionNotice } from "@/components/connection-notice";
 import {
   getAtfAlignmentReport,
   getWorkflowRun,
   getWorkflowRunEvents,
+  getWorkflowRunEventsLive,
+  getWorkflowRunLive,
   streamWorkflowRun,
   submitApproval,
   WORKFLOW_RUN_UPDATED_EVENT,
+  type RunStreamDisconnect,
   type WorkflowRunDetail,
 } from "@/lib/api";
+import {
+  isTerminalRunStatus,
+  RUN_STREAM_MAX_RECONNECT_ATTEMPTS,
+  RUN_STREAM_POLL_INTERVAL_MS,
+  runStreamReconnectDelayMs,
+  type RunStreamConnectionState,
+} from "@/lib/run-stream";
 import type { AtfAlignmentReport, InboxItem, WorkflowRunEvent, WorkflowRunSummary } from "@/types/locus";
 
 type UserChatWorkspaceProps = {
@@ -418,6 +429,7 @@ export function UserChatWorkspace({
   const [followupStatus, setFollowupStatus] = useState<FollowupComposerStatus>(EMPTY_FOLLOWUP_STATUS);
   const [atfReport, setAtfReport] = useState<AtfAlignmentReport | null>(null);
   const [streamedResponse, setStreamedResponse] = useState("");
+  const [streamConnection, setStreamConnection] = useState<RunStreamConnectionState>("live");
   const [runLoadError, setRunLoadError] = useState<string | null>(initialLoadError);
   const [runRefreshNonce, setRunRefreshNonce] = useState(0);
 
@@ -466,42 +478,153 @@ export function UserChatWorkspace({
     };
   }, [initialRuns, runRefreshNonce, selectedRunId]);
 
+  // Delta stream with drop detection. Only the server's `end` frame or a fetched
+  // terminal run status settles the run; a stream that closes without `end` is
+  // a lost connection: show it, reconnect with bounded backoff (resuming via the
+  // ?after= cursor), then fall back to polling. Never infer "Done" locally.
   useEffect(() => {
+    setStreamConnection("live");
     if (!selectedRunId) {
       return;
     }
-    const stopStreaming = streamWorkflowRun(selectedRunId, {
-      onMessage: (event) => {
-        if (event.type === "delta") {
-          const text = typeof event.payload.text === "string" ? event.payload.text : "";
-          if (text) {
-            setStreamedResponse((current: string) => current + text);
+    const runId = selectedRunId;
+    let cancelled = false;
+    let stopStreaming: (() => void) | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+    let cursor: string | undefined;
+    const seenItemIds = new Set<string>();
+
+    const refreshFromServer = async (): Promise<WorkflowRunDetail | null> => {
+      try {
+        const [runDetail, runEvents] = await Promise.all([getWorkflowRunLive(runId), getWorkflowRunEventsLive(runId)]);
+        if (cancelled) {
+          return null;
+        }
+        setSelectedRun(runDetail);
+        setEvents(runEvents);
+        setRunLoadError(null);
+        return runDetail;
+      } catch {
+        return null;
+      }
+    };
+
+    const settleIfTerminal = (runDetail: WorkflowRunDetail | null): boolean => {
+      if (!runDetail || !isTerminalRunStatus(runDetail.status) || runDetail.approvals?.pending) {
+        return false;
+      }
+      setStreamedResponse("");
+      setStreamConnection("live");
+      return true;
+    };
+
+    const pollUntilTerminal = () => {
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        void refreshFromServer().then((runDetail) => {
+          if (!cancelled && !settleIfTerminal(runDetail)) {
+            pollUntilTerminal();
           }
+        });
+      }, RUN_STREAM_POLL_INTERVAL_MS);
+    };
+
+    const handleDisconnect = (info: RunStreamDisconnect) => {
+      if (cancelled) {
+        return;
+      }
+      stopStreaming = null;
+      if (info.after) {
+        cursor = info.after;
+      }
+      if (info.reason === "timeout") {
+        connect(); // Server rotated the connection: resume immediately.
+        return;
+      }
+      if (attempt >= RUN_STREAM_MAX_RECONNECT_ATTEMPTS) {
+        setStreamConnection("polling");
+        pollUntilTerminal();
+        return;
+      }
+      setStreamConnection("reconnecting");
+      const delay = runStreamReconnectDelayMs(attempt);
+      attempt += 1;
+      void refreshFromServer().then((runDetail) => {
+        if (cancelled || settleIfTerminal(runDetail)) {
           return;
         }
-        if (event.type === "final") {
-          const text = typeof event.payload.text === "string" ? event.payload.text : "";
-          setStreamedResponse(text);
-          void Promise.all([getWorkflowRun(selectedRunId), getWorkflowRunEvents(selectedRunId)]).then(
-            ([runDetail, runEvents]) => {
-              setSelectedRun(runDetail);
-              setEvents(runEvents);
-              setRunLoadError(null);
-            },
-          );
-          return;
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          connect();
+        }, delay);
+      });
+    };
+
+    function connect() {
+      if (cancelled) {
+        return;
+      }
+      stopStreaming = streamWorkflowRun(
+        runId,
+        {
+          onOpen: () => setStreamConnection("live"),
+          onMessage: (event) => {
+            if (event.id) {
+              // Replayed items (unknown cursor on reconnect) must not double text.
+              if (seenItemIds.has(event.id)) {
+                return;
+              }
+              seenItemIds.add(event.id);
+              cursor = event.id;
+            }
+            attempt = 0; // Progress: the connection is healthy again.
+            handleStreamItem(event);
+          },
+          onEnd: () => {
+            setStreamConnection("live");
+            void refreshFromServer();
+          },
+          onDisconnect: handleDisconnect,
+        },
+        { after: cursor },
+      );
+    }
+
+    function handleStreamItem(event: { type: string; payload: Record<string, unknown> }) {
+      if (event.type === "delta") {
+        const text = typeof event.payload.text === "string" ? event.payload.text : "";
+        if (text) {
+          setStreamedResponse((current: string) => current + text);
         }
-        if (event.type === "complete") {
-          setStreamedResponse("");
-        }
-      },
-      onError: () => {
-        // Keep the current snapshot; polling refresh can recover on the next selection.
-      },
-    });
+        return;
+      }
+      if (event.type === "final") {
+        const text = typeof event.payload.text === "string" ? event.payload.text : "";
+        setStreamedResponse(text);
+        void Promise.all([getWorkflowRun(runId), getWorkflowRunEvents(runId)]).then(([runDetail, runEvents]) => {
+          if (cancelled) {
+            return;
+          }
+          setSelectedRun(runDetail);
+          setEvents(runEvents);
+          setRunLoadError(null);
+        });
+        return;
+      }
+      if (event.type === "complete") {
+        setStreamedResponse("");
+      }
+    }
+
+    connect();
 
     return () => {
-      stopStreaming();
+      cancelled = true;
+      stopStreaming?.();
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+      }
     };
   }, [initialRuns, runRefreshNonce, selectedRunId]);
 
@@ -761,6 +884,8 @@ export function UserChatWorkspace({
                     Unable to refresh this session from the backend. {runLoadError}
                   </div>
                 ) : null}
+
+                <ConnectionNotice state={streamConnection} />
 
                 <div ref={timelineRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5 lg:px-6 xl:px-8 2xl:px-10">
                   {loading ? (

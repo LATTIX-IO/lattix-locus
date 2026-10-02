@@ -21,6 +21,13 @@ import {
   type RunParticipants,
   type WorkflowRunDetail,
 } from "@/lib/api";
+import { ConnectionNotice } from "@/components/connection-notice";
+import {
+  isTerminalRunStatus,
+  RUN_STREAM_MAX_RECONNECT_ATTEMPTS,
+  runStreamReconnectDelayMs,
+  type RunStreamConnectionState,
+} from "@/lib/run-stream";
 import type { AtfAlignmentReport, WorkflowRunEvent } from "@/types/locus";
 
 // Deterministic per-agent accent so multi-agent conversations are visually
@@ -184,6 +191,8 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
   const [events, setEvents] = useState<WorkflowRunEvent[]>(initialEvents);
   // Prefer the SSE bridge (one idle connection); drop to interval polling if it fails.
   const [liveTransport, setLiveTransport] = useState<"stream" | "poll">("stream");
+  // Surfaced connection health: a dropped stream must never read as completion.
+  const [connectionState, setConnectionState] = useState<RunStreamConnectionState>("live");
   const lastEventIdRef = useRef<string>("");
   const [eventFilter, setEventFilter] = useState<EventFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
@@ -420,6 +429,11 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
     const controller = new AbortController();
     let cancelled = false;
     let detailTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    const waitForReconnect = (ms: number) =>
+      new Promise<void>((resolve) => {
+        reconnectTimer = setTimeout(resolve, ms);
+      });
 
     const scheduleDetailRefresh = () => {
       if (cancelled || detailTimer) {
@@ -440,31 +454,68 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
     };
 
     void (async () => {
+      let attempt = 0;
       while (!cancelled) {
         try {
           const endReason = await streamWorkflowRunEvents(runId, {
             afterEventId: lastEventIdRef.current || undefined,
             signal: controller.signal,
+            onOpen: () => setConnectionState("live"),
             onEvent: (event) => {
+              attempt = 0; // Progress: the connection is healthy again.
               lastEventIdRef.current = event.id;
               setEvents((prev) => (prev.some((item) => item.id === event.id) ? prev : [...prev, event]));
               scheduleDetailRefresh();
             },
             onStatus: () => scheduleDetailRefresh(),
           });
+          if (cancelled) {
+            return;
+          }
           if (endReason === "terminal") {
-            // Let polling close out the final state (it stops once terminal).
-            if (!cancelled) {
-              setLiveTransport("poll");
-            }
+            // Explicit `end` frame. Fetch the final state now; polling keeps
+            // the slow heartbeat afterwards.
+            setConnectionState("live");
+            void getWorkflowRunLive(runId)
+              .then((nextRun) => {
+                if (!cancelled) {
+                  setRun(nextRun);
+                }
+              })
+              .catch(() => {
+                // Polling below recovers the final state.
+              });
+            setLiveTransport("poll");
             return;
           }
           // "timeout": server rotated the connection; reconnect with the cursor.
         } catch {
-          if (!cancelled) {
-            setLiveTransport("poll");
+          if (cancelled) {
+            return;
           }
-          return;
+          // Dropped or failed without a terminal frame: never assume completion.
+          if (attempt >= RUN_STREAM_MAX_RECONNECT_ATTEMPTS) {
+            setConnectionState("polling");
+            setLiveTransport("poll");
+            return;
+          }
+          setConnectionState("reconnecting");
+          try {
+            const nextRun = await getWorkflowRunLive(runId);
+            if (cancelled) {
+              return;
+            }
+            setRun(nextRun);
+            if (isTerminalRunStatus(nextRun.status) && !nextRun.approvals?.pending) {
+              // The fetched status is authoritative; no stream needed.
+              setConnectionState("live");
+              return;
+            }
+          } catch {
+            // Backend unreachable too; keep backing off.
+          }
+          await waitForReconnect(runStreamReconnectDelayMs(attempt));
+          attempt += 1;
         }
       }
     })();
@@ -474,6 +525,9 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
       controller.abort();
       if (detailTimer) {
         clearTimeout(detailTimer);
+      }
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
       }
     };
   }, [liveTransport, runId, runIsLive]);
@@ -739,6 +793,8 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
           </button>
         </div>
       </header>
+
+      <ConnectionNotice state={runIsLive ? connectionState : "live"} />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
       <section className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[hsl(var(--muted)/0.18)]">

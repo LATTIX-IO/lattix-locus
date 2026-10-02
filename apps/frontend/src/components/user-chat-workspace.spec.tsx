@@ -10,6 +10,8 @@ const {
   getAtfAlignmentReportMock,
   getWorkflowRunMock,
   getWorkflowRunEventsMock,
+  getWorkflowRunLiveMock,
+  getWorkflowRunEventsLiveMock,
   reactFlowCanvasPropsMock,
   streamWorkflowRunMock,
   submitApprovalMock,
@@ -18,6 +20,8 @@ const {
   getAtfAlignmentReportMock: vi.fn(),
   getWorkflowRunMock: vi.fn(),
   getWorkflowRunEventsMock: vi.fn(),
+  getWorkflowRunLiveMock: vi.fn(),
+  getWorkflowRunEventsLiveMock: vi.fn(),
   reactFlowCanvasPropsMock: vi.fn(),
   streamWorkflowRunMock: vi.fn(),
   submitApprovalMock: vi.fn(),
@@ -25,8 +29,17 @@ const {
     current: null as null | {
       onMessage: (event: { id: string; type: string; createdAt: string; payload: Record<string, unknown> }) => void;
       onError?: () => void;
+      onOpen?: () => void;
+      onEnd?: (end: { reason: string; status: string; terminal: boolean }) => void;
+      onDisconnect?: (info: { reason: "timeout" | "dropped" | "error"; after?: string }) => void;
     },
   },
+}));
+
+// Reconnect immediately in tests; the backoff schedule itself is unit-tested.
+vi.mock("@/lib/run-stream", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/run-stream")>()),
+  runStreamReconnectDelayMs: () => 0,
 }));
 
 vi.mock("next/link", () => ({
@@ -81,6 +94,8 @@ vi.mock("@/lib/api", () => ({
   getAtfAlignmentReport: getAtfAlignmentReportMock,
   getWorkflowRun: getWorkflowRunMock,
   getWorkflowRunEvents: getWorkflowRunEventsMock,
+  getWorkflowRunLive: getWorkflowRunLiveMock,
+  getWorkflowRunEventsLive: getWorkflowRunEventsLiveMock,
   submitApproval: submitApprovalMock,
   streamWorkflowRun: streamWorkflowRunMock,
 }));
@@ -202,6 +217,8 @@ beforeEach(() => {
   getAtfAlignmentReportMock.mockReset();
   getWorkflowRunMock.mockReset();
   getWorkflowRunEventsMock.mockReset();
+  getWorkflowRunLiveMock.mockReset();
+  getWorkflowRunEventsLiveMock.mockReset();
   reactFlowCanvasPropsMock.mockReset();
   streamWorkflowRunMock.mockReset();
   submitApprovalMock.mockReset();
@@ -209,9 +226,11 @@ beforeEach(() => {
 
   getWorkflowRunMock.mockResolvedValue(runDetail);
   getWorkflowRunEventsMock.mockResolvedValue(runEvents);
+  getWorkflowRunLiveMock.mockResolvedValue(runDetail);
+  getWorkflowRunEventsLiveMock.mockResolvedValue(runEvents);
   getAtfAlignmentReportMock.mockResolvedValue(atfReport);
   submitApprovalMock.mockResolvedValue({ ok: true });
-  streamWorkflowRunMock.mockImplementation((_id: string, handlers: { onMessage: (event: { id: string; type: string; createdAt: string; payload: Record<string, unknown> }) => void; onError?: () => void }) => {
+  streamWorkflowRunMock.mockImplementation((_id: string, handlers: NonNullable<typeof streamHandlersState.current>) => {
     streamHandlersState.current = handlers;
     return vi.fn();
   });
@@ -235,7 +254,7 @@ describe("UserChatWorkspace", () => {
     expect(screen.getByRole("button", { name: /hide details/i })).toBeInTheDocument();
     expect(screen.getByText(/1 action items/i)).toBeInTheDocument();
     expect(await screen.findByText(/review plan/i)).toBeInTheDocument();
-    expect(screen.getByText(/keep the full markdown response visible/i)).toBeInTheDocument();
+    expect(await screen.findByText(/keep the full markdown response visible/i)).toBeInTheDocument();
     expect(screen.getByText("review-plan")).toBeInTheDocument();
     expect(screen.queryByText("Gathering evidence")).not.toBeInTheDocument();
     expect(screen.queryByText("Evidence gathered")).not.toBeInTheDocument();
@@ -421,5 +440,90 @@ describe("UserChatWorkspace", () => {
     await waitFor(() => expect(getWorkflowRunMock).toHaveBeenCalledWith("run-1"));
     expect(screen.getByTestId("session-workspace")).toBeInTheDocument();
     expect(await screen.findAllByText("Quarterly review")).not.toHaveLength(0);
+  });
+
+  describe("stream drop handling", () => {
+    const runningRuns = [{ ...initialRuns[0], status: "Running" as const, progressLabel: "Working" }];
+    const runningDetail = {
+      ...runDetail,
+      status: "Running",
+      approvals: { required: false, pending: false },
+    };
+
+    const renderRunning = () =>
+      render(
+        <UserChatWorkspace
+          initialRuns={runningRuns}
+          initialInbox={[]}
+          initialSelectedRunId="run-1"
+          initialDetailsOpen={false}
+          initialTab="chat"
+        />,
+      );
+
+    beforeEach(() => {
+      getWorkflowRunMock.mockResolvedValue(runningDetail);
+      getWorkflowRunLiveMock.mockResolvedValue(runningDetail);
+    });
+
+    it("shows a reconnecting state on early close, resumes with the cursor, and never marks Done", async () => {
+      renderRunning();
+      await waitFor(() => expect(streamWorkflowRunMock).toHaveBeenCalledTimes(1));
+
+      await act(async () => {
+        streamHandlersState.current?.onMessage({
+          id: "stream-1",
+          type: "delta",
+          createdAt: "2026-04-04T08:06:00Z",
+          payload: { text: "Partial answer" },
+        });
+      });
+      await act(async () => {
+        streamHandlersState.current?.onDisconnect?.({ reason: "dropped" });
+      });
+
+      expect(await screen.findByRole("status")).toHaveTextContent("Connection lost — reconnecting");
+      expect(screen.queryByText("Done")).not.toBeInTheDocument();
+      expect(screen.getByText("Partial answer")).toBeInTheDocument();
+
+      await waitFor(() => expect(streamWorkflowRunMock).toHaveBeenCalledTimes(2));
+      expect(streamWorkflowRunMock.mock.calls[1]?.[2]).toEqual({ after: "stream-1" });
+      expect(getWorkflowRunLiveMock).toHaveBeenCalledWith("run-1");
+
+      await act(async () => {
+        streamHandlersState.current?.onOpen?.();
+      });
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(screen.queryByText("Done")).not.toBeInTheDocument();
+    });
+
+    it("settles only from a fetched terminal status, without reconnecting", async () => {
+      getWorkflowRunLiveMock.mockResolvedValue({ ...runningDetail, status: "Done" });
+      renderRunning();
+      await waitFor(() => expect(streamWorkflowRunMock).toHaveBeenCalledTimes(1));
+
+      await act(async () => {
+        streamHandlersState.current?.onDisconnect?.({ reason: "dropped" });
+      });
+
+      await waitFor(() => expect(getWorkflowRunLiveMock).toHaveBeenCalledWith("run-1"));
+      await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+      expect(streamWorkflowRunMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("falls back to polling after bounded reconnect attempts", async () => {
+      renderRunning();
+
+      for (let call = 1; call <= 6; call += 1) {
+        await waitFor(() => expect(streamWorkflowRunMock).toHaveBeenCalledTimes(call));
+        await act(async () => {
+          streamHandlersState.current?.onDisconnect?.({ reason: "dropped" });
+        });
+      }
+
+      expect(await screen.findByRole("status")).toHaveTextContent("Live connection unavailable");
+      expect(streamWorkflowRunMock).toHaveBeenCalledTimes(6);
+      expect(screen.queryByText("Done")).not.toBeInTheDocument();
+    });
   });
 });

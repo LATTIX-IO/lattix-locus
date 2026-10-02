@@ -4,6 +4,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const fetchMock = vi.fn();
 vi.stubGlobal("fetch", fetchMock);
 
+/** Minimal fetch body: yields each SSE chunk, then closes. */
+function sseBody(chunks: string[]) {
+  const encoder = new TextEncoder();
+  let index = 0;
+  return {
+    getReader: () => ({
+      read: async () =>
+        index < chunks.length
+          ? { done: false, value: encoder.encode(chunks[index++]) }
+          : { done: true, value: undefined },
+    }),
+  };
+}
+
 // Reset modules so each test gets a fresh copy of api.ts state
 beforeEach(() => {
   fetchMock.mockReset();
@@ -117,6 +131,98 @@ describe("required core fetches", () => {
         }),
       }),
     );
+  });
+
+  it("reports a run stream that closes without an end frame as dropped, never as ended", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      body: sseBody([
+        'data: {"id":"s-1","type":"delta","createdAt":"t","payload":{"text":"partial"}}\n\n',
+      ]),
+    });
+    const onMessage = vi.fn();
+    const onEnd = vi.fn();
+    const onDisconnect = vi.fn();
+
+    const { streamWorkflowRun } = await import("@/lib/api");
+    streamWorkflowRun("run-1", { onMessage, onEnd, onDisconnect });
+
+    await vi.waitFor(() => expect(onDisconnect).toHaveBeenCalledWith({ reason: "dropped" }));
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onEnd).not.toHaveBeenCalled();
+  });
+
+  it("delivers the terminal end frame once and resumes with the after cursor", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      body: sseBody([
+        'data: {"id":"s-2","type":"final","createdAt":"t","payload":{"text":"done"}}\n\n',
+        'event: end\ndata: {"id":"end-1","type":"end","createdAt":"t","payload":{"reason":"complete","status":"Done","terminal":true}}\n\n',
+      ]),
+    });
+    const onMessage = vi.fn();
+    const onEnd = vi.fn();
+    const onDisconnect = vi.fn();
+
+    const { streamWorkflowRun } = await import("@/lib/api");
+    streamWorkflowRun("run-1", { onMessage, onEnd, onDisconnect }, { after: "s-1" });
+
+    await vi.waitFor(() => expect(onEnd).toHaveBeenCalledTimes(1));
+    expect(onEnd).toHaveBeenCalledWith({ reason: "complete", status: "Done", terminal: true });
+    expect(onDisconnect).not.toHaveBeenCalled();
+    expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ id: "s-2", type: "final" }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/workflow-runs/run-1/stream?after=s-1"),
+      expect.any(Object),
+    );
+  });
+
+  it("treats a stream_closed rotation as a non-terminal disconnect carrying the cursor", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      body: sseBody([
+        'event: stream_closed\ndata: {"id":"c-1","type":"stream_closed","createdAt":"t","payload":{"reason":"timeout","reconnect":true,"after":"s-9"}}\n\n',
+      ]),
+    });
+    const onEnd = vi.fn();
+    const onDisconnect = vi.fn();
+
+    const { streamWorkflowRun } = await import("@/lib/api");
+    streamWorkflowRun("run-1", { onMessage: vi.fn(), onEnd, onDisconnect });
+
+    await vi.waitFor(() => expect(onDisconnect).toHaveBeenCalledWith({ reason: "timeout", after: "s-9" }));
+    expect(onEnd).not.toHaveBeenCalled();
+  });
+
+  it("rejects run event streams that close without a lifecycle frame", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      body: sseBody(['event: run_status\ndata: {"status":"Running"}\n\n']),
+    });
+
+    const { streamWorkflowRunEvents } = await import("@/lib/api");
+    const { RunStreamInterruptedError } = await import("@/lib/run-stream");
+
+    await expect(
+      streamWorkflowRunEvents("run-1", { signal: new AbortController().signal }),
+    ).rejects.toBeInstanceOf(RunStreamInterruptedError);
+  });
+
+  it("resolves run event streams as terminal only on the end frame", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      body: sseBody(['event: end\ndata: {"reason":"terminal","status":"Done","terminal":true}\n\n']),
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      body: sseBody(['event: stream_closed\ndata: {"reason":"timeout","reconnect":true,"after":""}\n\n']),
+    });
+
+    const { streamWorkflowRunEvents } = await import("@/lib/api");
+    const signal = new AbortController().signal;
+
+    await expect(streamWorkflowRunEvents("run-1", { signal })).resolves.toBe("terminal");
+    await expect(streamWorkflowRunEvents("run-1", { signal })).resolves.toBe("timeout");
   });
 
   it("throws on network error for inbox reads", async () => {

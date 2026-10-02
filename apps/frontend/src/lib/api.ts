@@ -31,6 +31,7 @@ import {
   WorkflowRunKind,
   WorkflowRunSummary,
 } from "@/types/locus";
+import { RunStreamInterruptedError } from "@/lib/run-stream";
 export type { ObservabilityRunTrace } from "@/types/locus";
 
 /* ------------------------------------------------------------------ */
@@ -630,18 +631,40 @@ export async function getWorkflowRunEvents(id: string): Promise<WorkflowRunEvent
   return writeCachedValue(cacheKey, value, 1500);
 }
 
+export type RunStreamItem = { id: string; type: string; createdAt: string; payload: Record<string, unknown> };
+
+/** Payload of the terminal `end` lifecycle frame. `terminal` reports whether the
+ * run's status is terminal — `end` alone only means the stream is finished. */
+export type RunStreamEnd = { run_id?: string; reason: string; status: string; terminal: boolean };
+
+/** Why a run stream stopped without an `end` frame. Never means completion:
+ * "timeout" = server rotated the connection, "dropped" = closed without a
+ * lifecycle frame, "error" = HTTP/transport failure. */
+export type RunStreamDisconnect = { reason: "timeout" | "dropped" | "error"; after?: string };
+
+/**
+ * Fetch-based consumer for `/workflow-runs/{id}/stream` (delta stream).
+ * Exactly one of `onEnd` / `onDisconnect` fires per connection (unless aborted).
+ * `onError` is kept for HTTP/transport failures and fires alongside
+ * `onDisconnect({ reason: "error" })`.
+ */
 export function streamWorkflowRun(
   id: string,
   handlers: {
-    onMessage: (event: { id: string; type: string; createdAt: string; payload: Record<string, unknown> }) => void;
+    onMessage: (event: RunStreamItem) => void;
     onError?: () => void;
+    onOpen?: () => void;
+    onEnd?: (end: RunStreamEnd) => void;
+    onDisconnect?: (info: RunStreamDisconnect) => void;
   },
+  options: { after?: string } = {},
 ): () => void {
   const controller = new AbortController();
+  const suffix = options.after ? `?after=${encodeURIComponent(options.after)}` : "";
   void (async () => {
     try {
       const requestHeaders = await getRequestAuthHeaders();
-      const res = await fetch(`${getApiBase()}/workflow-runs/${encodeURIComponent(id)}/stream`, {
+      const res = await fetch(`${getApiBase()}/workflow-runs/${encodeURIComponent(id)}/stream${suffix}`, {
         method: "GET",
         headers: {
           ...requestHeaders,
@@ -652,8 +675,10 @@ export function streamWorkflowRun(
       });
       if (!res.ok || !res.body) {
         handlers.onError?.();
+        handlers.onDisconnect?.({ reason: "error" });
         return;
       }
+      handlers.onOpen?.();
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -673,23 +698,32 @@ export function streamWorkflowRun(
           if (!line) {
             continue;
           }
+          let item: RunStreamItem;
           try {
-            handlers.onMessage(
-              JSON.parse(line.slice(5).trim()) as {
-                id: string;
-                type: string;
-                createdAt: string;
-                payload: Record<string, unknown>;
-              },
-            );
+            item = JSON.parse(line.slice(5).trim()) as RunStreamItem;
           } catch {
-            handlers.onError?.();
+            continue; // A malformed frame is not a disconnect; skip it.
           }
+          if (item.type === "end") {
+            handlers.onEnd?.(item.payload as unknown as RunStreamEnd);
+            return;
+          }
+          if (item.type === "stream_closed") {
+            const after = typeof item.payload?.after === "string" ? item.payload.after : undefined;
+            handlers.onDisconnect?.({ reason: "timeout", after: after || undefined });
+            return;
+          }
+          handlers.onMessage(item);
         }
+      }
+      // Closed without `end`/`stream_closed`: a drop, never a completion.
+      if (!controller.signal.aborted) {
+        handlers.onDisconnect?.({ reason: "dropped" });
       }
     } catch {
       if (!controller.signal.aborted) {
         handlers.onError?.();
+        handlers.onDisconnect?.({ reason: "error" });
       }
     }
   })();
@@ -1109,11 +1143,14 @@ export type RunStreamOptions = {
   signal: AbortSignal;
   onEvent?: (event: WorkflowRunEvent) => void;
   onStatus?: (status: RunStatusFrame) => void;
+  onOpen?: () => void;
 };
 
 // Fetch-based SSE consumer (fetch can carry identity headers; EventSource cannot).
-// Resolves with the server's stream_end reason ("terminal" | "timeout"); throws on
-// transport/HTTP failure so callers can fall back to polling.
+// Resolves "terminal" only on the server's `end` frame and "timeout" on a
+// non-terminal `stream_closed` rotation (reconnect with the cursor). Throws on
+// HTTP/transport failure, and RunStreamInterruptedError when the stream closes
+// without either frame — a drop must never be read as completion.
 export async function streamWorkflowRunEvents(
   id: string,
   options: RunStreamOptions,
@@ -1131,6 +1168,7 @@ export async function streamWorkflowRunEvents(
     throw new Error(`Run event stream failed (${res.status})`);
   }
   setApiConnected(true);
+  options.onOpen?.();
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -1159,8 +1197,10 @@ export async function streamWorkflowRunEvents(
       options.onEvent?.(parsed as WorkflowRunEvent);
     } else if (eventName === "run_status") {
       options.onStatus?.(parsed as RunStatusFrame);
-    } else if (eventName === "stream_end") {
-      return String((parsed as { reason?: string }).reason ?? "terminal");
+    } else if (eventName === "end") {
+      return "terminal";
+    } else if (eventName === "stream_closed") {
+      return "timeout";
     }
     return null;
   };
@@ -1168,7 +1208,7 @@ export async function streamWorkflowRunEvents(
   for (;;) {
     const { done, value } = await reader.read();
     if (done) {
-      return "terminal";
+      throw new RunStreamInterruptedError();
     }
     buffer += decoder.decode(value, { stream: true });
     let separator = buffer.indexOf("\n\n");
