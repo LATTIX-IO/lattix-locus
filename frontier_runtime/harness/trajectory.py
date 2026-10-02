@@ -156,7 +156,8 @@ class TrajectoryRecorder:
     def final_outcome(self) -> dict[str, Any] | None:
         for r in reversed(self.records):
             if r.get("kind") == "outcome":
-                return r
+                outcome: dict[str, Any] = r
+                return outcome
         return None
 
     def to_jsonl(self) -> str:
