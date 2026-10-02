@@ -1361,14 +1361,8 @@ def test_agent_and_guardrail_runtime_resolution_use_pinned_published_revisions()
                 store.workflow_definition_revisions.pop(workflow_key, None)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Open product decision: main makes publish advance active_revision_id immediately; "
-        "this test encodes activate-only-on-first-publish. Resolve, then drop this marker."
-    ),
-)
-def test_republish_requires_explicit_activation_before_runtime_moves_forward() -> None:
+def test_republish_activates_new_revision_immediately() -> None:
+    # D-20 (docs/product/20 §2): publishing makes the new revision active.
     workflow_id = str(uuid4())
 
     try:
@@ -1397,7 +1391,7 @@ def test_republish_requires_explicit_activation_before_runtime_moves_forward() -
             json={
                 "id": workflow_id,
                 "name": "Release Workflow v2",
-                "description": "Second published release waiting on activation.",
+                "description": "Second published release.",
                 "graph_json": _sample_graph(),
             },
         )
@@ -1409,7 +1403,8 @@ def test_republish_requires_explicit_activation_before_runtime_moves_forward() -
         current = store.workflow_definitions[workflow_id]
         assert current.published_revision_id
         assert current.published_revision_id != first_published_revision_id
-        assert current.active_revision_id == first_active_revision_id
+        assert current.active_revision_id == current.published_revision_id
+        assert current.active_revision_id != first_active_revision_id
 
         published_listing = client.get("/workflows/published")
         assert published_listing.status_code == 200
@@ -1418,25 +1413,18 @@ def test_republish_requires_explicit_activation_before_runtime_moves_forward() -
         )
         assert published_workflow["name"] == "Release Workflow v2"
         assert (
-            published_workflow["description"] == "Second published release waiting on activation."
+            published_workflow["description"] == "Second published release."
         )
 
         active_listing = client.get("/workflows/active")
         assert active_listing.status_code == 200
         active_workflow = next(item for item in active_listing.json() if item["id"] == workflow_id)
-        assert active_workflow["name"] == "Release Workflow v1"
-        assert active_workflow["description"] == "Initial active release."
+        assert active_workflow["name"] == "Release Workflow v2"
 
+        # Activate stays available and is idempotent for the current revision.
         activate = client.post(f"/workflow-definitions/{workflow_id}/activate")
         assert activate.status_code == 200
         assert activate.json()["active_revision"]["id"] == current.published_revision_id
-
-        active_listing_after = client.get("/workflows/active")
-        assert active_listing_after.status_code == 200
-        active_workflow_after = next(
-            item for item in active_listing_after.json() if item["id"] == workflow_id
-        )
-        assert active_workflow_after["name"] == "Release Workflow v2"
     finally:
         store.workflow_definitions.pop(workflow_id, None)
         store.workflow_definition_revisions.pop(workflow_id, None)
@@ -1602,14 +1590,8 @@ def test_definition_saves_persist_for_workflows_agents_and_playbooks() -> None:
         store.playbooks.pop(playbook_id, None)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Open product decision: main makes publish advance active_revision_id immediately; "
-        "this test encodes activate-only-on-first-publish. Resolve, then drop this marker."
-    ),
-)
-def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
+def test_publish_activates_agent_and_guardrail_runtime_resolution() -> None:
+    # D-20 (docs/product/20 §2): publishing makes the new revision the runtime revision.
     agent_id = str(uuid4())
     ruleset_id = str(uuid4())
 
@@ -1651,13 +1633,14 @@ def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
         guardrail_current = store.guardrail_rulesets[ruleset_id]
         assert guardrail_current.published_revision_id
         assert guardrail_current.active_revision_id
-        assert guardrail_current.active_revision_id != guardrail_current.published_revision_id
+        assert guardrail_current.active_revision_id == guardrail_current.published_revision_id
 
         resolved_guardrail_before, _, _ = main_module._resolve_guardrail_config(
             {"ruleset_id": ruleset_id}
         )
-        assert resolved_guardrail_before["blocked_keywords"] == ["alpha"]
+        assert resolved_guardrail_before["blocked_keywords"] == ["beta"]
 
+        # Activate stays available and is idempotent for the current revision.
         activate_ruleset = client.post(
             f"/guardrail-rulesets/{ruleset_id}/activate", headers=ADMIN_HEADERS
         )
@@ -1707,12 +1690,12 @@ def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
         agent_current = store.agent_definitions[agent_id]
         assert agent_current.published_revision_id
         assert agent_current.active_revision_id
-        assert agent_current.active_revision_id != agent_current.published_revision_id
+        assert agent_current.active_revision_id == agent_current.published_revision_id
 
         resolved_agent_before = main_module._resolve_published_agent_definition(agent_id)
         assert resolved_agent_before is not None
-        assert resolved_agent_before.name == "Runtime Agent v1"
-        assert resolved_agent_before.config_json["system_prompt"] == "Use the first runtime prompt."
+        assert resolved_agent_before.name == "Runtime Agent v2"
+        assert resolved_agent_before.config_json["system_prompt"] == "Use the second runtime prompt."
 
         activate_agent = client.post(
             f"/agent-definitions/{agent_id}/activate", headers=ADMIN_HEADERS
