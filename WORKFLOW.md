@@ -22,7 +22,8 @@ tracker:
 polling:
   interval_ms: 30000
 workspace:
-  root: "E:/lattix/.symphony/workspaces/lattix-locus"
+  # Set by `make symphony` (default: ../.symphony/workspaces/lattix-locus); override per machine.
+  root: $SYMPHONY_WORKSPACE_ROOT
 hooks:
   timeout_ms: 120000
   after_create: |
