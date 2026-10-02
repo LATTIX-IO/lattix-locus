@@ -218,7 +218,13 @@ def test_skill_injection_increments_usage_metrics() -> None:
     assert commit.last_used_at != ""
 
 
-def test_skill_test_endpoint_dry_runs_a_skill() -> None:
+def test_skill_test_endpoint_dry_runs_a_skill(monkeypatch) -> None:
+    # Explicit fake provider (test double) — production has no simulated output.
+    def _fake_chat(*, system_prompt, user_prompt, model, temperature, **_kwargs):
+        assert "### Skill: commit" in system_prompt
+        return "Staged and committed.", {"mode": "live", "model": model, "provider": "openai"}
+
+    monkeypatch.setattr(main_module, "_run_openai_chat", _fake_chat)
     response = client.post(
         "/skills/skill-commit/test",
         json={"prompt": "Commit the current changes."},
@@ -227,8 +233,23 @@ def test_skill_test_endpoint_dry_runs_a_skill() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["skill_id"] == "skill-commit"
-    assert body["mode"] in {"live", "simulated"}
-    assert isinstance(body["output"], str) and body["output"]
+    assert body["mode"] == "live"
+    assert body["output"] == "Staged and committed."
+
+
+def test_skill_test_endpoint_reports_unconfigured_provider(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "_openai_api_key", lambda: "")
+    response = client.post(
+        "/skills/skill-commit/test",
+        json={"prompt": "Commit the current changes.", "model": "gpt-test-model"},
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 412
+    detail = response.json()["detail"]
+    assert detail["code"] == "provider_not_configured"
+    assert detail["provider"] == "openai"
+    assert detail["model"] == "gpt-test-model"
+    assert "Commit the current changes." not in str(detail)
 
 
 def test_skill_test_endpoint_validates_input() -> None:

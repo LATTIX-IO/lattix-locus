@@ -224,7 +224,7 @@ export type RuntimeProvider = {
   provider: string;
   configured: boolean;
   model: string;
-  mode: "live" | "simulated";
+  mode: "live" | "not_configured";
 };
 
 export type RuntimeFrameworkAdapterProbe = {

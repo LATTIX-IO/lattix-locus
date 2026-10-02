@@ -361,7 +361,7 @@ def test_agent_node_threads_skills_into_runtime_request_payload(
         captured["runtime"] = runtime
         return (
             "Investigate the incident with /incident-triage first.",
-            {"provider": "openai", "model": model, "mode": "simulated"},
+            {"provider": "openai", "model": model, "mode": "live"},
         )
 
     monkeypatch.setattr(main_module, "_run_openai_chat", _fake_run_openai_chat)

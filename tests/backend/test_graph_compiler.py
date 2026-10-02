@@ -266,5 +266,49 @@ def test_code_node_without_workspace_degrades_to_plan_only():
     res = gc._run_agent_node(
         node, incoming=[], out_ports=[], state={"run_input": {"message": "build it"}}, deps=deps
     )
-    assert res["mode"] in {"plan_only", "simulated"}
+    assert res["mode"] == "plan_only"
     assert res["route"] == "agreed"  # never traps the graph when it cannot build
+
+
+class _FailingClient:
+    provider = "scripted"
+    model = "scripted"
+
+    def complete(self, messages, **_kw):
+        raise ConnectionError("connection refused")
+
+
+def test_chat_node_provider_failure_is_explicit_not_simulated():
+    """LOCUS-309: a failing provider yields a typed node failure, never fake output."""
+    node = _Node({"id": "a", "type": "locus/agent", "title": "A", "config": {"agent_id": "x"}})
+    res = gc._run_agent_node(
+        node,
+        incoming=[],
+        out_ports=[],
+        state={"run_input": {"message": "hi"}},
+        deps=_deps(_FailingClient()),
+    )
+    assert res["mode"] == "failed"
+    assert res["error_code"] == "provider_call_failed"
+    assert "ollama" in res["response"] and "gpt-oss:20b" in res["response"]
+    assert "connection refused" in res["response"]
+    assert res["route"] == ""
+
+
+def test_plan_only_fallback_provider_failure_is_explicit():
+    node = _Node(
+        {
+            "id": "build",
+            "type": "locus/agent",
+            "title": "Build",
+            "config": {"agent_id": "sdet", "phase": "build"},
+        }
+    )
+    deps = _deps(
+        _FailingClient(), resolve=lambda cfg: _chat_resolution("sdet", "code"), provisioned=None
+    )
+    res = gc._run_agent_node(
+        node, incoming=[], out_ports=[], state={"run_input": {"message": "build it"}}, deps=deps
+    )
+    assert res["mode"] == "failed"
+    assert res["error_code"] == "provider_call_failed"
