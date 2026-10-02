@@ -41,7 +41,9 @@ PYTHON = _shell_python()
 # Self-contained assertion runner — no pytest dependency in the target
 # interpreter, and self-locating (sys.path from __file__, not cwd) so it works
 # regardless of which shell/python resolves the command.
-TEST_CMD = f"{PYTHON} runtests.py"
+# -B: the fix keeps the file size and can land in the same mtime second, so a cached
+# .pyc from the pre-fix run would otherwise be reused on Linux.
+TEST_CMD = f"{PYTHON} -B runtests.py"
 RUNTESTS = (
     "import os, sys\n"
     "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n"

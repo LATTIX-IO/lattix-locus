@@ -109,6 +109,8 @@ jobs:
 
   sast-codeql:
     name: SAST (CodeQL ${{ matrix.language }})
+    # SARIF upload needs GitHub Advanced Security; enable with repo variable CODEQL_ENABLED=true.
+    if: vars.CODEQL_ENABLED == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -128,6 +130,8 @@ jobs:
 
   lattix-cicd-pentest:
     name: Lattix AppSec and pentest gate
+    # Needs read access to LATTIX-IO/lattix-cicd-pentest; enable with repo variable LATTIX_PENTEST_ENABLED=true.
+    if: vars.LATTIX_PENTEST_ENABLED == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -188,6 +192,8 @@ jobs:
 
   sbom-sca:
     name: SBOM and software composition analysis
+    # Uses the pinned Lattix pentest kit, so it follows the same switch.
+    if: vars.LATTIX_PENTEST_ENABLED == 'true'
     runs-on: ubuntu-latest
     env:
       RUN_DIR: ${{ github.workspace }}/.security-results/sbom
@@ -246,7 +252,7 @@ jobs:
         run: |
           export A2A_JWT_SECRET="$(openssl rand -hex 32)"
           export LOCUS_API_BEARER_TOKEN="$(openssl rand -hex 32)"
-          export LOCUS_RUNTIME_PROFILE=local
+          export LOCUS_RUNTIME_PROFILE=local-lightweight
           export LOCUS_STATE_STORE="$RUNNER_TEMP/locus-state.json"
           PYTHONPATH=apps/backend nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > "$RUNNER_TEMP/uvicorn.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/uvicorn.pid"
@@ -320,7 +326,8 @@ jobs:
           python - <<'PY'
           import json, os, sys
           results = json.loads(os.environ["RESULTS"])
-          failed = {name: job["result"] for name, job in results.items() if job["result"] != "success"}
+          # "skipped" covers gates switched off by repository variables.
+          failed = {name: job["result"] for name, job in results.items() if job["result"] not in ("success", "skipped")}
           if failed:
               print("Required CI gates did not pass:", failed)
               sys.exit(1)

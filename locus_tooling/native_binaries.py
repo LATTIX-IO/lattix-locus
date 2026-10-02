@@ -124,7 +124,7 @@ def _ollama_spec(os_name: str, arch: str) -> BinarySpec:
             url=f"https://ollama.com/download/ollama-linux-{arch}.tgz",
             archive="tar.gz",
             layout="dir",
-            install_subdir="ollama",
+            install_subdir="ollama-dist",  # must differ from the "ollama" shim in bin_dir
             member_rel="bin/ollama",
         )
     return BinarySpec(
