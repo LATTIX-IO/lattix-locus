@@ -65,14 +65,27 @@ def _clear_streamable_run(run_id: str) -> None:
     store.run_stream_complete.pop(run_id, None)
 
 
-def _stream_payloads(run_id: str, *, headers: dict[str, str]) -> list[dict[str, object]]:
-    response = client.get(f"/workflow-runs/{run_id}/stream", headers=headers)
+_STREAM_LIFECYCLE_TYPES = {"end", "stream_closed"}
+
+
+def _all_stream_payloads(
+    run_id: str, *, headers: dict[str, str], params: dict[str, str] | None = None
+) -> list[dict[str, object]]:
+    response = client.get(f"/workflow-runs/{run_id}/stream", headers=headers, params=params)
     assert response.status_code == 200
     return [
         json.loads(line.removeprefix("data: "))
         for line in response.text.splitlines()
         if line.startswith("data: ")
     ]
+
+
+def _stream_payloads(run_id: str, *, headers: dict[str, str]) -> list[dict[str, object]]:
+    """Run-stream items only; asserts the stream ended with exactly one ``end`` frame."""
+    payloads = _all_stream_payloads(run_id, headers=headers)
+    assert [p.get("type") for p in payloads].count("end") == 1
+    assert payloads[-1].get("type") == "end"
+    return [p for p in payloads if p.get("type") not in _STREAM_LIFECYCLE_TYPES]
 
 
 def test_graph_validate_reports_invalid_prompt_node_configuration() -> None:
@@ -1320,17 +1333,96 @@ def test_workflow_run_stream_replays_history_on_reconnect() -> None:
         _clear_streamable_run(run_id)
 
 
-def test_workflow_run_stream_returns_empty_body_when_completed_without_events() -> None:
+def test_workflow_run_stream_sends_only_end_frame_when_completed_without_events() -> None:
     run_id = str(uuid4())
 
     try:
         _seed_streamable_run(run_id)
         store.run_stream_complete[run_id] = True
 
-        response = client.get(f"/workflow-runs/{run_id}/stream", headers=AUTH_HEADERS)
+        payloads = _all_stream_payloads(run_id, headers=AUTH_HEADERS)
 
-        assert response.status_code == 200
-        assert response.text == ""
+        assert len(payloads) == 1
+        assert payloads[0]["type"] == "end"
+        # The seeded run is still Running: `end` reports that honestly instead
+        # of implying completion.
+        assert payloads[0]["payload"] == {
+            "run_id": run_id,
+            "reason": "complete",
+            "status": "Running",
+            "terminal": False,
+        }
+    finally:
+        _clear_streamable_run(run_id)
+
+
+@pytest.mark.parametrize(
+    ("final_type", "run_status"),
+    [("final", "Done"), ("error", "Failed")],
+)
+def test_workflow_run_stream_ends_with_single_terminal_end_frame(
+    final_type: str, run_status: str
+) -> None:
+    run_id = str(uuid4())
+
+    try:
+        _seed_streamable_run(run_id)
+        main_module._append_run_stream_event(run_id, "delta", {"text": "partial"})
+        main_module._append_run_stream_event(run_id, final_type, {"text": "x", "message": "x"})
+        store.runs[run_id] = store.runs[run_id].model_copy(update={"status": run_status})
+        main_module._mark_run_stream_complete(run_id)
+
+        payloads = _all_stream_payloads(run_id, headers=AUTH_HEADERS)
+
+        types = [payload["type"] for payload in payloads]
+        assert types == ["delta", final_type, "complete", "end"]
+        end_payload = payloads[-1]["payload"]
+        assert isinstance(end_payload, dict)
+        assert end_payload["status"] == run_status
+        assert end_payload["terminal"] is True
+    finally:
+        _clear_streamable_run(run_id)
+
+
+def test_workflow_run_stream_timeout_cap_sends_non_terminal_stream_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_id = str(uuid4())
+    monkeypatch.setattr(main_module, "_RUN_STREAM_MAX_SECONDS", 0)
+
+    try:
+        _seed_streamable_run(run_id)
+        main_module._append_run_stream_event(run_id, "delta", {"text": "partial"})
+        delta_id = store.run_streams[run_id][0]["id"]
+
+        payloads = _all_stream_payloads(run_id, headers=AUTH_HEADERS)
+
+        types = [payload["type"] for payload in payloads]
+        assert types == ["delta", "stream_closed"]
+        assert payloads[-1]["payload"] == {
+            "run_id": run_id,
+            "reason": "timeout",
+            "reconnect": True,
+            "after": delta_id,
+        }
+    finally:
+        _clear_streamable_run(run_id)
+
+
+def test_workflow_run_stream_after_cursor_resumes_past_seen_items() -> None:
+    run_id = str(uuid4())
+
+    try:
+        _seed_streamable_run(run_id)
+        main_module._append_run_stream_event(run_id, "delta", {"text": "a"})
+        main_module._append_run_stream_event(run_id, "delta", {"text": "b"})
+        first_id = str(store.run_streams[run_id][0]["id"])
+        store.run_stream_complete[run_id] = True
+
+        payloads = _all_stream_payloads(run_id, headers=AUTH_HEADERS, params={"after": first_id})
+
+        assert [p["type"] for p in payloads] == ["delta", "end"]
+        assert payloads[0]["payload"] == {"text": "b"}
     finally:
         _clear_streamable_run(run_id)
 

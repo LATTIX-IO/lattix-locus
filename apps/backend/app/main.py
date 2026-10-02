@@ -23274,6 +23274,31 @@ _RUN_STREAM_MAX_SECONDS = 300
 _RUN_STREAM_POLL_INTERVAL_SECONDS = 1.0
 _RUN_TERMINAL_STATUSES = {"Done", "Failed", "Blocked"}
 
+# Run-stream lifecycle contract (LOCUS-310). Every run stream ends with exactly
+# one of these frames, so a client can always tell completion from a drop:
+#   end           - the stream has delivered everything it will; the payload
+#                   carries the run's status and whether that status is terminal.
+#   stream_closed - NOT terminal: the server rotated the connection (timeout
+#                   cap); the client must reconnect with ?after=<cursor>.
+# A stream that closes without either frame is a dropped connection.
+_RUN_STREAM_END_EVENT = "end"
+_RUN_STREAM_CLOSED_EVENT = "stream_closed"
+
+
+def _run_stream_end_payload(run_id: str, reason: str) -> dict[str, Any]:
+    run = store.runs.get(run_id)
+    status = run.status if run else "unknown"
+    return {
+        "run_id": run_id,
+        "reason": reason,
+        "status": status,
+        "terminal": status in _RUN_TERMINAL_STATUSES,
+    }
+
+
+def _run_stream_closed_payload(run_id: str, after: str) -> dict[str, Any]:
+    return {"run_id": run_id, "reason": "timeout", "reconnect": True, "after": after}
+
 
 @app.get("/workflow-runs/{run_id}/events/stream")
 async def stream_workflow_run_events(
@@ -23281,9 +23306,10 @@ async def stream_workflow_run_events(
 ) -> StreamingResponse:
     """Server-sent-events bridge for live run consoles.
 
-    One idle connection replaces client-side polling. The stream closes itself
-    once the run reaches a terminal status with no pending approval (or after
-    _RUN_STREAM_MAX_SECONDS; clients reconnect with ?after=<last_event_id>).
+    One idle connection replaces client-side polling. The stream ends with an
+    ``end`` frame once the run reaches a terminal status with no pending
+    approval, or with a non-terminal ``stream_closed`` frame after
+    _RUN_STREAM_MAX_SECONDS (clients reconnect with ?after=<last_event_id>).
     Async generator: no worker thread is held while the connection idles.
     """
     actor = _enforce_request_authn(request, action="workflow.run.events.stream")
@@ -23298,7 +23324,7 @@ async def stream_workflow_run_events(
         last_event_id = str(after or "")
         last_status_frame = ""
         deadline = time.monotonic() + _RUN_STREAM_MAX_SECONDS
-        while time.monotonic() < deadline:
+        while True:
             if await request.is_disconnected():
                 return
 
@@ -23335,12 +23361,17 @@ async def stream_workflow_run_events(
             if (run is None or run.status in _RUN_TERMINAL_STATUSES) and not bool(
                 approvals.get("pending")
             ):
-                yield _sse_frame("stream_end", {"reason": "terminal"})
+                yield _sse_frame(_RUN_STREAM_END_EVENT, _run_stream_end_payload(run_id, "terminal"))
+                return
+
+            if time.monotonic() >= deadline:
+                yield _sse_frame(
+                    _RUN_STREAM_CLOSED_EVENT, _run_stream_closed_payload(run_id, last_event_id)
+                )
                 return
 
             yield ": keep-alive\n\n"
             await asyncio.sleep(_RUN_STREAM_POLL_INTERVAL_SECONDS)
-        yield _sse_frame("stream_end", {"reason": "timeout"})
 
     return StreamingResponse(
         event_stream(),
@@ -24687,28 +24718,61 @@ def delete_local_model(model_id: str, request: Request) -> dict[str, Any]:
 
 
 @app.get("/workflow-runs/{run_id}/stream")
-def stream_workflow_run(run_id: str, request: Request) -> StreamingResponse:
+def stream_workflow_run(
+    run_id: str, request: Request, after: str | None = None
+) -> StreamingResponse:
+    """Delta stream for a run: ``data:`` frames of run-stream items.
+
+    Ends with exactly one lifecycle frame (see _RUN_STREAM_END_EVENT): ``end``
+    once the run's stream is complete, or a non-terminal ``stream_closed`` at
+    the _RUN_STREAM_MAX_SECONDS cap. ``?after=<item id>`` resumes after it.
+    """
     actor = _enforce_request_authn(request, action="workflow.run.events.read")
     _enforce_run_access(request, actor, run_id, action="workflow.run.events.read")
 
+    def _lifecycle_frame(event_type: str, payload: dict[str, Any]) -> str:
+        item = {
+            "id": f"{event_type}-{uuid4()}",
+            "type": event_type,
+            "createdAt": _now_iso(),
+            "payload": payload,
+        }
+        return f"event: {event_type}\ndata: {json.dumps(item, default=_persist_json_default)}\n\n"
+
     def event_stream() -> Any:
         last_index = 0
+        cursor = str(after or "")
+        if cursor:
+            for index, item in enumerate(store.run_streams.get(run_id, [])):
+                if isinstance(item, dict) and item.get("id") == cursor:
+                    last_index = index + 1
+                    break
         keepalive_every = 15.0
         last_keepalive = time.monotonic()
         deadline = time.monotonic() + _RUN_STREAM_MAX_SECONDS
-        while time.monotonic() < deadline:
+        while True:
             stream_items = store.run_streams.get(run_id, [])
             while last_index < len(stream_items):
                 item = stream_items[last_index]
                 last_index += 1
+                if isinstance(item, dict) and item.get("id"):
+                    cursor = str(item["id"])
                 yield f"data: {json.dumps(item, default=_persist_json_default)}\n\n"
 
             # Runs that never opened a delta stream (e.g. blocked at intake or
             # created before streaming existed) have nothing further to send.
             if store.run_stream_complete.get(run_id, True):
-                break
+                yield _lifecycle_frame(
+                    _RUN_STREAM_END_EVENT, _run_stream_end_payload(run_id, "complete")
+                )
+                return
 
             now = time.monotonic()
+            if now >= deadline:
+                yield _lifecycle_frame(
+                    _RUN_STREAM_CLOSED_EVENT, _run_stream_closed_payload(run_id, cursor)
+                )
+                return
             if now - last_keepalive >= keepalive_every:
                 yield ": keepalive\n\n"
                 last_keepalive = now

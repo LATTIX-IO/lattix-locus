@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { RunConversationConsole } from "@/components/run-conversation-console";
@@ -45,6 +45,12 @@ const {
     },
   })),
   submitApprovalMock: vi.fn(async () => ({})),
+}));
+
+// Reconnect immediately in tests; the backoff schedule itself is unit-tested.
+vi.mock("@/lib/run-stream", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/run-stream")>()),
+  runStreamReconnectDelayMs: () => 0,
 }));
 
 vi.mock("next/link", () => ({
@@ -216,5 +222,54 @@ describe("RunConversationConsole", () => {
     const bubble = screen.getByTestId("flyout-attention");
     expect(bubble).toBeInTheDocument();
     expect(bubble).toHaveAttribute("aria-label", "Issues detected");
+  });
+
+  describe("stream drop handling", () => {
+    type StreamOpts = { afterEventId?: string; onOpen?: () => void };
+
+    it("shows reconnecting on early close, resumes from the cursor, and keeps the run live", async () => {
+      streamWorkflowRunEventsMock.mockReset();
+      getWorkflowRunLiveMock.mockClear();
+      streamWorkflowRunEventsMock
+        .mockImplementationOnce(() => Promise.reject(new Error("Run stream closed without a terminal event")))
+        .mockImplementation(((_id: string, opts: StreamOpts) => {
+          opts.onOpen?.();
+          return new Promise<string>(() => {});
+        }) as never);
+
+      render(<RunConversationConsole runId="run-drop" run={run} events={events} />);
+
+      await waitFor(() => expect(streamWorkflowRunEventsMock).toHaveBeenCalledTimes(2));
+      expect(getWorkflowRunLiveMock).toHaveBeenCalledWith("run-drop");
+      const secondCall = streamWorkflowRunEventsMock.mock.calls[1] as unknown as [string, StreamOpts];
+      expect(secondCall[1].afterEventId).toBe("evt-1");
+      // Reconnected (onOpen) — the notice clears and nothing claimed completion.
+      await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+      expect(screen.queryByText("Done")).not.toBeInTheDocument();
+    });
+
+    it("keeps the reconnecting notice while the stream stays down", async () => {
+      streamWorkflowRunEventsMock.mockReset();
+      streamWorkflowRunEventsMock
+        .mockImplementationOnce(() => Promise.reject(new Error("dropped")))
+        .mockImplementation(() => new Promise<string>(() => {}));
+
+      render(<RunConversationConsole runId="run-down" run={run} events={events} />);
+
+      expect(await screen.findByRole("status")).toHaveTextContent("Connection lost — reconnecting");
+      expect(screen.queryByText("Done")).not.toBeInTheDocument();
+    });
+
+    it("falls back to polling after bounded reconnect attempts", async () => {
+      streamWorkflowRunEventsMock.mockReset();
+      streamWorkflowRunEventsMock.mockImplementation(() => Promise.reject(new Error("dropped")));
+
+      render(<RunConversationConsole runId="run-poll" run={run} events={events} />);
+
+      expect(await screen.findByText("Live connection unavailable")).toBeInTheDocument();
+      // 1 initial attempt + RUN_STREAM_MAX_RECONNECT_ATTEMPTS (5) reconnects.
+      expect(streamWorkflowRunEventsMock).toHaveBeenCalledTimes(6);
+      expect(screen.queryByText("Done")).not.toBeInTheDocument();
+    });
   });
 });
