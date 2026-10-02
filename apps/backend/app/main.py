@@ -20346,6 +20346,10 @@ def _resolve_working_folder(value: str) -> str | None:
         return None
     if any(segment == ".." for segment in raw.split("/")):
         return None
+    # Windows drive and drive-relative forms ("C:\\x", "C:x") are refused on every
+    # platform unless they resolve under the root below, so the rule is OS-independent.
+    if re.match(r"^[A-Za-z]:", raw) and os.name != "nt":
+        return None
     try:
         root = os.path.realpath(str(_projects_root_path()))
     except Exception:  # noqa: BLE001
