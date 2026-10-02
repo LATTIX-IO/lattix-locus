@@ -42,6 +42,22 @@ export type PlatformVersionStatus = {
   summary: string;
 };
 
+/** Runtime state of a security control, derived by the backend (LOCUS-313, P9). */
+export type ControlState = "enforced" | "degraded" | "off" | "unverified";
+
+export type ControlStatusItem = {
+  id: string;
+  label: string;
+  state: ControlState;
+  evidence: string;
+};
+
+export type ControlStatusReport = {
+  controls: ControlStatusItem[];
+  summary: Record<ControlState, number>;
+  generated_at?: string;
+};
+
 export type PlatformHealthDetails = {
   status: string;
   timestamp: string;
@@ -54,6 +70,7 @@ export type PlatformHealthDetails = {
   memory_hybrid_retrieval: string;
   memory_world_graph: string;
   neo4j: string;
+  control_status?: ControlStatusReport;
 };
 
 export type RunStatus =
@@ -193,8 +210,10 @@ export type SecurityPolicyResponse = {
   workflow_overrides: SecurityScopeConfig;
   agent_overrides: SecurityScopeConfig;
   effective: Required<SecurityScopeConfig> & { classification: SecurityClassification; guardrail_ruleset_id: string | null };
+  /** Derived from control_status: only controls whose state is "enforced". */
   backend_enforced_controls?: string[];
   configurable_controls?: string[];
+  control_status?: ControlStatusReport;
 };
 
 export type AgentDefinition = {
@@ -555,6 +574,7 @@ export type AtfAlignmentReport = {
     total_audit_events: number;
     run_count_total: number;
   };
+  control_status?: ControlStatusReport;
 };
 
 export type CollaborationParticipant = {

@@ -153,6 +153,32 @@ describe("RunConversationConsole", () => {
     expect(getAtfAlignmentReportMock).toHaveBeenCalledTimes(1);
   });
 
+  it("renders control states from the ATF report API without upgrading them", async () => {
+    const base = await getAtfAlignmentReportMock();
+    getAtfAlignmentReportMock.mockClear();
+    getAtfAlignmentReportMock.mockResolvedValueOnce({
+      ...base,
+      control_status: {
+        controls: [
+          { id: "execution_sandbox", label: "Agent execution sandbox", state: "off", evidence: "LocalDirectExecutor" },
+          { id: "capability_tokens_biscuit", label: "Capability grants (Biscuit)", state: "unverified", evidence: "HMAC tokens" },
+          { id: "api_authentication", label: "API authentication", state: "enforced", evidence: "authn on" },
+        ],
+        summary: { enforced: 1, degraded: 0, off: 1, unverified: 1 },
+      },
+    } as never);
+
+    render(<RunConversationConsole runId="run-1b" run={run} events={events} />);
+    fireEvent.click(screen.getByRole("button", { name: /open run details/i }));
+
+    const list = await screen.findByRole("list", { name: /security control status/i });
+    const items = within(list).getAllByRole("listitem");
+    expect(items.map((item) => item.getAttribute("data-control-state"))).toEqual(["off", "unverified", "enforced"]);
+    expect(within(items[0]).getByText("Off")).toBeInTheDocument();
+    expect(within(items[1]).getByText("Unverified")).toBeInTheDocument();
+    expect(within(list).getAllByText("Enforced")).toHaveLength(1);
+  });
+
   it("shows ATF loading error message when report fetch fails", async () => {
     getAtfAlignmentReportMock.mockReset();
     getAtfAlignmentReportMock.mockRejectedValueOnce(new Error("network"));

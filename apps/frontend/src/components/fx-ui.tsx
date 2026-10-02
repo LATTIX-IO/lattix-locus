@@ -178,7 +178,7 @@ export function FxStat({
   );
 }
 
-export function FxStatusBadge({ status }: { status: FxStatus }) {
+export function FxStatusBadge({ status, label }: { status: FxStatus; label?: string }) {
   const spec = FX_STATUS[status] ?? FX_STATUS.idle;
   return (
     <span
@@ -193,7 +193,7 @@ export function FxStatusBadge({ status }: { status: FxStatus }) {
         className="inline-block h-[5px] w-[5px] flex-shrink-0 rounded-full"
         style={{ background: spec.dot }}
       />
-      {spec.label}
+      {label ?? spec.label}
     </span>
   );
 }

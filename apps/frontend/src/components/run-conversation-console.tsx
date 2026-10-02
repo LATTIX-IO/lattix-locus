@@ -7,6 +7,7 @@ import dynamic from "next/dynamic";
 
 const ReactMarkdown = dynamic(() => import("react-markdown"), { ssr: false });
 import remarkGfm from "remark-gfm";
+import { ControlStatusList } from "@/components/control-status";
 import { RunGraphView } from "@/components/run-graph-view";
 import { RunArchiveButton } from "@/components/run-archive-button";
 import { RunFollowupComposer } from "@/components/run-followup-composer";
@@ -1092,6 +1093,11 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                       ) : (
                         <p className="mt-1 text-xs text-[var(--foreground)]">No major gaps currently flagged.</p>
                       )}
+                    </div>
+
+                    <div className="mt-2">
+                      <p className="fx-muted mb-1 text-[11px] uppercase tracking-wide">Control status</p>
+                      <ControlStatusList report={atfReport.control_status} />
                     </div>
                   </>
                 ) : (

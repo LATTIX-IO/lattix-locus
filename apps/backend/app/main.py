@@ -52,6 +52,11 @@ from pydantic import BaseModel, Field, ValidationError
 from app import cron as app_cron
 from app import knowledge as app_knowledge
 from app import local_models, mcp_client, skills_catalog
+from app.control_status import (
+    build_control_status_report,
+    collect_posture_facts,
+    enforced_control_ids,
+)
 from app.generated_artifacts import GeneratedArtifactService
 from app.integration_starters import INTEGRATION_STARTER_TEMPLATE_SEEDS
 from app.mcp_starters import MCP_STARTER_TEMPLATE_SEEDS
@@ -1098,6 +1103,32 @@ def _secure_profile_deployment_report(
         "requirements": requirements,
         "failures": failures,
     }
+
+
+def _control_status_report() -> dict[str, Any]:
+    """Per-control posture derived from runtime facts (see app.control_status)."""
+    settings = store.platform_settings
+    if _PRESIDIO_ANALYZER is not None:
+        presidio_state = "loaded"
+    elif _PRESIDIO_UNAVAILABLE:
+        presidio_state = "unavailable"
+    else:
+        presidio_state = "not_loaded"
+    facts = collect_posture_facts(
+        auth_required=bool(_effective_require_authenticated_requests()),
+        a2a_signed_messages=bool(settings.a2a_require_signed_messages),
+        a2a_trusted_subject_count=len(settings.a2a_trusted_subjects),
+        a2a_replay_protection=bool(settings.a2a_replay_protection),
+        egress_allowlist=bool(settings.enforce_egress_allowlist),
+        guardrail_signals_enabled=bool(settings.enable_foss_guardrail_signals),
+        guardrail_signal_enforcement=str(settings.foss_guardrail_signal_enforcement or ""),
+        presidio_flag=_env_flag("LOCUS_ENABLE_PRESIDIO_PII_ANALYZER", False),
+        presidio_state=presidio_state,
+        audit_durable=bool(_AUDIT_LOG is not None and _AUDIT_LOG.enabled),
+    )
+    report = build_control_status_report(facts)
+    report["generated_at"] = _now_iso()
+    return report
 
 
 def _validate_secure_profile_deployment() -> dict[str, Any]:
@@ -15580,9 +15611,33 @@ def _build_atf_alignment_report() -> dict[str, Any]:
     blocked_count = len([event for event in recent_audit if event.outcome == "blocked"])
     error_count = len([event for event in recent_audit if event.outcome == "error"])
 
+    # A pillar is only "strong" when the controls behind it are actually
+    # enforced (P9); config flags alone no longer earn it.
+    control_status = _control_status_report()
+    control_states = {
+        str(item.get("id")): item
+        for item in control_status.get("controls", [])
+        if isinstance(item, dict)
+    }
+
+    def _unenforced_gaps(*control_ids: str) -> list[str]:
+        gaps: list[str] = []
+        for control_id in control_ids:
+            item = control_states.get(control_id)
+            if item is None or item.get("state") == "enforced":
+                continue
+            gaps.append(f"{item.get('label')}: {item.get('state')} - {item.get('evidence')}")
+        return gaps
+
+    identity_gaps = _unenforced_gaps(
+        "api_authentication", "a2a_signed_messages", "a2a_replay_protection"
+    )
+    monitoring_gaps = _unenforced_gaps("audit_log", "guardrail_signals")
+    segmentation_gaps = _unenforced_gaps("egress_allowlist", "execution_sandbox")
+
     pillars = {
         "identity": {
-            "status": "strong" if effective_auth_required else "partial",
+            "status": "strong" if effective_auth_required and not identity_gaps else "partial",
             "controls": {
                 "require_authenticated_requests": effective_auth_required,
                 "a2a_require_signed_messages": platform.a2a_require_signed_messages,
@@ -15592,18 +15647,21 @@ def _build_atf_alignment_report() -> dict[str, Any]:
                 "secure_local_mode": _secure_local_mode_enabled(),
                 "runtime_profile": runtime_profile.name,
             },
-            "gaps": []
-            if effective_auth_required
-            else ["Enable require_authenticated_requests for strong API identity assurance"],
+            "gaps": (
+                []
+                if effective_auth_required
+                else ["Enable require_authenticated_requests for strong API identity assurance"]
+            )
+            + identity_gaps,
         },
         "behavior_monitoring": {
-            "status": "strong",
+            "status": "partial" if monitoring_gaps else "strong",
             "controls": {
                 "audit_events_available": True,
                 "observability_dashboard_available": True,
                 "foss_guardrail_signals_enabled": platform.enable_foss_guardrail_signals,
             },
-            "gaps": [],
+            "gaps": monitoring_gaps,
         },
         "data_governance": {
             "status": "strong" if platform.mask_secrets_in_events else "partial",
@@ -15617,7 +15675,9 @@ def _build_atf_alignment_report() -> dict[str, Any]:
         },
         "segmentation": {
             "status": "strong"
-            if platform.enforce_local_network_only and platform.enforce_egress_allowlist
+            if platform.enforce_local_network_only
+            and platform.enforce_egress_allowlist
+            and not segmentation_gaps
             else "partial",
             "controls": {
                 "enforce_egress_allowlist": platform.enforce_egress_allowlist,
@@ -15625,11 +15685,14 @@ def _build_atf_alignment_report() -> dict[str, Any]:
                 "mcp_require_local_server": platform.mcp_require_local_server,
                 "retrieval_require_local_source_url": platform.retrieval_require_local_source_url,
             },
-            "gaps": []
-            if platform.enforce_local_network_only and platform.enforce_egress_allowlist
-            else [
-                "Enable both local-network and egress allowlist controls for stronger segmentation"
-            ],
+            "gaps": (
+                []
+                if platform.enforce_local_network_only and platform.enforce_egress_allowlist
+                else [
+                    "Enable both local-network and egress allowlist controls for stronger segmentation"
+                ]
+            )
+            + segmentation_gaps,
         },
         "incident_response": {
             "status": "strong"
@@ -15674,6 +15737,7 @@ def _build_atf_alignment_report() -> dict[str, Any]:
         "coverage_percent": coverage_percent,
         "maturity_estimate": maturity,
         "pillars": pillars,
+        "control_status": control_status,
         "evidence": {
             "audit_window_hours": 24,
             "audit_event_count_24h": len(recent_audit),
@@ -19958,7 +20022,9 @@ def _build_health_payload() -> dict[str, Any]:
 def healthz_details(request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="health.details.read")
     _append_audit_event("health.details.read", actor, "allowed")
-    return _build_health_payload()
+    payload = _build_health_payload()
+    payload["control_status"] = _control_status_report()
+    return payload
 
 
 @app.get("/federation/status")
@@ -20455,15 +20521,11 @@ def get_platform_security_policy(request: Request) -> dict[str, Any]:
         },
         "legacy_secure_local_mode": _legacy_secure_local_mode_enabled(),
     }
-    resolved["backend_enforced_controls"] = [
-        "capability_filter",
-        "policy_gate_filter",
-        "signed_a2a_messages",
-        "a2a_replay_protection",
-        "readonly_sandbox_rootfs",
-        "non_root_sandbox_execution",
-        "fail_closed_policy_decisions",
-    ]
+    # Only controls proven active on the execution path are listed as enforced
+    # (P9); the full per-control state and evidence is in "control_status".
+    control_status = _control_status_report()
+    resolved["control_status"] = control_status
+    resolved["backend_enforced_controls"] = enforced_control_ids(control_status)
     resolved["configurable_controls"] = [
         "guardrail_ruleset_id",
         "blocked_keywords",

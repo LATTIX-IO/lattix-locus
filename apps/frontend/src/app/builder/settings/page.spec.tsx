@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import BuilderSettingsOverviewPage from "@/app/builder/settings/page";
@@ -98,5 +98,31 @@ describe("BuilderSettingsOverviewPage", () => {
     expect(screen.getByRole("link", { name: /approvals & governance/i })).toHaveAttribute("href", "/builder/settings/governance");
     expect(screen.getByText(/current envelope/i)).toBeInTheDocument();
     expect(screen.getByText(/builder heuristics/i)).toBeInTheDocument();
+  });
+
+  it("renders control states exactly as reported by the security-policy API", async () => {
+    getPlatformSecurityPolicyMock.mockResolvedValueOnce({
+      ...(await getPlatformSecurityPolicyMock()),
+      backend_enforced_controls: ["execution_sandbox"],
+      control_status: {
+        controls: [
+          { id: "execution_sandbox", label: "Agent execution sandbox", state: "enforced", evidence: "tier kernel-bwrap" },
+          { id: "policy_engine_rego", label: "Policy engine (Rego)", state: "off", evidence: "OPA server never called" },
+          { id: "egress_allowlist", label: "Egress allowlist", state: "degraded", evidence: "node checks only" },
+        ],
+        summary: { enforced: 1, degraded: 1, off: 1, unverified: 0 },
+      },
+    } as never);
+
+    render(<BuilderSettingsOverviewPage />);
+
+    const list = await screen.findByRole("list", { name: /security control status/i });
+    const items = within(list).getAllByRole("listitem");
+    expect(items.map((item) => item.getAttribute("data-control-state"))).toEqual(["enforced", "off", "degraded"]);
+    expect(within(items[1]).getByText("Off")).toBeInTheDocument();
+    expect(within(items[1]).queryByText("Enforced")).not.toBeInTheDocument();
+    expect(within(list).getAllByText("Enforced")).toHaveLength(1);
+    expect(screen.getByText(/2 security controls are not enforced at runtime/i)).toBeInTheDocument();
+    expect(screen.queryByText(/policy gate filter/i)).not.toBeInTheDocument();
   });
 });

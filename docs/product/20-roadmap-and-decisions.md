@@ -17,7 +17,7 @@ Scope:
 - Re-measure every gate and get them green.
 - Fix silent failure modes: swallowed persistence errors, SSE drop shown as completion.
 
-Exit: all gates green on main; the desktop app, harness, Windows sandbox, knowledge, skills, local models and schedules present and passing their tests; posture page shows true state.
+Exit: all gates green on main; the desktop app, harness, Windows sandbox, knowledge, skills, local models and schedules present and passing their tests; existing posture views report true control state (no declared-only control shown as enforced); the full posture page with per-control evidence is H1 (per [08](08-feature-catalog.md)).
 
 ### H1 · Personal operator — "hand it a task and trust what comes back"
 
