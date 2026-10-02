@@ -843,7 +843,86 @@ class RuntimeProviderStatus(BaseModel):
     provider: str
     configured: bool
     model: str
-    mode: Literal["live", "simulated"]
+    mode: Literal["live", "not_configured"]
+
+
+ProviderErrorCode = Literal["provider_not_configured", "provider_call_failed"]
+
+
+class ProviderUnavailableError(HTTPException):
+    """No usable model provider could serve a chat call (LOCUS-309).
+
+    Production paths must raise this instead of substituting echo/"simulated"
+    text for a model response, so misconfiguration is visible rather than
+    hidden. It is an ``HTTPException`` so request handlers surface it as a
+    structured 412 (not configured) / 424 (provider call failed) error with a
+    stable ``code``; background runs catch it and end in a Failed state.
+    """
+
+    def __init__(self, *, code: ProviderErrorCode, provider: str, model: str, reason: str) -> None:
+        self.code: ProviderErrorCode = code
+        self.provider = str(provider or "").strip() or "unknown"
+        self.model = str(model or "").strip() or "unknown"
+        self.reason = str(reason or "").strip()[:300] or "unavailable"
+        super().__init__(
+            status_code=412 if code == "provider_not_configured" else 424,
+            detail=self.to_detail(),
+        )
+
+    @property
+    def message(self) -> str:
+        if self.code == "provider_not_configured":
+            return (
+                f"Model provider '{self.provider}' is not configured for model "
+                f"'{self.model}': {self.reason}. Configure provider credentials "
+                "(Settings > Runtime providers, or the provider's environment variables) "
+                "and retry."
+            )
+        return (
+            f"Model provider '{self.provider}' call failed for model '{self.model}': {self.reason}"
+        )
+
+    def __str__(self) -> str:
+        return self.message
+
+    def to_detail(self) -> dict[str, str]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "provider": self.provider,
+            "model": self.model,
+            "reason": self.reason,
+        }
+
+    def to_meta(self) -> dict[str, Any]:
+        """Model-metadata shape used by run events (never carries output text)."""
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "mode": "unavailable",
+            "error_code": self.code,
+            "reason": self.message,
+        }
+
+
+def _provider_not_configured(provider: str, model: str, reason: str) -> ProviderUnavailableError:
+    return ProviderUnavailableError(
+        code="provider_not_configured", provider=provider, model=model, reason=reason
+    )
+
+
+def _provider_call_failed(
+    provider: str, model: str, exc: BaseException | str
+) -> ProviderUnavailableError:
+    return ProviderUnavailableError(
+        code="provider_call_failed",
+        provider=provider,
+        model=model,
+        # httpx errors embed the request URL; Gemini carries its key as ?key=.
+        reason=re.sub(
+            r"(?i)([?&]key=)[^&\s'\"]+", r"\1[REDACTED]", _redact_sensitive_text(str(exc))
+        )[:300],
+    )
 
 
 class UserRuntimeProviderConfigPayload(BaseModel):
@@ -4271,7 +4350,7 @@ def _openai_status() -> RuntimeProviderStatus:
         provider="openai",
         configured=configured,
         model=_default_openai_model(),
-        mode="live" if configured else "simulated",
+        mode="live" if configured else "not_configured",
     )
 
 
@@ -4477,15 +4556,7 @@ def _run_langchain_chat(
 ) -> tuple[str, dict[str, Any]]:
     key = str((runtime or {}).get("api_key") or os.getenv("OPENAI_API_KEY", "")).strip()
     if not key:
-        return (
-            f"[simulated:{model}] {user_prompt[:280]}",
-            {
-                "provider": "langchain-openai",
-                "model": model,
-                "mode": "simulated",
-                "reason": "OPENAI_API_KEY missing",
-            },
-        )
+        raise _provider_not_configured("langchain-openai", model, "OPENAI_API_KEY missing")
 
     try:
         langchain_messages = _import_module("langchain_core.messages")
@@ -4517,15 +4588,7 @@ def _run_langchain_chat(
             },
         )
     except Exception as exc:  # noqa: BLE001
-        return (
-            f"[fallback:{model}] {user_prompt[:280]}",
-            {
-                "provider": "langchain-openai",
-                "model": model,
-                "mode": "simulated",
-                "reason": f"LangChain call failed: {str(exc)[:180]}",
-            },
-        )
+        raise _provider_call_failed("langchain-openai", model, f"LangChain call failed: {exc}")
 
 
 def _run_langgraph_chat(
@@ -4568,8 +4631,10 @@ def _run_langgraph_chat(
 
         response_text = str(result.get("response") or "").strip()
         meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+        if not response_text:
+            raise _provider_call_failed("langgraph", model, "LangGraph returned no response")
         return (
-            response_text or f"[simulated:{model}] {user_prompt[:280]}",
+            response_text,
             {
                 "provider": "langgraph",
                 "model": model,
@@ -4577,16 +4642,10 @@ def _run_langgraph_chat(
                 "upstream_provider": meta.get("provider") or "langchain-openai",
             },
         )
+    except ProviderUnavailableError:
+        raise
     except Exception as exc:  # noqa: BLE001
-        return (
-            f"[fallback:{model}] {user_prompt[:280]}",
-            {
-                "provider": "langgraph",
-                "model": model,
-                "mode": "simulated",
-                "reason": f"LangGraph call failed: {str(exc)[:180]}",
-            },
-        )
+        raise _provider_call_failed("langgraph", model, f"LangGraph call failed: {exc}")
 
 
 def _run_semantic_kernel_chat(
@@ -4599,15 +4658,7 @@ def _run_semantic_kernel_chat(
 ) -> tuple[str, dict[str, Any]]:
     key = str((runtime or {}).get("api_key") or os.getenv("OPENAI_API_KEY", "")).strip()
     if not key:
-        return (
-            f"[simulated:{model}] {user_prompt[:280]}",
-            {
-                "provider": "semantic-kernel",
-                "model": model,
-                "mode": "simulated",
-                "reason": "OPENAI_API_KEY missing",
-            },
-        )
+        raise _provider_not_configured("semantic-kernel", model, "OPENAI_API_KEY missing")
 
     try:
         semantic_kernel = _import_module("semantic_kernel")
@@ -4643,15 +4694,7 @@ def _run_semantic_kernel_chat(
             },
         )
     except Exception as exc:  # noqa: BLE001
-        return (
-            f"[fallback:{model}] {user_prompt[:280]}",
-            {
-                "provider": "semantic-kernel",
-                "model": model,
-                "mode": "simulated",
-                "reason": f"Semantic Kernel call failed: {str(exc)[:180]}",
-            },
-        )
+        raise _provider_call_failed("semantic-kernel", model, f"Semantic Kernel call failed: {exc}")
 
 
 def _run_coroutine_sync(coro: Any) -> Any:
@@ -4680,15 +4723,7 @@ def _run_autogen_chat(
 ) -> tuple[str, dict[str, Any]]:
     key = str((runtime or {}).get("api_key") or os.getenv("OPENAI_API_KEY", "")).strip()
     if not key:
-        return (
-            f"[simulated:{model}] {user_prompt[:280]}",
-            {
-                "provider": "autogen",
-                "model": model,
-                "mode": "simulated",
-                "reason": "OPENAI_API_KEY missing",
-            },
-        )
+        raise _provider_not_configured("autogen", model, "OPENAI_API_KEY missing")
 
     # Try modern AutoGen first.
     try:
@@ -4761,15 +4796,7 @@ def _run_autogen_chat(
             },
         )
     except Exception as exc:  # noqa: BLE001
-        return (
-            f"[fallback:{model}] {user_prompt[:280]}",
-            {
-                "provider": "autogen",
-                "model": model,
-                "mode": "simulated",
-                "reason": f"AutoGen call failed: {str(exc)[:180]}",
-            },
-        )
+        raise _provider_call_failed("autogen", model, f"AutoGen call failed: {exc}")
 
 
 def _run_framework_chat(
@@ -5398,7 +5425,7 @@ def _run_framework_retrieval(
                 "LangChain retrieval fallback (framework unavailable).",
                 {
                     "framework": "langchain",
-                    "mode": "simulated",
+                    "mode": "framework_unavailable",
                     "reason": f"LangChain retrieval failed: {str(exc)[:180]}",
                 },
             )
@@ -5445,7 +5472,7 @@ def _run_framework_retrieval(
                 "LangGraph retrieval fallback (framework unavailable).",
                 {
                     "framework": "langgraph",
-                    "mode": "simulated",
+                    "mode": "framework_unavailable",
                     "reason": f"LangGraph retrieval failed: {str(exc)[:180]}",
                 },
             )
@@ -5480,7 +5507,7 @@ def _run_framework_retrieval(
                 "Semantic Kernel retrieval fallback (framework unavailable).",
                 {
                     "framework": "semantic-kernel",
-                    "mode": "simulated",
+                    "mode": "framework_unavailable",
                     "reason": f"Semantic Kernel retrieval failed: {str(exc)[:180]}",
                 },
             )
@@ -5514,7 +5541,7 @@ def _run_framework_retrieval(
                 "AutoGen retrieval fallback (framework unavailable).",
                 {
                     "framework": "autogen",
-                    "mode": "simulated",
+                    "mode": "framework_unavailable",
                     "reason": f"AutoGen retrieval failed: {str(exc)[:180]}",
                 },
             )
@@ -5592,7 +5619,7 @@ def _run_framework_tool_call(
         except Exception as exc:  # noqa: BLE001
             return _simulate(), {
                 "framework": "langchain",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "skill_hints": list(skill_hints),
                 "reason": f"LangChain tool call failed: {str(exc)[:180]}",
             }
@@ -5632,7 +5659,7 @@ def _run_framework_tool_call(
         except Exception as exc:  # noqa: BLE001
             return _simulate(), {
                 "framework": "langgraph",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "skill_hints": list(skill_hints),
                 "reason": f"LangGraph tool call failed: {str(exc)[:180]}",
             }
@@ -5651,7 +5678,7 @@ def _run_framework_tool_call(
         except Exception as exc:  # noqa: BLE001
             return _simulate(), {
                 "framework": "semantic-kernel",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "skill_hints": list(skill_hints),
                 "reason": f"Semantic Kernel tool call failed: {str(exc)[:180]}",
             }
@@ -5670,7 +5697,7 @@ def _run_framework_tool_call(
         except Exception as exc:  # noqa: BLE001
             return _simulate(), {
                 "framework": "autogen",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "skill_hints": list(skill_hints),
                 "reason": f"AutoGen tool call failed: {str(exc)[:180]}",
             }
@@ -5828,7 +5855,7 @@ def _run_framework_memory(
             result = _native_memory_flow()
             return result, {
                 "framework": "langchain",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "reason": f"LangChain memory failed: {str(exc)[:180]}",
             }
 
@@ -5840,7 +5867,7 @@ def _run_framework_memory(
             result = _native_memory_flow()
             return result, {
                 "framework": "langgraph",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "reason": f"LangGraph memory failed: {str(exc)[:180]}",
             }
 
@@ -5852,7 +5879,7 @@ def _run_framework_memory(
             result = _native_memory_flow()
             return result, {
                 "framework": "semantic-kernel",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "reason": f"Semantic Kernel memory failed: {str(exc)[:180]}",
             }
 
@@ -5867,7 +5894,7 @@ def _run_framework_memory(
             result = _native_memory_flow()
             return result, {
                 "framework": "autogen",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "reason": f"AutoGen memory failed: {str(exc)[:180]}",
             }
 
@@ -5893,7 +5920,7 @@ def _run_framework_guardrail(
         except Exception as exc:  # noqa: BLE001
             return _evaluate(), {
                 "framework": "langchain",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "stage": stage,
                 "reason": f"LangChain guardrail failed: {str(exc)[:180]}",
             }
@@ -5905,7 +5932,7 @@ def _run_framework_guardrail(
         except Exception as exc:  # noqa: BLE001
             return _evaluate(), {
                 "framework": "langgraph",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "stage": stage,
                 "reason": f"LangGraph guardrail failed: {str(exc)[:180]}",
             }
@@ -5917,7 +5944,7 @@ def _run_framework_guardrail(
         except Exception as exc:  # noqa: BLE001
             return _evaluate(), {
                 "framework": "semantic-kernel",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "stage": stage,
                 "reason": f"Semantic Kernel guardrail failed: {str(exc)[:180]}",
             }
@@ -5932,7 +5959,7 @@ def _run_framework_guardrail(
         except Exception as exc:  # noqa: BLE001
             return _evaluate(), {
                 "framework": "autogen",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "stage": stage,
                 "reason": f"AutoGen guardrail failed: {str(exc)[:180]}",
             }
@@ -5971,7 +5998,7 @@ def _run_framework_manifold(
         except Exception as exc:  # noqa: BLE001
             return _evaluate(), {
                 "framework": "langchain",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "reason": f"LangChain manifold failed: {str(exc)[:180]}",
             }
 
@@ -5982,7 +6009,7 @@ def _run_framework_manifold(
         except Exception as exc:  # noqa: BLE001
             return _evaluate(), {
                 "framework": "langgraph",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "reason": f"LangGraph manifold failed: {str(exc)[:180]}",
             }
 
@@ -5993,7 +6020,7 @@ def _run_framework_manifold(
         except Exception as exc:  # noqa: BLE001
             return _evaluate(), {
                 "framework": "semantic-kernel",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "reason": f"Semantic Kernel manifold failed: {str(exc)[:180]}",
             }
 
@@ -6007,7 +6034,7 @@ def _run_framework_manifold(
         except Exception as exc:  # noqa: BLE001
             return _evaluate(), {
                 "framework": "autogen",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "reason": f"AutoGen manifold failed: {str(exc)[:180]}",
             }
 
@@ -6049,7 +6076,7 @@ def _run_framework_human_review(
         except Exception as exc:  # noqa: BLE001
             return _evaluate(), {
                 "framework": "langchain",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "reason": f"LangChain human-review failed: {str(exc)[:180]}",
             }
 
@@ -6060,7 +6087,7 @@ def _run_framework_human_review(
         except Exception as exc:  # noqa: BLE001
             return _evaluate(), {
                 "framework": "langgraph",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "reason": f"LangGraph human-review failed: {str(exc)[:180]}",
             }
 
@@ -6071,7 +6098,7 @@ def _run_framework_human_review(
         except Exception as exc:  # noqa: BLE001
             return _evaluate(), {
                 "framework": "semantic-kernel",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "reason": f"Semantic Kernel human-review failed: {str(exc)[:180]}",
             }
 
@@ -6085,7 +6112,7 @@ def _run_framework_human_review(
         except Exception as exc:  # noqa: BLE001
             return _evaluate(), {
                 "framework": "autogen",
-                "mode": "simulated",
+                "mode": "native_fallback",
                 "reason": f"AutoGen human-review failed: {str(exc)[:180]}",
             }
 
@@ -6133,19 +6160,8 @@ def _env_provider_runtime(provider: str) -> dict[str, Any] | None:
     if provider in {"openai", "openai-compatible"}:
         api_key = str(os.getenv("OPENAI_API_KEY", "") or "").strip()
         if not api_key:
-            if _active_runtime_profile().name == "local-lightweight":
-                model = _default_openai_model()
-                return {
-                    "provider": provider,
-                    "model": model,
-                    "available_models": [model],
-                    "base_url": _normalize_provider_base_url(
-                        provider, os.getenv("OPENAI_BASE_URL", "")
-                    ),
-                    "api_key": "",
-                    "preferred": provider == "openai",
-                    "source": "simulated",
-                }
+            # No key means no provider: never hand back a keyless "simulated"
+            # runtime (LOCUS-309); callers raise provider_not_configured / 412.
             return None
         model = _default_openai_model()
         return {
@@ -6446,9 +6462,16 @@ def _resolve_request_chat_runtime(
         env_provider["principal_id"] = principal["principal_id"]
         return env_provider
 
-    raise HTTPException(
-        status_code=412,
-        detail=f"No configured runtime provider credentials found for '{resolved_provider}'. Configure user runtime providers or environment credentials.",
+    raise _provider_not_configured(
+        resolved_provider,
+        str(
+            runtime_payload.get("model")
+            or (payload.get("model") if isinstance(payload, dict) else "")
+            or agent_model_defaults.get("model")
+            or fallback_model
+            or _default_provider_model(resolved_provider)
+        ),
+        "no runtime provider credentials found (user runtime providers or environment)",
     )
 
 
@@ -6671,14 +6694,10 @@ def _collect_chat_response_chunks(
 ) -> tuple[list[str], dict[str, Any]]:
     resolved_runtime = runtime or _env_provider_runtime("openai")
     if resolved_runtime is None:
-        return (
-            [],
-            {
-                "provider": "openai",
-                "model": str(model or "").strip() or _default_openai_model(),
-                "mode": "simulated",
-                "reason": "No live provider credentials available",
-            },
+        raise _provider_not_configured(
+            "openai",
+            str(model or "").strip() or _default_openai_model(),
+            "no provider credentials are available (OPENAI_API_KEY unset and no user provider)",
         )
 
     resolved_runtime = {
@@ -6695,28 +6714,35 @@ def _collect_chat_response_chunks(
         messages=messages,
     )
     provider = _normalize_chat_provider(str(resolved_runtime.get("provider") or "openai"))
-    if provider in {"openai", "openai-compatible"}:
-        return _stream_openai_compatible_chat(
-            runtime=resolved_runtime,
-            messages=prepared_messages,
-            temperature=temperature,
-            on_chunk=on_chunk,
-        )
-    if provider == "anthropic":
-        return _stream_anthropic_chat(
+    try:
+        if provider in {"openai", "openai-compatible"}:
+            return _stream_openai_compatible_chat(
+                runtime=resolved_runtime,
+                messages=prepared_messages,
+                temperature=temperature,
+                on_chunk=on_chunk,
+            )
+        if provider == "anthropic":
+            return _stream_anthropic_chat(
+                runtime=resolved_runtime,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                on_chunk=on_chunk,
+            )
+        return _stream_gemini_chat(
             runtime=resolved_runtime,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=temperature,
             on_chunk=on_chunk,
         )
-    return _stream_gemini_chat(
-        runtime=resolved_runtime,
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        temperature=temperature,
-        on_chunk=on_chunk,
-    )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - surfaced as a typed provider error
+        raise _provider_call_failed(
+            provider, str(resolved_runtime.get("model") or ""), exc
+        ) from exc
 
 
 def _run_openai_chat(
@@ -6749,29 +6775,17 @@ def _run_openai_chat(
             return ("".join(chunks).strip(), meta)
         except HTTPException:
             raise
-        except Exception as exc:  # noqa: BLE001
-            return (
-                "",
-                {
-                    "provider": str(runtime.get("provider") or "openai"),
-                    "model": str(runtime.get("model") or model or ""),
-                    "mode": "simulated",
-                    "reason": f"Provider call failed: {str(exc)[:180]}",
-                },
-            )
+        except Exception as exc:  # noqa: BLE001 - surfaced as a typed provider error
+            raise _provider_call_failed(
+                str(runtime.get("provider") or "openai"),
+                str(runtime.get("model") or model or ""),
+                exc,
+            ) from exc
 
     provider, bare_model = _resolve_chat_provider(model)
     client, unavailable_reason = _get_chat_client(provider)
     if client is None:
-        return (
-            f"[simulated:{model}] {user_prompt[:280]}",
-            {
-                "provider": provider,
-                "model": model,
-                "mode": "simulated",
-                "reason": unavailable_reason,
-            },
-        )
+        raise _provider_not_configured(provider, bare_model or model, unavailable_reason)
 
     if messages is None:
         messages = []
@@ -6942,15 +6956,10 @@ def _run_openai_chat(
                 last_error = completion_error
             continue
 
-    return (
-        f"[fallback:{primary_model}] {user_prompt[:280]}",
-        {
-            "provider": provider,
-            "model": primary_model,
-            "attempted_models": attempt_models,
-            "mode": "simulated",
-            "reason": f"{provider} call failed: {last_error[:180]}",
-        },
+    raise _provider_call_failed(
+        provider,
+        primary_model,
+        f"attempted {', '.join(attempt_models)}: {last_error or 'no response'}",
     )
 
 
@@ -9432,8 +9441,6 @@ def _builder_runtime_model_catalog(principal_id: str) -> dict[str, list[str]]:
             continue
         env_provider = _env_provider_runtime(provider_name)
         if env_provider is None:
-            continue
-        if str(env_provider.get("source") or "").strip().lower() == "simulated":
             continue
         _register(
             provider_name,
@@ -13999,6 +14006,9 @@ def _register_a2a_nonce_or_raise(nonce: str) -> None:
 
 
 def _sanitize_runtime_error_message(exc: Exception) -> str:
+    if isinstance(exc, ProviderUnavailableError):
+        # Already redacted, and must stay actionable (provider/model/code).
+        return f"[{exc.code}] {exc.message}"
     message = str(exc or "").strip().lower()
     if any(token in message for token in ("guardrail", "tripwire", "policy", "blocked")):
         return "Execution blocked by runtime policy."
@@ -21383,12 +21393,16 @@ def _agent_decides_to_respond(
         "something the others cannot, or you were asked a direct question. Reply with ONLY a "
         'JSON object: {"respond": true|false, "reason": "<one short sentence>"}.'
     )
-    text, meta = _run_openai_chat(
-        system_prompt="You are a precise routing gate. Reply with JSON only.",
-        user_prompt=prompt,
-        model=_resolve_agent_chat_model(agent_def),
-        temperature=0.0,
-    )
+    try:
+        text, meta = _run_openai_chat(
+            system_prompt="You are a precise routing gate. Reply with JSON only.",
+            user_prompt=prompt,
+            model=_resolve_agent_chat_model(agent_def),
+            temperature=0.0,
+        )
+    except ProviderUnavailableError as exc:
+        # Gate fails open; the agent's own call then surfaces the provider error.
+        text, meta = "", exc.to_meta()
     # Fail OPEN: if the gate can't get a clean decision (the local model didn't
     # run "live", timed out, or returned non-JSON), the agent should still
     # participate — a missing teammate is worse than an extra contribution. Only
@@ -21494,20 +21508,41 @@ def _run_agent_collaboration(
             "next; otherwise give your best complete answer for your part."
         )
         work_id = f"work-{uuid4()}"
-        output, meta = _run_agent_iterations(
-            run_id,
-            agent_def,
-            system_prompt=agent_system,
-            user_prompt=collaboration_prompt,
-            model=_resolve_agent_chat_model(agent_def),
-            work_id=work_id,
-            max_iterations=_resolve_agent_max_iterations(agent_def, {}),
-            temperature=0.3,
-            thread_id=root_event_id,
-            parent_event_id=parent_event_id,
-        )
+        try:
+            output, meta = _run_agent_iterations(
+                run_id,
+                agent_def,
+                system_prompt=agent_system,
+                user_prompt=collaboration_prompt,
+                model=_resolve_agent_chat_model(agent_def),
+                work_id=work_id,
+                max_iterations=_resolve_agent_max_iterations(agent_def, {}),
+                temperature=0.3,
+                thread_id=root_event_id,
+                parent_event_id=parent_event_id,
+            )
+        except ProviderUnavailableError as exc:
+            # Provider unavailable: record the explicit error and stop the loop.
+            store.run_events[run_id].append(
+                WorkflowRunEvent(
+                    id=f"evt-{uuid4()}",
+                    type="error",
+                    title=f"{agent_def.name} could not respond",
+                    summary=exc.message,
+                    createdAt=_now_iso(),
+                    metadata={
+                        "selected_agent_id": agent_def.id,
+                        "selected_agent_name": agent_def.name,
+                        "parent_event_id": parent_event_id,
+                        "thread_id": root_event_id,
+                        "error_code": exc.code,
+                        "error": exc.to_detail(),
+                    },
+                )
+            )
+            break
         if str(meta.get("mode")) != "live":
-            break  # provider unavailable — stop rather than emit simulated chatter
+            break  # defensive: never emit non-live output as an agent message
 
         display = _redact_sensitive_text(output) if mask_secrets else output
         summary, _ = _truncate_text_with_metadata(display)
@@ -21555,12 +21590,16 @@ def _run_agent_collaboration(
                 "items. Be complete and self-contained — this is what the user reads as the result."
                 f"\n\nExchange:\n{transcript}"
             )
-            synthesis_output, synthesis_meta = _run_openai_chat(
-                system_prompt=synthesis_system,
-                user_prompt=synthesis_prompt,
-                model=_resolve_agent_chat_model(primary_def),
-                temperature=0.3,
-            )
+            try:
+                synthesis_output, synthesis_meta = _run_openai_chat(
+                    system_prompt=synthesis_system,
+                    user_prompt=synthesis_prompt,
+                    model=_resolve_agent_chat_model(primary_def),
+                    temperature=0.3,
+                )
+            except ProviderUnavailableError as exc:
+                # Synthesis is additive; skip it (no fabricated conclusion).
+                synthesis_output, synthesis_meta = "", exc.to_meta()
             if str(synthesis_meta.get("mode")) == "live":
                 synthesis_display = (
                     _redact_sensitive_text(synthesis_output) if mask_secrets else synthesis_output
@@ -22133,54 +22172,64 @@ def create_workflow_run(
                 )
 
             user_runtime = None if tool_schemas else _resolve_user_scoped_runtime()
-            if user_runtime is not None:
-                # User-scoped provider: stream deltas to /workflow-runs/{id}/stream.
-                response_buffer: list[str] = []
+            provider_error: ProviderUnavailableError | None = None
+            try:
+                if user_runtime is not None:
+                    # User-scoped provider: stream deltas to /workflow-runs/{id}/stream.
+                    response_buffer: list[str] = []
 
-                def _on_chunk(chunk: str) -> None:
-                    if not chunk:
-                        return
-                    response_buffer.append(chunk)
-                    detail = store.run_details.get(run_id)
-                    if isinstance(detail, dict):
-                        detail["response_text"] = "".join(response_buffer)
-                        store.run_details[run_id] = detail
-                    _append_run_stream_event(run_id, "delta", {"text": chunk})
+                    def _on_chunk(chunk: str) -> None:
+                        if not chunk:
+                            return
+                        response_buffer.append(chunk)
+                        detail = store.run_details.get(run_id)
+                        if isinstance(detail, dict):
+                            detail["response_text"] = "".join(response_buffer)
+                            store.run_details[run_id] = detail
+                        _append_run_stream_event(run_id, "delta", {"text": chunk})
 
-                chunks, model_meta = _collect_chat_response_chunks(
-                    system_prompt=system_prompt,
-                    user_prompt=request_prompt,
-                    model=str(user_runtime.get("model") or selected_model).strip(),
-                    temperature=0.2,
-                    runtime=user_runtime,
-                    on_chunk=_on_chunk,
-                )
-                response_text = "".join(chunks).strip()
-            else:
-                response_text, model_meta = _run_agent_iterations(
-                    run_id,
-                    selected_agent_definition,
-                    system_prompt=system_prompt,
-                    user_prompt=request_prompt,
-                    model=selected_model,
-                    work_id=primary_work_id,
-                    max_iterations=_resolve_agent_max_iterations(
-                        selected_agent_definition, payload
-                    ),
-                    temperature=0.2,
-                    tools=tool_schemas or None,
-                    tool_executor=_execute_mcp_tool if tool_dispatch else None,
-                    max_tool_calls=max(1, int(store.platform_settings.max_tool_calls_per_run or 8)),
-                    on_tool_event=_emit_tool_event,
-                    reasoning_effort=composer_opts["reasoning_effort"],
-                )
+                    chunks, model_meta = _collect_chat_response_chunks(
+                        system_prompt=system_prompt,
+                        user_prompt=request_prompt,
+                        model=str(user_runtime.get("model") or selected_model).strip(),
+                        temperature=0.2,
+                        runtime=user_runtime,
+                        on_chunk=_on_chunk,
+                    )
+                    response_text = "".join(chunks).strip()
+                else:
+                    response_text, model_meta = _run_agent_iterations(
+                        run_id,
+                        selected_agent_definition,
+                        system_prompt=system_prompt,
+                        user_prompt=request_prompt,
+                        model=selected_model,
+                        work_id=primary_work_id,
+                        max_iterations=_resolve_agent_max_iterations(
+                            selected_agent_definition, payload
+                        ),
+                        temperature=0.2,
+                        tools=tool_schemas or None,
+                        tool_executor=_execute_mcp_tool if tool_dispatch else None,
+                        max_tool_calls=max(
+                            1, int(store.platform_settings.max_tool_calls_per_run or 8)
+                        ),
+                        on_tool_event=_emit_tool_event,
+                        reasoning_effort=composer_opts["reasoning_effort"],
+                    )
+            except ProviderUnavailableError as exc:
+                # No echo text: the run fails with the typed, actionable error.
+                provider_error = exc
+                response_text = ""
+                model_meta = exc.to_meta()
             if tool_sources:
                 model_meta = {**model_meta, "tool_sources": tool_sources}
 
-            if str(model_meta.get("mode") or "") != "live":
+            if provider_error is not None or str(model_meta.get("mode") or "") != "live":
                 reason = str(
                     model_meta.get("reason") or "Agent execution provider is not available."
                 )
+                error_code = str(model_meta.get("error_code") or "provider_call_failed")
                 failure_artifact = ArtifactSummary(
                     id=str(uuid4()),
                     name="Agent Execution Failure Report",
@@ -22208,6 +22257,12 @@ def create_workflow_run(
                             metadata={
                                 "selected_agent_id": selected_agent_id,
                                 "selected_agent_name": selected_agent,
+                                "error_code": error_code,
+                                "error": (
+                                    provider_error.to_detail()
+                                    if provider_error is not None
+                                    else {"code": error_code, "message": reason}
+                                ),
                                 "model": model_meta,
                                 "system_prompt_source": system_prompt_source,
                             },
@@ -22249,17 +22304,18 @@ def create_workflow_run(
                         },
                     ],
                     "response_text": reason,
+                    "error": {"code": error_code, "message": reason},
                     "approvals": {"required": False, "pending": False},
                     "runtime": model_meta,
                     "access": access_context,
                 }
-                _append_run_stream_event(run_id, "error", {"message": reason})
+                _append_run_stream_event(run_id, "error", {"message": reason, "code": error_code})
                 _persist_store_state()
                 _append_audit_event(
                     "workflow.run.create",
                     actor,
                     "error",
-                    {"run_id": run_id, "status": "failed_provider"},
+                    {"run_id": run_id, "status": "failed_provider", "error_code": error_code},
                 )
                 _finish_stream()
                 return
@@ -22959,6 +23015,29 @@ def send_run_message(
                 current.progressLabel = "Complete" if live else "Provider unavailable"
                 current.updatedAt = "just now"
             _persist_store_state()
+        except ProviderUnavailableError as exc:
+            store.run_events.setdefault(run_id, []).append(
+                WorkflowRunEvent(
+                    id=f"evt-{uuid4()}",
+                    type="error",
+                    title="Agent execution failed",
+                    summary=exc.message,
+                    createdAt=_now_iso(),
+                    metadata={
+                        "selected_agent_id": captured_agent.id,
+                        "selected_agent_name": captured_agent.name,
+                        "error_code": exc.code,
+                        "error": exc.to_detail(),
+                        "model": exc.to_meta(),
+                    },
+                )
+            )
+            current = store.runs.get(run_id)
+            if current is not None:
+                current.status = "Failed"
+                current.progressLabel = "Provider unavailable"
+                current.updatedAt = "just now"
+            _persist_store_state()
         except Exception as exc:  # noqa: BLE001
             store.run_events.setdefault(run_id, []).append(
                 WorkflowRunEvent(
@@ -23196,14 +23275,18 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
         if event.type == "agent_message" and event.summary:
             response_text = event.summary
             break
+    provider_error: ProviderUnavailableError | None = None
     if not response_text:
         system_prompt, _ = _resolve_agent_system_prompt(selected_agent_definition)
-        response_text, _ = _run_openai_chat(
-            system_prompt=system_prompt,
-            user_prompt=prompt_text or "Execute the requested workflow task.",
-            model=_resolve_agent_chat_model(selected_agent_definition),
-            temperature=0.2,
-        )
+        try:
+            response_text, _ = _run_openai_chat(
+                system_prompt=system_prompt,
+                user_prompt=prompt_text or "Execute the requested workflow task.",
+                model=_resolve_agent_chat_model(selected_agent_definition),
+                temperature=0.2,
+            )
+        except ProviderUnavailableError as exc:
+            provider_error = exc
 
     artifact_id = str(uuid5(NAMESPACE_URL, f"legacy-artifact:{run_id}"))
     detail = {
@@ -23250,6 +23333,14 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
             "scope": "final send/export",
         },
     }
+    if provider_error is not None:
+        # Surface the explicit provider error; don't cache, so a later read can
+        # reconstruct once a provider is configured.
+        return {
+            **detail,
+            "error": provider_error.to_detail(),
+            "participants": _run_participants(run_id),
+        }
     store.run_details[run_id] = detail
 
     return {**detail, "participants": _run_participants(run_id)}
@@ -24079,16 +24170,16 @@ def run_skill_eval(
     )
     case_results: list[dict[str, Any]] = []
     scores: list[float] = []
+    # Provider errors propagate as ProviderUnavailableError (412/424): an eval
+    # never scores fabricated output (LOCUS-309).
     mode = "live"
     for case in cases:
-        output, model_meta = _run_openai_chat(
+        output, _ = _run_openai_chat(
             system_prompt=skill_system_prompt,
             user_prompt=case["prompt"],
             model=model,
             temperature=0.2,
         )
-        if str(model_meta.get("mode")) != "live":
-            mode = "simulated"
         judge_prompt = (
             "You are grading an AI response against a rubric. Respond with ONLY a JSON object "
             '{"score": <0.0-1.0>, "reason": "<short>"}.\n\n'
@@ -24097,7 +24188,7 @@ def run_skill_eval(
             + (f"EXPECTATION:\n{case['expectation']}\n\n" if case["expectation"] else "")
             + f"RESPONSE:\n{output[:4000]}"
         )
-        judge_text, judge_meta = _run_openai_chat(
+        judge_text, _ = _run_openai_chat(
             system_prompt="You are a precise, terse evaluator.",
             user_prompt=judge_prompt,
             model=model,
@@ -24110,8 +24201,6 @@ def run_skill_eval(
             case_score = max(0.0, min(1.0, float(parsed.get("score", 0.0))))
             reason = str(parsed.get("reason") or "")
         except Exception:  # noqa: BLE001 - ungradeable output scores 0
-            if str(judge_meta.get("mode")) != "live":
-                mode = "simulated"
             reason = "Judge output could not be parsed."
         scores.append(case_score)
         case_results.append(
@@ -24287,14 +24376,20 @@ def _run_skill_blast_chamber(skill: SkillDefinition) -> SkillSecurityScan:
             f"procedure exactly when handling the task:\n\n### Skill: {skill.name}\n"
             f"{skill.content.strip()}"
         )
-        output, model_meta = _run_openai_chat(
-            system_prompt=system_prompt,
-            user_prompt=_SKILL_IMPORT_PROBE_TASK,
-            model=_default_openai_model(),
-            temperature=0.2,
-        )
-        dry_run_mode = str(model_meta.get("mode") or "live")
-        dry_run_findings = _scan_skill_text(output, stage="dry_run_output")
+        try:
+            output, model_meta = _run_openai_chat(
+                system_prompt=system_prompt,
+                user_prompt=_SKILL_IMPORT_PROBE_TASK,
+                model=_default_openai_model(),
+                temperature=0.2,
+            )
+        except ProviderUnavailableError as exc:
+            # No provider: the dry-run did not execute. Record why instead of
+            # scanning fabricated output; the static scan still gates the skill.
+            dry_run_mode = exc.code
+        else:
+            dry_run_mode = str(model_meta.get("mode") or "live")
+            dry_run_findings = _scan_skill_text(output, stage="dry_run_output")
     dry_run_passed = static_passed and not any(
         f.severity.lower() == "high" for f in dry_run_findings
     )
@@ -24307,6 +24402,8 @@ def _run_skill_blast_chamber(skill: SkillDefinition) -> SkillSecurityScan:
         if cleared
         else f"Blocked: {high} high-severity finding(s) across the static scan and dry-run."
     )
+    if dry_run_mode in {"provider_not_configured", "provider_call_failed"}:
+        summary += f" Dry-run not executed ({dry_run_mode}); only the static scan ran."
     return SkillSecurityScan(
         cleared=cleared,
         static_passed=static_passed,
@@ -28541,6 +28638,50 @@ def _run_compiled_workflow_run(
         if isinstance(res, dict)
     ]
 
+    provider_failures = [
+        res
+        for res in node_results.values()
+        if isinstance(res, dict)
+        and str(res.get("error_code") or "") in {"provider_not_configured", "provider_call_failed"}
+    ]
+    if provider_failures:
+        # An agent node could not reach its model provider: the run failed. Do
+        # not hand back output as if the team completed the work (LOCUS-309).
+        failure_message = str(provider_failures[0].get("response") or "Model provider unavailable.")
+        failure_code = str(provider_failures[0].get("error_code"))
+        store.runs[run_id] = WorkflowRunSummary(
+            id=run_id,
+            title=title,
+            status="Failed",
+            updatedAt="just now",
+            progressLabel="Provider unavailable",
+            kind=run_kind,  # type: ignore[arg-type]
+        )
+        store.run_events.setdefault(run_id, []).append(
+            WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="error",
+                title="Multi-agent workflow failed",
+                summary=failure_message[:500],
+                createdAt=_now_iso(),
+                metadata={"error_code": failure_code, "phase": "graph"},
+            )
+        )
+        store.run_details[run_id] = {
+            "artifacts": [],
+            "status": "Failed",
+            "graph": graph_json,
+            "agent_traces": agent_traces,
+            "response_text": failure_message,
+            "error": {"code": failure_code, "message": failure_message},
+            "node_results": node_results,
+            "changed_files": changed_files,
+            "approvals": {"required": False, "pending": False},
+            "access": access_context,
+        }
+        _persist_store_state()
+        return
+
     artifacts: list[ArtifactSummary] = []
     main_artifact = ArtifactSummary(
         id=str(uuid4()), name="Completed Feature — Team Handback", status="Needs Review", version=1
@@ -28883,6 +29024,8 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
                 )
             )
         except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, ProviderUnavailableError):
+                node_results[node_id] = {"mode": "failed", "error": exc.to_detail()}
             events.append(
                 GraphRunEvent(
                     id=f"evt-{uuid4()}",

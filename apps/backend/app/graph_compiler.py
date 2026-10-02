@@ -363,6 +363,19 @@ def _reasoning_text(resp: Any) -> str:
     return ""
 
 
+# Stable error code shared with the backend's ProviderUnavailableError contract.
+PROVIDER_CALL_FAILED = "provider_call_failed"
+
+
+def _provider_failure_message(r: AgentResolution, exc: BaseException) -> str:
+    """Explicit, actionable failure text for an agent node whose model call failed."""
+    provider = r.provider or "unknown"
+    return (
+        f"[{PROVIDER_CALL_FAILED}] Model provider '{provider}' call failed for model "
+        f"'{r.model}': {str(exc)[:300]}"
+    )
+
+
 def _run_agent_node(
     node: Any,
     incoming: list[dict[str, Any]],
@@ -420,13 +433,17 @@ def _run_agent_node(
             reasoning = ""  # don't duplicate it as both message and reasoning
         usage = getattr(resp, "usage", {}) or {}
         mode = "live"
-    except Exception as exc:  # noqa: BLE001 - degrade, never crash the run
-        text = f"[agent unavailable: {exc}]"
+        error_code = ""
+    except Exception as exc:  # noqa: BLE001 - recorded as an explicit node failure
+        # Never pretend: the node reports a typed provider failure (LOCUS-309)
+        # and the run is marked Failed by the caller.
+        text = _provider_failure_message(r, exc)
         reasoning = ""
         usage = {}
-        mode = "simulated"
-    route = _extract_route(text, out_ports) if len(out_ports) > 1 else ""
-    return {
+        mode = "failed"
+        error_code = PROVIDER_CALL_FAILED
+    route = _extract_route(text, out_ports) if len(out_ports) > 1 and not error_code else ""
+    result = {
         "agent_id": r.agent_id,
         "title": getattr(node, "title", node.id),
         "model": f"{r.provider}/{r.model}" if r.provider else r.model,
@@ -439,6 +456,9 @@ def _run_agent_node(
         "mode": mode,
         "resolved": r.found,
     }
+    if error_code:
+        result["error_code"] = error_code
+    return result
 
 
 def _delegate_to_swe_agent(
@@ -730,10 +750,12 @@ def _plan_only_fallback(
         )
         text = (resp.text or "").strip()
         mode = "plan_only"
-    except Exception as exc:  # noqa: BLE001
-        text = f"[implementer unavailable: {exc}]"
-        mode = "simulated"
-    return {
+        error_code = ""
+    except Exception as exc:  # noqa: BLE001 - recorded as an explicit node failure
+        text = _provider_failure_message(r, exc)
+        mode = "failed"
+        error_code = PROVIDER_CALL_FAILED
+    result = {
         "agent_id": r.agent_id,
         "title": getattr(node, "title", node.id),
         "response": text,
@@ -744,6 +766,9 @@ def _plan_only_fallback(
         "mode": mode,
         "degraded_reason": reason,
     }
+    if error_code:
+        result["error_code"] = error_code
+    return result
 
 
 # --------------------------------------------------------------------------- #

@@ -387,7 +387,6 @@ export default function SkillBuilderPage({ params }: { params: Promise<{ id: str
             <div className="space-y-1.5 rounded border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2">
               <p className={evalResult.passed ? "text-[hsl(var(--state-success))]" : "text-[hsl(var(--state-warning))]"}>
                 Score {Math.round(evalResult.score * 100)}% — {evalResult.passed ? "passed" : "below threshold"}
-                {evalResult.mode !== "live" ? " (simulated — configure a provider)" : ""}
               </p>
               {evalResult.cases.map((c, i) => (
                 <div key={i} className="border-t border-[var(--fx-border)] pt-1">

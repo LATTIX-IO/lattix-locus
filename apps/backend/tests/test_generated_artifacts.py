@@ -489,6 +489,27 @@ def _sample_graph() -> dict[str, list[dict[str, object]]]:
     }
 
 
+def _use_fake_chat_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit test-double provider (LOCUS-309: production has no simulated output)."""
+
+    def _fake_runtime(**_kwargs: object) -> dict[str, object]:
+        return {
+            "provider": "openai",
+            "model": "gpt-test-model",
+            "available_models": ["gpt-test-model"],
+            "base_url": "https://provider.invalid/v1",
+            "api_key": "test-key",
+            "preferred": True,
+            "source": "test",
+        }
+
+    def _fake_chat(*, model: str, **_kwargs: object) -> tuple[str, dict[str, object]]:
+        return "Fake provider response.", {"provider": "openai", "model": model, "mode": "live"}
+
+    monkeypatch.setattr(main_module, "_resolve_request_chat_runtime", _fake_runtime)
+    monkeypatch.setattr(main_module, "_run_openai_chat", _fake_chat)
+
+
 def _run_access(owner: str, *, tenant: str = "") -> dict[str, object]:
     return {
         "actor": owner,
@@ -6912,6 +6933,7 @@ def test_graph_runs_sanitize_runtime_failure_details(monkeypatch) -> None:
     def _explode(*_args: object, **_kwargs: object) -> dict[str, object]:
         raise RuntimeError("ToolInputGuardrailTripwireTriggered at node 'tool-1'")
 
+    _use_fake_chat_provider(monkeypatch)
     monkeypatch.setattr(main_module, "_execute_node", _explode)
 
     response = client.post(
@@ -6963,7 +6985,8 @@ def test_graph_run_blocks_platform_global_blocked_keywords() -> None:
         store.platform_settings.global_blocked_keywords = original_keywords
 
 
-def test_graph_run_does_not_block_partial_word_keyword_matches() -> None:
+def test_graph_run_does_not_block_partial_word_keyword_matches(monkeypatch) -> None:
+    _use_fake_chat_provider(monkeypatch)
     original_keywords = list(store.platform_settings.global_blocked_keywords)
 
     try:
