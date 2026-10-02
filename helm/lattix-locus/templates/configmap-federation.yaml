@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "lattix-locus.fullname" . }}-federation
+data:
+  enabled: {{ .Values.federation.enabled | quote }}
+  clusterName: {{ .Values.federation.clusterName | quote }}
+  region: {{ .Values.federation.region | quote }}
+  peers: {{ join "," .Values.federation.peers | quote }}

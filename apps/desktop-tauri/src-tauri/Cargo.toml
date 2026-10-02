@@ -1,7 +1,7 @@
 [package]
-name = "lattix-xfrontier-desktop"
+name = "lattix-locus-desktop"
 version = "0.1.0"
-description = "Lattix xFrontier desktop shell"
+description = "Lattix Locus desktop shell"
 edition = "2021"
 rust-version = "1.77"
 

@@ -77,7 +77,7 @@ vi.mock("@/components/task-kickoff-composer", () => ({
 }));
 
 vi.mock("@/lib/api", () => ({
-  WORKFLOW_RUN_UPDATED_EVENT: "frontier:workflow-run-updated",
+  WORKFLOW_RUN_UPDATED_EVENT: "locus:workflow-run-updated",
   getAtfAlignmentReport: getAtfAlignmentReportMock,
   getWorkflowRun: getWorkflowRunMock,
   getWorkflowRunEvents: getWorkflowRunEventsMock,
@@ -118,8 +118,8 @@ const runDetail = {
   ],
   graph: {
     nodes: [
-      { id: "node-1", title: "Start", type: "frontier/trigger", x: 10, y: 10 },
-      { id: "node-2", title: "Agent", type: "frontier/agent", x: 110, y: 10 },
+      { id: "node-1", title: "Start", type: "locus/trigger", x: 10, y: 10 },
+      { id: "node-2", title: "Agent", type: "locus/agent", x: 110, y: 10 },
     ],
     links: [{ from: "node-1", to: "node-2" }],
   },
@@ -404,7 +404,7 @@ describe("UserChatWorkspace", () => {
     expect(lastGraphProps.readOnly).toBe(true);
     const graphTitles = lastGraphProps.nodes.map((node) => node.title);
     expect(graphTitles).toEqual(["Start", "Agent"]);
-    expect(lastGraphProps.nodes.map((node) => node.type)).toEqual(["frontier/trigger", "frontier/agent"]);
+    expect(lastGraphProps.nodes.map((node) => node.type)).toEqual(["locus/trigger", "locus/agent"]);
   });
 
   it("renders a selected session even when its summary is not preloaded", async () => {

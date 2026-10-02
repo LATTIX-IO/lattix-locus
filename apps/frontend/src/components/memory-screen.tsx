@@ -11,7 +11,7 @@ import {
   FxTag,
 } from "@/components/fx-ui";
 import { getMemorySession, getWorkflowRuns, type MemorySessionResponse } from "@/lib/api";
-import type { WorkflowRunSummary } from "@/types/frontier";
+import type { WorkflowRunSummary } from "@/types/locus";
 
 const CLUSTERS = [
   "Security Policies",

@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from frontier_runtime.security import VaultClient
+from locus_runtime.security import VaultClient
 
 
 def test_vault_client_fails_closed_without_configuration() -> None:
@@ -36,7 +36,7 @@ def test_vault_client_reads_kv_v2_secret(monkeypatch) -> None:
         captured["follow_redirects"] = follow_redirects
         return _FakeResponse()
 
-    monkeypatch.setattr("frontier_runtime.security.httpx.request", _fake_request)
+    monkeypatch.setattr("locus_runtime.security.httpx.request", _fake_request)
 
     client = VaultClient(addr="http://vault:8200", token="vault-token", timeout_seconds=7)
     secret = client.read_secret("secret/data/demo/path")
@@ -74,7 +74,7 @@ def test_vault_client_writes_kv_v2_secret(monkeypatch) -> None:
         captured["follow_redirects"] = follow_redirects
         return _FakeResponse()
 
-    monkeypatch.setattr("frontier_runtime.security.httpx.request", _fake_request)
+    monkeypatch.setattr("locus_runtime.security.httpx.request", _fake_request)
 
     client = VaultClient(addr="http://vault:8200", token="vault-token", timeout_seconds=9)
     response = client.write_secret(
@@ -97,7 +97,7 @@ def test_vault_client_sanitizes_http_error_details(monkeypatch) -> None:
     def _fake_request(method, url, headers=None, json=None, timeout=0, follow_redirects=False):
         raise httpx.HTTPStatusError("denied", request=httpx.Request(method, url), response=response)
 
-    monkeypatch.setattr("frontier_runtime.security.httpx.request", _fake_request)
+    monkeypatch.setattr("locus_runtime.security.httpx.request", _fake_request)
 
     client = VaultClient(addr="http://vault:8200", token="vault-token", timeout_seconds=5)
     with pytest.raises(RuntimeError) as exc:

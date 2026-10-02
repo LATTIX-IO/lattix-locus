@@ -10,9 +10,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from frontier_tooling import desktop_firstrun as fr  # noqa: E402
-from frontier_tooling import native_binaries as nb  # noqa: E402
-from frontier_tooling import native_launcher as nl  # noqa: E402
+from locus_tooling import desktop_firstrun as fr  # noqa: E402
+from locus_tooling import native_binaries as nb  # noqa: E402
+from locus_tooling import native_launcher as nl  # noqa: E402
 
 
 def _which_factory(available: set[str]):
@@ -71,10 +71,10 @@ def test_degrade_uses_sqlite_when_postgres_absent(tmp_path):
     cfg = nl.NativeConfig(app_home=tmp_path, degrade_when_missing=True, enable_world_models=True)
     plan = nl.build_native_plan(cfg, which=_which_factory(set()))
     assert "postgres" not in plan.service_names()
-    assert plan.env["FRONTIER_SQLITE_STATE_PATH"].endswith("frontier-state.db")
+    assert plan.env["LOCUS_SQLITE_STATE_PATH"].endswith("locus-state.db")
     assert "POSTGRES_DSN" not in plan.env
     # world models off (neo4j absent), nats degraded (agents in-proc).
-    assert plan.env["FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED"] == "false"
+    assert plan.env["LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED"] == "false"
     assert "NATS_URL" not in plan.env
     assert any("postgres not present" in w for w in plan.warnings)
 
@@ -93,4 +93,4 @@ def test_degrade_full_stack_present_uses_postgres(tmp_path):
     cfg = nl.NativeConfig(app_home=tmp_path, degrade_when_missing=True)
     plan = nl.build_native_plan(cfg, which=_which_factory(all_bins))
     assert "postgres" in plan.service_names()
-    assert "POSTGRES_DSN" in plan.env and "FRONTIER_SQLITE_STATE_PATH" not in plan.env
+    assert "POSTGRES_DSN" in plan.env and "LOCUS_SQLITE_STATE_PATH" not in plan.env

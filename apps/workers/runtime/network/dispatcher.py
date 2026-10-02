@@ -19,13 +19,13 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 def _runtime_profile() -> str:
-    value = str(os.getenv("FRONTIER_RUNTIME_PROFILE", "local-lightweight") or "").strip().lower()
+    value = str(os.getenv("LOCUS_RUNTIME_PROFILE", "local-lightweight") or "").strip().lower()
     return value or "local-lightweight"
 
 
 def _strict_remote_dispatch_required() -> bool:
     return _runtime_profile() in {"local-secure", "hosted"} or _env_flag(
-        "FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", False
+        "LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", False
     )
 
 

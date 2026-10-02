@@ -9,7 +9,7 @@ import {
   instantiatePlaybook,
   instantiateWorkflowTemplate,
 } from "@/lib/api";
-import type { TemplateCatalogItem } from "@/types/frontier";
+import type { TemplateCatalogItem } from "@/types/locus";
 
 type TemplateTypeFilter = "all" | "agent" | "workflow" | "playbook";
 type TemplateCatalogView = "library" | "archived";

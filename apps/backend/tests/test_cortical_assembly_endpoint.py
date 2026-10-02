@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
-from frontier_runtime.cognition import Commitment
-from frontier_runtime.persistence import (
+from locus_runtime.cognition import Commitment
+from locus_runtime.persistence import (
     load_assembly_causal_state,
     record_assembly_outcome,
     reset_shared_state_backend,
@@ -26,16 +26,16 @@ from test_generated_artifacts import (  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _default_runtime_profile(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FRONTIER_RUNTIME_PROFILE", raising=False)
-    monkeypatch.delenv("FRONTIER_SECURE_LOCAL_MODE", raising=False)
-    monkeypatch.delenv("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS", raising=False)
-    monkeypatch.delenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
-    monkeypatch.delenv("FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR", raising=False)
-    monkeypatch.delenv("FRONTIER_ADMIN_ACTORS", raising=False)
-    monkeypatch.delenv("FRONTIER_BUILDER_ACTORS", raising=False)
-    monkeypatch.setenv("FRONTIER_BOOTSTRAP_ADMIN_USERNAME", "frontier-admin")
-    monkeypatch.setenv("FRONTIER_BOOTSTRAP_ADMIN_EMAIL", "admin@frontier.localhost")
-    monkeypatch.setenv("FRONTIER_BOOTSTRAP_ADMIN_SUBJECT", "frontier-admin")
+    monkeypatch.delenv("LOCUS_RUNTIME_PROFILE", raising=False)
+    monkeypatch.delenv("LOCUS_SECURE_LOCAL_MODE", raising=False)
+    monkeypatch.delenv("LOCUS_REQUIRE_AUTHENTICATED_REQUESTS", raising=False)
+    monkeypatch.delenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
+    monkeypatch.delenv("LOCUS_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR", raising=False)
+    monkeypatch.delenv("LOCUS_ADMIN_ACTORS", raising=False)
+    monkeypatch.delenv("LOCUS_BUILDER_ACTORS", raising=False)
+    monkeypatch.setenv("LOCUS_BOOTSTRAP_ADMIN_USERNAME", "locus-admin")
+    monkeypatch.setenv("LOCUS_BOOTSTRAP_ADMIN_EMAIL", "admin@locus.localhost")
+    monkeypatch.setenv("LOCUS_BOOTSTRAP_ADMIN_SUBJECT", "locus-admin")
 
 
 def _post_internal_assembly(payload: dict[str, object], *, nonce: str) -> object:
@@ -114,7 +114,7 @@ def _payload_text(value: object) -> str:
 def test_internal_cortical_assembly_endpoint_runs_and_projects(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
 
@@ -167,7 +167,7 @@ def test_cortical_audit_events_redact_api_keys() -> None:
 def test_internal_cortical_assembly_endpoint_redacts_auth_headers_from_belief_state(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
 
@@ -201,7 +201,7 @@ def test_internal_cortical_assembly_endpoint_redacts_auth_headers_from_belief_st
 def test_internal_cortical_assembly_endpoint_redacts_sensitive_payload_from_projection(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
 
@@ -248,7 +248,7 @@ def test_internal_cortical_assembly_error_response_redacts_raw_sensitive_payload
 def test_internal_cortical_assembly_endpoint_runtime_gate_allows_valid_steps(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
     main_module.store.audit_events = []
@@ -280,7 +280,7 @@ def test_internal_cortical_assembly_endpoint_runtime_gate_allows_valid_steps(
 def test_internal_cortical_assembly_endpoint_allowed_execution_emits_audit_sequence(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
     main_module.store.audit_events = []
@@ -340,7 +340,7 @@ def test_internal_cortical_assembly_endpoint_allowed_execution_emits_audit_seque
 def test_internal_cortical_assembly_endpoint_rejected_execution_emits_blocked_audit_reason(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
     main_module.store.audit_events = []
@@ -380,7 +380,7 @@ def test_internal_cortical_assembly_endpoint_rejected_execution_emits_blocked_au
 def test_internal_cortical_assembly_endpoint_audit_events_do_not_expose_sensitive_payloads(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
     main_module.store.audit_events = []
@@ -406,7 +406,7 @@ def test_internal_cortical_assembly_endpoint_audit_events_do_not_expose_sensitiv
 def test_internal_cortical_assembly_endpoint_runtime_gate_blocks_over_budget(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
     main_module.store.audit_events = []
@@ -437,7 +437,7 @@ def test_internal_cortical_assembly_endpoint_runtime_gate_blocks_over_budget(
 def test_internal_cortical_assembly_endpoint_runtime_gate_blocks_missing_tenant_context(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
     main_module.store.audit_events = []
@@ -462,7 +462,7 @@ def test_internal_cortical_assembly_endpoint_runtime_gate_blocks_missing_tenant_
 def test_internal_cortical_assembly_endpoint_escalates_low_confidence(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
 
@@ -486,7 +486,7 @@ def test_internal_cortical_assembly_endpoint_escalates_low_confidence(
 def test_internal_cortical_assembly_endpoint_can_skip_graph_projection(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
 
@@ -515,7 +515,7 @@ def test_internal_cortical_assembly_endpoint_can_skip_graph_projection(
 def test_internal_cortical_assembly_endpoint_parses_string_false_for_graph_projection(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
 
@@ -542,7 +542,7 @@ def test_internal_cortical_assembly_endpoint_parses_string_false_for_graph_proje
 def test_internal_cortical_assembly_endpoint_persists_when_projection_unavailable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
     original_enabled = main_module._NEO4J_GRAPH.enabled
@@ -580,7 +580,7 @@ def test_internal_cortical_assembly_endpoint_persists_when_projection_unavailabl
 def test_internal_cortical_assembly_endpoint_reports_projection_write_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
 
@@ -613,7 +613,7 @@ def test_internal_cortical_assembly_endpoint_reports_projection_write_failure(
 def test_internal_cortical_assembly_endpoint_replays_existing_assembly_id_idempotently(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
     payload = {
@@ -650,7 +650,7 @@ def test_internal_cortical_assembly_endpoint_replays_existing_assembly_id_idempo
 def test_signed_cognitive_message_replay_marker_blocks_duplicate_mutation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
     assembly_id = "assembly:message-replay"
@@ -696,7 +696,7 @@ def test_signed_cognitive_message_replay_marker_blocks_duplicate_mutation(
 def test_duplicate_commitment_outcome_replay_marker_prevents_second_append(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     commitment = Commitment(
         decision="approve",
@@ -737,7 +737,7 @@ def test_duplicate_commitment_outcome_replay_marker_prevents_second_append(
 def test_internal_cortical_assembly_endpoint_rejects_conflicting_assembly_id_reuse(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
 
@@ -769,7 +769,7 @@ def test_internal_cortical_assembly_endpoint_rejects_conflicting_assembly_id_reu
 def test_internal_cortical_assembly_endpoint_rejects_cross_tenant_assembly_replay(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
 
@@ -803,7 +803,7 @@ def test_internal_cortical_assembly_endpoint_rejects_cross_tenant_assembly_repla
 def test_causal_assembly_graph_projection_denies_cross_tenant_access(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
 
@@ -843,12 +843,12 @@ def test_internal_cortical_assembly_endpoint_requires_signed_internal_access() -
 def test_internal_cortical_assembly_endpoint_requires_signed_access_in_secure_profiles(
     monkeypatch: pytest.MonkeyPatch, profile: str
 ) -> None:
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", profile)
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", profile)
 
     response = client.post(
         "/internal/cognition/assemblies/run",
         json={"task": "Summarize operational risk"},
-        headers={"x-frontier-actor": "tester"},
+        headers={"x-locus-actor": "tester"},
     )
 
     assert response.status_code == 401

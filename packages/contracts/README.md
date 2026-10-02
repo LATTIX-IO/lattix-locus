@@ -1,1 +1,1 @@
-# lattix-frontier-contracts
+# lattix-locus-contracts

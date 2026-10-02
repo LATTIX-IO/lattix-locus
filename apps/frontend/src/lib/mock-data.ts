@@ -6,7 +6,7 @@ import {
   WorkflowDefinition,
   WorkflowRunEvent,
   WorkflowRunSummary,
-} from "@/types/frontier";
+} from "@/types/locus";
 
 export const mockRuns: WorkflowRunSummary[] = [
   {

@@ -13,8 +13,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from frontier_tooling import desktop as dt  # noqa: E402
-from frontier_tooling import native_launcher as nl  # noqa: E402
+from locus_tooling import desktop as dt  # noqa: E402
+from locus_tooling import native_launcher as nl  # noqa: E402
 
 _TAURI_DIR = _REPO_ROOT / "apps" / "desktop-tauri" / "src-tauri"
 
@@ -37,17 +37,17 @@ def test_bundled_root_from_checkout_is_repo_root(monkeypatch):
     monkeypatch.delattr(sys, "_MEIPASS", raising=False)
     monkeypatch.setattr(sys, "frozen", False, raising=False)
     # source_repo_root() is the package parent (repo root).
-    assert (dt.bundled_root() / "frontier_tooling").exists()
+    assert (dt.bundled_root() / "locus_tooling").exists()
 
 
 def test_desktop_app_home_honors_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("FRONTIER_APP_HOME", str(tmp_path))
+    monkeypatch.setenv("LOCUS_APP_HOME", str(tmp_path))
     assert dt.desktop_app_home() == tmp_path
 
 
 # --- desktop NativeConfig ----------------------------------------------------
 def test_desktop_config_uses_writable_bin_and_degrades(monkeypatch, tmp_path):
-    monkeypatch.setenv("FRONTIER_APP_HOME", str(tmp_path))
+    monkeypatch.setenv("LOCUS_APP_HOME", str(tmp_path))
     cfg = dt.desktop_config()
     assert cfg.app_home == tmp_path
     # First-run fetch lands in the writable app-home bin (not the read-only bundle).
@@ -57,7 +57,7 @@ def test_desktop_config_uses_writable_bin_and_degrades(monkeypatch, tmp_path):
 
 
 def test_desktop_config_overrides_pass_through(monkeypatch, tmp_path):
-    monkeypatch.setenv("FRONTIER_APP_HOME", str(tmp_path))
+    monkeypatch.setenv("LOCUS_APP_HOME", str(tmp_path))
     cfg = dt.desktop_config(enable_world_models=False)
     assert cfg.enable_world_models is False
 
@@ -66,7 +66,7 @@ def test_desktop_config_serves_backend_in_process(monkeypatch, tmp_path):
     # The frozen exe IS the backend (in-proc uvicorn) and runs agents in-proc,
     # so the supervisor must not spawn `python -m uvicorn` subprocesses.
     monkeypatch.setattr(sys, "frozen", False, raising=False)
-    monkeypatch.setenv("FRONTIER_APP_HOME", str(tmp_path))
+    monkeypatch.setenv("LOCUS_APP_HOME", str(tmp_path))
     cfg = dt.desktop_config()
     assert cfg.manage_backend is False
     assert cfg.enable_agents is False
@@ -74,7 +74,7 @@ def test_desktop_config_serves_backend_in_process(monkeypatch, tmp_path):
 
 def test_desktop_plan_excludes_backend_and_agent_services(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "frozen", False, raising=False)
-    monkeypatch.setenv("FRONTIER_APP_HOME", str(tmp_path))
+    monkeypatch.setenv("LOCUS_APP_HOME", str(tmp_path))
     plan = dt.build_desktop_plan()  # degrade mode → no raise even with no sidecars present
     assert "backend" not in plan.service_names()
     assert not any(n.startswith("agent-") for n in plan.service_names())
@@ -147,8 +147,8 @@ def test_serve_stops_when_required_service_dies():
 # --- Tauri config validity ---------------------------------------------------
 def test_tauri_conf_is_valid_and_complete():
     conf = json.loads((_TAURI_DIR / "tauri.conf.json").read_text(encoding="utf-8"))
-    assert conf["identifier"] == "com.lattix.xfrontier"
-    assert conf["bundle"]["externalBin"] == ["bin/frontier-backend"]
+    assert conf["identifier"] == "com.lattix.locus"
+    assert conf["bundle"]["externalBin"] == ["bin/locus-backend"]
     # The one-click updater pulls signed release manifests from GitHub releases.
     updater = conf.get("plugins", {}).get("updater", {})
     assert updater.get("pubkey")
@@ -170,6 +170,6 @@ def test_tauri_capabilities_allow_sidecar_spawn():
 
 
 def test_pyinstaller_spec_targets_desktop_main():
-    spec = (_REPO_ROOT / "packaging" / "frontier-backend.spec").read_text(encoding="utf-8")
+    spec = (_REPO_ROOT / "packaging" / "locus-backend.spec").read_text(encoding="utf-8")
     assert "desktop_main.py" in spec
-    assert "frontier-backend" in spec
+    assert "locus-backend" in spec

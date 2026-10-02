@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from frontier_runtime.harness.executor import LocalDirectExecutor
-from frontier_runtime.harness.tools import BASH_TIMEOUT_CEILING, CodingToolset
-from frontier_runtime.harness.workspace import Workspace
+from locus_runtime.harness.executor import LocalDirectExecutor
+from locus_runtime.harness.tools import BASH_TIMEOUT_CEILING, CodingToolset
+from locus_runtime.harness.workspace import Workspace
 
 requires_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="no bash")
 requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="no git")

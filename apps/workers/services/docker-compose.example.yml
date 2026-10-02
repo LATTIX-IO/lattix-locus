@@ -1,36 +1,36 @@
 version: "3.9"
 services:
   gtm-agent:
-    image: ${FRONTIER_AGENT_IMAGE:-ghcr.io/your-org/agent-service:v0.1.0}
+    image: ${LOCUS_AGENT_IMAGE:-ghcr.io/your-org/agent-service:v0.1.0}
     read_only: true
     security_opt:
       - no-new-privileges:true
     tmpfs:
       - /tmp
     environment:
-      - FRONTIER_RUNTIME_PROFILE=hosted
-      - FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS=true
+      - LOCUS_RUNTIME_PROFILE=hosted
+      - LOCUS_REQUIRE_A2A_RUNTIME_HEADERS=true
       - SERVICE_NAME=gtm-agent
       - A2A_JWT_ALG=HS256
-      - A2A_JWT_ISS=lattix-frontier
-      - A2A_JWT_AUD=frontier-runtime
+      - A2A_JWT_ISS=lattix-locus
+      - A2A_JWT_AUD=locus-runtime
       - A2A_JWT_SECRET=dev-secret
     ports:
       - "8081:8080"
   security-agent:
-    image: ${FRONTIER_AGENT_IMAGE:-ghcr.io/your-org/agent-service:v0.1.0}
+    image: ${LOCUS_AGENT_IMAGE:-ghcr.io/your-org/agent-service:v0.1.0}
     read_only: true
     security_opt:
       - no-new-privileges:true
     tmpfs:
       - /tmp
     environment:
-      - FRONTIER_RUNTIME_PROFILE=hosted
-      - FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS=true
+      - LOCUS_RUNTIME_PROFILE=hosted
+      - LOCUS_REQUIRE_A2A_RUNTIME_HEADERS=true
       - SERVICE_NAME=security-agent
       - A2A_JWT_ALG=HS256
-      - A2A_JWT_ISS=lattix-frontier
-      - A2A_JWT_AUD=frontier-runtime
+      - A2A_JWT_ISS=lattix-locus
+      - A2A_JWT_AUD=locus-runtime
       - A2A_JWT_SECRET=dev-secret
     ports:
       - "8082:8080"

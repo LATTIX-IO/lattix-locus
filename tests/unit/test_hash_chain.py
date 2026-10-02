@@ -1,4 +1,4 @@
-from frontier_runtime.events import AgentEvent, HashChain
+from locus_runtime.events import AgentEvent, HashChain
 
 
 def test_hash_chain_verifies() -> None:

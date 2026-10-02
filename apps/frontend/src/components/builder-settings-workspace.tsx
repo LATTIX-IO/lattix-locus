@@ -22,7 +22,7 @@ import {
   type RuntimeProvider,
   type UserRuntimeProviderConfig,
 } from "@/lib/api";
-import type { OperatorSession, PlatformSettings, PlatformSignalEnforcement, SecurityPolicyResponse } from "@/types/frontier";
+import type { OperatorSession, PlatformSettings, PlatformSignalEnforcement, SecurityPolicyResponse } from "@/types/locus";
 
 type OverviewCardSectionKey = Exclude<BuilderSettingsSectionKey, "governance">;
 type RuntimeProviderKey = "openai" | "anthropic" | "gemini" | "openai-compatible";

@@ -149,8 +149,8 @@ jobs:
         uses: azure/setup-helm@v4.3.0
         with:
           version: v3.17.3
-      - run: helm lint ./helm/lattix-frontier
-      - run: helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml > /dev/null
+      - run: helm lint ./helm/lattix-locus
+      - run: helm template lattix ./helm/lattix-locus -f helm/lattix-locus/values-prod.yaml > /dev/null
 
       - name: Windows sandbox tests
         run: |

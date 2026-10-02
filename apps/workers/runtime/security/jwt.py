@@ -3,7 +3,7 @@ import os
 import time
 from typing import Any, Dict, Optional
 
-from frontier_runtime.security import RuntimeTokenIdentity, token_identity_from_claims
+from locus_runtime.security import RuntimeTokenIdentity, token_identity_from_claims
 
 try:
     import jwt  # type: ignore
@@ -14,8 +14,8 @@ except Exception:  # pragma: no cover - pyjwt optional at scaffolding time
 class JWTConfig:
     def __init__(self) -> None:
         self.algorithm = os.getenv("A2A_JWT_ALG", "HS256")
-        self.issuer = os.getenv("A2A_JWT_ISS", "lattix-frontier")
-        self.audience = os.getenv("A2A_JWT_AUD", "frontier-runtime")
+        self.issuer = os.getenv("A2A_JWT_ISS", "lattix-locus")
+        self.audience = os.getenv("A2A_JWT_AUD", "locus-runtime")
         self.secret = os.getenv("A2A_JWT_SECRET")  # for HS256
         self.private_key = os.getenv("A2A_JWT_PRIVATE_KEY")
         self.public_key = os.getenv("A2A_JWT_PUBLIC_KEY")

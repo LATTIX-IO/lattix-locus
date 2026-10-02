@@ -23,16 +23,16 @@ from test_generated_artifacts import (
 
 @pytest.fixture(autouse=True)
 def _default_runtime_profile(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FRONTIER_RUNTIME_PROFILE", raising=False)
-    monkeypatch.delenv("FRONTIER_SECURE_LOCAL_MODE", raising=False)
-    monkeypatch.delenv("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS", raising=False)
-    monkeypatch.delenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
-    monkeypatch.delenv("FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR", raising=False)
-    monkeypatch.delenv("FRONTIER_ADMIN_ACTORS", raising=False)
-    monkeypatch.delenv("FRONTIER_BUILDER_ACTORS", raising=False)
-    monkeypatch.setenv("FRONTIER_BOOTSTRAP_ADMIN_USERNAME", "frontier-admin")
-    monkeypatch.setenv("FRONTIER_BOOTSTRAP_ADMIN_EMAIL", "admin@frontier.localhost")
-    monkeypatch.setenv("FRONTIER_BOOTSTRAP_ADMIN_SUBJECT", "frontier-admin")
+    monkeypatch.delenv("LOCUS_RUNTIME_PROFILE", raising=False)
+    monkeypatch.delenv("LOCUS_SECURE_LOCAL_MODE", raising=False)
+    monkeypatch.delenv("LOCUS_REQUIRE_AUTHENTICATED_REQUESTS", raising=False)
+    monkeypatch.delenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
+    monkeypatch.delenv("LOCUS_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR", raising=False)
+    monkeypatch.delenv("LOCUS_ADMIN_ACTORS", raising=False)
+    monkeypatch.delenv("LOCUS_BUILDER_ACTORS", raising=False)
+    monkeypatch.setenv("LOCUS_BOOTSTRAP_ADMIN_USERNAME", "locus-admin")
+    monkeypatch.setenv("LOCUS_BOOTSTRAP_ADMIN_EMAIL", "admin@locus.localhost")
+    monkeypatch.setenv("LOCUS_BOOTSTRAP_ADMIN_SUBJECT", "locus-admin")
 
 
 def _seed_streamable_run(run_id: str, *, owner: str = "tester") -> None:
@@ -82,7 +82,7 @@ def test_graph_validate_reports_invalid_prompt_node_configuration() -> None:
     response = client.post(
         "/graph/validate",
         json={
-            "schema_version": "frontier-graph/1.0",
+            "schema_version": "locus-graph/1.0",
             "nodes": invalid_graph["nodes"],
             "links": invalid_graph["links"],
         },
@@ -103,7 +103,7 @@ def test_graph_validate_reports_invalid_agent_skill_configuration() -> None:
     response = client.post(
         "/graph/validate",
         json={
-            "schema_version": "frontier-graph/1.0",
+            "schema_version": "locus-graph/1.0",
             "nodes": invalid_graph["nodes"],
             "links": invalid_graph["links"],
         },
@@ -128,7 +128,7 @@ def test_graph_validate_reports_missing_transform_source_input() -> None:
             {
                 "id": "transform",
                 "title": "Transform",
-                "type": "frontier/transform",
+                "type": "locus/transform",
                 "config": {
                     "transform_mode": "map",
                     "mapping_json": '{"priority":"{{var.source.priority}}"}',
@@ -151,7 +151,7 @@ def test_graph_validate_reports_missing_transform_source_input() -> None:
     response = client.post(
         "/graph/validate",
         json={
-            "schema_version": "frontier-graph/1.0",
+            "schema_version": "locus-graph/1.0",
             "nodes": invalid_graph["nodes"],
             "links": invalid_graph["links"],
         },
@@ -167,7 +167,7 @@ def test_graph_validate_reports_missing_transform_source_input() -> None:
 def test_router_node_executes_rules_mode() -> None:
     node = main_module.GraphNode(
         id="router-1",
-        type="frontier/router",
+        type="locus/router",
         title="Priority Router",
         config={
             "router_mode": "rules",
@@ -195,7 +195,7 @@ def test_router_node_executes_rules_mode() -> None:
 def test_transform_node_maps_payload_deterministically() -> None:
     node = main_module.GraphNode(
         id="transform-1",
-        type="frontier/transform",
+        type="locus/transform",
         title="Normalize Ticket",
         config={
             "transform_mode": "map",
@@ -226,7 +226,7 @@ def test_transform_node_maps_payload_deterministically() -> None:
 def test_iterator_node_emits_loop_branch_for_items() -> None:
     node = main_module.GraphNode(
         id="iterator-1",
-        type="frontier/iterator",
+        type="locus/iterator",
         title="Iterate Accounts",
         config={"iteration_mode": "foreach", "item_path": "items", "max_items": 10},
     )
@@ -248,7 +248,7 @@ def test_iterator_node_emits_loop_branch_for_items() -> None:
 def test_event_node_publishes_structured_event() -> None:
     node = main_module.GraphNode(
         id="event-1",
-        type="frontier/event",
+        type="locus/event",
         title="Publish Event",
         config={"event_mode": "publish", "topic": "ops.alerts", "event_name": "incident.created"},
     )
@@ -271,7 +271,7 @@ def test_event_node_publishes_structured_event() -> None:
 def test_event_node_consume_without_match_emits_idle_branch() -> None:
     node = main_module.GraphNode(
         id="event-2",
-        type="frontier/event",
+        type="locus/event",
         title="Consume Event",
         config={"event_mode": "consume", "topic": "ops.alerts", "event_name": "incident.created"},
     )
@@ -293,13 +293,13 @@ def test_event_node_consume_without_match_emits_idle_branch() -> None:
 def test_data_store_node_upserts_and_reads_record() -> None:
     upsert_node = main_module.GraphNode(
         id="store-1",
-        type="frontier/data-store",
+        type="locus/data-store",
         title="Store Record",
         config={"operation": "upsert", "collection": "tickets", "record_key": "id"},
     )
     read_node = main_module.GraphNode(
         id="store-2",
-        type="frontier/data-store",
+        type="locus/data-store",
         title="Read Record",
         config={"operation": "read", "collection": "tickets", "record_key": "id"},
     )
@@ -355,7 +355,7 @@ def test_agent_node_threads_skills_into_runtime_request_payload(
 
     node = main_module.GraphNode(
         id="agent-1",
-        type="frontier/agent",
+        type="locus/agent",
         title="Incident Agent",
         config={
             "agent_id": "incident-agent",
@@ -434,7 +434,7 @@ def test_tool_call_node_routes_unspecified_tool_via_request_skills(
     try:
         node = main_module.GraphNode(
             id="tool-1",
-            type="frontier/tool-call",
+            type="locus/tool-call",
             title="Skill Routed Tool",
             config={"tool_id": "tool/unspecified", "method": "POST"},
         )
@@ -518,7 +518,7 @@ def test_tool_call_node_falls_back_to_model_request_skills_for_routing(
     try:
         node = main_module.GraphNode(
             id="tool-2",
-            type="frontier/tool-call",
+            type="locus/tool-call",
             title="Context Routed Tool",
             config={"tool_id": "tool/unspecified", "method": "POST"},
         )
@@ -559,7 +559,7 @@ def test_tool_call_node_falls_back_to_model_request_skills_for_routing(
 def test_evidence_column_can_retrieve_approved_source() -> None:
     node = main_module.GraphNode(
         id="retrieval-1",
-        type="frontier/retrieval",
+        type="locus/retrieval",
         title="Evidence Retrieval",
         config={"column_kind": "evidence", "source_id": "kb://default", "top_k": 1},
     )
@@ -583,7 +583,7 @@ def test_evidence_column_can_retrieve_approved_source() -> None:
 def test_retrieval_source_url_requires_explicit_policy_grant() -> None:
     node = main_module.GraphNode(
         id="retrieval-url-1",
-        type="frontier/retrieval",
+        type="locus/retrieval",
         title="Evidence URL Retrieval",
         config={
             "column_kind": "evidence",
@@ -609,7 +609,7 @@ def test_retrieval_source_url_requires_explicit_policy_grant() -> None:
 def test_evidence_column_cannot_call_arbitrary_tool() -> None:
     node = main_module.GraphNode(
         id="tool-evidence-1",
-        type="frontier/tool-call",
+        type="locus/tool-call",
         title="Evidence Tool Attempt",
         config={
             "column_kind": "evidence",
@@ -677,7 +677,7 @@ def test_tool_column_can_call_approved_integration_only(monkeypatch: pytest.Monk
         approved = main_module._execute_node(
             node=main_module.GraphNode(
                 id="tool-approved",
-                type="frontier/tool-call",
+                type="locus/tool-call",
                 title="Approved Tool",
                 config={"column_kind": "tool", "integration_id": approved_id},
             ),
@@ -690,7 +690,7 @@ def test_tool_column_can_call_approved_integration_only(monkeypatch: pytest.Monk
         denied = main_module._execute_node(
             node=main_module.GraphNode(
                 id="tool-denied",
-                type="frontier/tool-call",
+                type="locus/tool-call",
                 title="Denied Tool",
                 config={"column_kind": "tool", "integration_id": denied_id},
             ),
@@ -739,7 +739,7 @@ def test_skill_routed_integration_still_respects_tenant_and_egress_policies() ->
         result = main_module._execute_node(
             node=main_module.GraphNode(
                 id="tool-skill-egress",
-                type="frontier/tool-call",
+                type="locus/tool-call",
                 title="Skill Routed Egress",
                 config={"column_kind": "tool", "tool_id": "tool/unspecified"},
             ),
@@ -809,7 +809,7 @@ def test_tool_call_resolves_approved_mcp_connection_id(monkeypatch: pytest.Monke
         result = main_module._execute_node(
             node=main_module.GraphNode(
                 id="tool-mcp-approved",
-                type="frontier/tool-call",
+                type="locus/tool-call",
                 title="Approved MCP Tool",
                 config={
                     "column_kind": "tool",
@@ -865,7 +865,7 @@ def test_tool_call_rejects_unapproved_mcp_connection_id() -> None:
         result = main_module._execute_node(
             node=main_module.GraphNode(
                 id="tool-mcp-draft",
-                type="frontier/tool-call",
+                type="locus/tool-call",
                 title="Draft MCP Tool",
                 config={
                     "column_kind": "tool",
@@ -955,7 +955,7 @@ def test_gemini_stream_publishes_delta_chunks_to_subscribers(
 def test_error_handler_node_recovers_failed_payload() -> None:
     node = main_module.GraphNode(
         id="error-handler-1",
-        type="frontier/error-handler",
+        type="locus/error-handler",
         title="Recover Tool Failure",
         config={
             "handler_mode": "fallback",
@@ -982,7 +982,7 @@ def test_error_handler_node_recovers_failed_payload() -> None:
 def test_wait_node_emits_timeout_branch_when_delay_exceeds_timeout() -> None:
     node = main_module.GraphNode(
         id="wait-1",
-        type="frontier/wait",
+        type="locus/wait",
         title="Wait For Approval",
         config={"wait_mode": "delay", "delay_ms": 2000, "timeout_ms": 500, "simulate_wait": True},
     )
@@ -1002,18 +1002,18 @@ def test_wait_node_emits_timeout_branch_when_delay_exceeds_timeout() -> None:
 
 def test_graph_run_skips_inactive_router_branches() -> None:
     graph = {
-        "schema_version": "frontier-graph/1.0",
+        "schema_version": "locus-graph/1.0",
         "nodes": [
             {
                 "id": "trigger",
                 "title": "Trigger",
-                "type": "frontier/trigger",
+                "type": "locus/trigger",
                 "config": {"trigger_mode": "manual"},
             },
             {
                 "id": "router",
                 "title": "Priority Router",
-                "type": "frontier/router",
+                "type": "locus/router",
                 "config": {
                     "router_mode": "rules",
                     "route_match_a": "priority",
@@ -1034,7 +1034,7 @@ def test_graph_run_skips_inactive_router_branches() -> None:
             {
                 "id": "priority-transform",
                 "title": "Priority Transform",
-                "type": "frontier/transform",
+                "type": "locus/transform",
                 "config": {
                     "transform_mode": "map",
                     "mapping_json": json.dumps(
@@ -1045,7 +1045,7 @@ def test_graph_run_skips_inactive_router_branches() -> None:
             {
                 "id": "default-transform",
                 "title": "Default Transform",
-                "type": "frontier/transform",
+                "type": "locus/transform",
                 "config": {
                     "transform_mode": "map",
                     "mapping_json": json.dumps(
@@ -1056,7 +1056,7 @@ def test_graph_run_skips_inactive_router_branches() -> None:
             {
                 "id": "output",
                 "title": "Output",
-                "type": "frontier/output",
+                "type": "locus/output",
                 "config": {"destination": "artifact_store", "format": "json"},
             },
         ],
@@ -1165,7 +1165,7 @@ def test_observability_trace_requires_builder_access_and_reports_saved_run_metri
 
         header_only = client.get(
             f"/observability/runs/{run_id}/trace",
-            headers={"x-frontier-actor": "tester"},
+            headers={"x-locus-actor": "tester"},
         )
         assert header_only.status_code == 401
 
@@ -1349,7 +1349,7 @@ def test_workflow_run_stream_requires_authenticated_access() -> None:
 
         header_only = client.get(
             f"/workflow-runs/{run_id}/stream",
-            headers={"x-frontier-actor": "owner-user"},
+            headers={"x-locus-actor": "owner-user"},
         )
         assert header_only.status_code == 401
 

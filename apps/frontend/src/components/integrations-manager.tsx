@@ -20,7 +20,7 @@ import type {
   IntegrationDefinition,
   IntegrationOAuthStatus,
   IntegrationStarterTemplate,
-} from "@/types/frontier";
+} from "@/types/locus";
 
 type LastTestMetadata = {
   at?: string;
@@ -88,7 +88,7 @@ const OAUTH_PROVIDER_PRESETS: Record<Exclude<OAuthProvider, "custom">, OAuthProv
         "Keep offline_access when you need refresh tokens for background actions.",
         "Set a specific tenant instead of common once you know the production directory boundary.",
       ],
-      clientIdPlaceholder: "frontier-microsoft-client",
+      clientIdPlaceholder: "locus-microsoft-client",
       accountLabelPlaceholder: "Customer Success shared mailbox",
       clientSecretPlaceholder: "secret/integrations/microsoft/client-secret",
       tokenSecretPlaceholder: "secret/integrations/microsoft/access-token",
@@ -106,7 +106,7 @@ const OAUTH_PROVIDER_PRESETS: Record<Exclude<OAuthProvider, "custom">, OAuthProv
         "Admin consent for Graph application permissions must already be granted in Entra ID.",
         "User-centric endpoints like /me do not work with client credentials.",
       ],
-      clientIdPlaceholder: "frontier-microsoft-client",
+      clientIdPlaceholder: "locus-microsoft-client",
       accountLabelPlaceholder: "Tenant app",
       clientSecretPlaceholder: "secret/integrations/microsoft/client-secret",
       tokenSecretPlaceholder: "secret/integrations/microsoft/access-token",
@@ -134,7 +134,7 @@ const OAUTH_PROVIDER_PRESETS: Record<Exclude<OAuthProvider, "custom">, OAuthProv
         "Google adds refresh token behavior most reliably when offline access and consent prompting are requested.",
         "Domain-wide delegation via service accounts is a separate pattern and is better modeled as a custom provider flow if needed.",
       ],
-      clientIdPlaceholder: "frontier-google-client",
+      clientIdPlaceholder: "locus-google-client",
       accountLabelPlaceholder: "Workspace operations",
       clientSecretPlaceholder: "secret/integrations/google/client-secret",
       tokenSecretPlaceholder: "secret/integrations/google/access-token",
@@ -152,7 +152,7 @@ const OAUTH_PROVIDER_PRESETS: Record<Exclude<OAuthProvider, "custom">, OAuthProv
         "If you truly need server-to-server Google access, document whether you are using service-account impersonation outside this generic flow.",
         "Leave scopes empty here unless your broker expects a specific scope string for token minting.",
       ],
-      clientIdPlaceholder: "frontier-google-client",
+      clientIdPlaceholder: "locus-google-client",
       accountLabelPlaceholder: "Workspace backend sync",
       clientSecretPlaceholder: "secret/integrations/google/client-secret",
       tokenSecretPlaceholder: "secret/integrations/google/access-token",
@@ -174,7 +174,7 @@ const OAUTH_PROVIDER_PRESETS: Record<Exclude<OAuthProvider, "custom">, OAuthProv
         "Sandbox orgs usually switch the host from login.salesforce.com to test.salesforce.com.",
         "Keep refresh_token or offline_access when you need long-lived background synchronization.",
       ],
-      clientIdPlaceholder: "frontier-salesforce-client",
+      clientIdPlaceholder: "locus-salesforce-client",
       accountLabelPlaceholder: "Revenue operations",
       clientSecretPlaceholder: "secret/integrations/salesforce/client-secret",
       tokenSecretPlaceholder: "secret/integrations/salesforce/access-token",
@@ -192,7 +192,7 @@ const OAUTH_PROVIDER_PRESETS: Record<Exclude<OAuthProvider, "custom">, OAuthProv
         "The Salesforce connected app must explicitly allow the client credentials flow.",
         "Server-to-server access is best for org-wide automation, not user-personalized views.",
       ],
-      clientIdPlaceholder: "frontier-salesforce-client",
+      clientIdPlaceholder: "locus-salesforce-client",
       accountLabelPlaceholder: "Salesforce server-to-server app",
       clientSecretPlaceholder: "secret/integrations/salesforce/client-secret",
       tokenSecretPlaceholder: "secret/integrations/salesforce/access-token",
@@ -1432,7 +1432,7 @@ export function IntegrationsManager() {
                   className="fx-field mt-1 w-full px-2 py-2 text-sm"
                   value={oauthClientId}
                   onChange={(event) => setOauthClientId(event.target.value)}
-                  placeholder={oauthGrantPreset?.clientIdPlaceholder || "frontier-client"}
+                  placeholder={oauthGrantPreset?.clientIdPlaceholder || "locus-client"}
                 />
               </label>
               <label className="block text-sm text-[var(--foreground)]">

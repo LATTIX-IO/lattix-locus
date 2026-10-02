@@ -1,9 +1,9 @@
 $ErrorActionPreference = 'Stop'
 
 $TempRoot = if ([string]::IsNullOrWhiteSpace($env:TEMP)) { '.\tmp' } else { $env:TEMP }
-$BootstrapDir = Join-Path $TempRoot 'frontier-install'
-$InstallerUrl = 'https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/frontier-installer.py'
-$LocalInstallerPath = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'frontier-installer.py' } else { '' }
+$BootstrapDir = Join-Path $TempRoot 'locus-install'
+$InstallerUrl = 'https://raw.githubusercontent.com/LATTIX-IO/lattix-locus/main/install/locus-installer.py'
+$LocalInstallerPath = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'locus-installer.py' } else { '' }
 $MinimumPythonMinor = 12
 
 function Add-PathEntry {
@@ -187,7 +187,7 @@ function Stop-Bootstrap {
     throw $Message
 }
 
-Write-Host '==> Lattix xFrontier bootstrap'
+Write-Host '==> Lattix Locus bootstrap'
 Write-Host '==> Preparing installer workspace'
 New-Item -ItemType Directory -Force -Path $BootstrapDir | Out-Null
 
@@ -195,7 +195,7 @@ Refresh-CommonPaths
 $Python = Ensure-Python
 Ensure-Docker
 
-$InstallerPath = Join-Path $BootstrapDir 'frontier-installer.py'
+$InstallerPath = Join-Path $BootstrapDir 'locus-installer.py'
 if ($LocalInstallerPath -and (Test-Path $LocalInstallerPath)) {
     Write-Host '==> Using local checkout installer'
     $InstallerPath = $LocalInstallerPath
@@ -206,10 +206,10 @@ else {
 }
 
 Write-Host '==> Launching interactive installer'
-if ([string]::IsNullOrWhiteSpace($env:FRONTIER_INSTALLER_OUTPUT)) {
+if ([string]::IsNullOrWhiteSpace($env:LOCUS_INSTALLER_OUTPUT)) {
     try {
         if (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
-            $env:FRONTIER_INSTALLER_OUTPUT = 'tui'
+            $env:LOCUS_INSTALLER_OUTPUT = 'tui'
         }
     }
     catch {

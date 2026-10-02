@@ -50,7 +50,7 @@ export function AgentStudioClient({ agentId, agentName, initialGraph, returnHref
           id: agentId,
           name: agentName,
           config_json: {
-            schema_version: "frontier-agent-definition/1.0",
+            schema_version: "locus-agent-definition/1.0",
             source_agent_id: agentId,
             meta: {
               name: agentName,

@@ -12,8 +12,8 @@ from typing import Any
 
 
 DEFAULT_IMAGES = (
-    "lattix-frontier/orchestrator",
-    "lattix-frontier/agent-base",
+    "lattix-locus/orchestrator",
+    "lattix-locus/agent-base",
 )
 DEFAULT_PROMOTION_ORDER = ("dev", "stage", "prod")
 
@@ -93,7 +93,7 @@ def build_release_bundle(
 
     previous = str(previous_version or "").strip() or None
     manifest = {
-        "schema_version": "frontier-release-bundle/1.0",
+        "schema_version": "locus-release-bundle/1.0",
         "version": normalized_version,
         "repo": repo,
         "git_sha": git_sha,

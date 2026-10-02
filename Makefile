@@ -15,10 +15,10 @@ endif
 
 PYTHON ?= $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),$(DEFAULT_PYTHON))
 PYTEST ?= pytest
-CLI_RUNNER ?= $(PYTHON) -m frontier_tooling.cli
+CLI_RUNNER ?= $(PYTHON) -m locus_tooling.cli
 OPA_RUNNER ?= $(PYTHON) scripts/run_opa.py
-SECURE_ENV_FILE := $(strip $(shell "$(PYTHON)" -c "from frontier_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=False))"))
-LIGHTWEIGHT_ENV_FILE := $(strip $(shell "$(PYTHON)" -c "from frontier_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=True))"))
+SECURE_ENV_FILE := $(strip $(shell "$(PYTHON)" -c "from locus_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=False))"))
+LIGHTWEIGHT_ENV_FILE := $(strip $(shell "$(PYTHON)" -c "from locus_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=True))"))
 LOCAL_COMPOSE ?= docker compose --env-file $(LIGHTWEIGHT_ENV_FILE) -f docker-compose.local.yml
 FULL_COMPOSE ?= docker compose --env-file $(SECURE_ENV_FILE)
 
@@ -47,7 +47,7 @@ stack-down:     ## Stop the full platform stack
 	$(CLI_RUNNER) stack-down
 
 test:           ## Run all tests
-	$(PYTEST) apps/backend/tests tests -v --cov=app --cov=frontier_runtime --cov-report=term-missing
+	$(PYTEST) apps/backend/tests tests -v --cov=app --cov=locus_runtime --cov-report=term-missing
 
 unit-test:      ## Run deterministic backend/runtime unit and harness tests
 	$(PYTEST) apps/backend/tests tests/backend tests/unit tests/harness tests/evals -v
@@ -63,27 +63,27 @@ lint:           ## Lint and format
 	$(PYTHON) -m ruff format .
 
 typecheck:      ## Type check
-	$(PYTHON) -m mypy frontier_tooling/ frontier_runtime/
+	$(PYTHON) -m mypy locus_tooling/ locus_runtime/
 
 policy-test:    ## Test OPA policies
 	$(OPA_RUNNER) test policies/ -v
 
 helm-validate:  ## Validate Helm chart manifests (requires helm)
-	helm lint ./helm/lattix-frontier
-	helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml > $(DEV_NULL)
+	helm lint ./helm/lattix-locus
+	helm template lattix ./helm/lattix-locus -f helm/lattix-locus/values-prod.yaml > $(DEV_NULL)
 
 release-bundle: ## Build a local release bundle (requires VERSION and helm)
 	@test -n "$(VERSION)" || (echo "VERSION is required, e.g. make release-bundle VERSION=v0.1.0" && exit 1)
 	mkdir -p dist/chart dist/installer
-	helm package helm/lattix-frontier --destination dist/chart
+	helm package helm/lattix-locus --destination dist/chart
 	cp install/bootstrap.sh dist/installer/
 	cp install/bootstrap.ps1 dist/installer/
-	cp install/frontier-installer.py dist/installer/
+	cp install/locus-installer.py dist/installer/
 	cp install/manifest.json dist/installer/
 	$(PYTHON) scripts/build_release_bundle.py --version "$(VERSION)" --repo "local-worktree" --chart-dist dist/chart --installer-dist dist/installer --output-root dist/release
 
 install-opa:    ## Install repo-local OPA binary (Windows helper remains available too)
-	@echo "Install OPA with .\\scripts\\frontier.ps1 install-opa on Windows, or place the binary at .tools/opa/opa(.exe)."
+	@echo "Install OPA with .\\scripts\\locus.ps1 install-opa on Windows, or place the binary at .tools/opa/opa(.exe)."
 
 bootstrap:      ## First-time setup
 	$(CLI_RUNNER) bootstrap

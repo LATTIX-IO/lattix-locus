@@ -18,7 +18,7 @@ import {
   WORKFLOW_RUN_UPDATED_EVENT,
   type WorkflowRunDetail,
 } from "@/lib/api";
-import type { AtfAlignmentReport, InboxItem, WorkflowRunEvent, WorkflowRunSummary } from "@/types/frontier";
+import type { AtfAlignmentReport, InboxItem, WorkflowRunEvent, WorkflowRunSummary } from "@/types/locus";
 
 type UserChatWorkspaceProps = {
   initialRuns: WorkflowRunSummary[];
@@ -150,17 +150,17 @@ function buildExecutionGraph(
   const basePrompt = orderedEvents.find((event) => event.type === "user_message")?.summary ?? runTitle;
 
   const nodes: GraphNode[] = [
-    buildGraphNode(`${runId}-trigger`, "Run Trigger", "frontier/trigger", 120, 220, {
+    buildGraphNode(`${runId}-trigger`, "Run Trigger", "locus/trigger", 120, 220, {
       trigger_mode: "manual",
       default_message: summarizeGraphText(runTitle, 60),
       tags: topics,
     }),
-    buildGraphNode(`${runId}-prompt`, "Prompt", "frontier/prompt", 430, 220, {
+    buildGraphNode(`${runId}-prompt`, "Prompt", "locus/prompt", 430, 220, {
       objective: chatEvents.length > 2 ? "planning" : "general_assistant",
       audience: "operator",
       system_prompt_text: summarizeGraphText(basePrompt, 180),
     }),
-    buildGraphNode(`${runId}-agent`, `Agent · ${chatEvents.filter((event) => event.type === "agent_message").length || 1}`, "frontier/agent", 760, 220, {
+    buildGraphNode(`${runId}-agent`, `Agent · ${chatEvents.filter((event) => event.type === "agent_message").length || 1}`, "locus/agent", 760, 220, {
       role: run?.status === "Failed" ? "reviewer" : "executor",
       agent_id: runId,
       system_prompt: summarizeGraphText(
@@ -168,7 +168,7 @@ function buildExecutionGraph(
         200,
       ),
     }),
-    buildGraphNode(`${runId}-memory`, `Memory · ${memoryHighlights.length || chatEvents.length || 1}`, "frontier/memory", 760, 58, {
+    buildGraphNode(`${runId}-memory`, `Memory · ${memoryHighlights.length || chatEvents.length || 1}`, "locus/memory", 760, 58, {
       action: "read",
       scope: "run",
       session_id: runId,
@@ -185,7 +185,7 @@ function buildExecutionGraph(
 
   if (topics.length > 0 || retrievalEvents.length > 0) {
     nodes.push(
-      buildGraphNode(`${runId}-knowledge`, `Knowledge · ${Math.max(retrievalEvents.length, topics.length)}`, "frontier/retrieval", 760, 382, {
+      buildGraphNode(`${runId}-knowledge`, `Knowledge · ${Math.max(retrievalEvents.length, topics.length)}`, "locus/retrieval", 760, 382, {
         source_type: retrievalEvents.length > 0 ? "hybrid" : "graph",
         source_id: retrievalEvents.length > 0 ? "history://retrieval" : "history://topics",
         index_name: topics.join(", ") || "session-history",
@@ -197,7 +197,7 @@ function buildExecutionGraph(
 
   if (toolEvents.length > 0) {
     nodes.push(
-      buildGraphNode(`${runId}-tools`, `Tools · ${toolEvents.length}`, "frontier/tool-call", 1110, 110, {
+      buildGraphNode(`${runId}-tools`, `Tools · ${toolEvents.length}`, "locus/tool-call", 1110, 110, {
         tool_id: summarizeGraphText(toolEvents.map((event) => event.title).join(" | "), 120) || "tool/unspecified",
         input_schema: summarizeGraphText(toolEvents.map((event) => event.summary).join(" | "), 200),
         retry_count: toolEvents.length,
@@ -212,7 +212,7 @@ function buildExecutionGraph(
   const needsGuardrailNode = guardrailEvents.length > 0 || run?.status === "Failed";
   if (needsGuardrailNode) {
     nodes.push(
-      buildGraphNode(`${runId}-guardrail`, `Guardrails · ${Math.max(1, guardrailEvents.length)}`, "frontier/guardrail", 1110, 332, {
+      buildGraphNode(`${runId}-guardrail`, `Guardrails · ${Math.max(1, guardrailEvents.length)}`, "locus/guardrail", 1110, 332, {
         stage: run?.status === "Failed" ? "tool_output" : "output",
         reject_message: summarizeGraphText(
           guardrailEvents.map((event) => event.summary).join(" | ") || `Run status: ${run?.status ?? "unknown"}`,
@@ -226,7 +226,7 @@ function buildExecutionGraph(
   const needsReviewNode = approvalEvents.length > 0 || Boolean(run?.approvals?.required);
   if (needsReviewNode) {
     nodes.push(
-      buildGraphNode(`${runId}-review`, `Review · ${approvalEvents.length || 1}`, "frontier/human-review", 1450, 220, {
+      buildGraphNode(`${runId}-review`, `Review · ${approvalEvents.length || 1}`, "locus/human-review", 1450, 220, {
         reviewer_group: run?.approvals?.pending ? "ops" : "security",
         required_approvals: run?.approvals?.required ? 1 : 0,
         sla_minutes: 120,
@@ -240,7 +240,7 @@ function buildExecutionGraph(
   }
 
   nodes.push(
-    buildGraphNode(`${runId}-output`, artifactCount > 0 ? `Artifacts · ${artifactCount}` : `Outcome · ${run?.status ?? "Pending"}`, "frontier/output", 1780, 220, {
+    buildGraphNode(`${runId}-output`, artifactCount > 0 ? `Artifacts · ${artifactCount}` : `Outcome · ${run?.status ?? "Pending"}`, "locus/output", 1780, 220, {
       destination: artifactCount > 0 ? "artifact_store" : "webhook",
       format: artifactCount > 0 ? "markdown" : "text",
       result: summarizeGraphText(

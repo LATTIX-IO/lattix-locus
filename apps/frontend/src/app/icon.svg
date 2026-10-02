@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="40 40 240 240">
+  <style>
+    .ink { fill: #111315; }
+    .node { fill: #72777B; }
+    @media (prefers-color-scheme: dark) {
+      .ink { fill: #F4F4F2; }
+      .node { fill: #9B9FA2; }
+    }
+  </style>
+  <g class="ink">
+    <path d="M82 82H142V94H94V142H82Z"/>
+    <path d="M178 82H238V142H226V94H178Z"/>
+    <path d="M82 178H94V226H142V238H82Z"/>
+    <path d="M226 178H238V238H178V226H226Z"/>
+    <circle cx="160" cy="160" r="19"/>
+  </g>
+  <g class="node">
+    <circle cx="160" cy="58" r="16"/>
+    <circle cx="58" cy="160" r="16"/>
+    <circle cx="262" cy="160" r="16"/>
+    <circle cx="160" cy="262" r="16"/>
+  </g>
+</svg>

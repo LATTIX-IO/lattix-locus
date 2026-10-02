@@ -15,14 +15,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 if not str(os.environ.get("A2A_JWT_SECRET") or "").strip():
     os.environ["A2A_JWT_SECRET"] = "unit-test-super-secret-value-32bytes"
-if not str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").strip():
-    os.environ["FRONTIER_API_BEARER_TOKEN"] = "unit-test-bearer"
+if not str(os.environ.get("LOCUS_API_BEARER_TOKEN") or "").strip():
+    os.environ["LOCUS_API_BEARER_TOKEN"] = "unit-test-bearer"
 
 import app.main as main_module
 from app.main import app, store
 
 client = TestClient(app)
-ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "frontier-admin"}
+ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-locus-actor": "locus-admin"}
 
 
 @dataclass
@@ -439,7 +439,7 @@ def test_pinned_agents_stay_engaged_on_followups(monkeypatch) -> None:
 
 
 def test_send_run_message_requires_text() -> None:
-    runs = client.get("/workflow-runs", headers={"x-frontier-actor": "frontier-admin"}).json()
+    runs = client.get("/workflow-runs", headers={"x-locus-actor": "locus-admin"}).json()
     if not runs:
         return
     response = client.post(

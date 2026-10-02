@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lattix-locus.fullname" . }}-opa
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lattix-opa
+  template:
+    metadata:
+      labels:
+        app: lattix-opa
+    spec:
+      securityContext:
+{{ toYaml .Values.security.podSecurityContext | indent 8 }}
+      containers:
+        - name: opa
+          image: {{ include "lattix-locus.imageRef" .Values.vendorImages.opa }}
+          securityContext:
+{{ toYaml .Values.security.containerSecurityContext | indent 12 }}

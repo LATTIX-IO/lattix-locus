@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from frontier_runtime.assembly_runner import (
+from locus_runtime.assembly_runner import (
     AssemblyRunner,
     AssemblyRunRequest,
     ColumnRuntimeBudgetCounters,
@@ -10,7 +10,7 @@ from frontier_runtime.assembly_runner import (
     ColumnRuntimeGateRequest,
     admit_column_runtime_step,
 )
-from frontier_runtime.cognition import (
+from locus_runtime.cognition import (
     AssemblyAdmissionPolicy,
     AssemblyBudget,
     AssemblyDefinition,
@@ -18,11 +18,11 @@ from frontier_runtime.cognition import (
     ColumnCapability,
     ColumnKind,
 )
-from frontier_runtime.persistence import load_assembly_causal_state, reset_shared_state_backend
+from locus_runtime.persistence import load_assembly_causal_state, reset_shared_state_backend
 
 
 def test_assembly_runner_persists_committed_assembly(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
 
     result = AssemblyRunner().run(
@@ -48,7 +48,7 @@ def test_assembly_runner_persists_committed_assembly(monkeypatch, tmp_path: Path
 
 
 def test_assembly_runner_escalates_low_context_assembly(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
 
     result = AssemblyRunner().run(
@@ -69,7 +69,7 @@ def test_assembly_runner_escalates_low_context_assembly(monkeypatch, tmp_path: P
 def test_assembly_runner_blocks_high_risk_commitment_without_human_approval(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     audit_events: list[tuple[str, str, dict[str, object]]] = []
 
@@ -98,7 +98,7 @@ def test_assembly_runner_blocks_high_risk_commitment_without_human_approval(
 def test_assembly_runner_allows_high_risk_commitment_with_human_approval(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
 
     result = AssemblyRunner().run(
@@ -120,7 +120,7 @@ def test_assembly_runner_allows_high_risk_commitment_with_human_approval(
 def test_assembly_definition_admission_rejects_missing_required_columns(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
 
     with pytest.raises(AssemblyDefinitionAdmissionError, match="missing required column kinds"):
@@ -141,7 +141,7 @@ def test_assembly_definition_admission_rejects_missing_required_columns(
 def test_assembly_definition_admission_rejects_too_many_columns(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
 
     with pytest.raises(AssemblyDefinitionAdmissionError, match="too many columns"):
@@ -164,7 +164,7 @@ def test_assembly_definition_admission_rejects_too_many_columns(
 def test_assembly_definition_admission_rejects_unsupported_column_kind(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
 
     with pytest.raises(AssemblyDefinitionAdmissionError, match="Unsupported column kind"):
@@ -186,7 +186,7 @@ def test_assembly_definition_admission_rejects_unsupported_column_kind(
 def test_assembly_definition_admission_accepts_valid_minimum_assembly(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
 
     result = AssemblyRunner().run(

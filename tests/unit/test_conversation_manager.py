@@ -1,8 +1,8 @@
-"""Tests for frontier_runtime.conversation — ConversationManager."""
+"""Tests for locus_runtime.conversation — ConversationManager."""
 
 from __future__ import annotations
 
-from frontier_runtime.conversation import ConversationManager, _estimate_tokens
+from locus_runtime.conversation import ConversationManager, _estimate_tokens
 
 
 class TestEstimateTokens:

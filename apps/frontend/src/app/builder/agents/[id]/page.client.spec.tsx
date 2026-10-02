@@ -56,7 +56,7 @@ describe("AgentStudioClient", () => {
         id: "agent-123",
         name: "Responder",
         config_json: {
-          schema_version: "frontier-agent-definition/1.0",
+          schema_version: "locus-agent-definition/1.0",
           source_agent_id: "agent-123",
           meta: {
             name: "Responder",

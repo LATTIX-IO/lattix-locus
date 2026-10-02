@@ -1,6 +1,6 @@
 import asyncio
 
-from frontier_runtime.orchestrator import get_approval_store, get_workflow_catalog
+from locus_runtime.orchestrator import get_approval_store, get_workflow_catalog
 
 
 def test_confidential_workflow_requires_explicit_approval() -> None:

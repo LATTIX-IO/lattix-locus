@@ -35,11 +35,11 @@ class _FakeCursor:
         normalized = " ".join(str(sql).split()).lower()
         if normalized.startswith("create table"):
             return
-        if normalized.startswith("insert into frontier_state_store"):
+        if normalized.startswith("insert into locus_state_store"):
             assert params is not None
             self._table[str(params[0])] = str(params[1])
             return
-        if normalized.startswith("delete from frontier_state_store"):
+        if normalized.startswith("delete from locus_state_store"):
             assert params is not None
             self._table.pop(str(params[0]), None)
             return

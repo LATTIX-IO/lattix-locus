@@ -49,7 +49,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       - name: Unit and harness tests
-        run: make unit-test PYTEST="pytest --cov=app --cov=frontier_runtime --cov-report=xml"
+        run: make unit-test PYTEST="pytest --cov=app --cov=locus_runtime --cov-report=xml"
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         with:
@@ -104,8 +104,8 @@ jobs:
         run: python scripts/run_opa.py test policies/ -v
       - name: Helm validation
         run: |
-          helm lint ./helm/lattix-frontier
-          helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml > /dev/null
+          helm lint ./helm/lattix-locus
+          helm template lattix ./helm/lattix-locus -f helm/lattix-locus/values-prod.yaml > /dev/null
 
   sast-codeql:
     name: SAST (CodeQL ${{ matrix.language }})
@@ -138,8 +138,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Stage the product source for scanning
         run: |
-          mkdir -p "$RUNNER_TEMP/xfrontier-source"
-          git archive --format=tar HEAD | tar -xf - -C "$RUNNER_TEMP/xfrontier-source"
+          mkdir -p "$RUNNER_TEMP/locus-source"
+          git archive --format=tar HEAD | tar -xf - -C "$RUNNER_TEMP/locus-source"
       - name: Checkout pinned Lattix pentest kit
         uses: actions/checkout@v4
         with:
@@ -155,11 +155,11 @@ jobs:
       - name: Validate pinned pentest kit
         working-directory: .ci/lattix-cicd-pentest
         run: make ci
-      - name: Run shift-left scanners against xFrontier
+      - name: Run shift-left scanners against Locus
         run: >-
           python .ci/lattix-cicd-pentest/scripts/run_security_suite.py
           --phase shift-left
-          --source "$RUNNER_TEMP/xfrontier-source"
+          --source "$RUNNER_TEMP/locus-source"
           --run-dir "$RUN_DIR"
       - name: Normalize findings and build SARIF
         if: always()
@@ -195,8 +195,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Stage the product source for scanning
         run: |
-          mkdir -p "$RUNNER_TEMP/xfrontier-source"
-          git archive --format=tar HEAD | tar -xf - -C "$RUNNER_TEMP/xfrontier-source"
+          mkdir -p "$RUNNER_TEMP/locus-source"
+          git archive --format=tar HEAD | tar -xf - -C "$RUNNER_TEMP/locus-source"
       - name: Checkout pinned Lattix pentest kit
         uses: actions/checkout@v4
         with:
@@ -211,7 +211,7 @@ jobs:
         run: >-
           python .ci/lattix-cicd-pentest/scripts/run_security_suite.py
           --phase sbom
-          --source "$RUNNER_TEMP/xfrontier-source"
+          --source "$RUNNER_TEMP/locus-source"
           --run-dir "$RUN_DIR"
       - name: Normalize SCA findings
         if: always()
@@ -245,9 +245,9 @@ jobs:
       - name: Start ephemeral backend
         run: |
           export A2A_JWT_SECRET="$(openssl rand -hex 32)"
-          export FRONTIER_API_BEARER_TOKEN="$(openssl rand -hex 32)"
-          export FRONTIER_RUNTIME_PROFILE=local
-          export FRONTIER_STATE_STORE="$RUNNER_TEMP/frontier-state.json"
+          export LOCUS_API_BEARER_TOKEN="$(openssl rand -hex 32)"
+          export LOCUS_RUNTIME_PROFILE=local
+          export LOCUS_STATE_STORE="$RUNNER_TEMP/locus-state.json"
           PYTHONPATH=apps/backend nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > "$RUNNER_TEMP/uvicorn.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/uvicorn.pid"
           curl --fail --retry 30 --retry-delay 2 --retry-connrefused http://127.0.0.1:8000/health

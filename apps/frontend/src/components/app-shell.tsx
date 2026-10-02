@@ -9,7 +9,8 @@ import { ModeSwitch } from "@/components/mode-switch";
 import { LeftNav } from "@/components/navigation/left-nav";
 import { UserConsoleSidebar } from "@/components/navigation/user-console-sidebar";
 import { PLATFORM_SETTINGS_UPDATED_EVENT, getOperatorSession, getPlatformHealthDetails, getPlatformSettings, getPlatformVersionStatus, logoutOperator } from "@/lib/api";
-import type { AppMode, OperatorSession, PlatformHealthDetails, PlatformSettings, PlatformVersionStatus } from "@/types/frontier";
+import type { AppMode, OperatorSession, PlatformHealthDetails, PlatformSettings, PlatformVersionStatus } from "@/types/locus";
+import { LocusMark } from "@/components/locus-mark";
 
 function resolveOperatorLabel(session: OperatorSession | null): string {
   if (!session) {
@@ -136,18 +137,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       return "light";
     }
 
-    const stored = readLocalStorage("frontier-theme");
+    const stored = readLocalStorage("locus-theme");
     return stored === "dark" ? "dark" : "light";
   });
   const [menuOpen, setMenuOpen] = useState(false);
   // User mode offers two sidebars: the session list (Sessions) and the grouped
   // chat tree plus console navigation (Library).
   const [userSidebarView, setUserSidebarViewState] = useState<"sessions" | "library">(() =>
-    readLocalStorage("frontier-user-sidebar-view") === "library" ? "library" : "sessions",
+    readLocalStorage("locus-user-sidebar-view") === "library" ? "library" : "sessions",
   );
   const setUserSidebarView = (view: "sessions" | "library") => {
     setUserSidebarViewState(view);
-    writeLocalStorage("frontier-user-sidebar-view", view);
+    writeLocalStorage("locus-user-sidebar-view", view);
   };
   const [sidebarExpanded, setSidebarExpanded] = useState(() => {
     if (typeof window === "undefined") {
@@ -168,7 +169,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const html = document.documentElement;
     html.classList.remove("theme-light", "theme-dark");
     html.classList.add(`theme-${theme}`);
-    writeLocalStorage("frontier-theme", theme);
+    writeLocalStorage("locus-theme", theme);
   }, [theme]);
 
   useEffect(() => {
@@ -309,7 +310,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="fixed inset-x-0 top-0 z-30 border-b border-[var(--ui-border)] bg-[color-mix(in_srgb,var(--fx-header)_94%,transparent)] backdrop-blur-sm">
           <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
             <div className="flex min-w-0 items-center gap-3">
-              <span className="text-sm font-semibold tracking-[-0.02em] text-[hsl(var(--foreground))]">Lattix xFrontier</span>
+              <LocusMark className="h-6 w-6 shrink-0" />
+              <span className="text-sm font-semibold tracking-[-0.02em] text-[hsl(var(--foreground))]">Locus</span>
               <span className="fx-badge-local px-2 py-0.5 text-[10px]">Locked</span>
             </div>
             <span className="text-xs font-medium text-[var(--fx-muted)]">
@@ -357,8 +359,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <path d="M2 4h12M2 8h12M2 12h12" />
               </svg>
             </button>
+            <LocusMark className="h-5 w-5 shrink-0" />
             <span className="shrink-0 text-[13px] font-bold tracking-wide text-[var(--foreground)]">
-              Lattix xFrontier
+              Locus
             </span>
             <span className="fx-badge-local shrink-0 whitespace-nowrap px-2 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-[0.1em]">
               Local
@@ -386,7 +389,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
           <div className="relative flex shrink-0 items-center gap-1.5">
             <a
-              href="mailto:9ff6ac2b6c9d@intake.linear.app?subject=%5BFeedback%5D%20Lattix%20Frontier&body=%0A---%20Feedback%20---%0A%0AType%3A%20%5B%20Bug%20%7C%20Feature%20Request%20%7C%20Improvement%20%7C%20Other%20%5D%0A%0ADescription%3A%0A%0A%0ASteps%20to%20reproduce%20(if%20bug)%3A%0A1.%20%0A2.%20%0A3.%20%0A%0AExpected%20behavior%3A%0A%0A%0AActual%20behavior%3A%0A%0A%0AAdditional%20context%3A%0A"
+              href="mailto:9ff6ac2b6c9d@intake.linear.app?subject=%5BFeedback%5D%20Lattix%20Locus&body=%0A---%20Feedback%20---%0A%0AType%3A%20%5B%20Bug%20%7C%20Feature%20Request%20%7C%20Improvement%20%7C%20Other%20%5D%0A%0ADescription%3A%0A%0A%0ASteps%20to%20reproduce%20(if%20bug)%3A%0A1.%20%0A2.%20%0A3.%20%0A%0AExpected%20behavior%3A%0A%0A%0AActual%20behavior%3A%0A%0A%0AAdditional%20context%3A%0A"
               className="fx-btn-secondary hidden whitespace-nowrap px-2 py-1 text-[11px] no-underline md:inline-flex"
             >
               Feedback

@@ -11,7 +11,7 @@ export default function GlobalError({
 }) {
   useEffect(() => {
     // Log to an error reporting service in the future
-    console.error("[Frontier] Unhandled error:", error);
+    console.error("[Locus] Unhandled error:", error);
   }, [error]);
 
   return (

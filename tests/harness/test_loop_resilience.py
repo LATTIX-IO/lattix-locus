@@ -11,12 +11,12 @@ import shutil
 
 import pytest
 
-from frontier_runtime.harness.executor import LocalDirectExecutor
-from frontier_runtime.harness.llm import ChatResponse, ScriptedChatClient, ToolCall
-from frontier_runtime.harness.loop import AgentLoop, LoopBudgets, LoopOutcome, _normalize_tool_name
-from frontier_runtime.harness.model_profiles import resolve_profile
-from frontier_runtime.harness.tools import CodingToolset
-from frontier_runtime.harness.workspace import Workspace
+from locus_runtime.harness.executor import LocalDirectExecutor
+from locus_runtime.harness.llm import ChatResponse, ScriptedChatClient, ToolCall
+from locus_runtime.harness.loop import AgentLoop, LoopBudgets, LoopOutcome, _normalize_tool_name
+from locus_runtime.harness.model_profiles import resolve_profile
+from locus_runtime.harness.tools import CodingToolset
+from locus_runtime.harness.workspace import Workspace
 
 requires_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="no bash")
 

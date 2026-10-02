@@ -1,6 +1,6 @@
-# Lattix xFrontier Frontend Guidance
+# Lattix Locus Frontend Guidance
 
-The xFrontier frontend is a single Next.js app (`apps/frontend/`) serving two audiences from one shell: **operators** who run and audit work, and **builders** who compose agents, workflows, and guardrails. Path-scoped rules in `.github/instructions/lattix-frontend.instructions.md` apply automatically and take precedence on the mechanics; this file covers what is specific to xFrontier.
+The Locus frontend is a single Next.js app (`apps/frontend/`) serving two audiences from one shell: **operators** who run and audit work, and **builders** who compose agents, workflows, and guardrails. Path-scoped rules in `.github/instructions/lattix-frontend.instructions.md` apply automatically and take precedence on the mechanics; this file covers what is specific to Locus.
 
 ## Stack
 
@@ -23,8 +23,8 @@ Mode switching between operator and builder is a first-class control (`mode-swit
 
 ## Rules specific to this app
 
-- **Node changes are three-part.** Adding or changing a node type requires the backend executor, the catalog entry in `lib/frontier-node-catalog.ts`, and the config schema in `lib/frontier-node-schema.ts`. A change that lands only in the UI is incomplete.
-- **Config forms are schema-driven.** Do not hand-roll a node config form. Extend `node-config-schemas.ts` / `frontier-node-schema.ts` so validation stays shared.
+- **Node changes are three-part.** Adding or changing a node type requires the backend executor, the catalog entry in `lib/locus-node-catalog.ts`, and the config schema in `lib/locus-node-schema.ts`. A change that lands only in the UI is incomplete.
+- **Config forms are schema-driven.** Do not hand-roll a node config form. Extend `node-config-schemas.ts` / `locus-node-schema.ts` so validation stays shared.
 - **Security scope is UI-visible.** `security-scope-editor.tsx` and `classification-banner.tsx` exist so posture is legible. Never render a definition's actions without its scope and classification context.
 - **Never re-implement authorization client-side.** The backend resolves security policy (`/agent-definitions/{id}/security-policy`, `/workflow-definitions/{id}/security-policy`). The UI reflects decisions; it does not make them.
 - **Destructive actions are typed.** Use `typed-delete-button.tsx` for deletes and archives. Do not add a bare confirm.

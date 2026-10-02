@@ -171,7 +171,7 @@ sequenceDiagram
         SM-->>EB: Envelope cleared
 
         EB->>A1: POST /v1/envelope
-        Note over EB,A1: Headers:<br/>Authorization: Bearer {JWT}<br/>X-Frontier-Subject: orchestrator<br/>X-Frontier-Nonce: {uuid}<br/>X-Frontier-Signature: HMAC-SHA256<br/>X-Correlation-ID: {trace}
+        Note over EB,A1: Headers:<br/>Authorization: Bearer {JWT}<br/>X-Locus-Subject: orchestrator<br/>X-Locus-Nonce: {uuid}<br/>X-Locus-Signature: HMAC-SHA256<br/>X-Correlation-ID: {trace}
 
         A1->>A1: Verify JWT (iss, aud, exp, sub)
         A1->>A1: Verify HMAC signature

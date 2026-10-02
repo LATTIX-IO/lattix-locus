@@ -1,4 +1,4 @@
-# Capture a resource baseline for the local Lattix xFrontier stack.
+# Capture a resource baseline for the local Lattix Locus stack.
 # Writes a timestamped snapshot to docs/perf/baselines/ so optimizations can
 # prove their effect. Read-only: starts nothing, kills nothing.
 # Compatible with Windows PowerShell 5.1 and PowerShell 7+.
@@ -11,7 +11,7 @@ $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $outFile = Join-Path $outDir "baseline-$stamp.txt"
 
 $lines = @()
-$lines += "# Lattix xFrontier resource baseline - $(Get-Date -Format o)"
+$lines += "# Lattix Locus resource baseline - $(Get-Date -Format o)"
 $lines += ""
 
 $lines += "## Host"

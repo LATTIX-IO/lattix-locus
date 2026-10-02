@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { getPublishedWorkflows, createWorkflowRun } from "@/lib/api";
-import type { WorkflowDefinition } from "@/types/frontier";
+import type { WorkflowDefinition } from "@/types/locus";
 import { useEffect } from "react";
 
 export default function WorkflowStartPage() {

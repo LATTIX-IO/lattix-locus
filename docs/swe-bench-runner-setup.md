@@ -3,7 +3,7 @@
 Run the shipped **Full-Stack SDET agent** against real SWE-bench Verified
 instances on a dedicated runner (Docker + a model endpoint), keeping the load
 off the 32 GB dev box. The benchmark is a direct agent↔model loop; it does not
-route through the deployed xFrontier control plane.
+route through the deployed Locus control plane.
 
 ## Runner prerequisites
 
@@ -17,18 +17,18 @@ route through the deployed xFrontier control plane.
   - or **Ollama** — `ollama serve` with `gpt-oss:20b` pulled (works; slower).
 - **Python 3.12** with the harness + evals + swebench extra:
   ```bash
-  pip install -e .                       # repo root: frontier_runtime + harness
-  pip install -e "apps/evals[swebench]"  # frontier-evals + datasets + swebench
+  pip install -e .                       # repo root: locus_runtime + harness
+  pip install -e "apps/evals[swebench]"  # locus-evals + datasets + swebench
   ```
 
 ## Run it
 
 ```bash
 # 1) pick a reproducible subset from the dataset (prints real instance ids)
-frontier-evals list-instances --limit 20 > /tmp/ids.txt
+locus-evals list-instances --limit 20 > /tmp/ids.txt
 
 # 2) drive the SHIPPED SDET agent against SWE-bench Verified
-frontier-evals run \
+locus-evals run \
   --mode live --dataset swe-bench \
   --agent sdet-swe-agent \
   --api-base-url http://localhost:8000/v1 \
@@ -77,7 +77,7 @@ under test):
 
 ```bash
 # A) the team as a unit, via the collaborate CLI (one spec -> a built+tested feature)
-frontier-evals collaborate --repo /path/to/target-repo --spec @spec.md \
+locus-evals collaborate --repo /path/to/target-repo --spec @spec.md \
   --api-base-url http://localhost:8000/v1 --model openai/gpt-oss-20b --provider vllm \
   --base-ref main --isolation worktree --allow-outside deny
 
@@ -94,7 +94,7 @@ frontier-evals collaborate --repo /path/to/target-repo --spec @spec.md \
 The headline ≥30% gate is `tests/evals/test_deepswe_eval.py` — it drives the
 implementer `SweAgent` directly (FAIL_TO_PASS/PASS_TO_PASS grading). In
 `plumbing` mode it runs anywhere (reference solver, no GPU); set
-`FRONTIER_EVALS_MODE=live` + `FRONTIER_EVALS_API_BASE_URL` + `FRONTIER_EVALS_MODEL`
+`LOCUS_EVALS_MODE=live` + `LOCUS_EVALS_API_BASE_URL` + `LOCUS_EVALS_MODEL`
 + `DOCKER_HOST` on the runner to enforce gpt-oss-20b ≥ 30% on SWE-bench Verified.
 
 ## Tuning toward a higher score (after a baseline lands)

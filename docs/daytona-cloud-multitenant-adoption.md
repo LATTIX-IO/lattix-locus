@@ -10,7 +10,7 @@ Accepted (future-state policy)
 
 ## Context
 
-Lattix xFrontier is currently optimized for **local-first** development and internal network execution, with Docker Desktop + Docker Compose as the canonical runtime baseline.
+Lattix Locus is currently optimized for **local-first** development and internal network execution, with Docker Desktop + Docker Compose as the canonical runtime baseline.
 
 As we evolve to a **cloud-deployed, multi-tenant** platform, the team needs:
 
@@ -22,7 +22,7 @@ As we evolve to a **cloud-deployed, multi-tenant** platform, the team needs:
 
 ## Decision
 
-When Lattix xFrontier moves to cloud multi-tenant deployment, **Daytona will become the standard developer workspace platform**.
+When Lattix Locus moves to cloud multi-tenant deployment, **Daytona will become the standard developer workspace platform**.
 
 Docker Compose remains supported for local fallback and offline work, but the default team path for cloud-era development is Daytona-managed workspaces.
 

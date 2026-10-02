@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "lattix-locus.fullname" . }}-nats
+spec:
+  serviceName: {{ include "lattix-locus.fullname" . }}-nats
+  selector:
+    matchLabels:
+      app: lattix-nats
+  template:
+    metadata:
+      labels:
+        app: lattix-nats
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nats
+          image: {{ include "lattix-locus.imageRef" .Values.nats.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

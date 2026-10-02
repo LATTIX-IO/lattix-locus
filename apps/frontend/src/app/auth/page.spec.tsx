@@ -253,15 +253,15 @@ describe("AuthPage", () => {
       oidc: {
         configured: true,
         issuer: "http://127.0.0.1:8081",
-        audience: "frontier-ui",
+        audience: "locus-ui",
         provider: "casdoor",
         validation_error: "",
         browser_flow_configured: true,
         browser_flow_error: "",
       },
     });
-    process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "http://127.0.0.1:8081/login/oauth/authorize";
-    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "http://127.0.0.1:8081/signup";
+    process.env.LOCUS_AUTH_OIDC_SIGNIN_URL = "http://127.0.0.1:8081/login/oauth/authorize";
+    process.env.LOCUS_AUTH_OIDC_SIGNUP_URL = "http://127.0.0.1:8081/signup";
 
     render(await AuthPage());
 
@@ -285,8 +285,8 @@ describe("AuthPage", () => {
         browser_flow_error: "",
       },
     });
-    process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "https://evil.example.com/login";
-    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "";
+    process.env.LOCUS_AUTH_OIDC_SIGNIN_URL = "https://evil.example.com/login";
+    process.env.LOCUS_AUTH_OIDC_SIGNUP_URL = "";
 
     render(await AuthPage());
 
@@ -317,8 +317,8 @@ describe("AuthPage", () => {
         browser_flow_error: "",
       },
     });
-    process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "https://evil.example.com/login";
-    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "https://issuer.example.com/signup";
+    process.env.LOCUS_AUTH_OIDC_SIGNIN_URL = "https://evil.example.com/login";
+    process.env.LOCUS_AUTH_OIDC_SIGNUP_URL = "https://issuer.example.com/signup";
 
     render(await AuthPage());
 
@@ -335,7 +335,7 @@ describe("AuthPage", () => {
       oidc: {
         configured: false,
         issuer: "https://issuer.example.com",
-        audience: "frontier-ui",
+        audience: "locus-ui",
         provider: "oidc",
         validation_error: "OIDC configuration is invalid.",
         browser_flow_configured: false,

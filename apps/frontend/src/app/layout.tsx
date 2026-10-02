@@ -18,8 +18,8 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Lattix xFrontier",
-  description: "Dual-mode local-first orchestration UI for users and builders",
+  title: "Locus",
+  description: "Local-first AI operator by Lattix",
 };
 
 export default function RootLayout({

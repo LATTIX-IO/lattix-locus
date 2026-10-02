@@ -1,6 +1,6 @@
 import asyncio
 
-from frontier_runtime.security import OPAClient, PolicyEvaluationRequest
+from locus_runtime.security import OPAClient, PolicyEvaluationRequest
 
 
 def test_opa_client_local_fallback_denies_budget_overrun() -> None:
@@ -466,7 +466,7 @@ def test_opa_client_evaluate_request_returns_structured_details() -> None:
 
 def test_parse_run_as_user_uid_rejects_invalid_values() -> None:
     assert OPAClient._safe_int("123") == 123
-    from frontier_runtime.security import _parse_run_as_user_uid
+    from locus_runtime.security import _parse_run_as_user_uid
 
     assert _parse_run_as_user_uid("1000:1000") == 1000
     assert _parse_run_as_user_uid("0:0") == 0

@@ -1,6 +1,19 @@
 import type { NextConfig } from "next";
 import path from "node:path";
 
+// Installs from before the xFrontier -> Locus rename still set FRONTIER_* variables.
+// Alias them to LOCUS_* (an explicit LOCUS_* value wins) before Next reads env.
+for (const [key, value] of Object.entries(process.env)) {
+  const current = key.startsWith("FRONTIER_")
+    ? `LOCUS_${key.slice("FRONTIER_".length)}`
+    : key === "NEXT_PUBLIC_FRONTIER_ACTOR"
+      ? "NEXT_PUBLIC_LOCUS_ACTOR"
+      : null;
+  if (current && process.env[current] === undefined) {
+    process.env[current] = value;
+  }
+}
+
 const nextConfig: NextConfig = {
   output: "standalone",
   reactCompiler: true,
@@ -13,7 +26,7 @@ const nextConfig: NextConfig = {
     // server proxies to the backend, so the operator session cookie is first-party
     // and just works. In the Docker/hosted stack Caddy handles /api before it ever
     // reaches Next, so this rewrite is a harmless no-op there.
-    const backend = process.env.FRONTIER_BACKEND_PROXY_URL || "http://127.0.0.1:8000";
+    const backend = process.env.LOCUS_BACKEND_PROXY_URL || "http://127.0.0.1:8000";
     return [{ source: "/api/:path*", destination: `${backend}/:path*` }];
   },
   async redirects() {

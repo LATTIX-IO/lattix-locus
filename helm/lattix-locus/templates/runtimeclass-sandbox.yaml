@@ -1,0 +1,49 @@
+{{- if .Values.sandbox.enabled }}
+---
+# gVisor RuntimeClass — user-space kernel isolation for agent tool execution.
+# Requires gVisor (runsc) installed on cluster nodes.
+# Provides stronger isolation than Docker alone: syscalls are handled in
+# user space by the Sentry process, so host kernel 0-day exploits do not
+# escape the sandbox.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: {{ .Values.sandbox.gvisor.runtimeClassName | default "locus-sandbox" }}
+  labels:
+    {{- include "lattix-locus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox
+handler: {{ .Values.sandbox.gvisor.handler | default "runsc" }}
+scheduling:
+  {{- with .Values.sandbox.gvisor.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+overhead:
+  podFixed:
+    memory: {{ .Values.sandbox.gvisor.overhead.memory | default "64Mi" | quote }}
+    cpu: {{ .Values.sandbox.gvisor.overhead.cpu | default "100m" | quote }}
+{{- if .Values.sandbox.kata.enabled }}
+---
+# Kata Containers RuntimeClass — microVM isolation for regulated workloads.
+# Each agent tool execution runs inside a lightweight VM with its own kernel.
+# Hardware-level isolation: a kernel vulnerability in the guest cannot
+# compromise the host.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: {{ .Values.sandbox.kata.runtimeClassName | default "locus-sandbox-vm" }}
+  labels:
+    {{- include "lattix-locus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandbox
+handler: {{ .Values.sandbox.kata.handler | default "kata-qemu" }}
+scheduling:
+  {{- with .Values.sandbox.kata.nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+overhead:
+  podFixed:
+    memory: {{ .Values.sandbox.kata.overhead.memory | default "128Mi" | quote }}
+    cpu: {{ .Values.sandbox.kata.overhead.cpu | default "250m" | quote }}
+{{- end }}
+{{- end }}

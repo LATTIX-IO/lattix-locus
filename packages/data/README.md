@@ -1,1 +1,1 @@
-# lattix-frontier-data
+# lattix-locus-data

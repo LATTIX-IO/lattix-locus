@@ -21,8 +21,8 @@ def store_with_wal(wal_dir):
     with patch.dict(
         os.environ,
         {
-            "FRONTIER_MEMORY_WAL_ENABLED": "true",
-            "FRONTIER_MEMORY_WAL_DIR": str(wal_dir),
+            "LOCUS_MEMORY_WAL_ENABLED": "true",
+            "LOCUS_MEMORY_WAL_DIR": str(wal_dir),
         },
     ):
         store = RedisMemoryStore.__new__(RedisMemoryStore)

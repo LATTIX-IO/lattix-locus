@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import type { AppMode } from "@/types/frontier";
+import type { AppMode } from "@/types/locus";
 
 export function ModeSwitch({
   activeMode = "user",

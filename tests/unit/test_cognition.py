@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from frontier_runtime.cognition import (
+from locus_runtime.cognition import (
     AssemblyBudget,
     AssemblyDefinition,
     AssemblyState,

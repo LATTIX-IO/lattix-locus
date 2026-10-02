@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 
 import { LattixAuthCard } from "@/components/auth/lattix-auth-card";
 import { getOperatorSession } from "@/lib/api";
-import type { OperatorSession } from "@/types/frontier";
+import type { OperatorSession } from "@/types/locus";
 
 export const dynamic = "force-dynamic";
 
@@ -75,23 +75,23 @@ function firstSearchParamValue(value: SearchParamValue): string {
 }
 
 function getAuthUiConfigFromSession(session: OperatorSession | null): AuthUiConfig {
-  const authMode = String(session?.auth_mode ?? process.env.FRONTIER_AUTH_MODE ?? "").trim().toLowerCase();
+  const authMode = String(session?.auth_mode ?? process.env.LOCUS_AUTH_MODE ?? "").trim().toLowerCase();
   const provider = String(
     session?.oidc?.provider
       ?? session?.provider
-      ?? process.env.FRONTIER_AUTH_OIDC_PROVIDER
+      ?? process.env.LOCUS_AUTH_OIDC_PROVIDER
       ?? "",
   ).trim().toLowerCase();
-  const issuer = String(session?.oidc?.issuer ?? process.env.FRONTIER_AUTH_OIDC_ISSUER ?? "").trim();
-  const authorizationUrl = (process.env.FRONTIER_AUTH_OIDC_AUTHORIZATION_URL ?? "").trim();
-  const signinUrl = (process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL ?? authorizationUrl).trim();
-  const signupUrl = (process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL ?? authorizationUrl).trim();
-  const scopes = (process.env.FRONTIER_AUTH_OIDC_SCOPES ?? "")
+  const issuer = String(session?.oidc?.issuer ?? process.env.LOCUS_AUTH_OIDC_ISSUER ?? "").trim();
+  const authorizationUrl = (process.env.LOCUS_AUTH_OIDC_AUTHORIZATION_URL ?? "").trim();
+  const signinUrl = (process.env.LOCUS_AUTH_OIDC_SIGNIN_URL ?? authorizationUrl).trim();
+  const signupUrl = (process.env.LOCUS_AUTH_OIDC_SIGNUP_URL ?? authorizationUrl).trim();
+  const scopes = (process.env.LOCUS_AUTH_OIDC_SCOPES ?? "")
     .split(/\s+/)
     .map((scope) => scope.trim())
     .filter(Boolean);
-  const audience = String(session?.oidc?.audience ?? process.env.FRONTIER_AUTH_OIDC_AUDIENCE ?? "").trim();
-  const clientId = (process.env.FRONTIER_AUTH_OIDC_CLIENT_ID ?? "").trim();
+  const audience = String(session?.oidc?.audience ?? process.env.LOCUS_AUTH_OIDC_AUDIENCE ?? "").trim();
+  const clientId = (process.env.LOCUS_AUTH_OIDC_CLIENT_ID ?? "").trim();
   const browserFlowConfigured = Boolean(session?.oidc?.browser_flow_configured);
   const browserFlowError = String(session?.oidc?.browser_flow_error ?? "").trim();
   const sessionConfigured = Boolean(session?.oidc?.configured);
@@ -152,8 +152,8 @@ function getAuthUiConfigFromSession(session: OperatorSession | null): AuthUiConf
 }
 
 export const metadata: Metadata = {
-  title: "Sign in | Lattix xFrontier",
-  description: "Secure access to the Lattix xFrontier console.",
+  title: "Sign in | Locus",
+  description: "Secure access to the Lattix Locus console.",
 };
 
 async function loadOperatorSession(): Promise<OperatorSession | null> {
@@ -168,7 +168,7 @@ async function loadOperatorSession(): Promise<OperatorSession | null> {
 /**
  * Native local-password sign-in/up (LattixAuthCard) is always available. When the
  * install is configured for an external OIDC provider with a complete browser
- * flow, a single sign-on panel is added; its redirects land back in xFrontier via
+ * flow, a single sign-on panel is added; its redirects land back in Locus via
  * the backend callback exchange (`/auth/callback` -> `/api/auth/oidc/callback`).
  */
 export default async function AuthPage({ searchParams }: AuthPageProps = {}) {

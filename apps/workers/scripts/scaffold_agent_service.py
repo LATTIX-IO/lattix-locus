@@ -12,7 +12,7 @@ SERVICES = WORKERS_ROOT / "services"
 
 
 def _agent_assets_candidates() -> list[Path]:
-    configured = str(__import__("os").getenv("FRONTIER_AGENT_ASSETS_ROOT") or "").strip()
+    configured = str(__import__("os").getenv("LOCUS_AGENT_ASSETS_ROOT") or "").strip()
     candidates = [
         (REPO_ROOT / "examples" / "agents").resolve(),
     ]

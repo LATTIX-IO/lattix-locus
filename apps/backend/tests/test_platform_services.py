@@ -187,14 +187,14 @@ def test_postgres_connect_uses_bounded_connect_timeout(monkeypatch) -> None:
     fake_psycopg = _FakePsycopg()
     monkeypatch.setattr(platform_services, "psycopg", fake_psycopg)
 
-    store = PostgresStateStore("postgresql://frontier:test@db.example/frontier")
+    store = PostgresStateStore("postgresql://locus:test@db.example/locus")
 
     with store._connect():
         pass
 
     assert fake_psycopg.connect_calls == [
         (
-            "postgresql://frontier:test@db.example/frontier",
+            "postgresql://locus:test@db.example/locus",
             {"autocommit": True, "connect_timeout": 5},
         )
     ]

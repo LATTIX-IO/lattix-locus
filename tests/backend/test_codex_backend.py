@@ -13,7 +13,7 @@ _BACKEND = _REPO_ROOT / "apps" / "backend"
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from frontier_runtime.harness import codex_backend as cb  # noqa: E402
+from locus_runtime.harness import codex_backend as cb  # noqa: E402
 
 
 # --- ThreadEvent → normalized step mapping ----------------------------------
@@ -159,7 +159,7 @@ def test_code_node_routes_to_codex(monkeypatch):
 
     class _Node:
         id = "build"
-        type = "frontier/agent"
+        type = "locus/agent"
         title = "Build"
         config = {"agent_id": "sdet", "phase": "build", "harness_backend": "codex"}
 
@@ -208,7 +208,7 @@ def test_codex_unavailable_falls_back_to_native(monkeypatch):
 
     class _Node:
         id = "build"
-        type = "frontier/agent"
+        type = "locus/agent"
         title = "Build"
         config = {"harness_backend": "codex"}
 

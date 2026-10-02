@@ -1,6 +1,6 @@
 project:
   environment: prod
-  name: lattix-frontier-prod
+  name: lattix-locus-prod
   endpoint: https://REPLACE-PROD-ENDPOINT.services.ai.azure.com/api/projects/REPLACE-PROD-PROJECT
   region: eastus2
   auth:

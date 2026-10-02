@@ -42,7 +42,7 @@ Hosted and secure-profile deployments must require authenticated operator access
 
 This section is the engineering-facing companion to the disclosure policy above. `THREAT-MODEL.md` holds the full threat model; `.github/instructions/lattix-security.instructions.md` holds the path-scoped rules applied automatically to every edit.
 
-xFrontier sits on a sensitive boundary: operator intent becomes agent execution against real tools, networks, and data. Treat it as a policy and isolation system, not a convenient runner.
+Locus sits on a sensitive boundary: operator intent becomes agent execution against real tools, networks, and data. Treat it as a policy and isolation system, not a convenient runner.
 
 ## Trust boundaries
 
@@ -60,17 +60,17 @@ xFrontier sits on a sensitive boundary: operator intent becomes agent execution 
 | Control | Where | Requirement |
 | --- | --- | --- |
 | Runtime profile | `_RUNTIME_PROFILES` in `apps/backend/app/main.py` | Anything non-local pins `local-secure` or `hosted`. The unset default is `local-lightweight`, which permits unauthenticated requests — never rely on it outside a laptop. |
-| Operator authentication | OIDC (`FRONTIER_AUTH_OIDC_*`), operator session cookie | Header-only actor trust stays disabled in secure profiles |
-| Actor authorization | `FRONTIER_ADMIN_ACTORS`, `FRONTIER_BUILDER_ACTORS` | Least privilege; bootstrap admin is a first-run convenience, not a standing identity |
-| Signed A2A runtime headers | `frontier_runtime/security.py`, `apps/workers/runtime/security/jwt.py` | Required in `hosted`; verified, not assumed |
+| Operator authentication | OIDC (`LOCUS_AUTH_OIDC_*`), operator session cookie | Header-only actor trust stays disabled in secure profiles |
+| Actor authorization | `LOCUS_ADMIN_ACTORS`, `LOCUS_BUILDER_ACTORS` | Least privilege; bootstrap admin is a first-run convenience, not a standing identity |
+| Signed A2A runtime headers | `locus_runtime/security.py`, `apps/workers/runtime/security/jwt.py` | Required in `hosted`; verified, not assumed |
 | Replay protection | Nonce + TTL, Redis cache with Postgres snapshot fallback | **Fails closed** — `503` when replay state is unavailable |
 | Capability tokens | `CapabilityMinter` / `CapabilityVerifier`, optional Biscuit | Scope-limited, verified at use |
 | Policy decisions | OPA — agent, budget, data classification, filesystem, network egress, network, tool jail | An unavailable PDP is a deny |
-| Guardrails | `frontier_runtime/guardrails.py` — prompt render, DLP, capability enforcement | Applied to output paths; redaction before persistence and logging |
-| Tool isolation | `frontier_runtime/sandbox.py` | Explicit strategy per host platform — `kernel-bwrap` (Linux), `kernel-seatbelt` (macOS), `windows-appcontainer` (Windows), `hardened-docker` — with declared capabilities and no silent downgrade |
+| Guardrails | `locus_runtime/guardrails.py` — prompt render, DLP, capability enforcement | Applied to output paths; redaction before persistence and logging |
+| Tool isolation | `locus_runtime/sandbox.py` | Explicit strategy per host platform — `kernel-bwrap` (Linux), `kernel-seatbelt` (macOS), `windows-appcontainer` (Windows), `hardened-docker` — with declared capabilities and no silent downgrade |
 | Egress control | Sandbox egress gateway, per-integration `egress_allowlist` | Deny by default; allowlist is data, not code |
 | Secret storage | Vault (`hvac`), installer-managed mirroring | Secrets never in the repo, logs, or memory records |
-| Audit integrity | Hash-chained, signed events (`frontier_runtime/events.py`) | No execution path bypasses the event log |
+| Audit integrity | Hash-chained, signed events (`locus_runtime/events.py`) | No execution path bypasses the event log |
 | Transport and headers | Envoy, `apps/backend/app/security_headers.py`, `request_security.py` | Security headers and request validation are not optional middleware |
 
 ## Hard limits
@@ -80,7 +80,7 @@ xFrontier sits on a sensitive boundary: operator intent becomes agent execution 
 - Never include real PII, customer data, or production identifiers in tests, docs, or examples. Use `<API_KEY>` / `<REDACTED>`.
 - Never invent crypto, token formats, or random ID schemes. Use vetted libraries and existing project patterns.
 - Never weaken a fail-closed path to make a test or a local run pass.
-- Never commit private Lattix agent definitions. Demo assets live in `examples/agents/`; private assets come from `FRONTIER_AGENT_ASSETS_ROOT`.
+- Never commit private Lattix agent definitions. Demo assets live in `examples/agents/`; private assets come from `LOCUS_AGENT_ASSETS_ROOT`.
 - Replace the placeholder `A2A_JWT_SECRET` in the Helm chart before applying it anywhere.
 
 ## Review checkpoints
@@ -109,4 +109,4 @@ Do not describe these as covered:
 - **`apps/backend/app/main.py:1587` calls `platform.system()` without importing `platform`** — a latent `NameError` on that path, currently flagged by `ruff` as `F821`.
 - The test suite does not collect (`tests/` lacks `__init__.py`, breaking `tests.harness`), so there is no automated security-regression signal until that is fixed.
 
-Windows tool confinement **is** implemented — `_WindowsAppContainerStrategy` with the `windows-appcontainer` tier, selected fail-closed rather than downgrading to a bare Job Object (`FRONTIER_FORCE_WINDOWS_APPCONTAINER` forces it).
+Windows tool confinement **is** implemented — `_WindowsAppContainerStrategy` with the `windows-appcontainer` tier, selected fail-closed rather than downgrading to a bare Job Object (`LOCUS_FORCE_WINDOWS_APPCONTAINER` forces it).

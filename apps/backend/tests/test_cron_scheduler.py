@@ -14,15 +14,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 if not str(os.environ.get("A2A_JWT_SECRET") or "").strip():
     os.environ["A2A_JWT_SECRET"] = "unit-test-super-secret-value-32bytes"
-if not str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").strip():
-    os.environ["FRONTIER_API_BEARER_TOKEN"] = "unit-test-bearer"
+if not str(os.environ.get("LOCUS_API_BEARER_TOKEN") or "").strip():
+    os.environ["LOCUS_API_BEARER_TOKEN"] = "unit-test-bearer"
 
 import app.main as main_module
 from app.cron import cron_matches, is_valid_cron, parse_cron
 from app.main import WorkflowDefinition, app, store
 
 client = TestClient(app)
-ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "frontier-admin"}
+ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-locus-actor": "locus-admin"}
 UTC = timezone.utc
 
 
@@ -118,7 +118,7 @@ def test_scheduler_tick_fires_due_schedule_once(monkeypatch) -> None:
     store.workflow_schedules[schedule_id] = {
         "id": schedule_id,
         "workflow_id": workflow_id,
-        "actor": "frontier-admin",
+        "actor": "locus-admin",
         "label": "tick",
         "cron": "* * * * *",  # always matches
         "enabled": True,
@@ -160,7 +160,7 @@ def test_scheduler_tick_skips_disabled_and_unpublished(monkeypatch) -> None:
     store.workflow_schedules[schedule_id] = {
         "id": schedule_id,
         "workflow_id": workflow_id,
-        "actor": "frontier-admin",
+        "actor": "locus-admin",
         "label": "disabled",
         "cron": "* * * * *",
         "enabled": True,

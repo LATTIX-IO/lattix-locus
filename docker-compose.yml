@@ -1,10 +1,10 @@
 x-agent-image: &agent-image
-  image: ${FRONTIER_AGENT_IMAGE:-lattix-frontier/agent-base:3.12.10-slim-bookworm}
+  image: ${LOCUS_AGENT_IMAGE:-lattix-locus/agent-base:3.12.10-slim-bookworm}
   build:
     context: .
     dockerfile: Dockerfile.agent
     args:
-      PYTHON_BASE_IMAGE: ${FRONTIER_AGENT_PYTHON_BASE_IMAGE:-python:3.12.10-slim-bookworm}
+      PYTHON_BASE_IMAGE: ${LOCUS_AGENT_PYTHON_BASE_IMAGE:-python:3.12.10-slim-bookworm}
 
 x-default-logging: &default-logging
   logging:
@@ -27,18 +27,18 @@ services:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
       API_BASE_URL_INTERNAL: http://backend:8000
       NEXT_PUBLIC_ENABLE_MOCK_DATA: ${NEXT_PUBLIC_ENABLE_MOCK_DATA:-false}
-      NEXT_PUBLIC_FRONTIER_ACTOR: ${NEXT_PUBLIC_FRONTIER_ACTOR:-}
-      FRONTIER_AUTH_MODE: ${FRONTIER_AUTH_MODE:-oidc}
-      FRONTIER_AUTH_OIDC_PROVIDER: ${FRONTIER_AUTH_OIDC_PROVIDER:-casdoor}
-      FRONTIER_AUTH_OIDC_ISSUER: ${FRONTIER_AUTH_OIDC_ISSUER:-http://127.0.0.1:8081}
-      FRONTIER_AUTH_OIDC_AUDIENCE: ${FRONTIER_AUTH_OIDC_AUDIENCE:-frontier-ui}
-      FRONTIER_AUTH_OIDC_JWKS_URL: ${FRONTIER_AUTH_OIDC_JWKS_URL:-http://127.0.0.1:8081/.well-known/jwks.json}
-      FRONTIER_AUTH_OIDC_CLIENT_ID: ${FRONTIER_AUTH_OIDC_CLIENT_ID:-frontier-web}
-      FRONTIER_AUTH_OIDC_AUTHORIZATION_URL: ${FRONTIER_AUTH_OIDC_AUTHORIZATION_URL:-http://127.0.0.1:8081/login/oauth/authorize}
-      FRONTIER_AUTH_OIDC_TOKEN_URL: ${FRONTIER_AUTH_OIDC_TOKEN_URL:-http://127.0.0.1:8081/api/login/oauth/access_token}
-      FRONTIER_AUTH_OIDC_SIGNIN_URL: ${FRONTIER_AUTH_OIDC_SIGNIN_URL:-http://127.0.0.1:8081/login/oauth/authorize}
-      FRONTIER_AUTH_OIDC_SIGNUP_URL: ${FRONTIER_AUTH_OIDC_SIGNUP_URL:-http://127.0.0.1:8081/login/oauth/authorize}
-      FRONTIER_AUTH_OIDC_SCOPES: ${FRONTIER_AUTH_OIDC_SCOPES:-openid profile email}
+      NEXT_PUBLIC_LOCUS_ACTOR: ${NEXT_PUBLIC_LOCUS_ACTOR:-}
+      LOCUS_AUTH_MODE: ${LOCUS_AUTH_MODE:-oidc}
+      LOCUS_AUTH_OIDC_PROVIDER: ${LOCUS_AUTH_OIDC_PROVIDER:-casdoor}
+      LOCUS_AUTH_OIDC_ISSUER: ${LOCUS_AUTH_OIDC_ISSUER:-http://127.0.0.1:8081}
+      LOCUS_AUTH_OIDC_AUDIENCE: ${LOCUS_AUTH_OIDC_AUDIENCE:-locus-ui}
+      LOCUS_AUTH_OIDC_JWKS_URL: ${LOCUS_AUTH_OIDC_JWKS_URL:-http://127.0.0.1:8081/.well-known/jwks.json}
+      LOCUS_AUTH_OIDC_CLIENT_ID: ${LOCUS_AUTH_OIDC_CLIENT_ID:-locus-web}
+      LOCUS_AUTH_OIDC_AUTHORIZATION_URL: ${LOCUS_AUTH_OIDC_AUTHORIZATION_URL:-http://127.0.0.1:8081/login/oauth/authorize}
+      LOCUS_AUTH_OIDC_TOKEN_URL: ${LOCUS_AUTH_OIDC_TOKEN_URL:-http://127.0.0.1:8081/api/login/oauth/access_token}
+      LOCUS_AUTH_OIDC_SIGNIN_URL: ${LOCUS_AUTH_OIDC_SIGNIN_URL:-http://127.0.0.1:8081/login/oauth/authorize}
+      LOCUS_AUTH_OIDC_SIGNUP_URL: ${LOCUS_AUTH_OIDC_SIGNUP_URL:-http://127.0.0.1:8081/login/oauth/authorize}
+      LOCUS_AUTH_OIDC_SCOPES: ${LOCUS_AUTH_OIDC_SCOPES:-openid profile email}
 
   backend:
     <<: *default-logging
@@ -47,11 +47,11 @@ services:
       dockerfile: Dockerfile
     depends_on: [postgres, redis, opa, nats, envoy, casdoor]
     environment:
-      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://xfrontier.local}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://locus.local}
       POSTGRES_DSN: ${POSTGRES_DSN}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      FRONTIER_MEMORY_ENABLE_LONG_TERM: ${FRONTIER_MEMORY_ENABLE_LONG_TERM:-true}
-      FRONTIER_MEMORY_LEARNING_ENABLED: ${FRONTIER_MEMORY_LEARNING_ENABLED:-true}
+      LOCUS_MEMORY_ENABLE_LONG_TERM: ${LOCUS_MEMORY_ENABLE_LONG_TERM:-true}
+      LOCUS_MEMORY_LEARNING_ENABLED: ${LOCUS_MEMORY_LEARNING_ENABLED:-true}
       OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
       # NVIDIA NIM (hosted API by default; NIM_BASE_URL can target self-hosted
       # NIM microservices to keep inference on-prem).
@@ -62,43 +62,43 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       # Mounted host projects root (see volumes). Working folders are confined
       # under this container path so agents can read/edit the user's repos.
-      FRONTIER_PROJECTS_ROOT: ${FRONTIER_PROJECTS_ROOT:-/projects}
+      LOCUS_PROJECTS_ROOT: ${LOCUS_PROJECTS_ROOT:-/projects}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
       # World-models / knowledge graph live in Postgres (PostgresWorldGraph) — no
       # Neo4j, no JVM. The backend falls through to the relational world-graph when
       # NEO4J_URI is unset. (Set NEO4J_URI explicitly only to opt into legacy Neo4j.)
-      FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED: ${FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED:-true}
-      FRONTIER_AGENT_ASSETS_ROOT: ${FRONTIER_AGENT_ASSETS_ROOT:-/app/examples/agents}
+      LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED: ${LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED:-true}
+      LOCUS_AGENT_ASSETS_ROOT: ${LOCUS_AGENT_ASSETS_ROOT:-/app/examples/agents}
       VAULT_ADDR: ${VAULT_ADDR:-http://vault:8200}
       VAULT_TOKEN: ${VAULT_TOKEN:-}
       OPA_ADDR: http://opa:8181
       NATS_URL: nats://nats:4222
       JAEGER_ENDPOINT: http://jaeger:4317
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
-      FRONTIER_RUNTIME_PROFILE: ${FRONTIER_RUNTIME_PROFILE:-local-secure}
-      FRONTIER_AUTH_MODE: ${FRONTIER_AUTH_MODE:-oidc}
-      FRONTIER_AUTH_OIDC_PROVIDER: ${FRONTIER_AUTH_OIDC_PROVIDER:-casdoor}
-      FRONTIER_AUTH_OIDC_ISSUER: ${FRONTIER_AUTH_OIDC_ISSUER:-http://127.0.0.1:8081}
-      FRONTIER_AUTH_OIDC_AUDIENCE: ${FRONTIER_AUTH_OIDC_AUDIENCE:-frontier-ui}
-      FRONTIER_AUTH_OIDC_JWKS_URL: ${FRONTIER_AUTH_OIDC_JWKS_URL:-http://127.0.0.1:8081/.well-known/jwks.json}
-      FRONTIER_AUTH_OIDC_CLIENT_ID: ${FRONTIER_AUTH_OIDC_CLIENT_ID:-frontier-web}
-      FRONTIER_AUTH_OIDC_AUTHORIZATION_URL: ${FRONTIER_AUTH_OIDC_AUTHORIZATION_URL:-http://127.0.0.1:8081/login/oauth/authorize}
-      FRONTIER_AUTH_OIDC_TOKEN_URL: ${FRONTIER_AUTH_OIDC_TOKEN_URL:-http://127.0.0.1:8081/api/login/oauth/access_token}
-      FRONTIER_AUTH_OIDC_SIGNIN_URL: ${FRONTIER_AUTH_OIDC_SIGNIN_URL:-http://127.0.0.1:8081/login/oauth/authorize}
-      FRONTIER_AUTH_OIDC_SIGNUP_URL: ${FRONTIER_AUTH_OIDC_SIGNUP_URL:-http://127.0.0.1:8081/login/oauth/authorize}
-      FRONTIER_AUTH_OIDC_SCOPES: ${FRONTIER_AUTH_OIDC_SCOPES:-openid profile email}
-      FRONTIER_BOOTSTRAP_ADMIN_USERNAME: ${FRONTIER_BOOTSTRAP_ADMIN_USERNAME:-frontier-admin}
-      FRONTIER_BOOTSTRAP_ADMIN_EMAIL: ${FRONTIER_BOOTSTRAP_ADMIN_EMAIL:-admin@frontier.localhost}
-      FRONTIER_BOOTSTRAP_ADMIN_SUBJECT: ${FRONTIER_BOOTSTRAP_ADMIN_SUBJECT:-frontier-admin}
-      FRONTIER_ADMIN_ACTORS: ${FRONTIER_ADMIN_ACTORS:-frontier-admin,admin@frontier.localhost}
-      FRONTIER_BUILDER_ACTORS: ${FRONTIER_BUILDER_ACTORS:-frontier-admin,admin@frontier.localhost}
-      FRONTIER_API_BEARER_TOKEN: ${FRONTIER_API_BEARER_TOKEN:-}
+      LOCUS_RUNTIME_PROFILE: ${LOCUS_RUNTIME_PROFILE:-local-secure}
+      LOCUS_AUTH_MODE: ${LOCUS_AUTH_MODE:-oidc}
+      LOCUS_AUTH_OIDC_PROVIDER: ${LOCUS_AUTH_OIDC_PROVIDER:-casdoor}
+      LOCUS_AUTH_OIDC_ISSUER: ${LOCUS_AUTH_OIDC_ISSUER:-http://127.0.0.1:8081}
+      LOCUS_AUTH_OIDC_AUDIENCE: ${LOCUS_AUTH_OIDC_AUDIENCE:-locus-ui}
+      LOCUS_AUTH_OIDC_JWKS_URL: ${LOCUS_AUTH_OIDC_JWKS_URL:-http://127.0.0.1:8081/.well-known/jwks.json}
+      LOCUS_AUTH_OIDC_CLIENT_ID: ${LOCUS_AUTH_OIDC_CLIENT_ID:-locus-web}
+      LOCUS_AUTH_OIDC_AUTHORIZATION_URL: ${LOCUS_AUTH_OIDC_AUTHORIZATION_URL:-http://127.0.0.1:8081/login/oauth/authorize}
+      LOCUS_AUTH_OIDC_TOKEN_URL: ${LOCUS_AUTH_OIDC_TOKEN_URL:-http://127.0.0.1:8081/api/login/oauth/access_token}
+      LOCUS_AUTH_OIDC_SIGNIN_URL: ${LOCUS_AUTH_OIDC_SIGNIN_URL:-http://127.0.0.1:8081/login/oauth/authorize}
+      LOCUS_AUTH_OIDC_SIGNUP_URL: ${LOCUS_AUTH_OIDC_SIGNUP_URL:-http://127.0.0.1:8081/login/oauth/authorize}
+      LOCUS_AUTH_OIDC_SCOPES: ${LOCUS_AUTH_OIDC_SCOPES:-openid profile email}
+      LOCUS_BOOTSTRAP_ADMIN_USERNAME: ${LOCUS_BOOTSTRAP_ADMIN_USERNAME:-locus-admin}
+      LOCUS_BOOTSTRAP_ADMIN_EMAIL: ${LOCUS_BOOTSTRAP_ADMIN_EMAIL:-admin@locus.localhost}
+      LOCUS_BOOTSTRAP_ADMIN_SUBJECT: ${LOCUS_BOOTSTRAP_ADMIN_SUBJECT:-locus-admin}
+      LOCUS_ADMIN_ACTORS: ${LOCUS_ADMIN_ACTORS:-locus-admin,admin@locus.localhost}
+      LOCUS_BUILDER_ACTORS: ${LOCUS_BUILDER_ACTORS:-locus-admin,admin@locus.localhost}
+      LOCUS_API_BEARER_TOKEN: ${LOCUS_API_BEARER_TOKEN:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-dummy-key}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
-      FRONTIER_SECRETS_ENCRYPTION_KEY: ${FRONTIER_SECRETS_ENCRYPTION_KEY:-}
+      LOCUS_SECRETS_ENCRYPTION_KEY: ${LOCUS_SECRETS_ENCRYPTION_KEY:-}
       A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
-      A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-frontier}
-      A2A_JWT_AUD: ${A2A_JWT_AUD:-frontier-runtime}
+      A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-locus}
+      A2A_JWT_AUD: ${A2A_JWT_AUD:-locus-runtime}
       A2A_JWT_SECRET: ${A2A_JWT_SECRET}
       A2A_REQUIRE_NONCE: ${A2A_REQUIRE_NONCE:-true}
       A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}
@@ -108,16 +108,16 @@ services:
     volumes:
       - ./:/app
       - ./policies:/app/policies:ro
-      # Host projects root → /projects. Point FRONTIER_PROJECTS_HOST at the
+      # Host projects root → /projects. Point LOCUS_PROJECTS_HOST at the
       # folder that contains the repos you want the agents to work in.
-      - ${FRONTIER_PROJECTS_HOST:-D:/lattix}:/projects
+      - ${LOCUS_PROJECTS_HOST:-D:/lattix}:/projects
 
   local-gateway:
     <<: *default-logging
     image: caddy:2.8.4-alpine
     depends_on: [frontend, backend, casdoor]
     environment:
-      LOCAL_STACK_HOST: ${LOCAL_STACK_HOST:-xfrontier.local}
+      LOCAL_STACK_HOST: ${LOCAL_STACK_HOST:-locus.local}
       CASDOOR_LOCAL_HOST: ${CASDOOR_LOCAL_HOST:-casdoor.localhost}
     volumes:
       - ./docker/local/Caddyfile:/etc/caddy/Caddyfile:ro
@@ -142,8 +142,8 @@ services:
     environment:
       RUNNING_IN_DOCKER: "true"
       CASDOOR_PUBLIC_URL: ${CASDOOR_PUBLIC_URL:-http://127.0.0.1:8081}
-      CASDOOR_BOOTSTRAP_ADMIN_USERNAME: ${CASDOOR_BOOTSTRAP_ADMIN_USERNAME:-frontier-admin}
-      CASDOOR_BOOTSTRAP_ADMIN_EMAIL: ${CASDOOR_BOOTSTRAP_ADMIN_EMAIL:-admin@frontier.localhost}
+      CASDOOR_BOOTSTRAP_ADMIN_USERNAME: ${CASDOOR_BOOTSTRAP_ADMIN_USERNAME:-locus-admin}
+      CASDOOR_BOOTSTRAP_ADMIN_EMAIL: ${CASDOOR_BOOTSTRAP_ADMIN_EMAIL:-admin@locus.localhost}
       CASDOOR_POSTGRES_HOST: ${CASDOOR_POSTGRES_HOST:-postgres}
       CASDOOR_POSTGRES_PORT: ${CASDOOR_POSTGRES_PORT:-5432}
       CASDOOR_POSTGRES_USER: ${CASDOOR_POSTGRES_USER:-${POSTGRES_USER:-frontier}}
@@ -167,19 +167,19 @@ services:
       ORCHESTRATOR_URL: http://backend:8000
       VAULT_ADDR: http://vault:8200
       NATS_URL: nats://nats:4222
-      FRONTIER_RUNTIME_PROFILE: ${FRONTIER_RUNTIME_PROFILE:-local-secure}
+      LOCUS_RUNTIME_PROFILE: ${LOCUS_RUNTIME_PROFILE:-local-secure}
       A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
-      A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-frontier}
-      A2A_JWT_AUD: ${A2A_JWT_AUD:-frontier-runtime}
+      A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-locus}
+      A2A_JWT_AUD: ${A2A_JWT_AUD:-locus-runtime}
       A2A_JWT_SECRET: ${A2A_JWT_SECRET}
       A2A_REQUIRE_NONCE: ${A2A_REQUIRE_NONCE:-true}
       A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}
       A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
       A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
       A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-backend,research,code,review,coordinator}
-      FRONTIER_PROJECTS_ROOT: ${FRONTIER_PROJECTS_ROOT:-/projects}
+      LOCUS_PROJECTS_ROOT: ${LOCUS_PROJECTS_ROOT:-/projects}
     volumes:
-      - ${FRONTIER_PROJECTS_HOST:-D:/lattix}:/projects
+      - ${LOCUS_PROJECTS_HOST:-D:/lattix}:/projects
 
   agent-code:
     <<: *agent-image
@@ -195,19 +195,19 @@ services:
       ORCHESTRATOR_URL: http://backend:8000
       VAULT_ADDR: http://vault:8200
       NATS_URL: nats://nats:4222
-      FRONTIER_RUNTIME_PROFILE: ${FRONTIER_RUNTIME_PROFILE:-local-secure}
+      LOCUS_RUNTIME_PROFILE: ${LOCUS_RUNTIME_PROFILE:-local-secure}
       A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
-      A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-frontier}
-      A2A_JWT_AUD: ${A2A_JWT_AUD:-frontier-runtime}
+      A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-locus}
+      A2A_JWT_AUD: ${A2A_JWT_AUD:-locus-runtime}
       A2A_JWT_SECRET: ${A2A_JWT_SECRET}
       A2A_REQUIRE_NONCE: ${A2A_REQUIRE_NONCE:-true}
       A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}
       A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
       A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
       A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-backend,research,code,review,coordinator}
-      FRONTIER_PROJECTS_ROOT: ${FRONTIER_PROJECTS_ROOT:-/projects}
+      LOCUS_PROJECTS_ROOT: ${LOCUS_PROJECTS_ROOT:-/projects}
     volumes:
-      - ${FRONTIER_PROJECTS_HOST:-D:/lattix}:/projects
+      - ${LOCUS_PROJECTS_HOST:-D:/lattix}:/projects
 
   agent-review:
     <<: *agent-image
@@ -223,19 +223,19 @@ services:
       ORCHESTRATOR_URL: http://backend:8000
       VAULT_ADDR: http://vault:8200
       NATS_URL: nats://nats:4222
-      FRONTIER_RUNTIME_PROFILE: ${FRONTIER_RUNTIME_PROFILE:-local-secure}
+      LOCUS_RUNTIME_PROFILE: ${LOCUS_RUNTIME_PROFILE:-local-secure}
       A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
-      A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-frontier}
-      A2A_JWT_AUD: ${A2A_JWT_AUD:-frontier-runtime}
+      A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-locus}
+      A2A_JWT_AUD: ${A2A_JWT_AUD:-locus-runtime}
       A2A_JWT_SECRET: ${A2A_JWT_SECRET}
       A2A_REQUIRE_NONCE: ${A2A_REQUIRE_NONCE:-true}
       A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}
       A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
       A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
       A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-backend,research,code,review,coordinator}
-      FRONTIER_PROJECTS_ROOT: ${FRONTIER_PROJECTS_ROOT:-/projects}
+      LOCUS_PROJECTS_ROOT: ${LOCUS_PROJECTS_ROOT:-/projects}
     volumes:
-      - ${FRONTIER_PROJECTS_HOST:-D:/lattix}:/projects
+      - ${LOCUS_PROJECTS_HOST:-D:/lattix}:/projects
   vault:
     <<: *default-logging
     image: hashicorp/vault:1.18
@@ -341,14 +341,14 @@ services:
     depends_on: [ollama]
     environment:
       OLLAMA_HOST: http://ollama:11434
-      FRONTIER_OLLAMA_MODEL: ${FRONTIER_OLLAMA_MODEL:-gpt-oss:20b}
+      LOCUS_OLLAMA_MODEL: ${LOCUS_OLLAMA_MODEL:-gpt-oss:20b}
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         echo "waiting for ollama sidecar..."; \
         until ollama list >/dev/null 2>&1; do sleep 2; done; \
-        echo "pulling $${FRONTIER_OLLAMA_MODEL} ..."; \
-        ollama pull "$${FRONTIER_OLLAMA_MODEL}" && echo "gpt-oss model ready."
+        echo "pulling $${LOCUS_OLLAMA_MODEL} ..."; \
+        ollama pull "$${LOCUS_OLLAMA_MODEL}" && echo "gpt-oss model ready."
     restart: "no"
 
 volumes:

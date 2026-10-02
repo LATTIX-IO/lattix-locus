@@ -13,28 +13,28 @@ _BACKEND = _REPO_ROOT / "apps" / "backend"
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from frontier_runtime.harness import workspace_binding as wb  # noqa: E402
-from frontier_runtime.harness.executor import LocalDirectExecutor, LocalSandboxExecutor  # noqa: E402
-from frontier_runtime import sandbox as sb  # noqa: E402
+from locus_runtime.harness import workspace_binding as wb  # noqa: E402
+from locus_runtime.harness.executor import LocalDirectExecutor, LocalSandboxExecutor  # noqa: E402
+from locus_runtime import sandbox as sb  # noqa: E402
 
 
 # --- executor selection ------------------------------------------------------
 def test_default_uses_direct_executor(tmp_path, monkeypatch):
-    monkeypatch.delenv("FRONTIER_SANDBOX_AGENTS", raising=False)
-    monkeypatch.delenv("FRONTIER_RUNTIME_PROFILE", raising=False)
+    monkeypatch.delenv("LOCUS_SANDBOX_AGENTS", raising=False)
+    monkeypatch.delenv("LOCUS_RUNTIME_PROFILE", raising=False)
     ex = wb._make_executor(tmp_path, [])
     assert isinstance(ex, LocalDirectExecutor)  # current deploys unchanged
 
 
 def test_flag_selects_sandbox_executor(tmp_path, monkeypatch):
-    monkeypatch.setenv("FRONTIER_SANDBOX_AGENTS", "1")
+    monkeypatch.setenv("LOCUS_SANDBOX_AGENTS", "1")
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
     assert isinstance(wb._make_executor(tmp_path, []), LocalSandboxExecutor)
 
 
 def test_native_profile_selects_sandbox_executor(tmp_path, monkeypatch):
-    monkeypatch.delenv("FRONTIER_SANDBOX_AGENTS", raising=False)
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-native")
+    monkeypatch.delenv("LOCUS_SANDBOX_AGENTS", raising=False)
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-native")
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
     assert wb._sandbox_executor_requested() is True
     assert isinstance(wb._make_executor(tmp_path, []), LocalSandboxExecutor)
@@ -47,7 +47,7 @@ def test_sandbox_executor_carries_extra_paths(tmp_path):
 
 # --- detect: local-native is Dockerless -------------------------------------
 def test_local_native_never_falls_back_to_docker(monkeypatch):
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-native")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-native")
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
     monkeypatch.setattr(sb, "detect_host_platform", lambda *a, **k: sb.HostPlatform.LINUX)
     # docker present, bwrap absent → must NOT pick hardened-docker under native

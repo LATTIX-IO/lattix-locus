@@ -7,7 +7,7 @@ import { StatusChip } from "@/components/status-chip";
 import { resolveFloatingMenuPosition } from "@/lib/floating-menu";
 import { useKeyboardShortcuts } from "@/lib/keyboard-shortcuts";
 import { archiveWorkflowRun, getInbox, getWorkflowRuns, updateWorkflowRunTitle } from "@/lib/api";
-import type { InboxItem, PlatformVersionStatus, WorkflowRunSummary } from "@/types/frontier";
+import type { InboxItem, PlatformVersionStatus, WorkflowRunSummary } from "@/types/locus";
 
 type UserConsoleSidebarProps = {
   pathname: string;

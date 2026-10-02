@@ -408,7 +408,7 @@ const SCHEMAS: Record<string, NodeConfigSchema> = {
         ],
         defaultValue: "publish",
       },
-      { key: "topic", label: "Topic", type: "text", placeholder: "frontier.events.default", defaultValue: "frontier.events.default" },
+      { key: "topic", label: "Topic", type: "text", placeholder: "locus.events.default", defaultValue: "locus.events.default" },
       { key: "event_name", label: "Event Name", type: "text", placeholder: "event.workflow.step", defaultValue: "event.workflow.step" },
       { key: "correlation_key", label: "Correlation Key", type: "text", placeholder: "runId", defaultValue: "runId" },
       { key: "durable", label: "Durable", type: "boolean", defaultValue: false },
@@ -524,7 +524,7 @@ const SCHEMAS: Record<string, NodeConfigSchema> = {
 };
 
 export function normalizeNodeTypeForSchema(type: string): string {
-  const raw = type.startsWith("frontier/") ? type.replace("frontier/", "") : type;
+  const raw = type.startsWith("locus/") ? type.replace("locus/", "") : type;
   if (raw.startsWith("agent/")) {
     return "agent";
   }

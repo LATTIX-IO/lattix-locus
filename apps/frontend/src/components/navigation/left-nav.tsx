@@ -5,7 +5,7 @@ import { useSyncExternalStore } from "react";
 import { InboxChatTree } from "@/components/navigation/inbox-chat-tree";
 import { getPreferenceNavItem, getPrimaryNavGroups, type NavGroup, type NavIconName, type NavItem, type NavMode } from "@/components/navigation/nav-config";
 import { PlatformUpdatePanel } from "@/components/navigation/platform-update-panel";
-import type { PlatformVersionStatus } from "@/types/frontier";
+import type { PlatformVersionStatus } from "@/types/locus";
 
 type LeftNavProps = {
   mode: NavMode;

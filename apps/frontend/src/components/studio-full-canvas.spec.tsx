@@ -322,7 +322,7 @@ describe("StudioFullCanvas", () => {
       entityId: "agent-1",
       entityName: "Agent One",
       description: "desc",
-      initialNodes: [{ id: "n1", title: "Trigger", type: "frontier/trigger", x: 0, y: 0, config: {} }],
+      initialNodes: [{ id: "n1", title: "Trigger", type: "locus/trigger", x: 0, y: 0, config: {} }],
       initialLinks: [],
       onSave: async () => {},
       onPublish: async () => {},

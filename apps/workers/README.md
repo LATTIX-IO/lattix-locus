@@ -1,1 +1,1 @@
-# lattix-frontier-workers
+# lattix-locus-workers

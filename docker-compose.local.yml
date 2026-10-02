@@ -15,9 +15,9 @@ services:
     environment:
       NODE_ENV: development
       NEXT_TELEMETRY_DISABLED: 1
-      NEXT_PUBLIC_API_BASE_URL: ${FRONTIER_LOCAL_API_BASE_URL:-http://localhost:8000}
+      NEXT_PUBLIC_API_BASE_URL: ${LOCUS_LOCAL_API_BASE_URL:-http://localhost:8000}
       API_BASE_URL_INTERNAL: ${API_BASE_URL_INTERNAL:-http://backend:8000}
-      NEXT_PUBLIC_FRONTIER_ACTOR: ${NEXT_PUBLIC_FRONTIER_ACTOR:-frontend-user}
+      NEXT_PUBLIC_LOCUS_ACTOR: ${NEXT_PUBLIC_LOCUS_ACTOR:-frontend-user}
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
@@ -39,20 +39,20 @@ services:
     working_dir: /workspace/apps/backend
     # Dependencies install into a venv on a named volume, keyed by a hash of
     # requirements.txt — restarts reuse it instead of re-downloading every boot.
-    command: sh -lc "VENV=/opt/frontier-venv; HASH_FILE=$$VENV/.reqhash; CURRENT_HASH=$$(sha256sum requirements.txt | awk '{print $$1}'); SAVED_HASH=$$(cat $$HASH_FILE 2>/dev/null || true); if [ ! -x $$VENV/bin/python ] || [ \"$$CURRENT_HASH\" != \"$$SAVED_HASH\" ]; then python -m venv $$VENV && $$VENV/bin/pip install --no-cache-dir -r requirements.txt && if [ \"${FRONTIER_INSTALL_RUNTIME_ENGINES:-0}\" = \"1\" ]; then $$VENV/bin/pip install --no-cache-dir -r requirements-runtime-engines.txt; fi && echo $$CURRENT_HASH > $$HASH_FILE; fi; exec $$VENV/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    command: sh -lc "VENV=/opt/locus-venv; HASH_FILE=$$VENV/.reqhash; CURRENT_HASH=$$(sha256sum requirements.txt | awk '{print $$1}'); SAVED_HASH=$$(cat $$HASH_FILE 2>/dev/null || true); if [ ! -x $$VENV/bin/python ] || [ \"$$CURRENT_HASH\" != \"$$SAVED_HASH\" ]; then python -m venv $$VENV && $$VENV/bin/pip install --no-cache-dir -r requirements.txt && if [ \"${LOCUS_INSTALL_RUNTIME_ENGINES:-0}\" = \"1\" ]; then $$VENV/bin/pip install --no-cache-dir -r requirements-runtime-engines.txt; fi && echo $$CURRENT_HASH > $$HASH_FILE; fi; exec $$VENV/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
     environment:
-      # Backend + repo root on the path so `app` and `frontier_runtime` imports resolve.
+      # Backend + repo root on the path so `app` and `locus_runtime` imports resolve.
       PYTHONPATH: /workspace/apps/backend:/workspace
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
-      FRONTIER_RUNTIME_PROFILE: ${FRONTIER_RUNTIME_PROFILE:-local-lightweight}
-      FRONTIER_API_BEARER_TOKEN: ${FRONTIER_API_BEARER_TOKEN:-}
+      LOCUS_RUNTIME_PROFILE: ${LOCUS_RUNTIME_PROFILE:-local-lightweight}
+      LOCUS_API_BEARER_TOKEN: ${LOCUS_API_BEARER_TOKEN:-}
       # Bounded run-execution concurrency (resource plan 2.1 groundwork).
-      FRONTIER_WORKER_CONCURRENCY: ${FRONTIER_WORKER_CONCURRENCY:-2}
+      LOCUS_WORKER_CONCURRENCY: ${LOCUS_WORKER_CONCURRENCY:-2}
       # Signed A2A transport configuration (required at startup).
       A2A_JWT_SECRET: ${A2A_JWT_SECRET:-}
       A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
-      A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-frontier}
-      A2A_JWT_AUD: ${A2A_JWT_AUD:-frontier-runtime}
+      A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-locus}
+      A2A_JWT_AUD: ${A2A_JWT_AUD:-locus-runtime}
       A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-backend,orchestrator,research,code,review,coordinator}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
@@ -64,23 +64,23 @@ services:
       # Local open-weight models served by the ollama sidecar.
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
-      FRONTIER_AGENT_ASSETS_ROOT: ${FRONTIER_AGENT_ASSETS_ROOT:-/workspace/examples/agents}
-      FRONTIER_INSTALL_RUNTIME_ENGINES: ${FRONTIER_INSTALL_RUNTIME_ENGINES:-0}
-      FRONTIER_SECRETS_ENCRYPTION_KEY: ${FRONTIER_SECRETS_ENCRYPTION_KEY:-}
+      LOCUS_AGENT_ASSETS_ROOT: ${LOCUS_AGENT_ASSETS_ROOT:-/workspace/examples/agents}
+      LOCUS_INSTALL_RUNTIME_ENGINES: ${LOCUS_INSTALL_RUNTIME_ENGINES:-0}
+      LOCUS_SECRETS_ENCRYPTION_KEY: ${LOCUS_SECRETS_ENCRYPTION_KEY:-}
       POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://frontier:frontier@postgres:5432/frontier}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      FRONTIER_MEMORY_ENABLE_LONG_TERM: ${FRONTIER_MEMORY_ENABLE_LONG_TERM:-1}
-      FRONTIER_MEMORY_LEARNING_ENABLED: ${FRONTIER_MEMORY_LEARNING_ENABLED:-1}
+      LOCUS_MEMORY_ENABLE_LONG_TERM: ${LOCUS_MEMORY_ENABLE_LONG_TERM:-1}
+      LOCUS_MEMORY_LEARNING_ENABLED: ${LOCUS_MEMORY_LEARNING_ENABLED:-1}
       OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
       # World-models / knowledge graph live in Postgres (PostgresWorldGraph) — no
       # Neo4j, no JVM. With NEO4J_URI unset the backend uses the relational
-      # world-graph (frontier_kg_nodes/frontier_kg_edges) in the pgvector Postgres.
-      FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED: ${FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED:-1}
+      # world-graph (locus_kg_nodes/locus_kg_edges) in the pgvector Postgres.
+      LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED: ${LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED:-1}
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./:/workspace
-      - frontier_backend_venv:/opt/frontier-venv
+      - frontier_backend_venv:/opt/locus-venv
     depends_on:
       postgres:
         condition: service_healthy
@@ -146,7 +146,7 @@ services:
     #           capabilities: [gpu]
 
   # World-model / knowledge-graph capabilities are hosted in the pgvector
-  # Postgres above (PostgresWorldGraph → frontier_kg_nodes/frontier_kg_edges) —
+  # Postgres above (PostgresWorldGraph → locus_kg_nodes/locus_kg_edges) —
   # no Neo4j, no JVM. Frees ~1 GB RSS vs the old Neo4j sidecar.
 
   # Optional workers profile for integration runs.
@@ -165,10 +165,12 @@ services:
     ports:
       - "127.0.0.1:8010:8010"
     environment:
-      FRONTIER_RUNTIME_PROFILE: ${FRONTIER_RUNTIME_PROFILE:-local-lightweight}
+      LOCUS_RUNTIME_PROFILE: ${LOCUS_RUNTIME_PROFILE:-local-lightweight}
     volumes:
       - ./:/workspace
 
+# Volume names and Postgres defaults keep their pre-rename (xFrontier) values so
+# existing local installs keep their data. Do not rename without a migration.
 volumes:
   frontier_frontend_node_modules:
   frontier_backend_venv:

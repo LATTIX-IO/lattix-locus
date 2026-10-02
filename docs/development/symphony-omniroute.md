@@ -1,6 +1,6 @@
 # OpenAI Symphony with OmniRoute
 
-This repository runs OpenAI Symphony against the Linear **xFrontier** project (`3b160e533200`). Symphony polls eligible `FRONT-*` issues, creates isolated workspaces, and starts Codex app-server through the checked-in `WORKFLOW.md` contract.
+This repository runs OpenAI Symphony against the Linear **Locus** project (`3b160e533200`). Symphony polls eligible `FRONT-*` issues, creates isolated workspaces, and starts Codex app-server through the checked-in `WORKFLOW.md` contract.
 
 Native Codex and OmniRoute are intentionally separate inference lanes. The OmniRoute lane uses the existing local Responses-compatible endpoint at `http://127.0.0.1:20128/v1`; it does not expose the dashboard key to repository files or child prompts.
 
@@ -15,9 +15,9 @@ make symphony install elixir
 make symphony-preflight omniroute
 ```
 
-Preflight uses the host-side Linear credential for a read-only lookup of the exact xFrontier project and uses the OmniRoute dashboard key for `GET /v1/models`. It does not print either credential.
+Preflight uses the host-side Linear credential for a read-only lookup of the exact Locus project and uses the OmniRoute dashboard key for `GET /v1/models`. It does not print either credential.
 
-Start the xFrontier-bound daemon only after preflight and human review of the workflow:
+Start the Locus-bound daemon only after preflight and human review of the workflow:
 
 ```powershell
 make symphony omniroute no-guards

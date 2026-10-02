@@ -15,7 +15,7 @@ from app.main import WorkflowRunEvent, WorkflowRunSummary, app, store
 
 client = TestClient(app)
 
-HEADERS = {"x-frontier-actor": "tester"}
+HEADERS = {"x-locus-actor": "tester"}
 
 
 def _seed_terminal_run(run_id: str, event_ids: list[str]) -> None:

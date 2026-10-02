@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from frontier_runtime.harness.executor import LocalDirectExecutor
-from frontier_runtime.harness.tools import CodingToolset
-from frontier_runtime.harness.workspace import Workspace
-from frontier_runtime.harness.workspace_binding import WorkspaceBinding, WorkspaceManager
+from locus_runtime.harness.executor import LocalDirectExecutor
+from locus_runtime.harness.tools import CodingToolset
+from locus_runtime.harness.workspace import Workspace
+from locus_runtime.harness.workspace_binding import WorkspaceBinding, WorkspaceManager
 
 requires_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="no bash")
 requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="no git")
@@ -136,7 +136,7 @@ def test_worktree_provision_isolates_and_cleans_up(tmp_path):
         # the worktree is a separate dir, checked out, on a task branch
         assert prov.root != repo and prov.root.exists()
         assert (prov.root / "app.py").read_text() == "x = 1\n"
-        assert prov.branch == "frontier/FRONT-42"
+        assert prov.branch == "locus/FRONT-42"
         # editing in the worktree does NOT touch the main repo working tree
         prov.workspace.executor.write_file("app.py", "x = 2\n")
         assert (repo / "app.py").read_text() == "x = 1\n"

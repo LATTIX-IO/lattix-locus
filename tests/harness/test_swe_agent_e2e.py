@@ -13,11 +13,11 @@ from __future__ import annotations
 from pathlib import Path
 
 
-from frontier_runtime.harness.executor import LocalDirectExecutor
-from frontier_runtime.harness.llm import ChatResponse, ScriptedChatClient
-from frontier_runtime.harness.loop import LoopBudgets, LoopOutcome
-from frontier_runtime.harness.model_profiles import resolve_profile
-from frontier_runtime.harness.swe_agent import SweAgent, SweTask
+from locus_runtime.harness.executor import LocalDirectExecutor
+from locus_runtime.harness.llm import ChatResponse, ScriptedChatClient
+from locus_runtime.harness.loop import LoopBudgets, LoopOutcome
+from locus_runtime.harness.model_profiles import resolve_profile
+from locus_runtime.harness.swe_agent import SweAgent, SweTask
 
 from tests.harness.conftest import git_init, requires_bash, requires_git, tool_response
 
@@ -158,7 +158,7 @@ def test_malformed_tool_call_triggers_reask(tmp_path):
         responses=[
             ChatResponse(
                 tool_calls=[
-                    __import__("frontier_runtime.harness.llm", fromlist=["ToolCall"]).ToolCall(
+                    __import__("locus_runtime.harness.llm", fromlist=["ToolCall"]).ToolCall(
                         id="bad", name="execute_bash", arguments="{not valid json"
                     )
                 ]

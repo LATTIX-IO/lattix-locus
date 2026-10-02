@@ -1,1 +1,1 @@
-# lattix-frontier-infra
+# lattix-locus-infra

@@ -19,12 +19,12 @@
   "tools": [
     {
       "name": "coding-harness",
-      "type": "frontier-coding",
+      "type": "locus-coding",
       "config": { "toolset": ["execute_bash", "search", "str_replace_editor", "run_tests", "submit"] }
     },
     {
       "name": "azure-cli",
-      "type": "frontier-mcp",
+      "type": "locus-mcp",
       "config": { "server": "azure", "binary": "az", "mode": "read-then-confirm-write" }
     }
   ]

@@ -82,7 +82,7 @@ The Thousand Brains model stays. Its role is now precise: **columns are independ
 | **Verification** (H1 new) | Done criteria checks and step outcomes | Whether the run or step is actually done |
 | **Domain** (H2) | Area-specific knowledge (a client, a codebase) | Domain correctness |
 
-- **Assembly:** a coalition of columns configured per playbook, with a consensus policy (weighted support, veto rules) and a stopping rule. The existing `frontier/assembly` and `frontier/commitment` slices are the starting point.
+- **Assembly:** a coalition of columns configured per playbook, with a consensus policy (weighted support, veto rules) and a stopping rule. The existing `locus/assembly` and `locus/commitment` slices are the starting point.
 - **Independence:** columns use separate context and, where the area allows, different engines (for example a local model for Risk, a hosted model for Plan), so failures are less correlated.
 - **Commitment:** the fused decision with confidence, supporting and dissenting columns, blockers and next actions. R3 actions reference the commitment that justified them.
 - **Cost control:** columns call Laya first. Only disagreement or low confidence escalates to an LLM.

@@ -5,7 +5,7 @@ $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $FrontendRoot = Join-Path $RepoRoot "apps\frontend"
 $StepResults = [System.Collections.Generic.List[object]]::new()
 
-Write-Host "Lattix xFrontier pre-commit checks"
+Write-Host "Lattix Locus pre-commit checks"
 
 function Get-PythonCommand {
   $venvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
@@ -219,8 +219,8 @@ else {
 }
 Invoke-Step -Name "Python lint" -Action { Invoke-Python -Arguments @("-m", "ruff", "check", ".") }
 Invoke-Step -Name "Python format check" -Action { Invoke-Python -Arguments @("-m", "ruff", "format", ".", "--check") }
-Invoke-Step -Name "Python typecheck" -Action { Invoke-Python -Arguments @("-m", "mypy", "frontier_tooling/", "frontier_runtime/") }
-Invoke-Step -Name "Python tests" -Action { Invoke-Python -Arguments @("-m", "pytest", "apps/backend/tests", "tests", "-v", "--cov=app", "--cov=frontier_runtime", "--cov-report=term-missing") }
+Invoke-Step -Name "Python typecheck" -Action { Invoke-Python -Arguments @("-m", "mypy", "locus_tooling/", "locus_runtime/") }
+Invoke-Step -Name "Python tests" -Action { Invoke-Python -Arguments @("-m", "pytest", "apps/backend/tests", "tests", "-v", "--cov=app", "--cov=locus_runtime", "--cov-report=term-missing") }
 
 if ($Opa) {
   Invoke-Step -Name "Policy tests" -Action { Invoke-Python -Arguments @("scripts/run_opa.py", "test", "policies/", "-v") }
@@ -276,15 +276,15 @@ else {
 }
 if ($Helm) {
   Invoke-Step -Name "Helm chart validation" -Action {
-    & $Helm lint ./helm/lattix-frontier
+    & $Helm lint ./helm/lattix-locus
     if ($LASTEXITCODE -ne 0) {
       exit $LASTEXITCODE
     }
-    & $Helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml | Out-Null
+    & $Helm template lattix ./helm/lattix-locus -f helm/lattix-locus/values-prod.yaml | Out-Null
   }
 }
 else {
-  $helmDetail = "missing helm.exe (run .\\scripts\\frontier.ps1 install-helm or add helm.exe to PATH)"
+  $helmDetail = "missing helm.exe (run .\\scripts\\locus.ps1 install-helm or add helm.exe to PATH)"
   Write-Host ("SKIP: Helm chart validation ({0})" -f $helmDetail)
   Add-StepResult -Name "Helm chart validation" -Status "SKIP" -Detail $helmDetail
 }

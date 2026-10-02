@@ -47,7 +47,7 @@ describe("TypedDeleteButton", () => {
   it("requires the exact name and keeps the modal open on backend failure", async () => {
     deleteNodeDefinitionMock.mockRejectedValueOnce(new Error("501 node definitions are read-only"));
 
-    render(<TypedDeleteButton itemType="node" itemId="frontier/router" itemName="Router Node" />);
+    render(<TypedDeleteButton itemType="node" itemId="locus/router" itemName="Router Node" />);
 
     fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
 

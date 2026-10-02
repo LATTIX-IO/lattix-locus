@@ -7,7 +7,7 @@
     "core:default",
     {
       "identifier": "shell:allow-spawn",
-      "allow": [{ "name": "bin/frontier-backend", "sidecar": true }]
+      "allow": [{ "name": "bin/locus-backend", "sidecar": true }]
     }
   ]
 }

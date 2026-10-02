@@ -1,6 +1,6 @@
-# Lattix xFrontier Design
+# Lattix Locus Design
 
-xFrontier separates a control plane that owns definitions, versioning, and policy from a runtime that executes graphs under isolation. Keep domain logic pure and push IO, vendor SDKs, and model providers behind adapters, so the orchestration semantics stay testable without a live stack.
+Locus separates a control plane that owns definitions, versioning, and policy from a runtime that executes graphs under isolation. Keep domain logic pure and push IO, vendor SDKs, and model providers behind adapters, so the orchestration semantics stay testable without a live stack.
 
 ## Design principles
 
@@ -16,7 +16,7 @@ xFrontier separates a control plane that owns definitions, versioning, and polic
 ## Layer model
 
 1. **Orchestration** — graph validation and execution, run lifecycle, checkpointing
-2. **Guardrails** — filter chain (prompt render, DLP/redaction, capability enforcement) in `frontier_runtime/guardrails.py`
+2. **Guardrails** — filter chain (prompt render, DLP/redaction, capability enforcement) in `locus_runtime/guardrails.py`
 3. **Agent execution** — node executors and pluggable engines; A2A transport between workers
 4. **Infrastructure** — Vault, OPA, Envoy, NATS, Postgres/pgvector, Redis, Neo4j, sandbox egress
 
@@ -24,15 +24,15 @@ xFrontier separates a control plane that owns definitions, versioning, and polic
 
 | Extension point | Where | Contract |
 | --- | --- | --- |
-| Node type | `_execute_node` in `apps/backend/app/main.py` + `apps/frontend/src/lib/frontier-node-catalog.ts` + `frontier-node-schema.ts` | Backend executor, frontend catalog entry, and config schema must land together |
-| Cognitive column | `frontier_runtime/cognitive.py` | Implement `observe` → `ColumnState` → `emit_message`; fuse through `ConsensusEngine` |
+| Node type | `_execute_node` in `apps/backend/app/main.py` + `apps/frontend/src/lib/locus-node-catalog.ts` + `locus-node-schema.ts` | Backend executor, frontend catalog entry, and config schema must land together |
+| Cognitive column | `locus_runtime/cognitive.py` | Implement `observe` → `ColumnState` → `emit_message`; fuse through `ConsensusEngine` |
 | Execution engine | `_run_framework_*` helpers | Optional import, reported through `/runtime/providers`; never a hard dependency |
-| Guardrail filter | `frontier_runtime/guardrails.py` filter chain | `FilterContext` in, `FilterResult` out; no IO in the filter itself |
-| Isolation strategy | `frontier_runtime/sandbox.py` | Implement a strategy class and register it against a `HostPlatform`; declare real `SandboxCapabilities` |
+| Guardrail filter | `locus_runtime/guardrails.py` filter chain | `FilterContext` in, `FilterResult` out; no IO in the filter itself |
+| Isolation strategy | `locus_runtime/sandbox.py` | Implement a strategy class and register it against a `HostPlatform`; declare real `SandboxCapabilities` |
 | Policy | `policies/*.rego` | Ships with a matching test in `policies/tests/` |
 | Integration | `IntegrationDefinition` (`http`/`database`/`queue`/`vector`/`custom`) | Declare `permission_scopes`, `data_access`, `egress_allowlist`, and `execution_mode` |
 | Memory tier | `apps/backend/app/platform_services.py` | Redis (short-term), Postgres+pgvector (long-term), Neo4j (world graph) |
-| Agent asset | `examples/agents/` or `FRONTIER_AGENT_ASSETS_ROOT` | `agent.config.json` validated against `packages/contracts/templates/agent.config.schema.json` |
+| Agent asset | `examples/agents/` or `LOCUS_AGENT_ASSETS_ROOT` | `agent.config.json` validated against `packages/contracts/templates/agent.config.schema.json` |
 
 ## Known design tensions
 
@@ -49,5 +49,5 @@ xFrontier separates a control plane that owns definitions, versioning, and polic
 - `docs/reactflow-node-specs-and-execution-design.md`
 - `docs/isolation-layers.md`
 - `docs/SANDBOXING.md`
-- `docs/frontier-agent-schema.md`
+- `docs/locus-agent-schema.md`
 - `THREAT-MODEL.md`

@@ -86,8 +86,8 @@ function BrandMark(props: { className?: string }) {
   return (
     // eslint-disable-next-line @next/next/no-img-element -- static brand asset, no optimization needed
     <img
-      src={theme === "dark" ? "/logo-mark-dark.svg" : "/logo-mark-light.svg"}
-      alt="Lattix logo"
+      src={theme === "dark" ? "/brand/locus-icon-dark.svg" : "/brand/locus-icon-light.svg"}
+      alt="Locus"
       className={props.className}
     />
   );
@@ -96,7 +96,7 @@ function BrandMark(props: { className?: string }) {
 function readTheme(): "light" | "dark" {
   if (typeof window === "undefined") return "dark";
   try {
-    return window.localStorage.getItem("frontier-theme") === "light" ? "light" : "dark";
+    return window.localStorage.getItem("locus-theme") === "light" ? "light" : "dark";
   } catch {
     return "dark";
   }
@@ -104,10 +104,10 @@ function readTheme(): "light" | "dark" {
 
 function subscribeTheme(callback: () => void): () => void {
   window.addEventListener("storage", callback);
-  window.addEventListener("frontier-theme-change", callback);
+  window.addEventListener("locus-theme-change", callback);
   return () => {
     window.removeEventListener("storage", callback);
-    window.removeEventListener("frontier-theme-change", callback);
+    window.removeEventListener("locus-theme-change", callback);
   };
 }
 
@@ -121,14 +121,14 @@ function ThemeToggle() {
   function toggle() {
     const next = theme === "dark" ? "light" : "dark";
     try {
-      window.localStorage.setItem("frontier-theme", next);
+      window.localStorage.setItem("locus-theme", next);
     } catch {
       /* ignore */
     }
     const html = document.documentElement;
     html.classList.remove("theme-light", "theme-dark");
     html.classList.add(`theme-${next}`);
-    window.dispatchEvent(new CustomEvent("frontier-theme-change"));
+    window.dispatchEvent(new CustomEvent("locus-theme-change"));
   }
 
   return (
@@ -347,7 +347,7 @@ export function LattixAuthCard({ initialErrorCode }: LattixAuthCardProps = {}) {
       >
         {/* Brand */}
         <div className="mb-8 flex flex-col items-center" style={{ animation: "fx-fade-up-in 0.3s ease-out 0.075s both" }}>
-          <BrandMark className="mb-4 h-14 w-14 rounded-[10px] border border-[var(--ui-border)] shadow-[0_8px_24px_rgba(0,0,0,0.25)]" />
+          <BrandMark className="mb-4 h-14 w-14" />
           <span className="font-mono text-[13px] font-bold uppercase tracking-[0.3em] text-[hsl(var(--primary))]">
             Lattix
           </span>

@@ -63,7 +63,7 @@ Exit: two principals co-run a real project for 4 weeks from their own instances 
 | D-15 | Native work tracker modelled on Linear, generalized to knowledge work and personal life; external trackers sync | One system of record for all work, handed to the agent | — |
 | D-16 | Playbooks (envelope templates) replace workflow graphs as the main reusable unit; existing graphs import as playbooks | Outcome delegation over node wiring | — |
 | D-17 | Dependency provenance policy as in Kepler, including local models (P28); tldraw excluded for licensing (P29) | Security, customer eligibility, AGPL compatibility | — |
-| D-18 | Skills use the Agent Skills format with an Locus capability manifest | Portability with vendor agents; enforceable bounds | — |
+| D-18 | Skills use the Agent Skills format with a Locus capability manifest | Portability with vendor agents; enforceable bounds | — |
 | D-19 | Helm/hosted profile unsupported; desktop and headless peer are the targets | Follows D-03 and D-09 | An org deployment is requested |
 
 ## 3. Open questions (with recommendations)

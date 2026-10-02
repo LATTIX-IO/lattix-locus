@@ -8,14 +8,14 @@ permission**.
 
 ## Harness support (built + tested)
 
-`frontier_runtime/harness/workspace_binding.py`:
+`locus_runtime/harness/workspace_binding.py`:
 
 - **`WorkspaceBinding`** — the binding attached to a task/chat:
   `repo_path`, `base_ref`, `branch`, `isolation` (`worktree` | `in-place`),
   `allow_outside` (`ask` | `deny` | `allow`), `extra_paths` (granted outside paths),
   `test_command`. Round-trips to/from a JSON payload (`to_payload` / `from_payload`).
 - **`WorkspaceManager.provision(binding, run_id)`** — creates an isolated **git
-  worktree** off `base_ref` on a task branch (`frontier/<task>`), returns a bound
+  worktree** off `base_ref` on a task branch (`locus/<task>`), returns a bound
   `Workspace` + a `cleanup()` handle. `build_task(...)` returns a ready `SweTask`.
 - **Boundary enforcement** — `LocalDirectExecutor(root, extra_paths=…)` only allows
   paths inside the repo (or explicitly granted extras); the coding toolset, on an
@@ -27,7 +27,7 @@ permission**.
 
 Run it today (CLI):
 ```bash
-frontier-evals collaborate --repo /path/to/repo --spec @spec.md \
+locus-evals collaborate --repo /path/to/repo --spec @spec.md \
   --base-ref main --isolation worktree --allow-outside ask \
   --grant /path/to/shared-lib --task-id FRONT-123 \
   --test-command "pytest -q" \

@@ -1,4 +1,4 @@
-from frontier_runtime.security import CapabilityMinter, CapabilityVerifier, build_default_keypair
+from locus_runtime.security import CapabilityMinter, CapabilityVerifier, build_default_keypair
 
 
 def test_capability_token_round_trip() -> None:

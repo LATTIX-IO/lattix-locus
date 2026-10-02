@@ -8,10 +8,10 @@ from typing import Any
 
 import pytest
 
-from frontier_tooling import installer as packaged_installer
-from frontier_runtime.install import (
+from locus_tooling import installer as packaged_installer
+from locus_runtime.install import (
     DiagnosticResult,
-    FrontierInstaller,
+    LocusInstaller,
     InstallerAnswers,
     MissingPrerequisite,
     PrerequisiteDefinition,
@@ -20,15 +20,15 @@ from frontier_runtime.install import (
 
 def test_installer_writes_env_file(tmp_path: Path) -> None:
     (tmp_path / ".env.example").write_text("LOG_LEVEL=INFO\n", encoding="utf-8")
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     answers = InstallerAnswers(
         installation_root=str(tmp_path),
         local_hostname="demo",
         oidc_provider_template="casdoor",
         oidc_issuer="http://casdoor.demo.localhost",
-        oidc_audience="frontier-ui",
+        oidc_audience="locus-ui",
         oidc_jwks_url="http://casdoor.demo.localhost/.well-known/jwks.json",
-        oidc_client_id="frontier-web",
+        oidc_client_id="locus-web",
         oidc_authorization_url="http://casdoor.demo.localhost/login/oauth/authorize",
         oidc_token_url="http://casdoor.demo.localhost/api/login/oauth/access_token",
         bootstrap_login_username="demo-login",
@@ -52,48 +52,48 @@ def test_installer_writes_env_file(tmp_path: Path) -> None:
     text = env_path.read_text(encoding="utf-8")
     assert env_path == tmp_path / ".installer" / "local-secure.env"
     assert "LOCAL_STACK_HOST=demo.localhost" in text
-    assert "FRONTIER_RUNTIME_PROFILE=local-secure" in text
+    assert "LOCUS_RUNTIME_PROFILE=local-secure" in text
     assert "NEXT_PUBLIC_API_BASE_URL=/api" in text
     assert "FRONTEND_ORIGIN=http://demo.localhost" in text
-    assert "FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS=true" in text
-    assert "FRONTIER_ALLOW_HEADER_ACTOR_AUTH=false" in text
-    assert "FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR=true" in text
-    assert "FRONTIER_AUTH_MODE=oidc" in text
+    assert "LOCUS_REQUIRE_AUTHENTICATED_REQUESTS=true" in text
+    assert "LOCUS_ALLOW_HEADER_ACTOR_AUTH=false" in text
+    assert "LOCUS_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR=true" in text
+    assert "LOCUS_AUTH_MODE=oidc" in text
     assert "CASDOOR_LOCAL_HOST=casdoor.localhost" in text
     assert "CASDOOR_BIND_HOST=127.0.0.1" in text
     assert "CASDOOR_HTTP_PORT=8081" in text
     assert "CASDOOR_PUBLIC_URL=http://casdoor.demo.localhost" in text
-    assert "FRONTIER_BOOTSTRAP_ADMIN_USERNAME=frontier-admin" in text
-    assert "FRONTIER_BOOTSTRAP_ADMIN_EMAIL=admin@demo.localhost" in text
-    assert "FRONTIER_BOOTSTRAP_ADMIN_SUBJECT=frontier-admin" in text
-    assert "FRONTIER_ADMIN_ACTORS=frontier-admin,admin@demo.localhost" in text
-    assert "FRONTIER_BUILDER_ACTORS=frontier-admin,admin@demo.localhost" in text
+    assert "LOCUS_BOOTSTRAP_ADMIN_USERNAME=locus-admin" in text
+    assert "LOCUS_BOOTSTRAP_ADMIN_EMAIL=admin@demo.localhost" in text
+    assert "LOCUS_BOOTSTRAP_ADMIN_SUBJECT=locus-admin" in text
+    assert "LOCUS_ADMIN_ACTORS=locus-admin,admin@demo.localhost" in text
+    assert "LOCUS_BUILDER_ACTORS=locus-admin,admin@demo.localhost" in text
     assert "CASDOOR_BOOTSTRAP_LOGIN_USERNAME=demo-login" in text
     assert "CASDOOR_BOOTSTRAP_LOGIN_EMAIL=demo-login@demo.localhost" in text
     assert "CASDOOR_BOOTSTRAP_LOGIN_DISPLAY_NAME=Demo Login" in text
     assert "CASDOOR_BOOTSTRAP_LOGIN_PASSWORD=DemoPass123!" in text
-    assert "FRONTIER_API_BEARER_TOKEN=" in text
-    assert "FRONTIER_AUTH_OIDC_PROVIDER=casdoor" in text
-    assert "FRONTIER_AUTH_OIDC_ISSUER=http://casdoor.demo.localhost" in text
-    assert "FRONTIER_AUTH_OIDC_AUDIENCE=frontier-ui" in text
-    assert "FRONTIER_AUTH_OIDC_JWKS_URL=http://casdoor.demo.localhost/.well-known/jwks.json" in text
-    assert "FRONTIER_AUTH_OIDC_CLIENT_ID=frontier-web" in text
+    assert "LOCUS_API_BEARER_TOKEN=" in text
+    assert "LOCUS_AUTH_OIDC_PROVIDER=casdoor" in text
+    assert "LOCUS_AUTH_OIDC_ISSUER=http://casdoor.demo.localhost" in text
+    assert "LOCUS_AUTH_OIDC_AUDIENCE=locus-ui" in text
+    assert "LOCUS_AUTH_OIDC_JWKS_URL=http://casdoor.demo.localhost/.well-known/jwks.json" in text
+    assert "LOCUS_AUTH_OIDC_CLIENT_ID=locus-web" in text
     assert (
-        "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL=http://casdoor.demo.localhost/login/oauth/authorize"
+        "LOCUS_AUTH_OIDC_AUTHORIZATION_URL=http://casdoor.demo.localhost/login/oauth/authorize"
         in text
     )
     assert (
-        "FRONTIER_AUTH_OIDC_TOKEN_URL=http://casdoor.demo.localhost/api/login/oauth/access_token"
+        "LOCUS_AUTH_OIDC_TOKEN_URL=http://casdoor.demo.localhost/api/login/oauth/access_token"
         in text
     )
     assert (
-        "FRONTIER_AUTH_OIDC_SIGNIN_URL=http://casdoor.demo.localhost/login/oauth/authorize" in text
+        "LOCUS_AUTH_OIDC_SIGNIN_URL=http://casdoor.demo.localhost/login/oauth/authorize" in text
     )
     assert (
-        "FRONTIER_AUTH_OIDC_SIGNUP_URL=http://casdoor.demo.localhost/login/oauth/authorize" in text
+        "LOCUS_AUTH_OIDC_SIGNUP_URL=http://casdoor.demo.localhost/login/oauth/authorize" in text
     )
-    assert "FRONTIER_AUTH_OIDC_SCOPES=openid profile email" in text
-    assert "A2A_JWT_AUD=frontier-runtime" in text
+    assert "LOCUS_AUTH_OIDC_SCOPES=openid profile email" in text
+    assert "A2A_JWT_AUD=locus-runtime" in text
     assert "FEDERATION_ENABLED=true" in text
     assert "A2A_JWT_SECRET=" in text
     assert "POSTGRES_PASSWORD=db-secret" in text
@@ -101,7 +101,7 @@ def test_installer_writes_env_file(tmp_path: Path) -> None:
 
 
 def test_installer_generates_local_secret_when_blank(monkeypatch, tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     answers = InstallerAnswers(installation_root=str(tmp_path), deployment_mode="local")
     monkeypatch.setattr("getpass.getpass", lambda prompt: "")
 
@@ -111,11 +111,11 @@ def test_installer_generates_local_secret_when_blank(monkeypatch, tmp_path: Path
     assert len(secrets_map["A2A_JWT_SECRET"]) >= 32
     assert secrets_map["POSTGRES_PASSWORD"]
     assert secrets_map["NEO4J_PASSWORD"]
-    assert "FRONTIER_API_BEARER_TOKEN" not in secrets_map
+    assert "LOCUS_API_BEARER_TOKEN" not in secrets_map
 
 
 def test_installer_reuses_existing_local_secrets_when_blank(monkeypatch, tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     installer_dir = tmp_path / ".installer"
     installer_dir.mkdir(parents=True, exist_ok=True)
     (installer_dir / "local-secure.env").write_text(
@@ -140,7 +140,7 @@ def test_installer_reuses_existing_local_secrets_when_blank(monkeypatch, tmp_pat
 
 
 def test_installer_reuses_existing_shared_token_when_blank(monkeypatch, tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     installer_dir = tmp_path / ".installer"
     installer_dir.mkdir(parents=True, exist_ok=True)
     (installer_dir / "local-secure.env").write_text(
@@ -149,7 +149,7 @@ def test_installer_reuses_existing_shared_token_when_blank(monkeypatch, tmp_path
                 "A2A_JWT_SECRET=existing-a2a",
                 "POSTGRES_PASSWORD=existing-postgres",
                 "NEO4J_PASSWORD=existing-neo4j",
-                "FRONTIER_API_BEARER_TOKEN=existing-bearer",
+                "LOCUS_API_BEARER_TOKEN=existing-bearer",
             ]
         )
         + "\n",
@@ -164,23 +164,23 @@ def test_installer_reuses_existing_shared_token_when_blank(monkeypatch, tmp_path
 
     secrets_map = installer._collect_local_secrets(answers)
 
-    assert secrets_map["FRONTIER_API_BEARER_TOKEN"] == "existing-bearer"
+    assert secrets_map["LOCUS_API_BEARER_TOKEN"] == "existing-bearer"
 
 
 def test_secure_local_answers_generate_randomized_bootstrap_identity(
     monkeypatch, tmp_path: Path
 ) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     monkeypatch.setattr("secrets.token_hex", lambda _: "abc123")
 
     answers = installer.secure_local_answers(tmp_path)
 
-    assert answers.local_hostname == "xfrontier"
+    assert answers.local_hostname == "locus"
     assert answers.local_auth_provider == "oidc"
     assert answers.oidc_provider_template == "casdoor"
-    assert answers.bootstrap_admin_username == "frontier-admin-abc123"
-    assert answers.bootstrap_admin_email == "frontier-admin-abc123@xfrontier.localhost"
-    assert answers.bootstrap_admin_subject == "frontier-admin-abc123"
+    assert answers.bootstrap_admin_username == "locus-admin-abc123"
+    assert answers.bootstrap_admin_email == "locus-admin-abc123@locus.localhost"
+    assert answers.bootstrap_admin_subject == "locus-admin-abc123"
     assert answers.bootstrap_login_username == ""
     assert answers.bootstrap_login_email == ""
     assert answers.bootstrap_login_display_name == ""
@@ -189,27 +189,27 @@ def test_secure_local_answers_generate_randomized_bootstrap_identity(
 
 
 def test_secure_local_answers_reuse_existing_install_settings(tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     installer_dir = tmp_path / ".installer"
     installer_dir.mkdir(parents=True, exist_ok=True)
     (installer_dir / "local-secure.env").write_text(
         "\n".join(
             [
                 "LOCAL_STACK_HOST=existing.localhost",
-                "FRONTIER_AUTH_MODE=oidc",
-                "FRONTIER_AUTH_OIDC_PROVIDER=external",
-                "FRONTIER_AUTH_OIDC_ISSUER=https://login.example.com/realms/frontier",
-                "FRONTIER_AUTH_OIDC_AUDIENCE=frontier-api",
-                "FRONTIER_AUTH_OIDC_JWKS_URL=https://login.example.com/jwks",
-                "FRONTIER_AUTH_OIDC_CLIENT_ID=frontier-ui",
-                "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL=https://login.example.com/auth",
-                "FRONTIER_AUTH_OIDC_TOKEN_URL=https://login.example.com/token",
-                "FRONTIER_AUTH_OIDC_SIGNIN_URL=https://login.example.com/sign-in",
-                "FRONTIER_AUTH_OIDC_SIGNUP_URL=https://login.example.com/sign-up",
-                "FRONTIER_AUTH_OIDC_SCOPES=openid profile email groups",
-                "FRONTIER_BOOTSTRAP_ADMIN_USERNAME=existing-admin",
-                "FRONTIER_BOOTSTRAP_ADMIN_EMAIL=admin@existing.localhost",
-                "FRONTIER_BOOTSTRAP_ADMIN_SUBJECT=existing-admin-subject",
+                "LOCUS_AUTH_MODE=oidc",
+                "LOCUS_AUTH_OIDC_PROVIDER=external",
+                "LOCUS_AUTH_OIDC_ISSUER=https://login.example.com/realms/locus",
+                "LOCUS_AUTH_OIDC_AUDIENCE=locus-api",
+                "LOCUS_AUTH_OIDC_JWKS_URL=https://login.example.com/jwks",
+                "LOCUS_AUTH_OIDC_CLIENT_ID=locus-ui",
+                "LOCUS_AUTH_OIDC_AUTHORIZATION_URL=https://login.example.com/auth",
+                "LOCUS_AUTH_OIDC_TOKEN_URL=https://login.example.com/token",
+                "LOCUS_AUTH_OIDC_SIGNIN_URL=https://login.example.com/sign-in",
+                "LOCUS_AUTH_OIDC_SIGNUP_URL=https://login.example.com/sign-up",
+                "LOCUS_AUTH_OIDC_SCOPES=openid profile email groups",
+                "LOCUS_BOOTSTRAP_ADMIN_USERNAME=existing-admin",
+                "LOCUS_BOOTSTRAP_ADMIN_EMAIL=admin@existing.localhost",
+                "LOCUS_BOOTSTRAP_ADMIN_SUBJECT=existing-admin-subject",
                 "CASDOOR_BOOTSTRAP_LOGIN_USERNAME=existing-login",
                 "CASDOOR_BOOTSTRAP_LOGIN_EMAIL=login@existing.localhost",
                 "CASDOOR_BOOTSTRAP_LOGIN_DISPLAY_NAME=Existing Login",
@@ -229,10 +229,10 @@ def test_secure_local_answers_reuse_existing_install_settings(tmp_path: Path) ->
     assert answers.local_hostname == "existing"
     assert answers.local_auth_provider == "oidc"
     assert answers.oidc_provider_template == "external"
-    assert answers.oidc_issuer == "https://login.example.com/realms/frontier"
-    assert answers.oidc_audience == "frontier-api"
+    assert answers.oidc_issuer == "https://login.example.com/realms/locus"
+    assert answers.oidc_audience == "locus-api"
     assert answers.oidc_jwks_url == "https://login.example.com/jwks"
-    assert answers.oidc_client_id == "frontier-ui"
+    assert answers.oidc_client_id == "locus-ui"
     assert answers.oidc_authorization_url == "https://login.example.com/auth"
     assert answers.oidc_token_url == "https://login.example.com/token"
     assert answers.oidc_signin_url == "https://login.example.com/sign-in"
@@ -254,20 +254,20 @@ def test_secure_local_answers_reuse_existing_install_settings(tmp_path: Path) ->
 def test_collect_local_answers_interactively_prompts_for_external_oidc(
     monkeypatch, tmp_path: Path
 ) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     prompts = iter(
         [
             "demo",
             "oidc",
             "external",
-            "https://login.example.com/realms/frontier",
-            "frontier-api",
-            "https://login.example.com/realms/frontier/protocol/openid-connect/certs",
-            "frontier-ui",
-            "https://login.example.com/realms/frontier/protocol/openid-connect/auth",
-            "https://login.example.com/realms/frontier/protocol/openid-connect/token",
+            "https://login.example.com/realms/locus",
+            "locus-api",
+            "https://login.example.com/realms/locus/protocol/openid-connect/certs",
+            "locus-ui",
+            "https://login.example.com/realms/locus/protocol/openid-connect/auth",
+            "https://login.example.com/realms/locus/protocol/openid-connect/token",
             "",
-            "https://login.example.com/realms/frontier/registrations/start",
+            "https://login.example.com/realms/locus/registrations/start",
             "openid profile email groups",
             "",
             "",
@@ -283,22 +283,22 @@ def test_collect_local_answers_interactively_prompts_for_external_oidc(
     assert answers.local_hostname == "demo"
     assert answers.local_auth_provider == "oidc"
     assert answers.oidc_provider_template == "external"
-    assert answers.oidc_issuer == "https://login.example.com/realms/frontier"
-    assert answers.oidc_audience == "frontier-api"
+    assert answers.oidc_issuer == "https://login.example.com/realms/locus"
+    assert answers.oidc_audience == "locus-api"
     assert answers.oidc_jwks_url.endswith("/certs")
-    assert answers.oidc_client_id == "frontier-ui"
+    assert answers.oidc_client_id == "locus-ui"
     assert answers.oidc_authorization_url.endswith("/auth")
     assert answers.oidc_token_url.endswith("/token")
     assert answers.oidc_signin_url == answers.oidc_authorization_url
     assert answers.oidc_signup_url.endswith("/registrations/start")
     assert answers.oidc_scopes == ["openid", "profile", "email", "groups"]
-    assert answers.bootstrap_admin_username == "frontier-admin-abc123"
-    assert answers.bootstrap_admin_email == "frontier-admin-abc123@demo.localhost"
-    assert answers.bootstrap_admin_subject == "frontier-admin-abc123"
+    assert answers.bootstrap_admin_username == "locus-admin-abc123"
+    assert answers.bootstrap_admin_email == "locus-admin-abc123@demo.localhost"
+    assert answers.bootstrap_admin_subject == "locus-admin-abc123"
 
 
 def test_render_panel_produces_boxed_tui_output(tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
 
     panel = installer._render_panel("Sample", ["Line one", "Line two"])
     lines = panel.splitlines()
@@ -313,7 +313,7 @@ def test_render_panel_produces_boxed_tui_output(tmp_path: Path) -> None:
 def test_collect_local_answers_prints_review_tui(
     monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     prompts = iter(
         ["", "", "", "", "", "", "review-user", "review@example.com", "Review User", "y"]
     )
@@ -324,17 +324,17 @@ def test_collect_local_answers_prints_review_tui(
     answers = installer.collect_local_answers(installation_root=tmp_path, interactive=True)
 
     captured = capsys.readouterr()
-    assert answers.bootstrap_admin_username == "frontier-admin-abc123"
+    assert answers.bootstrap_admin_username == "locus-admin-abc123"
     assert answers.bootstrap_login_username == "review-user"
     assert answers.bootstrap_login_password == "ReviewPass123!"
-    assert "Lattix xFrontier installer" in captured.out
+    assert "Lattix Locus installer" in captured.out
     assert "Review install settings" in captured.out
     assert "Secure local installation wizard" in captured.out
     assert "Login user  : review-user" in captured.out
 
 
 def test_collect_local_answers_requires_interactive_casdoor_login_input(tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
 
     with pytest.raises(
         SystemExit,
@@ -346,16 +346,16 @@ def test_collect_local_answers_requires_interactive_casdoor_login_input(tmp_path
 def test_collect_local_answers_prompts_for_casdoor_login_bootstrap(
     monkeypatch, tmp_path: Path
 ) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     prompts = iter(
         [
             "demo",
             "oidc",
             "casdoor",
-            "frontier-admin-demo",
+            "locus-admin-demo",
             "admin@demo.localhost",
-            "frontier-admin-demo",
-            "frontier-login-demo",
+            "locus-admin-demo",
+            "locus-login-demo",
             "login@demo.localhost",
             "Demo Operator",
             "y",
@@ -367,7 +367,7 @@ def test_collect_local_answers_prompts_for_casdoor_login_bootstrap(
 
     answers = installer.collect_local_answers(installation_root=tmp_path, interactive=True)
 
-    assert answers.bootstrap_login_username == "frontier-login-demo"
+    assert answers.bootstrap_login_username == "locus-login-demo"
     assert answers.bootstrap_login_email == "login@demo.localhost"
     assert answers.bootstrap_login_display_name == "Demo Operator"
     assert answers.bootstrap_login_password == "LoginPass123!"
@@ -377,18 +377,18 @@ def test_collect_local_answers_prompts_for_casdoor_login_bootstrap(
 def test_collect_local_answers_reuses_existing_bootstrap_login_password_when_blank(
     monkeypatch, tmp_path: Path
 ) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     installer_dir = tmp_path / ".installer"
     installer_dir.mkdir(parents=True, exist_ok=True)
     (installer_dir / "local-secure.env").write_text(
         "\n".join(
             [
                 "LOCAL_STACK_HOST=existing.localhost",
-                "FRONTIER_AUTH_MODE=oidc",
-                "FRONTIER_AUTH_OIDC_PROVIDER=casdoor",
-                "FRONTIER_BOOTSTRAP_ADMIN_USERNAME=existing-admin",
-                "FRONTIER_BOOTSTRAP_ADMIN_EMAIL=admin@existing.localhost",
-                "FRONTIER_BOOTSTRAP_ADMIN_SUBJECT=existing-admin",
+                "LOCUS_AUTH_MODE=oidc",
+                "LOCUS_AUTH_OIDC_PROVIDER=casdoor",
+                "LOCUS_BOOTSTRAP_ADMIN_USERNAME=existing-admin",
+                "LOCUS_BOOTSTRAP_ADMIN_EMAIL=admin@existing.localhost",
+                "LOCUS_BOOTSTRAP_ADMIN_SUBJECT=existing-admin",
                 "CASDOOR_BOOTSTRAP_LOGIN_USERNAME=existing-login",
                 "CASDOOR_BOOTSTRAP_LOGIN_EMAIL=login@existing.localhost",
                 "CASDOOR_BOOTSTRAP_LOGIN_DISPLAY_NAME=Existing Login",
@@ -429,15 +429,15 @@ def test_collect_local_answers_reuses_existing_bootstrap_login_password_when_bla
 def test_collect_local_answers_reprompts_for_required_casdoor_login_fields(
     monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     prompts = iter(
         [
             "demo",
             "oidc",
             "casdoor",
-            "frontier-admin-demo",
+            "locus-admin-demo",
             "admin@demo.localhost",
-            "frontier-admin-demo",
+            "locus-admin-demo",
             "",
             "required-user",
             "",
@@ -720,7 +720,7 @@ def test_packaged_installer_reuses_matching_existing_casdoor_login_without_updat
 def test_print_install_result_json_redacts_bootstrap_password(
     monkeypatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setenv("FRONTIER_INSTALLER_OUTPUT", "json")
+    monkeypatch.setenv("LOCUS_INSTALLER_OUTPUT", "json")
 
     packaged_installer._print_install_result(
         {
@@ -730,7 +730,7 @@ def test_print_install_result_json_redacts_bootstrap_password(
             "compose_env": "D:/demo/.installer/local-secure.env",
             "auth_mode": "oidc",
             "security_posture": "Secure local profile (single-host compose, authenticated A2A)",
-            "urls": ["http://xfrontier.localhost:8080"],
+            "urls": ["http://locus.localhost:8080"],
             "path": {
                 "cli_path": "C:/Python/Scripts/lattix.exe",
                 "scripts_dir": "C:/Python/Scripts",
@@ -753,7 +753,7 @@ def test_print_install_result_json_redacts_bootstrap_password(
     rendered = json.loads(captured.out)
     assert "DemoPass123!" not in captured.out
     assert '"password"' not in captured.out
-    assert rendered["urls"] == ["http://xfrontier.localhost:8080"]
+    assert rendered["urls"] == ["http://locus.localhost:8080"]
 
 
 def test_packaged_installer_display_mode_prefers_tui_for_interactive_stdin(monkeypatch) -> None:
@@ -764,7 +764,7 @@ def test_packaged_installer_display_mode_prefers_tui_for_interactive_stdin(monke
         def isatty(self) -> bool:
             return self._tty
 
-    monkeypatch.delenv("FRONTIER_INSTALLER_OUTPUT", raising=False)
+    monkeypatch.delenv("LOCUS_INSTALLER_OUTPUT", raising=False)
     monkeypatch.setattr(packaged_installer.sys, "stdout", DummyStream(False))
     monkeypatch.setattr(packaged_installer.sys, "stdin", DummyStream(True))
 
@@ -776,18 +776,18 @@ def test_collect_local_answers_requires_explicit_casdoor_identity_even_when_exis
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     installer_dir = tmp_path / ".installer"
     installer_dir.mkdir(parents=True, exist_ok=True)
     (installer_dir / "local-secure.env").write_text(
         "\n".join(
             [
                 "LOCAL_STACK_HOST=existing.localhost",
-                "FRONTIER_AUTH_MODE=oidc",
-                "FRONTIER_AUTH_OIDC_PROVIDER=casdoor",
-                "FRONTIER_BOOTSTRAP_ADMIN_USERNAME=existing-admin",
-                "FRONTIER_BOOTSTRAP_ADMIN_EMAIL=admin@existing.localhost",
-                "FRONTIER_BOOTSTRAP_ADMIN_SUBJECT=existing-admin",
+                "LOCUS_AUTH_MODE=oidc",
+                "LOCUS_AUTH_OIDC_PROVIDER=casdoor",
+                "LOCUS_BOOTSTRAP_ADMIN_USERNAME=existing-admin",
+                "LOCUS_BOOTSTRAP_ADMIN_EMAIL=admin@existing.localhost",
+                "LOCUS_BOOTSTRAP_ADMIN_SUBJECT=existing-admin",
                 "CASDOOR_BOOTSTRAP_LOGIN_USERNAME=existing-login",
                 "CASDOOR_BOOTSTRAP_LOGIN_EMAIL=login@existing.localhost",
                 "CASDOOR_BOOTSTRAP_LOGIN_DISPLAY_NAME=Existing Login",
@@ -849,7 +849,7 @@ def test_render_install_summary_never_echoes_bootstrap_password(
             "compose_env": str(tmp_path / ".installer" / "local-secure.env"),
             "auth_mode": "oidc",
             "security_posture": "Secure local profile (single-host compose, authenticated A2A)",
-            "urls": ["http://xfrontier.localhost:8080"],
+            "urls": ["http://locus.localhost:8080"],
             "path": {
                 "cli_path": "C:/Python/Scripts/lattix.exe",
                 "scripts_dir": "C:/Python/Scripts",
@@ -872,7 +872,7 @@ def test_render_install_summary_never_echoes_bootstrap_password(
 
     assert "DemoPass123!" not in summary
     assert "Generated during install and stored securely" in summary
-    assert "  [1] http://xfrontier.localhost:8080" in body_lines
+    assert "  [1] http://locus.localhost:8080" in body_lines
 
 
 def test_packaged_installer_managed_runtime_paths(tmp_path: Path) -> None:
@@ -911,17 +911,17 @@ def test_packaged_installer_runtime_env_prepends_managed_scripts_dir(
         str(tmp_path / "system" / "bin"),
         str(tmp_path / "other" / "bin"),
     ]
-    assert env[packaged_installer.FRONTIER_APP_HOME_ENV] == str(tmp_path)
-    assert env["FRONTIER_PYTHON_BIN"] == str(python_bin)
+    assert env[packaged_installer.LOCUS_APP_HOME_ENV] == str(tmp_path)
+    assert env["LOCUS_PYTHON_BIN"] == str(python_bin)
     assert env["VIRTUAL_ENV"] == str(tmp_path / ".venv")
 
 
 def test_packaged_installer_update_preserves_installer_state(tmp_path: Path) -> None:
     source_root = tmp_path / "source"
     install_root = tmp_path / "installed"
-    (source_root / "frontier_tooling").mkdir(parents=True, exist_ok=True)
+    (source_root / "locus_tooling").mkdir(parents=True, exist_ok=True)
     (source_root / "pyproject.toml").write_text(
-        "[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8"
+        "[project]\nname='lattix-locus'\nversion='0.2.0'\n", encoding="utf-8"
     )
     (source_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     (source_root / "README.md").write_text("new build\n", encoding="utf-8")
@@ -930,7 +930,7 @@ def test_packaged_installer_update_preserves_installer_state(tmp_path: Path) -> 
     (install_root / ".installer" / "local-secure.env").write_text(
         "A2A_JWT_SECRET=existing-secret\n", encoding="utf-8"
     )
-    (install_root / ".env").write_text("LOCAL_STACK_HOST=xfrontier.local\n", encoding="utf-8")
+    (install_root / ".env").write_text("LOCAL_STACK_HOST=locus.local\n", encoding="utf-8")
     (install_root / "README.md").write_text("old build\n", encoding="utf-8")
 
     refreshed_root = packaged_installer._prepare_install_root_for_update(source_root, install_root)
@@ -946,9 +946,9 @@ def test_packaged_installer_prepare_install_root_preserves_existing_installer_st
 ) -> None:
     source_root = tmp_path / "source"
     install_root = tmp_path / "installed"
-    (source_root / "frontier_tooling").mkdir(parents=True, exist_ok=True)
+    (source_root / "locus_tooling").mkdir(parents=True, exist_ok=True)
     (source_root / "pyproject.toml").write_text(
-        "[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8"
+        "[project]\nname='lattix-locus'\nversion='0.2.0'\n", encoding="utf-8"
     )
     (source_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     (source_root / "README.md").write_text("new build\n", encoding="utf-8")
@@ -978,18 +978,18 @@ def test_packaged_installer_prepare_install_root_preserves_custom_in_app_agent_a
 ) -> None:
     source_root = tmp_path / "source"
     install_root = tmp_path / "installed"
-    (source_root / "frontier_tooling").mkdir(parents=True, exist_ok=True)
+    (source_root / "locus_tooling").mkdir(parents=True, exist_ok=True)
     (source_root / "pyproject.toml").write_text(
-        "[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8"
+        "[project]\nname='lattix-locus'\nversion='0.2.0'\n", encoding="utf-8"
     )
     (source_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     (source_root / ".env.example").write_text(
-        "FRONTIER_AGENT_ASSETS_ROOT=private-agents\n", encoding="utf-8"
+        "LOCUS_AGENT_ASSETS_ROOT=private-agents\n", encoding="utf-8"
     )
 
     install_root.mkdir(parents=True, exist_ok=True)
     (install_root / ".env").write_text(
-        "FRONTIER_AGENT_ASSETS_ROOT=private-agents\n", encoding="utf-8"
+        "LOCUS_AGENT_ASSETS_ROOT=private-agents\n", encoding="utf-8"
     )
     (install_root / "private-agents" / "custom-agent").mkdir(parents=True, exist_ok=True)
     (install_root / "private-agents" / "custom-agent" / "system-prompt.md").write_text(
@@ -1010,9 +1010,9 @@ def test_packaged_installer_prepare_install_root_preserves_user_added_sample_age
 ) -> None:
     source_root = tmp_path / "source"
     install_root = tmp_path / "installed"
-    (source_root / "frontier_tooling").mkdir(parents=True, exist_ok=True)
+    (source_root / "locus_tooling").mkdir(parents=True, exist_ok=True)
     (source_root / "pyproject.toml").write_text(
-        "[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8"
+        "[project]\nname='lattix-locus'\nversion='0.2.0'\n", encoding="utf-8"
     )
     (source_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     (source_root / "examples" / "agents" / "built-in-agent").mkdir(parents=True, exist_ok=True)
@@ -1046,9 +1046,9 @@ def test_packaged_installer_prepare_install_root_preserves_manifest_declared_in_
 ) -> None:
     source_root = tmp_path / "source"
     install_root = tmp_path / "installed"
-    (source_root / "frontier_tooling").mkdir(parents=True, exist_ok=True)
+    (source_root / "locus_tooling").mkdir(parents=True, exist_ok=True)
     (source_root / "pyproject.toml").write_text(
-        "[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8"
+        "[project]\nname='lattix-locus'\nversion='0.2.0'\n", encoding="utf-8"
     )
     (source_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     (install_root / ".installer").mkdir(parents=True, exist_ok=True)
@@ -1079,11 +1079,11 @@ def test_packaged_installer_retries_secure_gateway_on_fallback_port(
     compose_env.write_text(
         "\n".join(
             [
-                "LOCAL_STACK_HOST=xfrontier.local",
+                "LOCAL_STACK_HOST=locus.local",
                 "LOCAL_GATEWAY_BIND_HOST=127.0.0.1",
                 "LOCAL_GATEWAY_HTTP_PORT=80",
-                "FRONTEND_ORIGIN=http://xfrontier.local",
-                "FRONTIER_LOCAL_API_BASE_URL=http://127.0.0.1/api",
+                "FRONTEND_ORIGIN=http://locus.local",
+                "LOCUS_LOCAL_API_BASE_URL=http://127.0.0.1/api",
             ]
         )
         + "\n",
@@ -1102,7 +1102,7 @@ def test_packaged_installer_retries_secure_gateway_on_fallback_port(
                 command,
                 1,
                 stdout="",
-                stderr="Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint xfrontier-local-gateway-1: Bind for 127.0.0.1:80 failed: port is already allocated\n",
+                stderr="Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint locus-local-gateway-1: Bind for 127.0.0.1:80 failed: port is already allocated\n",
             )
         return subprocess.CompletedProcess(command, 0, stdout="started\n", stderr="")
 
@@ -1116,17 +1116,17 @@ def test_packaged_installer_retries_secure_gateway_on_fallback_port(
     monkeypatch.setattr(
         packaged_installer,
         "portal_urls",
-        lambda root=None: ["http://xfrontier.local:8080", "http://127.0.0.1:8080"],
+        lambda root=None: ["http://locus.local:8080", "http://127.0.0.1:8080"],
     )
 
     urls = packaged_installer._auto_start_stack(tmp_path, {})
     updated_env = compose_env.read_text(encoding="utf-8")
 
     assert len(calls) == 2
-    assert urls == ["http://xfrontier.local:8080", "http://127.0.0.1:8080"]
+    assert urls == ["http://locus.local:8080", "http://127.0.0.1:8080"]
     assert "LOCAL_GATEWAY_HTTP_PORT=8080" in updated_env
-    assert "FRONTEND_ORIGIN=http://xfrontier.local:8080" in updated_env
-    assert "FRONTIER_LOCAL_API_BASE_URL=http://127.0.0.1:8080/api" in updated_env
+    assert "FRONTEND_ORIGIN=http://locus.local:8080" in updated_env
+    assert "LOCUS_LOCAL_API_BASE_URL=http://127.0.0.1:8080/api" in updated_env
 
 
 def test_auto_start_stack_prebuilds_secure_images_once(monkeypatch, tmp_path: Path) -> None:
@@ -1148,12 +1148,12 @@ def test_auto_start_stack_prebuilds_secure_images_once(monkeypatch, tmp_path: Pa
         ),
     )
     monkeypatch.setattr(
-        packaged_installer, "portal_urls", lambda root=None: ["http://xfrontier.local"]
+        packaged_installer, "portal_urls", lambda root=None: ["http://locus.local"]
     )
 
     urls = packaged_installer._auto_start_stack(tmp_path, {})
 
-    assert urls == ["http://xfrontier.local"]
+    assert urls == ["http://locus.local"]
     assert commands == [
         [
             "docker",
@@ -1178,13 +1178,13 @@ def test_casdoor_bootstrap_endpoint_uses_effective_secure_gateway_port(
             [
                 "LOCAL_GATEWAY_BIND_HOST=127.0.0.1",
                 "LOCAL_GATEWAY_HTTP_PORT=8080",
-                "LOCAL_STACK_HOST=xfrontier.local",
+                "LOCAL_STACK_HOST=locus.local",
             ]
         )
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv(packaged_installer.FRONTIER_APP_HOME_ENV, str(tmp_path))
+    monkeypatch.setenv(packaged_installer.LOCUS_APP_HOME_ENV, str(tmp_path))
 
     answers = InstallerAnswers(
         installation_root=str(tmp_path),
@@ -1225,12 +1225,12 @@ def test_bootstrap_failure_reports_postgres_volume_guidance(monkeypatch, tmp_pat
     (installer_dir / "local-secure.env").write_text(
         "LOCAL_GATEWAY_HTTP_PORT=80\n", encoding="utf-8"
     )
-    monkeypatch.setenv(packaged_installer.FRONTIER_APP_HOME_ENV, str(tmp_path))
+    monkeypatch.setenv(packaged_installer.LOCUS_APP_HOME_ENV, str(tmp_path))
     monkeypatch.setattr(
         packaged_installer,
         "_compose_service_logs_text",
         lambda install_root, service, tail=80: (
-            'panic: pq: password authentication failed for user "frontier"'
+            'panic: pq: password authentication failed for user "locus"'
             if service == "casdoor"
             else ""
         ),
@@ -1292,16 +1292,16 @@ def test_packaged_installer_syncs_sensitive_install_state_to_vault(
     installer_dir = tmp_path / ".installer"
     installer_dir.mkdir(parents=True, exist_ok=True)
     (tmp_path / "pyproject.toml").write_text(
-        "[project]\nname='lattix-frontier'\nversion='1.2.3'\n", encoding="utf-8"
+        "[project]\nname='lattix-locus'\nversion='1.2.3'\n", encoding="utf-8"
     )
     (tmp_path / ".env").write_text(
-        "FRONTIER_AGENT_ASSETS_ROOT=private-agents\nOPENAI_API_KEY=root-openai\n", encoding="utf-8"
+        "LOCUS_AGENT_ASSETS_ROOT=private-agents\nOPENAI_API_KEY=root-openai\n", encoding="utf-8"
     )
     (installer_dir / "local-secure.env").write_text(
         "\n".join(
             [
-                "LOCAL_STACK_HOST=xfrontier.local",
-                "FRONTIER_AUTH_MODE=oidc",
+                "LOCAL_STACK_HOST=locus.local",
+                "LOCUS_AUTH_MODE=oidc",
                 "A2A_JWT_SECRET=a2a-secret",
                 "POSTGRES_PASSWORD=postgres-secret",
                 "NEO4J_PASSWORD=neo4j-secret",
@@ -1330,8 +1330,8 @@ def test_packaged_installer_syncs_sensitive_install_state_to_vault(
 
     synced = packaged_installer._sync_installer_state_to_vault(tmp_path, install_mode="wheel")
 
-    assert synced["vault_secret_path"].startswith("secret/data/local/frontier/installations/")
-    assert synced["vault_state_path"].startswith("secret/data/local/frontier/installations/")
+    assert synced["vault_secret_path"].startswith("secret/data/local/locus/installations/")
+    assert synced["vault_state_path"].startswith("secret/data/local/locus/installations/")
     assert len(captured_writes) == 2
 
     secret_write = next(item for item in captured_writes if item[0] == synced["vault_secret_path"])
@@ -1347,9 +1347,9 @@ def test_packaged_installer_syncs_sensitive_install_state_to_vault(
 
     decoded_state = json.loads(base64.b64decode(state_write[1]["payload_b64"]).decode("utf-8"))
     assert decoded_state["install_mode"] == "wheel"
-    assert decoded_state["env_snapshots"]["secure_env"]["LOCAL_STACK_HOST"] == "xfrontier.local"
+    assert decoded_state["env_snapshots"]["secure_env"]["LOCAL_STACK_HOST"] == "locus.local"
     assert (
-        decoded_state["env_snapshots"]["root_env"]["FRONTIER_AGENT_ASSETS_ROOT"] == "private-agents"
+        decoded_state["env_snapshots"]["root_env"]["LOCUS_AGENT_ASSETS_ROOT"] == "private-agents"
     )
     assert "POSTGRES_PASSWORD" not in decoded_state["env_snapshots"]["secure_env"]
     assert (
@@ -1359,7 +1359,7 @@ def test_packaged_installer_syncs_sensitive_install_state_to_vault(
 
 
 def test_installer_defaults_to_casdoor_oidc_preset(tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     answers = InstallerAnswers(installation_root=str(tmp_path), deployment_mode="local")
 
     env_path = installer._write_env_file(
@@ -1372,29 +1372,29 @@ def test_installer_defaults_to_casdoor_oidc_preset(tmp_path: Path) -> None:
     )
     text = env_path.read_text(encoding="utf-8")
 
-    assert "FRONTIER_AUTH_MODE=oidc" in text
-    assert "FRONTIER_AUTH_OIDC_PROVIDER=casdoor" in text
-    assert "FRONTIER_AUTH_OIDC_ISSUER=http://127.0.0.1:8081" in text
-    assert "FRONTIER_AUTH_OIDC_AUDIENCE=frontier-ui" in text
-    assert "FRONTIER_AUTH_OIDC_JWKS_URL=http://127.0.0.1:8081/.well-known/jwks.json" in text
-    assert "FRONTIER_AUTH_OIDC_CLIENT_ID=frontier-web" in text
+    assert "LOCUS_AUTH_MODE=oidc" in text
+    assert "LOCUS_AUTH_OIDC_PROVIDER=casdoor" in text
+    assert "LOCUS_AUTH_OIDC_ISSUER=http://127.0.0.1:8081" in text
+    assert "LOCUS_AUTH_OIDC_AUDIENCE=locus-ui" in text
+    assert "LOCUS_AUTH_OIDC_JWKS_URL=http://127.0.0.1:8081/.well-known/jwks.json" in text
+    assert "LOCUS_AUTH_OIDC_CLIENT_ID=locus-web" in text
     assert (
-        "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
+        "LOCUS_AUTH_OIDC_AUTHORIZATION_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
     )
-    assert "FRONTIER_AUTH_OIDC_TOKEN_URL=http://127.0.0.1:8081/api/login/oauth/access_token" in text
+    assert "LOCUS_AUTH_OIDC_TOKEN_URL=http://127.0.0.1:8081/api/login/oauth/access_token" in text
 
 
 def test_installer_writes_casdoor_preset_when_selected(monkeypatch, tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     answers = InstallerAnswers(
         installation_root=str(tmp_path),
         deployment_mode="local",
         local_auth_provider="oidc",
         oidc_provider_template="casdoor",
         oidc_issuer="http://127.0.0.1:8081",
-        oidc_audience="frontier-ui",
+        oidc_audience="locus-ui",
         oidc_jwks_url="http://127.0.0.1:8081/.well-known/jwks.json",
-        oidc_client_id="frontier-web",
+        oidc_client_id="locus-web",
         oidc_authorization_url="http://127.0.0.1:8081/login/oauth/authorize",
         oidc_token_url="http://127.0.0.1:8081/api/login/oauth/access_token",
     )
@@ -1404,25 +1404,25 @@ def test_installer_writes_casdoor_preset_when_selected(monkeypatch, tmp_path: Pa
     env_path = installer._write_env_file(answers, secrets_map)
     text = env_path.read_text(encoding="utf-8")
 
-    assert "FRONTIER_API_BEARER_TOKEN=" in text
-    assert "FRONTIER_AUTH_MODE=oidc" in text
-    assert "FRONTIER_AUTH_OIDC_PROVIDER=casdoor" in text
-    assert "FRONTIER_AUTH_OIDC_ISSUER=http://127.0.0.1:8081" in text
-    assert "FRONTIER_AUTH_OIDC_AUDIENCE=frontier-ui" in text
-    assert "FRONTIER_AUTH_OIDC_JWKS_URL=http://127.0.0.1:8081/.well-known/jwks.json" in text
-    assert "FRONTIER_AUTH_OIDC_CLIENT_ID=frontier-web" in text
+    assert "LOCUS_API_BEARER_TOKEN=" in text
+    assert "LOCUS_AUTH_MODE=oidc" in text
+    assert "LOCUS_AUTH_OIDC_PROVIDER=casdoor" in text
+    assert "LOCUS_AUTH_OIDC_ISSUER=http://127.0.0.1:8081" in text
+    assert "LOCUS_AUTH_OIDC_AUDIENCE=locus-ui" in text
+    assert "LOCUS_AUTH_OIDC_JWKS_URL=http://127.0.0.1:8081/.well-known/jwks.json" in text
+    assert "LOCUS_AUTH_OIDC_CLIENT_ID=locus-web" in text
     assert (
-        "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
+        "LOCUS_AUTH_OIDC_AUTHORIZATION_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
     )
-    assert "FRONTIER_AUTH_OIDC_TOKEN_URL=http://127.0.0.1:8081/api/login/oauth/access_token" in text
-    assert "FRONTIER_AUTH_OIDC_SIGNIN_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
-    assert "FRONTIER_AUTH_OIDC_SIGNUP_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
-    assert "FRONTIER_AUTH_OIDC_SCOPES=openid profile email" in text
-    assert "FRONTIER_API_BEARER_TOKEN" not in secrets_map
+    assert "LOCUS_AUTH_OIDC_TOKEN_URL=http://127.0.0.1:8081/api/login/oauth/access_token" in text
+    assert "LOCUS_AUTH_OIDC_SIGNIN_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
+    assert "LOCUS_AUTH_OIDC_SIGNUP_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
+    assert "LOCUS_AUTH_OIDC_SCOPES=openid profile email" in text
+    assert "LOCUS_API_BEARER_TOKEN" not in secrets_map
 
 
 def test_installer_treats_legacy_casdoor_mode_as_oidc(monkeypatch, tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     answers = InstallerAnswers(
         installation_root=str(tmp_path),
         deployment_mode="local",
@@ -1434,28 +1434,28 @@ def test_installer_treats_legacy_casdoor_mode_as_oidc(monkeypatch, tmp_path: Pat
     env_path = installer._write_env_file(answers, secrets_map)
     text = env_path.read_text(encoding="utf-8")
 
-    assert "FRONTIER_AUTH_MODE=oidc" in text
-    assert "FRONTIER_AUTH_OIDC_PROVIDER=casdoor" in text
-    assert "FRONTIER_AUTH_OIDC_SIGNIN_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
-    assert "FRONTIER_AUTH_OIDC_SIGNUP_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
-    assert "FRONTIER_API_BEARER_TOKEN" not in secrets_map
+    assert "LOCUS_AUTH_MODE=oidc" in text
+    assert "LOCUS_AUTH_OIDC_PROVIDER=casdoor" in text
+    assert "LOCUS_AUTH_OIDC_SIGNIN_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
+    assert "LOCUS_AUTH_OIDC_SIGNUP_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
+    assert "LOCUS_API_BEARER_TOKEN" not in secrets_map
 
 
 def test_installer_supports_external_oidc_provider(monkeypatch, tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     answers = InstallerAnswers(
         installation_root=str(tmp_path),
         deployment_mode="local",
         local_auth_provider="oidc",
         oidc_provider_template="external",
-        oidc_issuer="https://login.example.com/realms/frontier",
-        oidc_audience="frontier-api",
-        oidc_jwks_url="https://login.example.com/realms/frontier/protocol/openid-connect/certs",
-        oidc_client_id="frontier-ui",
-        oidc_authorization_url="https://login.example.com/realms/frontier/protocol/openid-connect/auth",
-        oidc_token_url="https://login.example.com/realms/frontier/protocol/openid-connect/token",
-        oidc_signin_url="https://login.example.com/realms/frontier/protocol/openid-connect/auth?prompt=login",
-        oidc_signup_url="https://login.example.com/realms/frontier/registrations/start",
+        oidc_issuer="https://login.example.com/realms/locus",
+        oidc_audience="locus-api",
+        oidc_jwks_url="https://login.example.com/realms/locus/protocol/openid-connect/certs",
+        oidc_client_id="locus-ui",
+        oidc_authorization_url="https://login.example.com/realms/locus/protocol/openid-connect/auth",
+        oidc_token_url="https://login.example.com/realms/locus/protocol/openid-connect/token",
+        oidc_signin_url="https://login.example.com/realms/locus/protocol/openid-connect/auth?prompt=login",
+        oidc_signup_url="https://login.example.com/realms/locus/registrations/start",
         oidc_scopes=["openid", "profile", "email", "groups"],
     )
     monkeypatch.setattr("getpass.getpass", lambda prompt: "")
@@ -1464,36 +1464,36 @@ def test_installer_supports_external_oidc_provider(monkeypatch, tmp_path: Path) 
     env_path = installer._write_env_file(answers, secrets_map)
     text = env_path.read_text(encoding="utf-8")
 
-    assert "FRONTIER_AUTH_MODE=oidc" in text
-    assert "FRONTIER_AUTH_OIDC_PROVIDER=oidc" in text
-    assert "FRONTIER_AUTH_OIDC_ISSUER=https://login.example.com/realms/frontier" in text
-    assert "FRONTIER_AUTH_OIDC_AUDIENCE=frontier-api" in text
-    assert "FRONTIER_AUTH_OIDC_CLIENT_ID=frontier-ui" in text
+    assert "LOCUS_AUTH_MODE=oidc" in text
+    assert "LOCUS_AUTH_OIDC_PROVIDER=oidc" in text
+    assert "LOCUS_AUTH_OIDC_ISSUER=https://login.example.com/realms/locus" in text
+    assert "LOCUS_AUTH_OIDC_AUDIENCE=locus-api" in text
+    assert "LOCUS_AUTH_OIDC_CLIENT_ID=locus-ui" in text
     assert (
-        "FRONTIER_AUTH_OIDC_SIGNIN_URL=https://login.example.com/realms/frontier/protocol/openid-connect/auth?prompt=login"
+        "LOCUS_AUTH_OIDC_SIGNIN_URL=https://login.example.com/realms/locus/protocol/openid-connect/auth?prompt=login"
         in text
     )
     assert (
-        "FRONTIER_AUTH_OIDC_SIGNUP_URL=https://login.example.com/realms/frontier/registrations/start"
+        "LOCUS_AUTH_OIDC_SIGNUP_URL=https://login.example.com/realms/locus/registrations/start"
         in text
     )
-    assert "FRONTIER_AUTH_OIDC_SCOPES=openid profile email groups" in text
-    assert "FRONTIER_API_BEARER_TOKEN" not in secrets_map
+    assert "LOCUS_AUTH_OIDC_SCOPES=openid profile email groups" in text
+    assert "LOCUS_API_BEARER_TOKEN" not in secrets_map
 
 
 def test_installer_rejects_oidc_urls_with_embedded_credentials(tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     answers = InstallerAnswers(
         installation_root=str(tmp_path),
         deployment_mode="local",
         local_auth_provider="oidc",
         oidc_provider_template="external",
-        oidc_issuer="https://user:pass@login.example.com/realms/frontier",
-        oidc_audience="frontier-api",
-        oidc_jwks_url="https://login.example.com/realms/frontier/protocol/openid-connect/certs",
-        oidc_client_id="frontier-ui",
-        oidc_authorization_url="https://login.example.com/realms/frontier/protocol/openid-connect/auth",
-        oidc_token_url="https://login.example.com/realms/frontier/protocol/openid-connect/token",
+        oidc_issuer="https://user:pass@login.example.com/realms/locus",
+        oidc_audience="locus-api",
+        oidc_jwks_url="https://login.example.com/realms/locus/protocol/openid-connect/certs",
+        oidc_client_id="locus-ui",
+        oidc_authorization_url="https://login.example.com/realms/locus/protocol/openid-connect/auth",
+        oidc_token_url="https://login.example.com/realms/locus/protocol/openid-connect/token",
     )
 
     with pytest.raises(ValueError, match="must not embed credentials"):
@@ -1510,7 +1510,7 @@ def test_installer_rejects_oidc_urls_with_embedded_credentials(tmp_path: Path) -
 def test_installer_shared_token_mode_still_generates_bearer_secret(
     monkeypatch, tmp_path: Path
 ) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     answers = InstallerAnswers(
         installation_root=str(tmp_path),
         deployment_mode="local",
@@ -1522,14 +1522,14 @@ def test_installer_shared_token_mode_still_generates_bearer_secret(
     env_path = installer._write_env_file(answers, secrets_map)
     text = env_path.read_text(encoding="utf-8")
 
-    assert secrets_map["FRONTIER_API_BEARER_TOKEN"]
-    assert "FRONTIER_AUTH_MODE=shared-token" in text
-    assert "FRONTIER_API_BEARER_TOKEN=" in text
-    assert "FRONTIER_AUTH_OIDC_PROVIDER=" in text
+    assert secrets_map["LOCUS_API_BEARER_TOKEN"]
+    assert "LOCUS_AUTH_MODE=shared-token" in text
+    assert "LOCUS_API_BEARER_TOKEN=" in text
+    assert "LOCUS_AUTH_OIDC_PROVIDER=" in text
 
 
 def test_installer_does_not_collect_local_secret_for_enterprise_only(tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     answers = InstallerAnswers(installation_root=str(tmp_path), deployment_mode="enterprise")
 
     secrets_map = installer._collect_local_secrets(answers)
@@ -1538,7 +1538,7 @@ def test_installer_does_not_collect_local_secret_for_enterprise_only(tmp_path: P
 
 
 def test_installer_writes_helm_values(tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     answers = InstallerAnswers(
         installation_root=str(tmp_path),
         deployment_mode="enterprise",
@@ -1556,7 +1556,7 @@ def test_installer_writes_helm_values(tmp_path: Path) -> None:
 def test_resolve_missing_prerequisites_attempts_install_and_continues(
     monkeypatch, tmp_path: Path
 ) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     definition = PrerequisiteDefinition(
         key="helm",
         display_name="Helm",
@@ -1589,7 +1589,7 @@ def test_resolve_missing_prerequisites_attempts_install_and_continues(
 def test_resolve_missing_prerequisites_decline_exits_with_actionable_message(
     monkeypatch, tmp_path: Path
 ) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     definition = PrerequisiteDefinition(
         key="kubectl",
         display_name="kubectl",
@@ -1616,7 +1616,7 @@ def test_resolve_missing_prerequisites_decline_exits_with_actionable_message(
 
 
 def test_attempt_missing_prerequisites_reports_failed_install(monkeypatch, tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     definition = PrerequisiteDefinition(
         key="docker",
         display_name="Docker",
@@ -1646,7 +1646,7 @@ def test_attempt_missing_prerequisites_reports_failed_install(monkeypatch, tmp_p
 
 
 def test_installer_yes_no_accepts_default_and_explicit_answers(monkeypatch, tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     answers = iter(["", "n", "yes"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
 
@@ -1658,7 +1658,7 @@ def test_installer_yes_no_accepts_default_and_explicit_answers(monkeypatch, tmp_
 def test_installer_yes_no_reprompts_on_invalid_input(
     monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     answers = iter(["maybe", "Y"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
 
@@ -1668,7 +1668,7 @@ def test_installer_yes_no_reprompts_on_invalid_input(
 
 
 def test_run_prerequisite_check_validates_named_commands(monkeypatch, tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     definition = PrerequisiteDefinition(
         key="helm",
         display_name="Helm",
@@ -1685,7 +1685,7 @@ def test_run_prerequisite_check_validates_named_commands(monkeypatch, tmp_path: 
 
 
 def test_run_prerequisite_check_reports_missing_commands(monkeypatch, tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     definition = PrerequisiteDefinition(
         key="kubectl",
         display_name="kubectl",
@@ -1700,7 +1700,7 @@ def test_run_prerequisite_check_reports_missing_commands(monkeypatch, tmp_path: 
 
 
 def test_attempt_missing_prerequisites_rechecks_after_install(monkeypatch, tmp_path: Path) -> None:
-    installer = FrontierInstaller(repo_root=tmp_path)
+    installer = LocusInstaller(repo_root=tmp_path)
     definition = PrerequisiteDefinition(
         key="helm",
         display_name="Helm",

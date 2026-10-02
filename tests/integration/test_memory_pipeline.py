@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from frontier_runtime.conversation import ConversationManager
-from frontier_runtime.context_dedup import dedup_file_operations
-from frontier_runtime.session_notes import generate_session_note
+from locus_runtime.conversation import ConversationManager
+from locus_runtime.context_dedup import dedup_file_operations
+from locus_runtime.session_notes import generate_session_note
 
 
 class TestMemoryPipelineIntegration:

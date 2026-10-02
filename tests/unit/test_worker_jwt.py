@@ -24,8 +24,8 @@ from apps.workers.runtime.security.jwt import issue_token
 def test_worker_issue_token_supports_shared_identity_claims(monkeypatch) -> None:
     monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
     monkeypatch.setenv("A2A_JWT_ALG", "HS256")
-    monkeypatch.setenv("A2A_JWT_ISS", "lattix-frontier")
-    monkeypatch.setenv("A2A_JWT_AUD", "frontier-runtime")
+    monkeypatch.setenv("A2A_JWT_ISS", "lattix-locus")
+    monkeypatch.setenv("A2A_JWT_AUD", "locus-runtime")
 
     token = issue_token(
         "backend",
@@ -52,9 +52,9 @@ def test_worker_issue_token_supports_shared_identity_claims(monkeypatch) -> None
 def test_worker_post_envelope_mints_identity_claims(monkeypatch) -> None:
     monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
     monkeypatch.setenv("A2A_JWT_ALG", "HS256")
-    monkeypatch.setenv("A2A_JWT_ISS", "lattix-frontier")
-    monkeypatch.setenv("A2A_JWT_AUD", "frontier-runtime")
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("A2A_JWT_ISS", "lattix-locus")
+    monkeypatch.setenv("A2A_JWT_AUD", "locus-runtime")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
 
     captured: dict[str, object] = {}
 
@@ -68,9 +68,9 @@ def test_worker_post_envelope_mints_identity_claims(monkeypatch) -> None:
         captured["url"] = url
         captured["authorization"] = headers.get("Authorization") if headers else None
         captured["correlation_id"] = headers.get("X-Correlation-ID") if headers else None
-        captured["frontier_subject"] = headers.get("X-Frontier-Subject") if headers else None
-        captured["frontier_nonce"] = headers.get("X-Frontier-Nonce") if headers else None
-        captured["frontier_signature"] = headers.get("X-Frontier-Signature") if headers else None
+        captured["locus_subject"] = headers.get("X-Locus-Subject") if headers else None
+        captured["locus_nonce"] = headers.get("X-Locus-Nonce") if headers else None
+        captured["locus_signature"] = headers.get("X-Locus-Signature") if headers else None
         captured["timeout"] = timeout
         captured["verify"] = verify
         captured["follow_redirects"] = follow_redirects
@@ -101,9 +101,9 @@ def test_worker_post_envelope_mints_identity_claims(monkeypatch) -> None:
     assert identity.internal_service is True
     assert captured["url"] == "https://worker.example.test/v1/envelope"
     assert captured["correlation_id"] == env.correlation_id
-    assert captured["frontier_subject"] == "backend"
-    assert captured["frontier_nonce"]
-    assert captured["frontier_signature"]
+    assert captured["locus_subject"] == "backend"
+    assert captured["locus_nonce"]
+    assert captured["locus_signature"]
 
 
 def test_worker_post_envelope_rejects_non_http_scheme(monkeypatch) -> None:
@@ -117,7 +117,7 @@ def test_worker_post_envelope_rejects_non_http_scheme(monkeypatch) -> None:
 
 def test_worker_post_envelope_rejects_plain_http_in_hosted_profile(monkeypatch) -> None:
     monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
 
     env = Envelope(topic="security.compliance", sender="orchestrator", payload={"task": "review"})
 
@@ -140,8 +140,8 @@ def test_worker_jwt_defaults_match_shared_runtime_contract(monkeypatch) -> None:
     cfg = JWTConfig()
 
     assert cfg.algorithm == "HS256"
-    assert cfg.issuer == "lattix-frontier"
-    assert cfg.audience == "frontier-runtime"
+    assert cfg.issuer == "lattix-locus"
+    assert cfg.audience == "locus-runtime"
 
 
 def _load_agent_service_template_module():
@@ -167,8 +167,8 @@ def _load_agent_service_template_module():
 
 def test_worker_service_template_hosted_profile_limits_public_surfaces(monkeypatch) -> None:
     monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
-    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", "true")
     monkeypatch.setenv("SERVICE_NAME", "security-agent")
 
     module = _load_agent_service_template_module()
@@ -189,8 +189,8 @@ def test_worker_service_template_hosted_profile_requires_internal_service_identi
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
-    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", "true")
     monkeypatch.setenv("SERVICE_NAME", "security-agent")
 
     module = _load_agent_service_template_module()
@@ -231,10 +231,10 @@ def test_worker_service_template_hosted_profile_requires_internal_service_identi
             "Authorization": f"Bearer {service_token}",
             "Content-Type": "application/json",
             "X-Correlation-ID": env.correlation_id,
-            "X-Frontier-Subject": "backend",
-            "X-Frontier-Nonce": "nonce-1",
-            "X-Frontier-Timestamp": timestamp,
-            "X-Frontier-Signature": a2a._build_runtime_signature(
+            "X-Locus-Subject": "backend",
+            "X-Locus-Nonce": "nonce-1",
+            "X-Locus-Timestamp": timestamp,
+            "X-Locus-Signature": a2a._build_runtime_signature(
                 "backend",
                 "nonce-1",
                 env.correlation_id,
@@ -257,8 +257,8 @@ def test_worker_service_template_hosted_profile_requires_internal_service_identi
 
 def test_worker_service_template_lightweight_profile_keeps_placeholder_ack(monkeypatch) -> None:
     monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-lightweight")
-    monkeypatch.delenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-lightweight")
+    monkeypatch.delenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
 
     module = _load_agent_service_template_module()
     client = TestClient(module.app)
@@ -291,8 +291,8 @@ def test_worker_service_template_lightweight_profile_keeps_placeholder_ack(monke
 
 def test_worker_service_template_rejects_runtime_header_replay(monkeypatch) -> None:
     monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
-    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", "true")
 
     module = _load_agent_service_template_module()
     client = TestClient(module.app)
@@ -316,10 +316,10 @@ def test_worker_service_template_rejects_runtime_header_replay(monkeypatch) -> N
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "X-Correlation-ID": env.correlation_id,
-        "X-Frontier-Subject": "backend",
-        "X-Frontier-Nonce": nonce,
-        "X-Frontier-Timestamp": timestamp,
-        "X-Frontier-Signature": signature,
+        "X-Locus-Subject": "backend",
+        "X-Locus-Nonce": nonce,
+        "X-Locus-Timestamp": timestamp,
+        "X-Locus-Signature": signature,
     }
 
     first = client.post("/v1/envelope", content=env.to_json(), headers=headers)
@@ -333,8 +333,8 @@ def test_worker_service_template_requires_correlation_id_for_signed_runtime_head
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
-    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", "true")
 
     module = _load_agent_service_template_module()
     client = TestClient(module.app)
@@ -357,10 +357,10 @@ def test_worker_service_template_requires_correlation_id_for_signed_runtime_head
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "X-Frontier-Subject": "backend",
-        "X-Frontier-Nonce": nonce,
-        "X-Frontier-Timestamp": timestamp,
-        "X-Frontier-Signature": signature,
+        "X-Locus-Subject": "backend",
+        "X-Locus-Nonce": nonce,
+        "X-Locus-Timestamp": timestamp,
+        "X-Locus-Signature": signature,
     }
 
     denied = client.post("/v1/envelope", content=env.to_json(), headers=headers)
@@ -372,8 +372,8 @@ def test_worker_service_template_rejects_header_subject_mismatch_with_bearer_ide
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
-    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", "true")
 
     module = _load_agent_service_template_module()
     client = TestClient(module.app)
@@ -394,26 +394,26 @@ def test_worker_service_template_rejects_header_subject_mismatch_with_bearer_ide
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "X-Correlation-ID": env.correlation_id,
-        "X-Frontier-Subject": "backend",
-        "X-Frontier-Nonce": nonce,
-        "X-Frontier-Timestamp": timestamp,
-        "X-Frontier-Signature": a2a._build_runtime_signature(
+        "X-Locus-Subject": "backend",
+        "X-Locus-Nonce": nonce,
+        "X-Locus-Timestamp": timestamp,
+        "X-Locus-Signature": a2a._build_runtime_signature(
             "backend", nonce, env.correlation_id, env.to_json().encode("utf-8"), timestamp=timestamp
         ),
     }
 
     denied = client.post("/v1/envelope", content=env.to_json(), headers=headers)
     assert denied.status_code == 401
-    assert denied.json()["detail"] == "frontier subject header does not match bearer token subject"
+    assert denied.json()["detail"] == "locus subject header does not match bearer token subject"
 
 
 def test_worker_service_template_prunes_expired_seen_nonces_before_accepting_reuse(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
-    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
-    monkeypatch.setenv("FRONTIER_A2A_NONCE_TTL_SECONDS", "5")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+    monkeypatch.setenv("LOCUS_A2A_NONCE_TTL_SECONDS", "5")
 
     module = _load_agent_service_template_module()
     module._SEEN_NONCES.clear()
@@ -426,8 +426,8 @@ def test_worker_service_template_prunes_expired_seen_nonces_before_accepting_reu
 
 def test_worker_service_template_requires_fresh_runtime_timestamp(monkeypatch) -> None:
     monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
-    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", "true")
     monkeypatch.setenv("A2A_CLOCK_SKEW_SECONDS", "30")
 
     module = _load_agent_service_template_module()
@@ -447,10 +447,10 @@ def test_worker_service_template_requires_fresh_runtime_timestamp(monkeypatch) -
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "X-Correlation-ID": env.correlation_id,
-        "X-Frontier-Subject": "backend",
-        "X-Frontier-Nonce": "nonce-stale-ts",
-        "X-Frontier-Timestamp": "1",
-        "X-Frontier-Signature": a2a._build_runtime_signature(
+        "X-Locus-Subject": "backend",
+        "X-Locus-Nonce": "nonce-stale-ts",
+        "X-Locus-Timestamp": "1",
+        "X-Locus-Signature": a2a._build_runtime_signature(
             "backend",
             "nonce-stale-ts",
             env.correlation_id,
@@ -461,14 +461,14 @@ def test_worker_service_template_requires_fresh_runtime_timestamp(monkeypatch) -
 
     denied = client.post("/v1/envelope", content=env.to_json(), headers=headers)
     assert denied.status_code == 401
-    assert denied.json()["detail"] == "stale frontier timestamp"
+    assert denied.json()["detail"] == "stale locus timestamp"
 
 
 def test_worker_service_template_nonce_registration_is_race_safe(monkeypatch) -> None:
     monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
-    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
-    monkeypatch.setenv("FRONTIER_A2A_NONCE_TTL_SECONDS", "60")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+    monkeypatch.setenv("LOCUS_A2A_NONCE_TTL_SECONDS", "60")
 
     module = _load_agent_service_template_module()
     module._SEEN_NONCES.clear()
@@ -494,8 +494,8 @@ def test_worker_service_template_nonce_registration_is_race_safe(monkeypatch) ->
 
 def test_topic_dispatcher_propagates_auth_context_in_strict_profile(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
-    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", "true")
 
     mapping_path = tmp_path / "topic-map.json"
     mapping_path.write_text(
@@ -552,8 +552,8 @@ def test_topic_dispatcher_propagates_auth_context_in_strict_profile(monkeypatch,
 def test_topic_dispatcher_fails_closed_without_registered_url_in_strict_profile(
     monkeypatch, tmp_path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
-    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", "true")
 
     mapping_path = tmp_path / "topic-map.json"
     mapping_path.write_text("{}", encoding="utf-8")
@@ -592,8 +592,8 @@ def test_topic_dispatcher_fails_closed_without_registered_url_in_strict_profile(
 def test_topic_dispatcher_keeps_skip_semantics_in_lightweight_profile(
     monkeypatch, tmp_path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-lightweight")
-    monkeypatch.delenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-lightweight")
+    monkeypatch.delenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
 
     mapping_path = tmp_path / "topic-map.json"
     mapping_path.write_text("{}", encoding="utf-8")
@@ -619,8 +619,8 @@ def test_topic_dispatcher_keeps_skip_semantics_in_lightweight_profile(
 
 def test_orchestrator_remote_dispatch_records_failure_on_envelope(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
-    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", "true")
 
     mapping_path = tmp_path / "topic-map.json"
     mapping_path.write_text(
@@ -702,7 +702,7 @@ def test_orchestrator_done_when_exception_no_longer_passes_as_success(tmp_path) 
 
 
 def test_local_event_bus_blocks_unauthorized_tenant_memory_request(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
     orchestrator = Orchestrator(tmp_path / "registry.json")
     called = {"value": False}
 
@@ -735,7 +735,7 @@ def test_local_event_bus_blocks_unauthorized_tenant_memory_request(monkeypatch, 
 
 
 def test_local_event_bus_allows_authorized_tenant_memory_request(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
     orchestrator = Orchestrator(tmp_path / "registry.json")
     called = {"value": False}
 
@@ -767,7 +767,7 @@ def test_local_event_bus_allows_authorized_tenant_memory_request(monkeypatch, tm
 
 
 def test_local_event_bus_blocks_conflicting_payload_tenant_context(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
     orchestrator = Orchestrator(tmp_path / "registry.json")
     called = {"value": False}
 
@@ -809,7 +809,7 @@ def test_local_event_bus_blocks_conflicting_payload_tenant_context(monkeypatch, 
 
 
 def test_local_event_bus_allows_matching_payload_tenant_context(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
     orchestrator = Orchestrator(tmp_path / "registry.json")
     called = {"value": False}
 
@@ -840,7 +840,7 @@ def test_local_event_bus_allows_matching_payload_tenant_context(monkeypatch, tmp
 
 
 def test_multi_tenant_runtime_messages_do_not_cross_contaminate(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
     orchestrator = Orchestrator(tmp_path / "registry.json")
     observed: list[tuple[str, str]] = []
 
@@ -879,7 +879,7 @@ def test_multi_tenant_runtime_messages_do_not_cross_contaminate(monkeypatch, tmp
 
 
 def test_session_memory_scope_ignores_payload_session_override(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
     orchestrator = Orchestrator(tmp_path / "registry.json")
     called = {"value": False}
 
@@ -976,7 +976,7 @@ def test_event_bus_records_subscriber_failures_in_trace() -> None:
 def test_runtime_security_middleware_marks_unexpected_errors_as_security_errors(
     monkeypatch, tmp_path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
     orchestrator = Orchestrator(tmp_path / "registry.json")
     called = {"value": False}
 

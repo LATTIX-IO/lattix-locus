@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from frontier_runtime.harness.llm import ChatResponse, ToolCall
+from locus_runtime.harness.llm import ChatResponse, ToolCall
 
 
 def tc(call_id: str, name: str, **arguments) -> ToolCall:

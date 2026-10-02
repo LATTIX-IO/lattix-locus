@@ -47,7 +47,7 @@ vi.mock("@/components/api-status-banner", () => ({
 }));
 
 vi.mock("@/lib/api", () => ({
-  PLATFORM_SETTINGS_UPDATED_EVENT: "frontier:platform-settings-updated",
+  PLATFORM_SETTINGS_UPDATED_EVENT: "locus:platform-settings-updated",
   getOperatorSession: getOperatorSessionMock,
   getPlatformHealthDetails: getPlatformHealthDetailsMock,
   getPlatformSettings: getPlatformSettingsMock,
@@ -82,23 +82,23 @@ const guestSession = {
   capabilities: { can_admin: false, can_builder: false },
   allowed_modes: ["user"],
   default_mode: "user",
-  oidc: { configured: true, issuer: "http://casdoor.localhost", audience: "frontier-ui", provider: "casdoor", validation_error: "" },
+  oidc: { configured: true, issuer: "http://casdoor.localhost", audience: "locus-ui", provider: "casdoor", validation_error: "" },
 } as const;
 
 const builderSession = {
   authenticated: true,
-  actor: "frontier-admin",
-  principal_id: "frontier-admin",
+  actor: "locus-admin",
+  principal_id: "locus-admin",
   principal_type: "user",
-  display_name: "Frontier Admin",
-  subject: "frontier-admin",
+  display_name: "Locus Admin",
+  subject: "locus-admin",
   roles: ["builder-admin"],
   auth_mode: "oidc",
   provider: "casdoor",
   capabilities: { can_admin: true, can_builder: true },
   allowed_modes: ["user", "builder"],
   default_mode: "builder",
-  oidc: { configured: true, issuer: "http://casdoor.localhost", audience: "frontier-ui", provider: "casdoor", validation_error: "" },
+  oidc: { configured: true, issuer: "http://casdoor.localhost", audience: "locus-ui", provider: "casdoor", validation_error: "" },
 } as const;
 
 const currentVersion = {
@@ -131,7 +131,7 @@ const updateAvailableVersion = {
   latest_version: "0.1.1",
   update_available: true,
   status: "update_available",
-  release_notes_url: "https://github.com/LATTIX-IO/lattix-xfrontier",
+  release_notes_url: "https://github.com/LATTIX-IO/lattix-locus",
   summary: "Version 0.1.1 is available.",
 } as const;
 
@@ -220,7 +220,7 @@ describe("AppShell", () => {
       capabilities: { can_admin: false, can_builder: false },
       allowed_modes: ["user"],
       default_mode: "user",
-      oidc: { configured: true, issuer: "http://casdoor.localhost", audience: "frontier-ui", provider: "casdoor", validation_error: "" },
+      oidc: { configured: true, issuer: "http://casdoor.localhost", audience: "locus-ui", provider: "casdoor", validation_error: "" },
     });
 
     render(<AppShell><div>builder child</div></AppShell>);
@@ -290,7 +290,7 @@ describe("AppShell", () => {
     expect(await screen.findByText(/internal • operational console/i)).toBeInTheDocument();
 
     await act(async () => {
-      window.dispatchEvent(new CustomEvent("frontier:platform-settings-updated", {
+      window.dispatchEvent(new CustomEvent("locus:platform-settings-updated", {
         detail: {
           console_classification_banner_enabled: true,
           console_classification_banner_text: "Restricted • Incident Console",
@@ -401,7 +401,7 @@ describe("AppShell", () => {
     getOperatorSessionMock.mockResolvedValue({
       ...builderSession,
       display_name: "James Booth",
-      email: "james@xfrontier.localhost",
+      email: "james@locus.localhost",
       preferred_username: "james",
       roles: ["builder-admin", "member"],
       default_mode: "user",
@@ -417,7 +417,7 @@ describe("AppShell", () => {
 
     await waitFor(() => expect(screen.getByText(/signed in as/i)).toBeInTheDocument());
     expect(screen.getByText("James Booth")).toBeInTheDocument();
-    expect(screen.getByText("james@xfrontier.localhost")).toBeInTheDocument();
+    expect(screen.getByText("james@locus.localhost")).toBeInTheDocument();
     expect(screen.getByText(/builder access enabled/i)).toBeInTheDocument();
     expect(screen.getByText("builder-admin")).toBeInTheDocument();
   });

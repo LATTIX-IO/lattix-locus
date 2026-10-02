@@ -1,7 +1,7 @@
 import asyncio
 
-from frontier_runtime.envelope import Envelope
-from frontier_runtime.guardrails import FilterContext, PromptRenderFilter
+from locus_runtime.envelope import Envelope
+from locus_runtime.guardrails import FilterContext, PromptRenderFilter
 
 
 def test_prompt_render_uses_structured_policy_context() -> None:
@@ -12,4 +12,4 @@ def test_prompt_render_uses_structured_policy_context() -> None:
     )
 
     assert result.envelope.payload["task"] == "demo"
-    assert result.envelope.payload["frontier_policy_context"] == {"classification": "restricted"}
+    assert result.envelope.payload["locus_policy_context"] == {"classification": "restricted"}

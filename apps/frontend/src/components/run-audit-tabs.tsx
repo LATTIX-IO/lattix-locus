@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { WorkflowRunEvent } from "@/types/frontier";
+import type { WorkflowRunEvent } from "@/types/locus";
 
 type AgentTrace = {
   agent: string;

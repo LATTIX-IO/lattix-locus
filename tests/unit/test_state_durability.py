@@ -3,16 +3,16 @@ import hashlib
 from pathlib import Path
 from threading import Thread
 
-import frontier_runtime.security as security_module
-from frontier_runtime.events import AgentEvent, get_event_bus, reset_event_bus
-from frontier_runtime.orchestrator import get_approval_store, reset_approval_store
-from frontier_runtime.persistence import (
+import locus_runtime.security as security_module
+from locus_runtime.events import AgentEvent, get_event_bus, reset_event_bus
+from locus_runtime.orchestrator import get_approval_store, reset_approval_store
+from locus_runtime.persistence import (
     load_state,
     mutate_state,
     reset_shared_state_backend,
     save_state,
 )
-from frontier_runtime.security import (
+from locus_runtime.security import (
     decode_token,
     mint_token,
     reset_token_caches,
@@ -22,7 +22,7 @@ from frontier_runtime.security import (
 
 
 def test_approval_store_persists_across_singleton_reset(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "state.db"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "state.db"))
     reset_shared_state_backend()
     reset_approval_store()
 
@@ -40,7 +40,7 @@ def test_approval_store_persists_across_singleton_reset(monkeypatch, tmp_path: P
 def test_event_bus_fallback_persists_events_across_singleton_reset(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "state.db"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "state.db"))
     reset_shared_state_backend()
     reset_event_bus()
 
@@ -57,9 +57,9 @@ def test_event_bus_fallback_persists_events_across_singleton_reset(
 
 
 def test_event_bus_rate_limit_records_observability(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "state.db"))
-    monkeypatch.setenv("FRONTIER_EVENT_BUS_RATE_LIMIT_COUNT", "1")
-    monkeypatch.setenv("FRONTIER_EVENT_BUS_RATE_LIMIT_WINDOW_SECONDS", "60")
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "state.db"))
+    monkeypatch.setenv("LOCUS_EVENT_BUS_RATE_LIMIT_COUNT", "1")
+    monkeypatch.setenv("LOCUS_EVENT_BUS_RATE_LIMIT_WINDOW_SECONDS", "60")
     reset_shared_state_backend()
     reset_event_bus()
 
@@ -80,7 +80,7 @@ def test_event_bus_rate_limit_records_observability(monkeypatch, tmp_path: Path)
 
 
 def test_replay_cache_persists_across_singleton_reset(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "state.db"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "state.db"))
     reset_shared_state_backend()
     reset_token_caches()
 
@@ -101,7 +101,7 @@ def test_replay_cache_persists_across_singleton_reset(monkeypatch, tmp_path: Pat
 def test_decode_token_preserves_identity_claims_without_consuming_replay_cache(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "state.db"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "state.db"))
     reset_shared_state_backend()
     reset_token_caches()
 
@@ -126,7 +126,7 @@ def test_decode_token_preserves_identity_claims_without_consuming_replay_cache(
 
 
 def test_mutate_state_serializes_concurrent_updates(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "state.db"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "state.db"))
     reset_shared_state_backend()
 
     def _worker() -> None:
@@ -148,8 +148,8 @@ def test_mutate_state_serializes_concurrent_updates(monkeypatch, tmp_path: Path)
 
 
 def test_replay_cache_prunes_expired_entries(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "state.db"))
-    monkeypatch.setenv("FRONTIER_RUNTIME_REPLAY_TTL_SECONDS", "1")
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "state.db"))
+    monkeypatch.setenv("LOCUS_RUNTIME_REPLAY_TTL_SECONDS", "1")
     reset_shared_state_backend()
     reset_token_caches()
 

@@ -4,8 +4,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowCanvas, type GraphLink, type GraphNode } from "@/components/reactflow-canvas";
-import { normalizeNodeTypeForSchema, resolveNodePortAlias } from "@/lib/frontier-node-schema";
-import type { IntegrationDefinition } from "@/types/frontier";
+import { normalizeNodeTypeForSchema, resolveNodePortAlias } from "@/lib/locus-node-schema";
+import type { IntegrationDefinition } from "@/types/locus";
 import {
   clearMemorySession,
   getCollaborationSession,
@@ -236,7 +236,7 @@ export function StudioFullCanvas({
   const collabVersionRef = useRef(0);
   const localGraphDirtyRef = useRef(false);
   const [extraNodeDefinitions, setExtraNodeDefinitions] = useState<
-    Array<{ key: `frontier/${string}`; title: string; color?: string; description?: string }>
+    Array<{ key: `locus/${string}`; title: string; color?: string; description?: string }>
   >([]);
   const [graph, setGraph] = useState<{ nodes: GraphNode[]; links: GraphLink[] }>({
     nodes: initialNodes,
@@ -494,10 +494,10 @@ export function StudioFullCanvas({
       }
 
       const allNodeDefinitions = nodeDefinitions
-        .filter((node) => node.type_key.startsWith("frontier/"))
+        .filter((node) => node.type_key.startsWith("locus/"))
         .map((node) => ({
-          key: node.type_key as `frontier/${string}`,
-          title: node.title ?? node.type_key.replace("frontier/", ""),
+          key: node.type_key as `locus/${string}`,
+          title: node.title ?? node.type_key.replace("locus/", ""),
           color: node.color,
           description: node.description,
         }));
@@ -513,7 +513,7 @@ export function StudioFullCanvas({
   }, [isInternalBuilderMode]);
 
   useEffect(() => {
-    const storageKey = `frontier:collab:${entityType}:${entityId}:user`;
+    const storageKey = `locus:collab:${entityType}:${entityId}:user`;
     const existing = readLocalStorage(storageKey);
     if (existing) {
       setCollabUserId(existing);
@@ -1194,7 +1194,7 @@ export function StudioFullCanvas({
         </div>
 
         <div className="pointer-events-none absolute bottom-3 left-3 z-20 rounded-full border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_94%,hsl(var(--background))_6%)] px-3 py-1.5 text-[0.72rem] font-medium fx-muted shadow-[0_12px_30px_rgba(15,23,42,0.08)] backdrop-blur-md">
-          Tip: right-click canvas to add frontier nodes
+          Tip: right-click canvas to add locus nodes
         </div>
 
         <aside className={`absolute bottom-3 right-3 z-20 rounded-[1.5rem] border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_96%,hsl(var(--background))_4%)] p-3 text-[var(--foreground)] shadow-[0_24px_60px_rgba(15,23,42,0.12)] backdrop-blur-md ${runtimePanelCollapsed ? "w-auto" : "w-[420px]"}`}>

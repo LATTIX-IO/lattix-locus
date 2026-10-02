@@ -20,7 +20,7 @@ import {
   type RunParticipants,
   type WorkflowRunDetail,
 } from "@/lib/api";
-import type { AtfAlignmentReport, WorkflowRunEvent } from "@/types/frontier";
+import type { AtfAlignmentReport, WorkflowRunEvent } from "@/types/locus";
 
 // Deterministic per-agent accent so multi-agent conversations are visually
 // distinct. Hashes the agent name to a stable hue.
@@ -363,7 +363,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
   const errorEventsCount = orderedEvents.filter((event) => matchesEventFilter(event, "errors")).length;
 
   const hasAgentNode = effectiveGraphNodes.some((node) => {
-    const normalized = String(node.type || "").replace(/^frontier\//, "");
+    const normalized = String(node.type || "").replace(/^locus\//, "");
     return normalized === "agent" || normalized.startsWith("agent/");
   });
   const usedAgentStudioAgent = hasAgentNode || agentTraces.length > 0;
@@ -533,9 +533,9 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
         void refreshLiveState().catch(() => {});
       }, 1200);
     };
-    window.addEventListener("frontier:runs-changed", onRunsChanged);
+    window.addEventListener("locus:runs-changed", onRunsChanged);
     return () => {
-      window.removeEventListener("frontier:runs-changed", onRunsChanged);
+      window.removeEventListener("locus:runs-changed", onRunsChanged);
       if (followupTimer) {
         clearTimeout(followupTimer);
       }

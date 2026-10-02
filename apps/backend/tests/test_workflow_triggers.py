@@ -14,14 +14,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 if not str(os.environ.get("A2A_JWT_SECRET") or "").strip():
     os.environ["A2A_JWT_SECRET"] = "unit-test-super-secret-value-32bytes"
-if not str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").strip():
-    os.environ["FRONTIER_API_BEARER_TOKEN"] = "unit-test-bearer"
+if not str(os.environ.get("LOCUS_API_BEARER_TOKEN") or "").strip():
+    os.environ["LOCUS_API_BEARER_TOKEN"] = "unit-test-bearer"
 
 import app.main as main_module
 from app.main import WorkflowDefinition, app, store
 
 client = TestClient(app)
-ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "frontier-admin"}
+ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-locus-actor": "locus-admin"}
 
 
 def _seed_published_workflow() -> str:
@@ -131,7 +131,7 @@ def test_webhook_rejects_unpublished_workflow() -> None:
         token = "manual-test-token-draft"
         store.workflow_triggers[token] = {
             "workflow_id": workflow_id,
-            "actor": "frontier-admin",
+            "actor": "locus-admin",
             "label": "draft",
             "created_at": main_module._now_iso(),
         }

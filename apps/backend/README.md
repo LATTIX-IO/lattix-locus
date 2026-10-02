@@ -1,1 +1,1 @@
-# lattix-frontier-backend
+# lattix-locus-backend

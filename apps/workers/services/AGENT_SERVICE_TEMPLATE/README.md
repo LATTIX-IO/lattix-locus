@@ -11,11 +11,11 @@ Endpoints
 
 Security
 - Authorization: Bearer JWT (A2A). See `runtime/security/jwt.py` for issuer/verification.
-- Hosted/service-separated deployments should set `FRONTIER_RUNTIME_PROFILE=hosted` and keep `FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS=true` so worker services follow the same signed runtime-header contract as the canonical backend.
+- Hosted/service-separated deployments should set `LOCUS_RUNTIME_PROFILE=hosted` and keep `LOCUS_REQUIRE_A2A_RUNTIME_HEADERS=true` so worker services follow the same signed runtime-header contract as the canonical backend.
 - Preferred identity claims: `actor`, `tenant_id`, `subject`, and `internal_service` so worker services and the canonical backend can interpret the same caller identity semantics.
 - In `local-secure` and `hosted` profiles, worker service envelope and detailed readiness/health surfaces require an authenticated bearer token with `internal_service=true`.
-- In strict profiles, runtime callers must also send `X-Frontier-Subject`, `X-Frontier-Nonce`, `X-Frontier-Signature`, and `X-Correlation-ID`; worker services verify the HMAC signature and reject nonce replay.
-- The shared runtime JWT audience is `frontier-runtime`; examples and manifests should keep worker services on that audience unless a deliberate compatibility override is documented.
+- In strict profiles, runtime callers must also send `X-Locus-Subject`, `X-Locus-Nonce`, `X-Locus-Signature`, and `X-Correlation-ID`; worker services verify the HMAC signature and reject nonce replay.
+- The shared runtime JWT audience is `locus-runtime`; examples and manifests should keep worker services on that audience unless a deliberate compatibility override is documented.
 - In the `hosted` runtime profile, A2A clients should target `https://` endpoints only; plaintext `http://` transport is reserved for explicitly local profiles.
 - mTLS (optional): terminate at ingress; forward identity via headers and enforce JWT.
 

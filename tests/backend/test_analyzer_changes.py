@@ -16,9 +16,9 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 gc = pytest.importorskip("app.graph_compiler")
-from frontier_runtime.harness.executor import LocalDirectExecutor  # noqa: E402
-from frontier_runtime.harness.tools import CodingToolset  # noqa: E402
-from frontier_runtime.harness.workspace import Workspace  # noqa: E402
+from locus_runtime.harness.executor import LocalDirectExecutor  # noqa: E402
+from locus_runtime.harness.tools import CodingToolset  # noqa: E402
+from locus_runtime.harness.workspace import Workspace  # noqa: E402
 
 requires_git = pytest.mark.skipif(__import__("shutil").which("git") is None, reason="git required")
 
@@ -72,8 +72,8 @@ def test_changed_files_reports_status_and_diff(tmp_path):
 
 # --- A2: analyzer delegation never edits + returns findings -----------------
 def test_analyzer_delegate_returns_findings(monkeypatch):
-    from frontier_runtime.harness import swe_agent as swe_mod
-    from frontier_runtime.harness.loop import LoopOutcome
+    from locus_runtime.harness import swe_agent as swe_mod
+    from locus_runtime.harness.loop import LoopOutcome
 
     captured = {}
 
@@ -107,7 +107,7 @@ def test_analyzer_delegate_returns_findings(monkeypatch):
         model = "gpt-oss:20b"
 
         def complete(self, *a, **k):
-            from frontier_runtime.harness.llm import ChatResponse
+            from locus_runtime.harness.llm import ChatResponse
 
             return ChatResponse(text="")
 
@@ -129,7 +129,7 @@ def test_analyzer_delegate_returns_findings(monkeypatch):
 
     class _Node:
         id = "security-audit"
-        type = "frontier/agent"
+        type = "locus/agent"
         title = "Security Audit"
         config = {
             "agent_id": "security-auditor-agent",
@@ -191,6 +191,6 @@ def test_cross_functional_v2_graph_compiles():
         execute_native=lambda *a: {},
         mode="execute",
     )
-    compiled = gc.compile_frontier_graph(nodes, links, deps)
+    compiled = gc.compile_locus_graph(nodes, links, deps)
     assert compiled.has_cycle is True
     assert set(compiled.routing_nodes) == {"consensus", "gate"}

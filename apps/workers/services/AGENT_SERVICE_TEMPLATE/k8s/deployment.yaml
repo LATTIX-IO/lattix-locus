@@ -31,16 +31,16 @@ spec:
           ports:
             - containerPort: 8080
           env:
-            - name: FRONTIER_RUNTIME_PROFILE
+            - name: LOCUS_RUNTIME_PROFILE
               value: "hosted"
-            - name: FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS
+            - name: LOCUS_REQUIRE_A2A_RUNTIME_HEADERS
               value: "true"
             - name: A2A_JWT_ALG
               value: "HS256"
             - name: A2A_JWT_ISS
-              value: "lattix-frontier"
+              value: "lattix-locus"
             - name: A2A_JWT_AUD
-              value: "frontier-runtime"
+              value: "locus-runtime"
             - name: A2A_JWT_SECRET
               valueFrom:
                 secretKeyRef:

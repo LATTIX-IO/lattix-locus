@@ -142,7 +142,7 @@ export function LocalAuthPanel({ providerLabel }: LocalAuthPanelProps) {
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 className="w-full rounded-[12px] border border-[var(--ui-border)] bg-[hsl(var(--background))] px-4 py-3 text-sm outline-none transition focus:border-[var(--fx-primary)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--fx-primary)_18%,transparent)]"
-                placeholder="james@xfrontier.localhost"
+                placeholder="james@locus.localhost"
                 required
               />
             </div>
@@ -205,7 +205,7 @@ export function LocalAuthPanel({ providerLabel }: LocalAuthPanelProps) {
           <span className="rounded-full border border-[var(--ui-border)] px-2.5 py-1 text-[0.68rem] font-medium text-[var(--fx-muted)]">Local first</span>
         </div>
         <p className="mt-3 text-sm leading-6 text-[var(--fx-muted)]">
-          {providerLabel} manages the identity records, and xFrontier handles the sign-in form and session setup here.
+          {providerLabel} manages the identity records, and Locus handles the sign-in form and session setup here.
         </p>
       </div>
     </div>

@@ -12,7 +12,7 @@ import {
   type FxStatus,
 } from "@/components/fx-ui";
 import { getPlaybooks } from "@/lib/api";
-import type { PlaybookDefinition } from "@/types/frontier";
+import type { PlaybookDefinition } from "@/types/locus";
 
 type DerivedPlaybook = {
   id: string;

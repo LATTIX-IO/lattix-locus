@@ -16,13 +16,13 @@ from ..security.jwt import issue_token
 
 
 def _runtime_profile() -> str:
-    value = str(os.getenv("FRONTIER_RUNTIME_PROFILE", "local-lightweight") or "").strip().lower()
+    value = str(os.getenv("LOCUS_RUNTIME_PROFILE", "local-lightweight") or "").strip().lower()
     return value or "local-lightweight"
 
 
 def _strict_transport_required() -> bool:
     return _runtime_profile() in {"local-secure", "hosted"} or _env_flag(
-        "FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", False
+        "LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", False
     )
 
 
@@ -123,17 +123,17 @@ def post_envelope(
     headers["Authorization"] = f"Bearer {tok}"
     # Propagate correlation id for cross-service tracing
     headers["X-Correlation-ID"] = env.correlation_id
-    headers["X-Frontier-Subject"] = sub
+    headers["X-Locus-Subject"] = sub
     if actor:
-        headers["X-Frontier-Actor"] = actor
+        headers["X-Locus-Actor"] = actor
     if tenant_id:
-        headers["X-Frontier-Tenant"] = tenant_id
+        headers["X-Locus-Tenant"] = tenant_id
     if _strict_transport_required():
         nonce = str(uuid4())
         timestamp = str(int(time.time()))
-        headers["X-Frontier-Nonce"] = nonce
-        headers["X-Frontier-Timestamp"] = timestamp
-        headers["X-Frontier-Signature"] = _build_runtime_signature(
+        headers["X-Locus-Nonce"] = nonce
+        headers["X-Locus-Timestamp"] = timestamp
+        headers["X-Locus-Signature"] = _build_runtime_signature(
             sub, nonce, env.correlation_id, data, timestamp=timestamp
         )
 

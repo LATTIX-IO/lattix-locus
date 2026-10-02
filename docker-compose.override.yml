@@ -2,6 +2,6 @@ services:
   backend:
     environment:
       LOG_LEVEL: DEBUG
-      FRONTIER_ENV: development
+      LOCUS_ENV: development
     volumes:
       - ./:/app

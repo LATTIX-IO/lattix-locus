@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from frontier_runtime.cognition import (
+from locus_runtime.cognition import (
     AssemblyDefinition,
     AssemblyState,
     BeliefRecord,
@@ -11,7 +11,7 @@ from frontier_runtime.cognition import (
     ColumnState,
     Commitment,
 )
-from frontier_runtime.persistence import (
+from locus_runtime.persistence import (
     load_assembly_causal_state,
     load_causal_state,
     persist_assembly_state,
@@ -22,7 +22,7 @@ from frontier_runtime.persistence import (
 
 
 def _configured_state_store(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
 
 
@@ -151,8 +151,8 @@ def test_persist_assembly_state_appends_confidence_history_and_commitment_outcom
 
 def test_causal_history_limits_keep_recent_entries(monkeypatch, tmp_path: Path) -> None:
     _configured_state_store(monkeypatch, tmp_path)
-    monkeypatch.setenv("FRONTIER_CAUSAL_BELIEF_HISTORY_LIMIT", "2")
-    monkeypatch.setenv("FRONTIER_CAUSAL_CONFIDENCE_HISTORY_LIMIT", "2")
+    monkeypatch.setenv("LOCUS_CAUSAL_BELIEF_HISTORY_LIMIT", "2")
+    monkeypatch.setenv("LOCUS_CAUSAL_CONFIDENCE_HISTORY_LIMIT", "2")
 
     for confidence in (0.2, 0.5, 0.9):
         state = ColumnState(
