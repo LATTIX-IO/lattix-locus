@@ -45,7 +45,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    depends_on: [postgres, redis, neo4j, opa, nats, envoy, casdoor]
+    depends_on: [postgres, redis, opa, nats, envoy, casdoor]
     environment:
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://xfrontier.local}
       POSTGRES_DSN: ${POSTGRES_DSN}
@@ -53,9 +53,21 @@ services:
       FRONTIER_MEMORY_ENABLE_LONG_TERM: ${FRONTIER_MEMORY_ENABLE_LONG_TERM:-true}
       FRONTIER_MEMORY_LEARNING_ENABLED: ${FRONTIER_MEMORY_LEARNING_ENABLED:-true}
       OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
-      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
-      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      # NVIDIA NIM (hosted API by default; NIM_BASE_URL can target self-hosted
+      # NIM microservices to keep inference on-prem).
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NIM_BASE_URL: ${NIM_BASE_URL:-}
+      NIM_MODEL: ${NIM_MODEL:-}
+      # Local open-weight models served by the ollama sidecar.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      # Mounted host projects root (see volumes). Working folders are confined
+      # under this container path so agents can read/edit the user's repos.
+      FRONTIER_PROJECTS_ROOT: ${FRONTIER_PROJECTS_ROOT:-/projects}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      # World-models / knowledge graph live in Postgres (PostgresWorldGraph) — no
+      # Neo4j, no JVM. The backend falls through to the relational world-graph when
+      # NEO4J_URI is unset. (Set NEO4J_URI explicitly only to opt into legacy Neo4j.)
+      FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED: ${FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED:-true}
       FRONTIER_AGENT_ASSETS_ROOT: ${FRONTIER_AGENT_ASSETS_ROOT:-/app/examples/agents}
       VAULT_ADDR: ${VAULT_ADDR:-http://vault:8200}
       VAULT_TOKEN: ${VAULT_TOKEN:-}
@@ -96,6 +108,9 @@ services:
     volumes:
       - ./:/app
       - ./policies:/app/policies:ro
+      # Host projects root → /projects. Point FRONTIER_PROJECTS_HOST at the
+      # folder that contains the repos you want the agents to work in.
+      - ${FRONTIER_PROJECTS_HOST:-D:/lattix}:/projects
 
   local-gateway:
     <<: *default-logging
@@ -106,7 +121,11 @@ services:
       CASDOOR_LOCAL_HOST: ${CASDOOR_LOCAL_HOST:-casdoor.localhost}
     volumes:
       - ./docker/local/Caddyfile:/etc/caddy/Caddyfile:ro
-    ports: ["${LOCAL_GATEWAY_BIND_HOST:-127.0.0.1}:${LOCAL_GATEWAY_HTTP_PORT:-80}:80"]
+    # Bind BOTH IPv4 and IPv6 loopback: browsers resolve *.localhost to ::1
+    # first, so an IPv4-only bind makes the UI fail with "Failed to fetch".
+    ports:
+      - "${LOCAL_GATEWAY_BIND_HOST:-127.0.0.1}:${LOCAL_GATEWAY_HTTP_PORT:-80}:80"
+      - "[::1]:${LOCAL_GATEWAY_HTTP_PORT:-80}:80"
 
   casdoor:
     <<: *default-logging
@@ -158,6 +177,9 @@ services:
       A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
       A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
       A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-backend,research,code,review,coordinator}
+      FRONTIER_PROJECTS_ROOT: ${FRONTIER_PROJECTS_ROOT:-/projects}
+    volumes:
+      - ${FRONTIER_PROJECTS_HOST:-D:/lattix}:/projects
 
   agent-code:
     <<: *agent-image
@@ -183,6 +205,9 @@ services:
       A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
       A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
       A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-backend,research,code,review,coordinator}
+      FRONTIER_PROJECTS_ROOT: ${FRONTIER_PROJECTS_ROOT:-/projects}
+    volumes:
+      - ${FRONTIER_PROJECTS_HOST:-D:/lattix}:/projects
 
   agent-review:
     <<: *agent-image
@@ -208,6 +233,9 @@ services:
       A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
       A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
       A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-backend,research,code,review,coordinator}
+      FRONTIER_PROJECTS_ROOT: ${FRONTIER_PROJECTS_ROOT:-/projects}
+    volumes:
+      - ${FRONTIER_PROJECTS_HOST:-D:/lattix}:/projects
   vault:
     <<: *default-logging
     image: hashicorp/vault:1.18
@@ -247,7 +275,9 @@ services:
 
   postgres:
     <<: *default-logging
-    image: postgres:16-alpine
+    # pgvector image (PG16) so the long-term memory / knowledge store can use
+    # vector similarity search. Volume-compatible with plain postgres:16.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-frontier}
       POSTGRES_USER: ${POSTGRES_USER:-frontier}
@@ -263,13 +293,6 @@ services:
     <<: *default-logging
     image: redis:7-alpine
 
-  neo4j:
-    <<: *default-logging
-    image: neo4j:5-community
-    environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
-    volumes: [neo4j-data:/data]
-
   nats:
     <<: *default-logging
     image: nats:2.11-alpine
@@ -283,11 +306,56 @@ services:
       COLLECTOR_OTLP_ENABLED: "true"
     ports: ["127.0.0.1:16686:16686"]
 
+  # Local open-weight model runtime (download + serve via OpenAI-compatible
+  # API). Idles small; memory is consumed only while a model is loaded.
+  ollama:
+    <<: *default-logging
+    image: ollama/ollama:latest
+    # gpt-oss:20b (MXFP4, ~13GB) needs headroom for the KV cache and any layers
+    # that spill past VRAM. 16g is a safe floor on a 32GB host.
+    mem_limit: 16g
+    environment:
+      # keep the model resident between agent calls / runs so each turn isn't a
+      # cold reload from disk.
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+    volumes:
+      - ollama-models:/root/.ollama
+    # GPU passthrough — host has an NVIDIA GPU and the nvidia container runtime.
+    # gpt-oss:20b (~13GB) is larger than 12GB VRAM, so Ollama keeps most layers
+    # on the GPU and offloads the rest to CPU/RAM automatically. Comment this
+    # block out (and the model runs CPU-only) on a host without an NVIDIA GPU.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # One-shot: pull the local model into the ollama sidecar on `make up` so the
+  # platform self-provisions gpt-oss:20b instead of relying on a manual pull.
+  # Idempotent — a no-op once the model is in the ollama-models volume.
+  ollama-init:
+    <<: *default-logging
+    image: ollama/ollama:latest
+    depends_on: [ollama]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      FRONTIER_OLLAMA_MODEL: ${FRONTIER_OLLAMA_MODEL:-gpt-oss:20b}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "waiting for ollama sidecar..."; \
+        until ollama list >/dev/null 2>&1; do sleep 2; done; \
+        echo "pulling $${FRONTIER_OLLAMA_MODEL} ..."; \
+        ollama pull "$${FRONTIER_OLLAMA_MODEL}" && echo "gpt-oss model ready."
+    restart: "no"
+
 volumes:
   vault-data:
   postgres-data:
   nats-data:
-  neo4j-data:
+  ollama-models:
 
 networks:
   sandbox-internal:

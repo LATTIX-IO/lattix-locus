@@ -1,0 +1,37 @@
+{
+  "id": "qa-engineer-agent",
+  "name": "QA Engineer Agent",
+  "description": "Quality gate for the change: verifies the implementation against the acceptance criteria by actually running the test suite and exercising edge cases, checks coverage of the new/changed code, and reports a pass/fail verdict with concrete reproduction steps for any defect. Read + execute only — never edits product code; hands failures back to the implementer.",
+  "version": 1,
+  "status": "active",
+  "tags": ["qa", "quality", "test-execution", "verification", "sdlc"],
+  "capabilities": [
+    "test-execution",
+    "acceptance-verification",
+    "edge-case-analysis",
+    "coverage-review",
+    "defect-reporting"
+  ],
+  "owners": ["oss-maintainers"],
+  "prompt_file": "system-prompt.md",
+  "model_defaults": {
+    "provider": "ollama",
+    "model": "gpt-oss:20b",
+    "temperature": 0.2,
+    "top_p": 0.95,
+    "capability_profile": "local-32b-class"
+  },
+  "tools": [
+    {
+      "name": "coding-harness",
+      "type": "frontier-coding",
+      "config": {
+        "toolset": ["execute_bash", "search", "str_replace_editor", "run_tests", "submit"],
+        "allow_edits": false,
+        "bash_timeout_seconds": 60,
+        "test_timeout_seconds": 600,
+        "workspace": "per-run"
+      }
+    }
+  ]
+}

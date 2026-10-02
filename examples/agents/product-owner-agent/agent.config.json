@@ -1,0 +1,24 @@
+{
+  "id": "product-owner-agent",
+  "name": "Product Owner Agent",
+  "description": "Owns the 'what' and 'why': turns a raw request into a crisp, testable problem statement with explicit user value, scope boundaries, and measurable acceptance criteria. Clarifies ambiguity, prioritizes, defines done, and at the gate confirms the delivered change actually satisfies the intent before release.",
+  "version": 1,
+  "status": "active",
+  "tags": ["product", "product-owner", "requirements", "acceptance-criteria", "sdlc"],
+  "capabilities": [
+    "requirements-elicitation",
+    "acceptance-criteria",
+    "scope-definition",
+    "prioritization",
+    "intent-verification"
+  ],
+  "owners": ["oss-maintainers"],
+  "prompt_file": "system-prompt.md",
+  "model_defaults": {
+    "provider": "ollama",
+    "model": "gpt-oss:20b",
+    "temperature": 0.3,
+    "top_p": 0.95,
+    "capability_profile": "local-32b-class"
+  }
+}

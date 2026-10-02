@@ -1,0 +1,26 @@
+{
+  "id": "code-reviewer-agent",
+  "name": "Code Reviewer Agent",
+  "description": "Reviews a proposed change for correctness, bugs, readability, and unnecessary complexity. Reads the diff and the surrounding code and returns structured findings with a verdict. Does not edit code — it challenges the implementer's work.",
+  "version": 1,
+  "status": "active",
+  "tags": ["swe", "review", "correctness", "quality", "team", "oss"],
+  "capabilities": ["code-review", "bug-detection", "simplification"],
+  "owners": ["oss-maintainers"],
+  "prompt_file": "system-prompt.md",
+  "url_manifest": "url-manifest.json",
+  "model_defaults": {
+    "provider": "ollama",
+    "model": "gpt-oss:20b",
+    "temperature": 0.2,
+    "top_p": 0.95,
+    "capability_profile": "local-32b-class"
+  },
+  "tools": [
+    {
+      "name": "repo-read",
+      "type": "frontier-coding",
+      "config": { "toolset": ["execute_bash", "search", "str_replace_editor"], "mode": "read-only" }
+    }
+  ]
+}

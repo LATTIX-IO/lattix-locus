@@ -39,6 +39,67 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     ),
     RouteAccessRule(("POST",), "/auth/logout", RouteAccessCategory.PUBLIC_MINIMAL, "auth.logout"),
     RouteAccessRule(
+        ("GET",),
+        "/system/active-agents",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "system.active_agents.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/system/shutdown",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "system.shutdown",
+    ),
+    # Export / import (agents, workflows, playbooks, bundle) — JSON/YAML.
+    RouteAccessRule(
+        ("GET",),
+        "/agent-definitions/{item_id}/export",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "agent.definition.export",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/agent-definitions/import",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "agent.definition.import",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflow-definitions/{item_id}/export",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.definition.export",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/workflow-definitions/import",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.definition.import",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/playbooks/{playbook_id}/export",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "playbook.export",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/playbooks/import",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "playbook.import",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/bundle/export",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "bundle.export",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/bundle/import",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "bundle.import",
+    ),
+    RouteAccessRule(
         ("GET",), "/auth/session", RouteAccessCategory.PUBLIC_MINIMAL, "auth.session.read"
     ),
     RouteAccessRule(("GET",), "/platform/version", RouteAccessCategory.PUBLIC_MINIMAL),
@@ -117,6 +178,34 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         RouteAccessCategory.AUTHENTICATED_MUTATE,
         "platform.settings.save",
     ),
+    # Composer capabilities (per-user settings, working folders, MCP, escalations).
+    RouteAccessRule(
+        ("GET",), "/user/settings", RouteAccessCategory.AUTHENTICATED_READ, "user.settings.read"
+    ),
+    RouteAccessRule(
+        ("PUT",), "/user/settings", RouteAccessCategory.AUTHENTICATED_MUTATE, "user.settings.save"
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workspace/folders",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workspace.folders.list",
+    ),
+    RouteAccessRule(
+        ("GET",), "/mcp/servers", RouteAccessCategory.AUTHENTICATED_READ, "mcp.servers.list"
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflow-runs/{run_id}/escalations",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.run.escalations.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/workflow-runs/{run_id}/escalations/{escalation_id}/approve",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.run.escalations.approve",
+    ),
     RouteAccessRule(
         ("GET",), "/memory/{session_id}", RouteAccessCategory.AUTHENTICATED_READ, "memory.read"
     ),
@@ -169,6 +258,18 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         ("GET",), "/workflow-runs", RouteAccessCategory.AUTHENTICATED_READ, "workflow.run.list"
     ),
     RouteAccessRule(
+        ("POST",),
+        "/workflow-runs/{run_id}/messages",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.run.message",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/workflow-runs/{run_id}/rename",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.run.rename",
+    ),
+    RouteAccessRule(
         ("GET",),
         "/workflow-runs/{run_id}",
         RouteAccessCategory.AUTHENTICATED_READ,
@@ -179,6 +280,186 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         "/workflow-runs/{run_id}/events",
         RouteAccessCategory.AUTHENTICATED_READ,
         "workflow.run.events.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflow-runs/{run_id}/events/stream",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.run.events.stream",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/models/overview",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "models.overview.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/models/providers/{provider_id}/models",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "models.provider.models.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflow-definitions/{item_id}/triggers",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.trigger.list",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/workflow-definitions/{item_id}/triggers",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.trigger.create",
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/triggers/{token}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.trigger.revoke",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/triggers/webhook/{token}",
+        RouteAccessCategory.PUBLIC_MINIMAL,
+        "workflow.trigger.fire",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflow-definitions/{item_id}/schedules",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.schedule.list",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/workflow-definitions/{item_id}/schedules",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.schedule.create",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/schedules/{schedule_id}/toggle",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.schedule.toggle",
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/schedules/{schedule_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.schedule.delete",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/knowledge/collections",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "knowledge.collection.list",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/knowledge/collections",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "knowledge.collection.create",
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/knowledge/collections/{collection_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "knowledge.collection.delete",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/knowledge/collections/{collection_id}/documents",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "knowledge.document.add",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/knowledge/collections/{collection_id}/search",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "knowledge.search",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/knowledge/memory-layers",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "knowledge.memory.layers",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/knowledge/vector-stores",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "knowledge.vector.list",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/skills",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "skill.list",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/skills",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "skill.save",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/skills/import",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "skill.import",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/skills/{skill_id}/scan",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "skill.scan",
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/skills/{skill_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "skill.delete",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/skills/{skill_id}/test",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "skill.test",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/skills/{skill_id}/eval",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "skill.eval",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/skills/{skill_id}/promote",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "skill.promote",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/integrations/catalog",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "integration.catalog.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/integrations/catalog/{catalog_id}/install",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "integration.catalog.install",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/models/local/pull",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "models.local.pull",
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/models/local/{model_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "models.local.delete",
     ),
     RouteAccessRule(
         ("GET",),
@@ -208,6 +489,24 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         ("POST",), "/approvals", RouteAccessCategory.AUTHENTICATED_MUTATE, "approval.submit"
     ),
     RouteAccessRule(("GET",), "/inbox", RouteAccessCategory.AUTHENTICATED_READ, "inbox.read"),
+    RouteAccessRule(
+        ("GET",), "/inbox/groups", RouteAccessCategory.AUTHENTICATED_READ, "inbox.groups.list"
+    ),
+    RouteAccessRule(
+        ("POST",), "/inbox/groups", RouteAccessCategory.AUTHENTICATED_MUTATE, "inbox.groups.create"
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/inbox/groups/{group_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "inbox.groups.update",
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/inbox/groups/{group_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "inbox.groups.delete",
+    ),
     RouteAccessRule(
         ("GET",), "/integrations", RouteAccessCategory.AUTHENTICATED_READ, "integration.list"
     ),

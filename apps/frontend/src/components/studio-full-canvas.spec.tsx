@@ -284,8 +284,7 @@ describe("StudioFullCanvas", () => {
     const section = container.querySelector("section");
     expect(section).not.toBeNull();
     expect(section?.className).toContain("overflow-hidden");
-    expect(section?.className).toContain("h-[calc(100vh-57px-2rem)]");
-    expect(section?.className).toContain("md:h-[calc(100vh-57px-3rem)]");
+    expect(section?.className).toContain("h-[calc(100vh-var(--fx-content-top,57px))]");
   });
 
   it("passes selected edge style controls to canvas", async () => {

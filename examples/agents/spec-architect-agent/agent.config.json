@@ -1,0 +1,26 @@
+{
+  "id": "spec-architect-agent",
+  "name": "Spec Architect Agent",
+  "description": "Turns a specification into a concrete, minimal implementation plan: clarifies intent and acceptance criteria, identifies the affected code, chooses the smallest correct design, and lists the changes and tests required. Plans only — it does not edit code. First seat in the multi-agent dev team.",
+  "version": 1,
+  "status": "active",
+  "tags": ["swe", "architect", "planning", "design", "team", "oss"],
+  "capabilities": ["spec-analysis", "decomposition", "design", "test-planning"],
+  "owners": ["oss-maintainers"],
+  "prompt_file": "system-prompt.md",
+  "url_manifest": "url-manifest.json",
+  "model_defaults": {
+    "provider": "ollama",
+    "model": "gpt-oss:20b",
+    "temperature": 0.3,
+    "top_p": 0.95,
+    "capability_profile": "local-32b-class"
+  },
+  "tools": [
+    {
+      "name": "repo-read",
+      "type": "frontier-coding",
+      "config": { "toolset": ["execute_bash", "search", "str_replace_editor"], "mode": "read-only" }
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Lattix xFrontier",
+  "version": "0.1.0",
+  "identifier": "com.lattix.xfrontier",
+  "build": {
+    "frontendDist": "loading",
+    "devUrl": "http://127.0.0.1:3000"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Lattix xFrontier",
+        "width": 1440,
+        "height": 920,
+        "minWidth": 1024,
+        "minHeight": 700,
+        "resizable": true,
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi", "app", "dmg", "deb", "appimage"],
+    "category": "DeveloperTool",
+    "shortDescription": "Secure, local-first multi-agent orchestration.",
+    "longDescription": "Lattix xFrontier desktop shell — runs the backend, sidecars (Postgres+pgvector, Neo4j world models, NATS, Ollama) and confined agents locally, with no Docker.",
+    "externalBin": ["bin/frontier-backend"],
+    "resources": ["bin/*", "resources/frontend/**/*"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com",
+      "certificateThumbprint": null,
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": null,
+      "entitlements": null,
+      "hardenedRuntime": true
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEIxODJDNDQ4NzlFRTFCMjcKUldRbkcrNTVTTVNDc1pHWFFEcGFwWjB0TmVRZUU1eFlPSDBVVkhTM3VOYUdPT2pCR2Vva2M4ZWcK",
+      "endpoints": [
+        "https://github.com/LATTIX-IO/lattix-xfrontier/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

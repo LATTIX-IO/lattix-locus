@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { getNodeDefinitions } from "@/lib/api";
+import { NodeFieldForm } from "@/components/node-field-form";
+import { getNodeDefinitions, type NodeFieldSpec } from "@/lib/api";
 import { frontierNodeTemplates, type FrontierNodeTemplate } from "@/lib/frontier-node-catalog";
 import { useEffect, useMemo, useState } from "react";
 
@@ -29,6 +30,7 @@ const emptyTemplate: FrontierNodeTemplate = {
 export default function NodeLibraryPage() {
   const [nodeTemplates, setNodeTemplates] = useState<FrontierNodeTemplate[]>(frontierNodeTemplates);
   const [selectedNode, setSelectedNode] = useState<string>(frontierNodeTemplates[0]?.id ?? "");
+  const [nodeInputs, setNodeInputs] = useState<Record<string, NodeFieldSpec[]>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -56,6 +58,13 @@ export default function NodeLibraryPage() {
       if (mapped.length > 0) {
         setNodeTemplates(mapped);
         setSelectedNode((current) => (mapped.some((item) => item.id === current) ? current : mapped[0].id));
+        const inputsByKey: Record<string, NodeFieldSpec[]> = {};
+        for (const node of response) {
+          if (node.inputs && node.inputs.length > 0) {
+            inputsByKey[node.type_key] = node.inputs;
+          }
+        }
+        setNodeInputs(inputsByKey);
       }
     }
 
@@ -175,6 +184,18 @@ export default function NodeLibraryPage() {
         </aside>
 
         <div className="space-y-4">
+          <div className="fx-panel p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold uppercase tracking-wide">{selectedTemplate.name} — configurable inputs</h2>
+              <span className="fx-muted text-[10px] uppercase">{selectedTemplate.key}</span>
+            </div>
+            <p className="fx-muted mb-3 text-xs">
+              Declarative input schema. The studio renders this node&apos;s config panel from these specs —
+              edit once here and every workflow gets the same controls.
+            </p>
+            <NodeFieldForm fields={nodeInputs[selectedTemplate.key] ?? []} readOnly />
+          </div>
+
           <div className="fx-panel p-4">
             <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide">Custom node builder</h2>
             <div className="grid gap-3 md:grid-cols-2">

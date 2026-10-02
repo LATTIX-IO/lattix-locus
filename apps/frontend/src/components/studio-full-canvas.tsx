@@ -13,6 +13,7 @@ import {
   getIntegrations,
   getMcpConnections,
   getMemorySession,
+  getModelsOverview,
   getNodeDefinitions,
   getObservabilityDashboard,
   getObservabilityRunTrace,
@@ -672,7 +673,11 @@ export function StudioFullCanvas({
     let cancelled = false;
 
     async function loadGuardrailOptions() {
-      const rulesets = await getGuardrailRulesets();
+      const [rulesets, modelsOverview] = await Promise.all([
+        getGuardrailRulesets(),
+        // Wrapped so a synchronous throw also degrades to the static model options.
+        Promise.resolve().then(() => getModelsOverview()).catch(() => null),
+      ]);
       if (cancelled) {
         return;
       }
@@ -681,12 +686,41 @@ export function StudioFullCanvas({
         .filter((item) => item.status === "published")
         .map((item) => item.id);
 
+      // Build the agent-node model dropdown from the models actually configured
+      // in the platform: locally-installed Ollama models + the default model of
+      // every configured API/external provider. Falls back to the schema's static
+      // options when nothing is configured (or the overview is unavailable).
+      const modelOptions: string[] = [];
+      const addModel = (value: string | undefined | null) => {
+        const v = String(value ?? "").trim();
+        if (v && !modelOptions.includes(v)) modelOptions.push(v);
+      };
+      if (modelsOverview) {
+        const ollama = modelsOverview.providers?.ollama;
+        for (const installed of ollama?.installed_models ?? []) {
+          const id = String(installed?.id ?? "").trim();
+          if (id) addModel(id.startsWith("ollama/") ? id : `ollama/${id}`);
+        }
+        for (const item of modelsOverview.catalog ?? []) {
+          if (item?.installed) {
+            const ref = String(item.reference ?? "").trim();
+            if (ref) addModel(ref.startsWith("ollama/") ? ref : `ollama/${ref}`);
+          }
+        }
+        if (modelsOverview.providers?.openai?.configured) addModel(modelsOverview.providers.openai.default_model);
+        if (modelsOverview.providers?.nim?.configured) addModel(modelsOverview.providers.nim.default_model);
+        for (const ext of modelsOverview.external ?? []) {
+          if (ext?.configured) addModel(ext.default_model);
+        }
+      }
+
       setWidgetOptionOverrides((current) => ({
         ...current,
         guardrail: {
           ...(current.guardrail ?? {}),
           ruleset_id: publishedRuleSetIds,
         },
+        ...(modelOptions.length > 0 ? { agent: { ...(current.agent ?? {}), model: modelOptions } } : {}),
       }));
     }
 
@@ -892,6 +926,11 @@ export function StudioFullCanvas({
     }
     setPublishState("publishing");
     try {
+      // Persist the current canvas FIRST, then publish — otherwise publish
+      // snapshots the last *saved* draft and the runtime keeps calling a stale
+      // version of the graph (the autosave only writes the collab session, not
+      // the workflow definition).
+      await onSave(graph);
       await onPublish();
       setPublishState("published");
     } catch {
@@ -989,7 +1028,7 @@ export function StudioFullCanvas({
   const backHref = entityType === "agent" ? "/builder/agents" : entityType === "workflow" ? "/builder/workflows" : "/builder/playbooks";
 
   return (
-    <section className="-m-4 h-[calc(100vh-57px-2rem)] overflow-hidden md:-m-6 md:h-[calc(100vh-57px-3rem)]">
+    <section className="-m-5 h-[calc(100vh-var(--fx-content-top,57px))] overflow-hidden md:-m-6">
       <div className="relative h-full w-full">
         <ReactFlowCanvas
           className="h-full border-0"

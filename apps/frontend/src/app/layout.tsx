@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, IBM_Plex_Mono } from "next/font/google";
 import { Suspense } from "react";
 import { AppShell } from "@/components/app-shell";
+import { DesktopLifecycle } from "@/components/desktop-lifecycle";
 import { ToastProvider } from "@/components/toast";
 import "./globals.css";
 
@@ -32,6 +33,7 @@ export default function RootLayout({
         className={`${geist.variable} ${ibmPlexMono.variable} antialiased`}
       >
         <ToastProvider>
+          <DesktopLifecycle />
           <Suspense fallback={<div className="min-h-screen bg-[hsl(var(--background))]" />}>
             <AppShell>{children}</AppShell>
           </Suspense>

@@ -1,0 +1,26 @@
+{
+  "id": "security-auditor-agent",
+  "name": "Security Auditor Agent",
+  "description": "Audits a proposed change for security defects: injection, unsafe input handling, secrets, authz/authn gaps, unsafe deserialization, path traversal, and dependency risks. Reads the diff and returns structured findings with a verdict. The team's adversarial security seat.",
+  "version": 1,
+  "status": "active",
+  "tags": ["swe", "security", "audit", "appsec", "team", "oss"],
+  "capabilities": ["security-review", "vulnerability-detection", "secure-coding"],
+  "owners": ["oss-maintainers"],
+  "prompt_file": "system-prompt.md",
+  "url_manifest": "url-manifest.json",
+  "model_defaults": {
+    "provider": "ollama",
+    "model": "gpt-oss:20b",
+    "temperature": 0.1,
+    "top_p": 0.9,
+    "capability_profile": "local-32b-class"
+  },
+  "tools": [
+    {
+      "name": "repo-read",
+      "type": "frontier-coding",
+      "config": { "toolset": ["execute_bash", "search", "str_replace_editor"], "mode": "read-only" }
+    }
+  ]
+}

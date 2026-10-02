@@ -185,6 +185,75 @@ The following assets require explicit protection:
 8. Column runtime → causal state persistence and graph projection
 9. Cognitive message transport → backend admission handler
 
+
+## Threats
+
+Use severity: Critical, High, Medium, Low.
+
+| ID | Threat | Severity | Affected Boundary | Description |
+|----|--------|----------|-------------------|-------------|
+| T1 | Unauthenticated API access | Critical | Browser/UI → backend API | Anonymous or weakly authenticated callers reach mutating endpoints in non-secure profiles |
+| T2 | Credential leakage in logs/traces | Critical | Deployment/configuration → running services | Secrets, tokens, or auth headers accidentally logged in structured logs, traces, or error responses |
+| T3 | SQL/injection via graph definition inputs | High | Backend API → persistence services | Malicious graph/agent/guardrail definitions trigger injection in Postgres/Neo4j/Redis |
+| T4 | Path traversal in shared filesystem access | High | Runtime → sandbox/tool jail / Backend/shared path auth | Attacker escapes approved roots via symlink, \..\, or canonicalization bypass |
+| T5 | SSRF via sandbox egress or runtime fetch | High | Runtime → sandbox/tool jail | Sandbox/tool makes outbound requests to internal metadata services or private networks |
+| T6 | Replay of A2A / worker messages | High | Service → service / Orchestrator → worker | Captured signed envelopes replayed to impersonate legitimate worker/orchestrator |
+| T7 | Capability token forgery or escalation | High | Orchestrator/worker → policy engine | Forged or over-permissioned capability tokens bypass tool-call budgets or path scopes |
+| T8 | Memory scope bypass | High | Backend runtime → worker/A2A | Cross-tenant or cross-scope memory read/write due to missing authorization checks |
+| T9 | Policy drift between Rego and Python fallback | Medium | Orchestrator/worker → policy engine | Allow/deny decisions diverge when fallback and Rego logic evolve independently |
+| T10 | Introspection leakage via health/diagnostic endpoints | Medium | Browser/UI → backend API / Deployment → services | \/healthz\, \/ready\, \/platform/*\ expose runtime config, versions, or topology to unauthenticated callers |
+| T11 | CORS misconfiguration | Medium | Browser/UI → backend API | Overly permissive origins/headers allow browser-based credentialed attacks |
+| T12 | Supply chain: compromised dependency | Medium | Deployment/configuration → running services | Malicious package in Python/npm supply chain executes at build or runtime |
+| T13 | Container escape via sandbox breakout | Low | Runtime → sandbox/tool jail | Attacker breaks out of seccomp/bubblewrap/Docker isolation to host kernel |
+| T14 | Denial of service via unbounded queues/retries | Low | Orchestrator/worker → policy engine / Runtime → sandbox | Unbounded work queues, retries, or tool calls exhaust memory/CPU |
+| T15 | Configuration drift between local and hosted profiles | Low | Deployment/configuration → running services | Secure/full and lightweight modes diverge, leading to wrong operator assumptions |
+
+## Mitigations
+
+| Threat ID | Mitigation | Status | Implementation |
+|-----------|------------|--------|----------------|
+| T1 | Central route inventory with middleware enforcement; startup validation catches unclassified endpoints; secure/local full-stack fails closed via env-backed auth defaults | **Implemented** | `apps/backend/app/request_security.py`, `apps/backend/app/main.py` (route classification), `FRONTIER_RUNTIME_PROFILE=local-secure` |
+| T2 | Structured logging redacts auth headers, tokens, secrets; error responses sanitize guardrail internals; no PII in traces by default | **Implemented** | `apps/backend/app/logging_config.py`, runtime sanitization in `frontier_runtime/security.py` |
+| T3 | Prepared statements / safe query builders in backend; graph schema validation; input length/format checks at API boundary | **Implemented** | SQLAlchemy ORM, Pydantic models in `apps/backend/app/schemas.py` |
+| T4 | Canonical containment checks (not prefix matching) in backend loaders and shared fallback policy; symlink resolution before containment test | **Implemented** | `apps/backend/app/filesystem.py`, `policies/fs.rego` |
+| T5 | Squid domain allowlist (fail-closed) replacing open IP-range ACL; network namespace isolation when `allow_network=False` | **Implemented** | `docker/sandbox/squid.conf`, `frontier_runtime/sandbox.py` |
+| T6 | A2A replay protection: TTL-based nonce expiry with bounded pruning; signed `X-Frontier-Subject`/`Nonce`/`Signature` headers verified at receiver | **Implemented** | `apps/backend/app/a2a_replay.py`, worker A2A client in `apps/workers/` |
+| T7 | Capability tokens carry `exp` (10-min TTL), `allowed_tools`, `max_tool_calls`, canonical read/write path scopes; shared verifier enforces all claims | **Implemented** | `frontier_runtime/capability_tokens.py`, filter-chain enforcement |
+| T8 | Memory reads/writes enforce actor, tenant, collaboration-session, or internal-service authorization per scope; scope-to-bucket validation | **Implemented** | `apps/backend/app/memory.py`, worker runtime envelope auth middleware |
+| T9 | Normalized evaluation contract shared by Python fallback and Rego; parity tests for path access, dynamic tool allowlists, tool budgets | **Implemented** | `policies/agent.rego`, `frontier_runtime/policy_fallback.py`, `tests/unit/test_*_parity.py` |
+| T10 | Central route classification marks /healthz public (minimal), diagnostics authenticated; secure local mode serves minimal public healthz | **Implemented** | `apps/backend/app/request_security.py` access classes |
+| T11 | CORS uses explicit local origins/methods/headers instead of wildcards; localhost-only in local profiles | **Implemented** | `apps/backend/app/main.py` CORS middleware config |
+| T12 | Gitleaks secret scanning in CI; Semgrep SAST; Trivy SCA for vuln/misconfig; SBOM via Syft; pinned dependencies in `pyproject.toml`/`package-lock.json` | **Implemented** | `.github/workflows/security-lifecycle.yml`, `precommit.ps1` |
+| T13 | Three-tier sandbox: seccomp BPF, read-only rootfs, network namespace, non-root, resource limits, IPC isolation, gVisor/Kata RuntimeClasses for K8s | **Implemented** | `docker/sandbox/seccomp-strict.json`, `frontier_runtime/sandbox.py`, Helm chart `frontier-sandbox` RuntimeClass |
+| T14 | Bounded pids-limit (256), memory (512m), CPU (1.0); capability token `max_tool_calls` budget; sandbox resource limits | **Implemented** | `frontier_runtime/sandbox.py`, capability token claims |
+| T15 | Explicit `FRONTIER_RUNTIME_PROFILE` values (`local-lightweight`, `local-secure`, `hosted`); Helm values-prod.yaml codifies hosted posture; CI validates Helm render | **Implemented** | `frontier_tooling/common.py`, `helm/lattix-frontier/values-prod.yaml`, CI Helm lint |
+
+## Required Tests
+
+The following tests provide regression coverage for the threats and mitigations above. All tests must pass in CI before merge.
+
+| Test Target | Test File(s) | Threat Coverage | Frequency |
+|-------------|--------------|-----------------|-----------|
+| Route classification & auth enforcement | \pps/backend/tests/test_request_security.py\ | T1 | Every PR |
+| Security headers & sanitized errors | \	ests/unit/test_security_headers.py\ | T2, T10 | Every PR |
+| Graph schema validation & injection safety | \pps/backend/tests/test_graph_validation.py\ | T3 | Every PR |
+| Filesystem canonical containment | \	ests/unit/test_compose_auth_contract.py\, \policies/tests/fs_test.rego\ | T4 | Every PR |
+| Sandbox egress allowlist & network isolation | \	ests/unit/test_sandbox_policy.py\, \	ests/backend/test_windows_sandbox.py\ | T5, T13 | Every PR |
+| A2A replay protection & nonce expiry | \	ests/unit/test_event_signing.py\, \pps/backend/tests/test_a2a_replay.py\ | T6 | Every PR |
+| Capability token verification (TTL, tools, budgets, scopes) | \	ests/unit/test_biscuit_tokens.py\, \	ests/unit/test_tool_jail.py\ | T7, T14 | Every PR |
+| Memory scope authorization (actor, tenant, collaboration, internal) | \pps/backend/tests/test_memory_scope.py\ | T8 | Every PR |
+| Policy parity (Rego vs Python fallback) | \policies/tests/agent_test.rego\, \	ests/unit/test_policy_parity.py\ | T9 | Every PR |
+| Health/diagnostic endpoint visibility | \pps/backend/tests/test_endpoint_visibility.py\ | T10 | Every PR |
+| CORS configuration | \pps/backend/tests/test_cors.py\ | T11 | Every PR |
+| Secret scanning (Gitleaks), SAST (Semgrep), SCA (Trivy) | CI-only: \.github/workflows/security-lifecycle.yml\ | T12 | Every PR + scheduled |
+| Sandbox isolation (seccomp, bubblewrap, gVisor) | \	ests/backend/test_windows_sandbox.py\, Helm chart render tests | T13 | Every PR + Windows CI |
+| Resource limits & tool-call budgets | \	ests/unit/test_sandbox_policy.py\, \	ests/unit/test_biscuit_tokens.py\ | T14 | Every PR |
+| Profile consistency (local-lightweight vs local-secure vs hosted) | \	ests/unit/test_helm_security_contract.py\, \helm/lattix-frontier/values-*.yaml\ diff check | T15 | Every PR |
+| Compose config validation (both compose files) | \docker compose config --quiet\ in CI | T5, T13, T15 | Every PR |
+| Helm lint & template render (prod values) | \make helm-validate\ in CI | T15 | Every PR |
+| OPA policy tests | \make policy-test\ | T4, T9 | Every PR |
+
+---
 ## Service-level zero trust expectations
 
 The secure/full stack target is **service-level zero trust**.
@@ -608,3 +677,4 @@ Phase 2 is complete when:
 3. memory access control
 4. service-to-service transport hardening
 5. deployment control repair and hosted-profile documentation cleanup
+

@@ -106,6 +106,7 @@ class IsolationStrategy(str, Enum):
 
     KERNEL_BWRAP = "kernel-bwrap"
     KERNEL_SEATBELT = "kernel-seatbelt"
+    WINDOWS_APPCONTAINER = "windows-appcontainer"
     HARDENED_DOCKER = "hardened-docker"
     K8S_GVISOR = "k8s-gvisor"
     K8S_KATA = "k8s-kata"
@@ -365,6 +366,39 @@ class _HardenedDockerStrategy:
         return args
 
 
+class _WindowsAppContainerStrategy:
+    """Windows: confine the child via the win_sandbox launcher (Job Object now,
+    AppContainer / Windows-Sandbox as opt-in tiers). No Docker required."""
+
+    def build_command(self, spec: ExecutionSpec, policy: SandboxPolicy) -> list[str]:
+        import sys as _sys
+
+        args = [
+            _sys.executable,
+            "-m",
+            "frontier_runtime.win_sandbox",
+            "run",
+            "--memory",
+            str(policy.memory_limit),
+            "--pids",
+            str(policy.pid_limit),
+            "--cpu",
+            str(policy.cpu_limit),
+            "--timeout",
+            str(policy.timeout_seconds),
+        ]
+        if policy.allow_network:
+            args.append("--allow-network")
+        for path in policy.allowed_read_paths:
+            args += ["--read-path", str(Path(path).expanduser().resolve())]
+        for path in policy.allowed_write_paths:
+            args += ["--write-path", str(Path(path).expanduser().resolve())]
+        if spec.cwd:
+            args += ["--cwd", spec.cwd]
+        args += ["--", *spec.command]
+        return args
+
+
 class _RestrictedProcessStrategy:
     """Fallback: run command with minimal env sanitization (no sandbox)."""
 
@@ -413,6 +447,20 @@ class SandboxManager:
         if platform == HostPlatform.MACOS and Path("/usr/bin/sandbox-exec").is_file():
             return IsolationStrategy.KERNEL_SEATBELT
 
+        # Windows: AppContainer/Job-Object confinement via the win_sandbox
+        # launcher (no Docker). Used for the native install, or opt-in elsewhere.
+        if platform == HostPlatform.WINDOWS and (
+            profile in {"local-native", "native"}
+            or _env_flag("FRONTIER_FORCE_WINDOWS_APPCONTAINER")
+        ):
+            return IsolationStrategy.WINDOWS_APPCONTAINER
+
+        # Native desktop install is explicitly Dockerless: never fall back to a
+        # docker daemon. Use the kernel sandbox above when present, else degrade
+        # to restricted-process (Windows is handled above).
+        if profile in {"local-native", "native"}:
+            return IsolationStrategy.RESTRICTED_PROCESS
+
         # Fall back to hardened Docker if available
         if shutil.which("docker"):
             return IsolationStrategy.HARDENED_DOCKER
@@ -449,6 +497,9 @@ class SandboxManager:
         elif strategy == IsolationStrategy.KERNEL_SEATBELT:
             cmd = _KernelSeatbeltStrategy().build_command(spec, policy)
             backend = "kernel-seatbelt"
+        elif strategy == IsolationStrategy.WINDOWS_APPCONTAINER:
+            cmd = _WindowsAppContainerStrategy().build_command(spec, policy)
+            backend = "windows-appcontainer"
         elif strategy == IsolationStrategy.HARDENED_DOCKER:
             cmd = _HardenedDockerStrategy().build_command(spec, policy)
             backend = "hardened-docker"

@@ -1,4 +1,8 @@
 http://{$LOCAL_STACK_HOST:xfrontier.local} {
+    log {
+        output stdout
+        format console
+    }
     handle_path /api/* {
         reverse_proxy backend:8000
     }

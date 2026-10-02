@@ -1,0 +1,22 @@
+{
+  "id": "tech-lead-agent",
+  "name": "Tech Lead Agent",
+  "description": "Facilitates the cross-functional engineering team: frames the spec, runs the design discussion, draws out each engineer's reasoning, resolves disagreements on the merits, drives the team to a concrete consensus design, and owns the final quality gate before handing a completed feature back to the human.",
+  "version": 1,
+  "status": "active",
+  "tags": ["swe", "tech-lead", "facilitator", "architecture", "team", "oss"],
+  "capabilities": ["facilitation", "design-synthesis", "consensus", "quality-gate"],
+  "owners": ["oss-maintainers"],
+  "prompt_file": "system-prompt.md",
+  "url_manifest": "url-manifest.json",
+  "model_defaults": {
+    "provider": "ollama",
+    "model": "gpt-oss:20b",
+    "temperature": 0.3,
+    "top_p": 0.95,
+    "capability_profile": "local-32b-class"
+  },
+  "tools": [
+    { "name": "repo-read", "type": "frontier-coding", "config": { "toolset": ["execute_bash", "search", "str_replace_editor"], "mode": "read-only" } }
+  ]
+}

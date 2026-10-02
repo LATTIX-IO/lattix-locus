@@ -136,6 +136,108 @@ def local_down_command() -> None:
     run_command(_local_compose("down", "-v"), cwd=ROOT)
 
 
+# --------------------------------------------------------------------------- #
+# Native (Dockerless) install — managed sidecars, no docker compose.
+# --------------------------------------------------------------------------- #
+def _native_plan(*, world_models: bool, redis: bool):
+    from .native_launcher import NativeConfig, build_native_plan
+
+    config = NativeConfig(
+        enable_world_models=world_models,
+        enable_redis=redis,
+        projects_root=str(os.getenv("FRONTIER_PROJECTS_ROOT") or "").strip(),
+    )
+    return build_native_plan(config)
+
+
+@cli.command("native-up")
+@click.option(
+    "--world-models/--no-world-models", default=True, help="Run the Neo4j world-graph sidecar."
+)
+@click.option(
+    "--redis/--no-redis", default=True, help="Run the Redis short-term cache (WAL fallback if off)."
+)
+def native_up_command(world_models: bool, redis: bool) -> None:
+    """Start xFrontier natively (no Docker): managed Postgres+pgvector, Neo4j
+    world models, NATS, Ollama, and the app — then print the resolved status."""
+    from .native_launcher import NativeLauncherError, NativeSupervisor
+
+    try:
+        plan = _native_plan(world_models=world_models, redis=redis)
+    except NativeLauncherError as exc:
+        raise SystemExit(f"native-up blocked: {exc}")
+    for warning in plan.warnings:
+        click.echo(f"warning: {warning}")
+    supervisor = NativeSupervisor(plan, log=lambda m: click.echo(m))
+    status = supervisor.start_all()
+    print_json({"profile": "local-native", "services": status, "warnings": plan.warnings})
+
+
+@cli.command("native-status")
+@click.option("--world-models/--no-world-models", default=True)
+@click.option("--redis/--no-redis", default=True)
+def native_status_command(world_models: bool, redis: bool) -> None:
+    """Show the planned native service set + derived backend env (no launch)."""
+    from .native_launcher import NativeLauncherError
+
+    try:
+        plan = _native_plan(world_models=world_models, redis=redis)
+    except NativeLauncherError as exc:
+        raise SystemExit(str(exc))
+    safe_env = {
+        k: ("***" if any(frag in k for frag in ("SECRET", "PASSWORD", "TOKEN", "DSN")) else v)
+        for k, v in plan.env.items()
+    }
+    print_json({"services": plan.service_names(), "env": safe_env, "warnings": plan.warnings})
+
+
+@cli.command("native-fetch")
+@click.argument("names", nargs=-1)
+def native_fetch_command(names: tuple[str, ...]) -> None:
+    """Download the native sidecar binaries for THIS OS/arch into the app-home
+    bin dir. Auto-fetches single static binaries (nats-server, caddy, ollama on
+    Linux); prints official-install guidance for Postgres+pgvector and Neo4j."""
+    from .common import default_app_home
+    from .native_binaries import DEFAULT_TARGETS, current_platform, provision
+
+    bin_dir = default_app_home() / "bin"
+    targets = list(names) if names else list(DEFAULT_TARGETS)
+    os_name, arch = current_platform()
+    report = provision(targets, bin_dir)
+    print_json(
+        {
+            "platform": {"os": os_name, "arch": arch},
+            "bin_dir": str(bin_dir),
+            "installed": report.installed,
+            "skipped": report.skipped,
+            "manual": report.manual,
+            "failed": report.failed,
+            "warnings": report.warnings,
+        }
+    )
+
+
+@cli.command("native-serve")
+def native_serve_command() -> None:
+    """Run the native supervisor in the FOREGROUND until interrupted (Ctrl+C).
+
+    This is the dev equivalent of the desktop backend sidecar: it starts every
+    sidecar + the backend + the frontend and blocks, tearing them down on exit.
+    """
+    from .desktop import run_desktop_supervisor
+
+    run_desktop_supervisor(log=lambda m: click.echo(m))
+
+
+@cli.command("native-down")
+def native_down_command() -> None:
+    """Stop natively-launched sidecars (best-effort; supervisor is per-process)."""
+    click.echo(
+        "Native services run under the foreground supervisor started by 'native-up'/'native-serve'. "
+        "Stop that process (Ctrl+C) to terminate the managed sidecars."
+    )
+
+
 @cli.command("stack-up")
 def stack_up_command() -> None:
     run_command(_full_compose("up", "-d"), cwd=ROOT)

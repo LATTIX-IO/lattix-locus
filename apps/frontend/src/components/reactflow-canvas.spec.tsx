@@ -50,8 +50,8 @@ vi.mock("reactflow", () => {
     ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
     Handle: ({ id, type }: { id: string; type: string }) => <div data-testid={`handle-${type}-${id}`} />,
     addEdge: (edge: Record<string, unknown>, edges: Array<Record<string, unknown>>) => [...edges, edge],
-    applyEdgeChanges: (changes: Array<{ id?: string; type?: string; selected?: boolean }>, edges: Array<Record<string, unknown>>) => applySelectionChanges(changes, edges),
-    applyNodeChanges: (changes: Array<{ id?: string; type?: string; selected?: boolean }>, nodes: Array<Record<string, unknown>>) => applySelectionChanges(changes, nodes),
+    applyEdgeChanges: (changes: Array<{ id?: string; type?: string; selected?: boolean }>, edges: Array<{ id: string; selected?: boolean }>) => applySelectionChanges(changes, edges),
+    applyNodeChanges: (changes: Array<{ id?: string; type?: string; selected?: boolean }>, nodes: Array<{ id: string; selected?: boolean }>) => applySelectionChanges(changes, nodes),
     ReactFlow: (props: Record<string, unknown>) => {
       reactFlowPropsSpy(props);
       const nodeTypes = (props.nodeTypes ?? {}) as Record<string, React.ComponentType<MockNodeComponentProps>>;

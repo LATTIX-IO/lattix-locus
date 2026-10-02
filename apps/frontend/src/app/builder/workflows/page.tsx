@@ -1,4 +1,7 @@
+import { randomUUID } from "node:crypto";
 import Link from "next/link";
+import { TypedDeleteButton } from "@/components/typed-delete-button";
+import { ImportExportControls } from "@/components/import-export-controls";
 import { BuilderLibraryActions } from "@/components/builder-library-actions";
 import { BuilderLibraryStatusBadges } from "@/components/builder-library-status-badges";
 import { getWorkflowDefinitions } from "@/lib/api";
@@ -9,6 +12,7 @@ type BuilderWorkflowsPageProps = {
 
 export default async function BuilderWorkflowsPage({ searchParams }: BuilderWorkflowsPageProps) {
   const workflows = await getWorkflowDefinitions();
+  const newWorkflowId = randomUUID();
   const resolvedSearchParams = await searchParams;
   const view = resolvedSearchParams?.view === "archived" ? "archived" : "library";
   const workflowCounts = {
@@ -22,16 +26,24 @@ export default async function BuilderWorkflowsPage({ searchParams }: BuilderWork
 
   return (
     <section className="space-y-4">
-      <header>
-        <h1 className="text-2xl font-semibold">Workflow Studio</h1>
-        <p className="fx-muted">Workflows are tasks for one or more agents to execute end-to-end.</p>
-        <BuilderLibraryStatusBadges
-          counts={[
-            { label: "Draft", count: workflowCounts.draft },
-            { label: "Published", count: workflowCounts.published },
-            { label: "Archived", count: workflowCounts.archived },
-          ]}
-        />
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Workflow Studio</h1>
+          <p className="fx-muted">Workflows are tasks for one or more agents to execute end-to-end.</p>
+          <BuilderLibraryStatusBadges
+            counts={[
+              { label: "Draft", count: workflowCounts.draft },
+              { label: "Published", count: workflowCounts.published },
+              { label: "Archived", count: workflowCounts.archived },
+            ]}
+          />
+        </div>
+        <div className="flex items-center gap-3">
+          <ImportExportControls kind="workflow-definitions" />
+          <Link className="fx-btn-primary px-3 py-2 text-sm font-medium" href={`/builder/workflows/${newWorkflowId}`}>
+            New Workflow
+          </Link>
+        </div>
       </header>
 
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -75,14 +87,18 @@ export default async function BuilderWorkflowsPage({ searchParams }: BuilderWork
                   <td className="px-3 py-2 text-[var(--foreground)]">{workflow.status}</td>
                   <td className="px-3 py-2 text-[var(--foreground)]">v{workflow.version}</td>
                   <td className="fx-muted px-3 py-2">{workflow.description}</td>
-                  <td className="px-3 py-2 text-right">
-                    <BuilderLibraryActions
-                      entityType="workflow"
-                      entityId={workflow.id}
-                      entityName={workflow.name}
-                      openHref={`/builder/workflows/${workflow.id}`}
-                      status={workflow.status}
-                    />
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    <div className="flex flex-nowrap items-center justify-end gap-2">
+                      <ImportExportControls kind="workflow-definitions" id={workflow.id} compact />
+                      <BuilderLibraryActions
+                        entityType="workflow"
+                        entityId={workflow.id}
+                        entityName={workflow.name}
+                        openHref={`/builder/workflows/${workflow.id}`}
+                        status={workflow.status}
+                      />
+                      <TypedDeleteButton itemType="workflow" itemId={workflow.id} itemName={workflow.name} />
+                    </div>
                   </td>
                 </tr>
               ))

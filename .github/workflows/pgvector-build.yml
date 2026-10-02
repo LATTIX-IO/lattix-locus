@@ -1,0 +1,85 @@
+# Compile the pgvector extension per (OS, PG-major, arch) and publish the
+# artifacts the desktop first-run fetch installs into the bundled Postgres tree.
+# Run once per pgvector/PG bump; the desktop installer's first-run step then
+# downloads the matching artifact (else long-term memory degrades to keyword
+# search; Neo4j world-models are unaffected).
+
+name: pgvector-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      pgvector_ref:
+        description: "pgvector git ref"
+        default: "v0.8.0"
+      pg_major:
+        description: "PostgreSQL major version"
+        default: "16"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-amd64
+          - os: macos-latest
+            label: darwin-arm64
+          - os: windows-latest
+            label: windows-amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Clone pgvector
+        uses: actions/checkout@v4
+        with:
+          repository: pgvector/pgvector
+          ref: ${{ github.event.inputs.pgvector_ref }}
+          path: pgvector
+
+      # --- Linux: build against postgresql-server-dev-<major> -------------
+      - name: Build (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-server-dev-${{ github.event.inputs.pg_major }} build-essential
+          make -C pgvector PG_CONFIG=/usr/lib/postgresql/${{ github.event.inputs.pg_major }}/bin/pg_config
+          make -C pgvector install PG_CONFIG=/usr/lib/postgresql/${{ github.event.inputs.pg_major }}/bin/pg_config DESTDIR=$PWD/stage
+
+      # --- macOS: build against brew postgresql@<major> -------------------
+      - name: Build (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install postgresql@${{ github.event.inputs.pg_major }}
+          PGC="$(brew --prefix postgresql@${{ github.event.inputs.pg_major }})/bin/pg_config"
+          make -C pgvector PG_CONFIG="$PGC"
+          make -C pgvector install PG_CONFIG="$PGC" DESTDIR=$PWD/stage
+
+      # --- Windows: MSVC + nmake Makefile.win against an installed PG -----
+      - name: Build (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: cmd
+        run: |
+          choco install postgresql${{ github.event.inputs.pg_major }} --no-progress -y
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          set "PGROOT=C:\Program Files\PostgreSQL\${{ github.event.inputs.pg_major }}"
+          cd pgvector
+          nmake /F Makefile.win
+          nmake /F Makefile.win install
+
+      # Collect vector.{so,dylib,dll} + vector.control + sql/*.sql into a flat
+      # archive the first-run fetch drops into the embedded PG's lib/ + share/.
+      - name: Package artifact
+        shell: bash
+        run: |
+          mkdir -p out
+          find . \( -name "vector*.so" -o -name "vector*.dylib" -o -name "vector*.dll" \
+                    -o -name "vector.control" -o -name "vector--*.sql" \) \
+                 -exec cp {} out/ \; || true
+          ( cd out && tar -czf "../pgvector-pg${{ github.event.inputs.pg_major }}-${{ matrix.label }}.tgz" . )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pgvector-pg${{ github.event.inputs.pg_major }}-${{ matrix.label }}
+          path: pgvector-pg${{ github.event.inputs.pg_major }}-${{ matrix.label }}.tgz
+          if-no-files-found: error

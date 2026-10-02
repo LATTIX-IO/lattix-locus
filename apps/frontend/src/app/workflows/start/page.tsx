@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { getPublishedWorkflows, createWorkflowRun } from "@/lib/api";
 import type { WorkflowDefinition } from "@/types/frontier";
 import { useEffect } from "react";
 
 export default function WorkflowStartPage() {
+  const router = useRouter();
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
   const [startingId, setStartingId] = useState<string | null>(null);
   const [lastRunId, setLastRunId] = useState<string | null>(null);
@@ -22,8 +24,10 @@ export default function WorkflowStartPage() {
     try {
       const result = await createWorkflowRun({ workflow_definition_id: workflowId, session_kind: "workflow" });
       setLastRunId(result.id);
-    } catch {
-      setStartError("Unable to start workflow run. Please try again after backend is healthy.");
+      router.push(`/runs/${result.id}`);
+    } catch (error) {
+      const detail = error instanceof Error && error.message ? ` (${error.message})` : "";
+      setStartError(`Unable to start workflow run.${detail}`);
     } finally {
       setStartingId(null);
     }

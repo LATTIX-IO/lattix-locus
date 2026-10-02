@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { RunConversationConsole } from "@/components/run-conversation-console";
@@ -8,7 +8,20 @@ const routerRefreshMock = vi.fn();
 const {
   getAtfAlignmentReportMock,
   submitApprovalMock,
+  getWorkflowRunLiveMock,
+  getWorkflowRunEventsLiveMock,
+  streamWorkflowRunEventsMock,
 } = vi.hoisted(() => ({
+  // Never resolves: keeps the console in "stream" mode without state churn.
+  streamWorkflowRunEventsMock: vi.fn(() => new Promise<string>(() => {})),
+  getWorkflowRunLiveMock: vi.fn(async () => ({
+    artifacts: [],
+    status: "Running",
+    graph: { nodes: [], links: [] },
+    agent_traces: [],
+    approvals: { required: false, pending: false },
+  })),
+  getWorkflowRunEventsLiveMock: vi.fn(async () => []),
   getAtfAlignmentReportMock: vi.fn(async () => ({
     generated_at: new Date().toISOString(),
     framework: "CSA Agentic Trust Framework",
@@ -41,6 +54,7 @@ vi.mock("next/link", () => ({
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
     refresh: routerRefreshMock,
+    push: vi.fn(),
   }),
 }));
 
@@ -59,6 +73,10 @@ vi.mock("@/components/run-followup-composer", () => ({
 vi.mock("@/lib/api", () => ({
   getAtfAlignmentReport: getAtfAlignmentReportMock,
   submitApproval: submitApprovalMock,
+  getWorkflowRunLive: getWorkflowRunLiveMock,
+  getWorkflowRunEventsLive: getWorkflowRunEventsLiveMock,
+  streamWorkflowRunEvents: streamWorkflowRunEventsMock,
+  createWorkflowRun: vi.fn(async () => ({ id: "regen-run", status: "started" })),
 }));
 
 describe("RunConversationConsole", () => {
@@ -71,6 +89,32 @@ describe("RunConversationConsole", () => {
     },
     agent_traces: [],
     approvals: { required: false, pending: false },
+    cognitive: {
+      assembly: {
+        assembly_id: "assembly-1",
+        consensus_policy: "weighted-support",
+        inference_mode: "bounded",
+        columns: ["goal", "evidence", "synthesis"],
+      },
+      commitment: {
+        decision: "Proceed with the release recommendation",
+        confidence: 0.72,
+        supporting_columns: ["goal", "evidence", "synthesis"],
+        dissenting_columns: ["evidence"],
+        blockers: ["Missing required evidence: approval memo"],
+        next_actions: ["Escalate to human checkpoint."],
+        rationale: "Evidence is incomplete for autonomous release.",
+        status: "escalated",
+      },
+      states: {
+        goal: { column_id: "goal", confidence: 0.8 },
+        evidence: { column_id: "evidence", confidence: 0.5 },
+      },
+      messages: [
+        { message_type: "belief_update", column_id: "goal" },
+        { message_type: "evidence_claim", column_id: "evidence" },
+      ],
+    },
   };
 
   const events = [
@@ -83,10 +127,12 @@ describe("RunConversationConsole", () => {
     },
   ];
 
-  it("renders ATF posture metrics and top gaps", async () => {
+  it("renders ATF posture metrics and top gaps in the details flyout", async () => {
     getAtfAlignmentReportMock.mockClear();
 
     render(<RunConversationConsole runId="run-1" run={run} events={events} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open run details/i }));
 
     expect(await screen.findByText(/ATF posture at execution time/i)).toBeInTheDocument();
     expect(await screen.findByText("87%")).toBeInTheDocument();
@@ -113,7 +159,62 @@ describe("RunConversationConsole", () => {
 
     render(<RunConversationConsole runId="run-2" run={run} events={events} />);
 
+    fireEvent.click(screen.getByRole("button", { name: /open run details/i }));
+
     expect(await screen.findByText(/Unable to load ATF posture/i)).toBeInTheDocument();
     expect(getAtfAlignmentReportMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders cognitive commitment details when present", async () => {
+    getAtfAlignmentReportMock.mockClear();
+
+    render(<RunConversationConsole runId="run-3" run={run} events={events} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /open run details/i }));
+
+    expect(await screen.findByText(/Cognitive artifacts/i)).toBeInTheDocument();
+    expect(screen.getByText(/Proceed with the release recommendation/i)).toBeInTheDocument();
+    expect(screen.getByText(/Missing required evidence: approval memo/i)).toBeInTheDocument();
+    expect(screen.getByText(/Escalate to human checkpoint\./i)).toBeInTheDocument();
+    expect(screen.getByText(/weighted-support/i)).toBeInTheDocument();
+    expect(screen.getByText(/belief_update · goal/i)).toBeInTheDocument();
+  });
+
+  it("keeps the details flyout collapsed by default with the chat visible", () => {
+    render(<RunConversationConsole runId="run-4" run={run} events={events} />);
+
+    expect(screen.queryByText(/ATF posture at execution time/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: /run details/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/Please generate the draft\./i)).toBeInTheDocument();
+  });
+
+  it("shows no attention bubble for a healthy running run", () => {
+    render(<RunConversationConsole runId="run-5" run={run} events={events} />);
+
+    expect(screen.queryByTestId("flyout-attention")).not.toBeInTheDocument();
+  });
+
+  it("shows an action bubble when an approval is pending", () => {
+    const approvalRun = {
+      ...run,
+      status: "Needs Review",
+      approvals: { required: true, pending: true, artifact_id: "artifact-1", version: 1 },
+    };
+
+    render(<RunConversationConsole runId="run-6" run={approvalRun} events={events} />);
+
+    const bubble = screen.getByTestId("flyout-attention");
+    expect(bubble).toBeInTheDocument();
+    expect(bubble).toHaveAttribute("aria-label", "Action required");
+  });
+
+  it("shows an alert bubble when the run failed", () => {
+    const failedRun = { ...run, status: "Failed" };
+
+    render(<RunConversationConsole runId="run-7" run={failedRun} events={events} />);
+
+    const bubble = screen.getByTestId("flyout-attention");
+    expect(bubble).toBeInTheDocument();
+    expect(bubble).toHaveAttribute("aria-label", "Issues detected");
   });
 });

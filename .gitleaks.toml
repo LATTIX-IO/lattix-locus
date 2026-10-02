@@ -4,6 +4,17 @@ title = "lattix-xfrontier gitleaks config"
 useDefault = true
 
 [[allowlists]]
+# Allow redaction placeholders (e.g. "[REDACTED]", "[REDACTED_TOKEN]") without excluding whole source files.
+description = "Redaction placeholders, local env files, and the generated frontend node catalog"
+regexes = [
+  "\\[REDACTED[^\\]]*\\]"
+]
+paths = [
+  "(?i)\\..*\\.env",
+  "apps/frontend/src/lib/frontier-node-catalog.ts"
+]
+
+[[allowlists]]
 description = "Ignore generated local installer state, build artifacts, and internal worktree copies"
 paths = [
   '''^\.artifacts/''',

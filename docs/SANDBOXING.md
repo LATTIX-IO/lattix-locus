@@ -34,7 +34,21 @@ When `bubblewrap` (Linux) or `/usr/bin/sandbox-exec` (macOS) is available, xFron
 - Network: localhost-only when `allow_network=False`, full when enabled
 - Hardcoded `/usr/bin/sandbox-exec` path (prevents PATH injection)
 
-**When to use:** Local development on a laptop or desktop where Docker is not installed or too heavy. This is the fastest mode (~1ms startup).
+**Windows (AppContainer + Job Object):** the `windows-appcontainer` strategy
+(`frontier_runtime/sandbox.py` → `frontier_runtime/win_sandbox.py`) confines the
+child via Win32 directly — no Docker, no WSL:
+- **AppContainer (default tier):** low-privilege, capability-gated execution with
+  default-deny filesystem. The bound worktree is ACL-granted to the container SID
+  (`icacls`), so the agent can read/write its workspace and nothing else. Network
+  capabilities (`internetClient`) are granted only when `allow_network=True`. On
+  par with bwrap (Linux) / seatbelt (macOS).
+- **Job Object (fallback tier):** memory limit + active-process cap + kill-on-job-close
+  so a runaway/forkbomb child is bounded and dies with the launcher. Used when
+  AppContainer setup fails. **Note:** this tier bounds *resources* but does NOT
+  confine filesystem or network — see `FRONTIER_WIN_SANDBOX_REQUIRE_APPCONTAINER`
+  below to fail closed instead of silently degrading to it.
+
+**When to use:** Local development on a laptop or desktop where Docker is not installed or too heavy. This is the fastest mode (~1ms startup on Linux/macOS).
 
 ### Tier 2: Hardened Docker (Docker Compose — Local-Secure)
 
@@ -87,8 +101,10 @@ The `SandboxManager` selects strategy in this priority order:
 1. **K8s mode** — if `FRONTIER_RUNTIME_PROFILE=hosted` or `KUBERNETES_SERVICE_HOST` is set
 2. **Kernel bubblewrap** — if `bwrap` is on PATH (Linux)
 3. **Kernel seatbelt** — if `/usr/bin/sandbox-exec` exists (macOS)
-4. **Hardened Docker** — if `docker` is on PATH
-5. **Restricted process** — fallback with no sandbox (development only)
+4. **Windows AppContainer** — on Windows when `FRONTIER_RUNTIME_PROFILE` is `local-native`/`native`, or `FRONTIER_FORCE_WINDOWS_APPCONTAINER=1`
+5. **Restricted process** — under `local-native`/`native` the manager is Dockerless and never falls back to a Docker daemon
+6. **Hardened Docker** — if `docker` is on PATH (non-native profiles)
+7. **Restricted process** — last-resort fallback with no sandbox (gated behind `FRONTIER_ALLOW_RESTRICTED_PROCESS_SANDBOX`; off by default → fails closed)
 
 Override with `SandboxManager(force_strategy=IsolationStrategy.HARDENED_DOCKER)`.
 
@@ -148,7 +164,10 @@ The `SandboxManager` auto-detects available sandbox backends at runtime. For loc
 
 **macOS:** Seatbelt is built into macOS. No installation needed.
 
-**Windows:** Use WSL2 with bubblewrap, or fall back to Docker Desktop.
+**Windows:** No installation needed — the `windows-appcontainer` strategy uses
+built-in Win32 AppContainer + Job Object APIs (active under the `local-native`
+profile or via `FRONTIER_FORCE_WINDOWS_APPCONTAINER=1`). WSL2-with-bubblewrap or
+Docker Desktop remain optional alternatives.
 
 ## Security Model
 
@@ -171,3 +190,7 @@ The `SandboxManager` auto-detects available sandbox backends at runtime. For loc
 | `SANDBOX_RUNNER_IMAGE` | `python:3.12.10-slim-bookworm` | Docker image for tool execution |
 | `SANDBOX_INTERNAL_NETWORK` | `frontier-sandbox-internal` | Docker network for sandbox containers |
 | `SANDBOX_EGRESS_GATEWAY` | `sandbox-egress-gateway:3128` | Squid proxy address |
+| `FRONTIER_FORCE_WINDOWS_APPCONTAINER` | _(unset)_ | Force the Windows AppContainer strategy even outside the `local-native` profile |
+| `FRONTIER_WIN_SANDBOX_TIER` | `appcontainer` | Windows confinement tier: `appcontainer` (default) or `job` (resource-only baseline) |
+| `FRONTIER_WIN_SANDBOX_REQUIRE_APPCONTAINER` | _(unset)_ | Fail **closed** if AppContainer can't be established instead of silently degrading to the resource-only Job-Object tier. Set for the hostile-code threat model where losing filesystem/network confinement is unacceptable |
+| `FRONTIER_ALLOW_RESTRICTED_PROCESS_SANDBOX` | _(unset)_ | Permit the last-resort no-isolation fallback. Off by default → execution fails closed when no real sandbox backend is available |

@@ -1,0 +1,24 @@
+[package]
+name = "lattix-xfrontier-desktop"
+version = "0.1.0"
+description = "Lattix xFrontier desktop shell"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+# Auto-update: the plugin is always compiled in but stays inactive unless the
+# build supplies updater config (pubkey + endpoints) via the updater.conf.json
+# overlay — so a keyless dev build still works (check() just returns an error,
+# which the UI ignores). Release builds enable it (see scripts/build-desktop.ps1).
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# By default Tauri uses a custom protocol; `custom-protocol` is required for release builds.
+custom-protocol = ["tauri/custom-protocol"]

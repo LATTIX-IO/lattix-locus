@@ -1,0 +1,158 @@
+# Build the native desktop installers (.msi/.exe, .dmg/.app, .deb/AppImage).
+#
+# Pipeline per OS: PyInstaller backend sidecar → Next.js standalone + vendored
+# Node → `cargo tauri build` (Tauri bundles installers) → (Windows) Authenticode
+# sign → upload as release assets. Pure recipe; runs in CI, not on a dev box.
+#
+# Required secrets:
+#   WINDOWS_PFX_BASE64 / WINDOWS_PFX_PASSWORD  (Authenticode signing)
+#   TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD  (updater minisign)
+# macOS is built unsigned/ad-hoc until an Apple Developer ID is added (then set
+#   APPLE_CERTIFICATE / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID).
+
+name: desktop-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 0.1.0)"
+        required: true
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
+            ext: .exe
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+            ext: ""
+          - os: ubuntu-latest
+            triple: x86_64-unknown-linux-gnu
+            ext: ""
+    runs-on: ${{ matrix.os }}
+    env:
+      # Sign only when an Authenticode cert secret is present; otherwise the
+      # build still produces an (unsigned) installer for testing.
+      HAS_WIN_CERT: ${{ secrets.WINDOWS_PFX_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Linux: Tauri (WebKitGTK) system deps ---------------------------
+      - name: Install Linux build deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # --- 1) Backend sidecar via PyInstaller -----------------------------
+      - name: Build backend sidecar
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          python -m pip install -e .
+          pyinstaller packaging/frontier-backend.spec
+          mkdir -p apps/desktop-tauri/src-tauri/bin
+          cp "dist/frontier-backend${{ matrix.ext }}" \
+             "apps/desktop-tauri/src-tauri/bin/frontier-backend-${{ matrix.triple }}${{ matrix.ext }}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # --- 2) Frontend standalone + vendored Node -------------------------
+      - name: Build frontend (Next.js standalone)
+        shell: bash
+        working-directory: apps/frontend
+        run: |
+          npm ci
+          npm run build
+          # Stage the standalone server + static assets where the supervisor
+          # resolves them under the bundle (see desktop.bundled_root()).
+          mkdir -p ../../apps/desktop-tauri/src-tauri/resources/frontend
+          cp -r .next/standalone/. ../../apps/desktop-tauri/src-tauri/resources/frontend/
+          cp -r .next/static ../../apps/desktop-tauri/src-tauri/resources/frontend/.next/static
+          cp -r public ../../apps/desktop-tauri/src-tauri/resources/frontend/public || true
+
+      - name: Vendor Node runtime into the bundle
+        shell: bash
+        run: |
+          # Copy the runner's node into bin/ so `node server.js` works offline.
+          node_path="$(command -v node)"
+          cp "$node_path" "apps/desktop-tauri/src-tauri/bin/node${{ matrix.ext }}" || true
+
+      # --- 3) Rust + Tauri build ------------------------------------------
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+
+      - name: Generate app icons
+        working-directory: apps/desktop-tauri/src-tauri
+        shell: bash
+        run: |
+          cargo install tauri-cli --version "^2" --locked
+          cargo tauri icon ../icon-source.png
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the auto-update artifacts (latest.json + .sig). The matching
+          # public key is committed in tauri.conf.json (public keys are safe).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/desktop-tauri/src-tauri
+          # Create/attach to a GitHub Release so the signed installers AND the
+          # generated latest.json land as release assets — that manifest is what
+          # the in-app one-click updater reads from
+          # github.com/.../releases/latest/download/latest.json.
+          tagName: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
+          releaseName: "Lattix xFrontier ${{ github.event.inputs.version || github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.triple }}
+
+      # --- 4) Windows: Authenticode-sign the produced installers ----------
+      - name: Sign Windows installers
+        if: matrix.os == 'windows-latest' && env.HAS_WIN_CERT == 'true'
+        shell: pwsh
+        run: |
+          $pfx = "$env:RUNNER_TEMP\cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_PFX_BASE64))
+          $st = "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe"
+          $signtool = (Get-Item $st | Select-Object -First 1).FullName
+          Get-ChildItem -Recurse apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle `
+            -Include *.msi,*.exe | ForEach-Object {
+              & $signtool sign /f $pfx /p $env:WINDOWS_PFX_PASSWORD /fd sha256 `
+                /tr http://timestamp.digicert.com /td sha256 $_.FullName
+              & $signtool verify /pa $_.FullName
+            }
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.triple }}
+          path: |
+            apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.msi
+            apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.exe
+            apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.dmg
+            apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.deb
+            apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.AppImage
+          if-no-files-found: warn

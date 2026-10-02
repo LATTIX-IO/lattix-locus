@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { BuilderLibraryActions } from "@/components/builder-library-actions";
 import { BuilderLibraryStatusBadges } from "@/components/builder-library-status-badges";
+import { ImportExportControls } from "@/components/import-export-controls";
 import { getPlaybooks } from "@/lib/api";
 
 type BuilderPlaybooksPageProps = {
@@ -34,9 +35,12 @@ export default async function BuilderPlaybooksPage({ searchParams }: BuilderPlay
             ]}
           />
         </div>
-        <Link className="fx-btn-secondary px-4 py-2 text-sm font-medium" href="/builder/playbooks/new">
-          New Playbook
-        </Link>
+        <div className="flex items-center gap-3">
+          <ImportExportControls kind="playbooks" />
+          <Link className="fx-btn-secondary px-4 py-2 text-sm font-medium" href="/builder/playbooks/new">
+            New Playbook
+          </Link>
+        </div>
       </header>
 
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -80,14 +84,17 @@ export default async function BuilderPlaybooksPage({ searchParams }: BuilderPlay
                   <td className="px-3 py-2 text-[var(--foreground)]">{playbook.category}</td>
                   <td className="px-3 py-2 text-[var(--foreground)]">{playbook.status}</td>
                   <td className="fx-muted px-3 py-2">{playbook.description}</td>
-                  <td className="px-3 py-2 text-right">
-                    <BuilderLibraryActions
-                      entityType="playbook"
-                      entityId={playbook.id}
-                      entityName={playbook.name}
-                      openHref={`/builder/playbooks/${playbook.id}`}
-                      status={playbook.status}
-                    />
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    <div className="flex flex-nowrap items-center justify-end gap-2">
+                      <ImportExportControls kind="playbooks" id={playbook.id} compact />
+                      <BuilderLibraryActions
+                        entityType="playbook"
+                        entityId={playbook.id}
+                        entityName={playbook.name}
+                        openHref={`/builder/playbooks/${playbook.id}`}
+                        status={playbook.status}
+                      />
+                    </div>
                   </td>
                 </tr>
               ))

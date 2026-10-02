@@ -1,0 +1,92 @@
+# 20 · Roadmap and Decisions
+
+## 1. Release horizons
+
+Horizons are defined by what the principal can do. Each has exit criteria demonstrated on clean Windows and macOS machines.
+
+### H0 · Recover — "a trustworthy main"
+
+The 2 Oct 2026 System State Review found origin/main regressed: the PR #18 merge (`0a7adc0`) deleted 218 files landed by PRs #20–#24. The fullest state is `ae4d703`.
+
+Scope:
+
+- Protect main (required reviews and checks; no agent conflict resolution that takes one side wholesale).
+- Restore the deleted files from `ae4d703` onto origin/main, keeping PR #18's additions; reconcile the 108 modified files by hand (`main.py`, `platform_services.py`, `sandbox.py`, `pyproject.toml` first).
+- Re-add `openai` to dependencies; restore `tests/__init__.py`; remove simulated-output fallback from production paths.
+- Land the uncommitted CI rewrite (ten jobs, required-gates aggregator), rebased, with the workstation path removed from `WORKFLOW.md`.
+- Re-measure every gate and get them green.
+- Fix silent failure modes: swallowed persistence errors, SSE drop shown as completion.
+
+Exit: all gates green on main; the desktop app, harness, Windows sandbox, knowledge, skills, local models and schedules present and passing their tests; posture page shows true state.
+
+### H1 · Personal operator — "hand it a task and trust what comes back"
+
+Scope: chat → task → run with envelopes and tiered autonomy; run loop with verification; desktop and browser computer use on Windows and macOS; engines (local, API, Codex CLI, Claude Code) behind the gateway; Laya judge in shadow mode plus injection screening live; work tracker (areas, tasks, labels, projects, views, board, triage, recurrence, assign-to-agent); forever whiteboard with memory indexing; memory v1 with review; skills and MCP through the gateway with schema pinning; security core enforced (embedded Rego, Biscuit grants, taint gate, keychain, per-run egress, durable audit, posture page); schedules and file triggers; `main.py` split begun along domains; signed installers.
+
+Exit criteria:
+
+- 20 representative delegated tasks across three areas complete at ≥ 70% with only planned approvals.
+- Zero escaped R3/R4 actions in the safety suite (injection on screen, email and web; payment and credential screens).
+- Panic key and preemption ≤ 100 ms on both platforms.
+- The principal uses it for real work ≥ 5 days a week for 4 weeks.
+
+### H2 · Always on — "it keeps up without being asked"
+
+Scope: inbox and messaging intake; Linear/Asana/Jira sync; Symphony generalized (tracker trigger + coding playbook + any engine); M365 Copilot as a context provider; Laya gating live where calibrated; Jev adapter; column assemblies gating R3 actions; sub-agents; isolated desktop mode; diagram-js models and formalization from whiteboards; cycles and project updates; voice; Locus MCP server; headless peer profile; memory import.
+
+Exit: ≥ 50% of new tasks arrive through intake and are triaged in batches; ≥ 60% of judgments served locally; weekly audit takes ≤ 10 minutes.
+
+### H3 · Federated — "my instance and yours, working together"
+
+Scope: pairing, peer cards and org attestations; shared spaces with CRDT sync for projects, boards, models and documents; cross-peer delegation; data-centric protection on shared objects; mobile approvals through a paired device.
+
+Exit: two principals co-run a real project for 4 weeks from their own instances with no shared server; one delegated task per week across peers completes without manual file exchange.
+
+## 2. Decisions taken in these docs
+
+| ID | Decision | Rationale | Revisit when |
+|---|---|---|---|
+| D-01 | Reposition from multi-agent orchestration platform to **local-first personal AI operator** | The value is delegated, trusted completion of real work; orchestration is the means | — |
+| D-02 | `docs/product/` takes precedence over implementation docs for product intent; `PRODUCT_SENSE.md` superseded | One owner for direction | — |
+| D-03 | Single principal per instance; collaboration through peers, not multi-user tenancy | Matches personal-first plus partnership use | An org asks for a managed deployment |
+| D-04 | Subscription capacity is used only through vendors' official clients (Codex CLI, Claude Code) as sandboxed engines; no token reuse | Vendor terms; stability; auditability | Vendors publish sanctioned third-party subscription access |
+| D-05 | Default autonomy is tiered by action risk (R0–R4) with envelopes and budgets for every run | Autonomy where reversible; humans where irreversible | Calibration data supports wider standing grants |
+| D-06 | Full desktop control on Windows and macOS in H1, via a separate signed native helper | Takeover needs desktop apps; containment needs OS-level controls | Safety suite shows escapes |
+| D-07 | Microsoft 365 Copilot is a context provider (Retrieval, Chat, Meeting Insights APIs), not an engine; M365 actions go through Graph tools | The Chat API answers but doesn't act | Microsoft ships an action-capable API for custom apps |
+| D-08 | Retire React Flow. Forms and declarative files are the source of truth; diagram-js renders models; Excalidraw is the whiteboard | Data-centric modelling and freeform thinking are different jobs | Kepler's engine bake-off picks a different modelling engine |
+| D-09 | Federation is pure peer-to-peer; no hub | Sovereignty; no central target | Connectivity data (O-05) shows P2P is impractical without relays |
+| D-10 | Cognitive columns are retained as independent reasoning and memory units that vote before commitments | Uncorrelated checks on high-stakes actions | — |
+| D-11 | Laya (local) is the default System One judge; Jev optional per area policy | Open source, local, fast; Jev where accuracy needs it | Laya calibration fails for key judgments |
+| D-12 | Policy stays in Rego, evaluated in process (Regorus, or bundled OPA as fallback); the Python copy of the rules is removed | Enforced, not declared (P9) | — |
+| D-13 | Capability grants use Biscuit tokens; HMAC shared-secret tokens retired | Attenuation for sub-agents and peers; public-key verification | — |
+| D-14 | Drop NATS, Envoy, Vault server, Squid and Casdoor from the desktop profile; keep optional adapters where useful | Remove declared-only components; reduce footprint | — |
+| D-15 | Native work tracker modelled on Linear, generalized to knowledge work and personal life; external trackers sync | One system of record for all work, handed to the agent | — |
+| D-16 | Playbooks (envelope templates) replace workflow graphs as the main reusable unit; existing graphs import as playbooks | Outcome delegation over node wiring | — |
+| D-17 | Dependency provenance policy as in Kepler, including local models (P28); tldraw excluded for licensing (P29) | Security, customer eligibility, AGPL compatibility | — |
+| D-18 | Skills use the Agent Skills format with an Locus capability manifest | Portability with vendor agents; enforceable bounds | — |
+| D-19 | Helm/hosted profile unsupported; desktop and headless peer are the targets | Follows D-03 and D-09 | An org deployment is requested |
+
+## 3. Open questions (with recommendations)
+
+| ID | Question | Recommendation |
+|---|---|---|
+| O-01 | How is Claude Code billed when Locus launches it (plan, Agent SDK credits, API key)? | Confirm against current Anthropic terms before H1; adapter supports all three and labels the mode |
+| O-02 | May Codex ChatGPT-login runs execute unattended? | Treat as attended-only until confirmed; use an API key for scheduled runs |
+| O-03 | Default local T3 model under the provenance filter on available hardware | Benchmark gpt-oss, Llama, Gemma and Mistral sizes on the target machines in H1 |
+| O-04 | Should GitHub Copilot be added as an engine later? | Not selected now; design the adapter interface so it can be added |
+| O-05 | Allow optional, stateless, end-to-end-encrypted relays for peers behind restrictive NATs? | Yes as opt-in per space; they can't read or authorize anything. Needs your confirmation given the pure-P2P choice |
+| O-06 | Embedded PostgreSQL or SQLite for the desktop store? | Keep PostgreSQL in H1 (existing code, pgvector); evaluate SQLite for H2 footprint |
+| O-07 | Is Microsoft Agent Framework kept? | Remove from the architecture story unless a concrete H2 use appears; at minimum pin it |
+| O-08 | Name and voice for the assistant persona | Choose before H1 UI polish |
+| O-09 | Retention defaults for computer-use frames and run payloads | 14 days frames, 90 days run payloads, audit indefinite; confirm |
+
+## 4. Validation plan
+
+- **Dogfood:** the principal runs H1 daily across BairesDev, Lattix and Personal areas; weekly review of metrics in [01](01-vision-and-positioning.md).
+- **Safety suite:** an adversarial corpus (injected web pages, emails, documents, screens; malicious MCP tool descriptions; drifting schemas) run on every release.
+- **Calibration:** Laya shadow-mode accuracy per judgment published on Memory → Columns before any judgment gates alone.
+- **Peer pilot (H3):** two principals on separate networks.
+
+## 5. How to change this document
+
+Add a decision row with rationale and a revisit trigger; never delete superseded decisions; strike them through and point to the replacement.

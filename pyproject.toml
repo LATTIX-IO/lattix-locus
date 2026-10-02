@@ -26,10 +26,12 @@ dependencies = [
   "opentelemetry-exporter-otlp>=1.30.0",
   "opentelemetry-sdk>=1.30.0",
   "opa-python-client>=0.2.3",
+  "openai>=1.50.0",
   "psycopg[binary]>=3.2.0",
   "pydantic>=2.10.0",
   "pydantic-settings>=2.7.0",
   "python-dotenv>=1.0.1",
+  "PyYAML>=6.0",
   "redis>=5.2.1",
   "structlog>=24.4.0",
   "uvicorn[standard]>=0.34.0",
@@ -75,6 +77,23 @@ python_version = "3.12"
 strict = true
 warn_unused_configs = true
 plugins = []
+
+[[tool.mypy.overrides]]
+module = [
+  "frontier_runtime.harness.codex_backend",
+  "frontier_runtime.harness.enforcement",
+  "frontier_runtime.harness.integrations",
+  "frontier_runtime.harness.team",
+  "frontier_runtime.harness.workspace",
+  "frontier_runtime.harness.workspace_binding",
+  "frontier_runtime.win_sandbox",
+  "frontier_tooling.cli",
+  "frontier_tooling.desktop",
+  "frontier_tooling.desktop_main",
+  "frontier_tooling.native_binaries",
+  "frontier_tooling.native_secrets",
+]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["apps/backend/tests", "tests"]

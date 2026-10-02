@@ -10,6 +10,19 @@ type DashboardSummary = {
   token_estimate: number;
   cost_estimate_usd: number;
   average_latency_ms: number;
+  skills_enabled?: number;
+  skill_injections_total?: number;
+};
+
+type SkillUsage = {
+  id: string;
+  name: string;
+  status: string;
+  source: string;
+  auto_inject: boolean;
+  version: number;
+  usage_count: number;
+  last_used_at: string;
 };
 
 type Severity = "critical" | "high" | "medium" | "low";
@@ -78,6 +91,7 @@ export default function ObservabilityPage() {
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [runs, setRuns] = useState<ObservabilityRunTrace[]>([]);
+  const [skillUsage, setSkillUsage] = useState<SkillUsage[]>([]);
   const [selectedRun, setSelectedRun] = useState<ObservabilityRunTrace | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "failed" | "blocked" | "needs review" | "running" | "done">("all");
@@ -96,6 +110,11 @@ export default function ObservabilityPage() {
         }
         setSummary(dashboard.summary);
         setRuns(dashboard.runs);
+        setSkillUsage(
+          Array.isArray((dashboard as { skills?: SkillUsage[] }).skills)
+            ? ((dashboard as { skills?: SkillUsage[] }).skills as SkillUsage[])
+            : [],
+        );
       } catch {
         if (!cancelled) {
           setError("Unable to load observability dashboard.");
@@ -392,6 +411,35 @@ export default function ObservabilityPage() {
           )}
         </article>
       </div>
+
+      <article className="fx-panel p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Skill usage</h2>
+          <span className="fx-muted text-xs">
+            {summary?.skills_enabled ?? 0} enabled · {summary?.skill_injections_total ?? 0} total injections
+          </span>
+        </div>
+        {skillUsage.length === 0 ? (
+          <p className="fx-muted text-xs">No skill metrics yet — metrics populate as runs execute.</p>
+        ) : (
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {skillUsage.map((skill) => (
+              <div key={skill.id} className="border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-mono font-medium text-[var(--foreground)]">{skill.name}</p>
+                  <span className={skill.status === "enabled" ? "text-[hsl(var(--state-success))]" : "fx-muted"}>
+                    {skill.status}
+                  </span>
+                </div>
+                <p className="fx-muted mt-1">
+                  v{skill.version} · {skill.source} · injected {skill.usage_count}×
+                </p>
+                <p className="fx-muted">last used: {skill.last_used_at || "never"}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </article>
 
       <article className="fx-panel p-4">
         <div className="mb-2 flex items-center justify-between">

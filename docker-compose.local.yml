@@ -6,6 +6,7 @@ services:
         max-size: "10m"
         max-file: "3"
     image: node:22-alpine
+    mem_limit: 2g
     user: "0:0"
     working_dir: /workspace/apps/frontend
     command: sh -lc "LOCK_HASH_FILE=node_modules/.lockhash; CURRENT_HASH=$(sha256sum package-lock.json | awk '{print $1}'); SAVED_HASH=$(cat $$LOCK_HASH_FILE 2>/dev/null || true); if [ ! -x node_modules/.bin/next ] || [ \"$$CURRENT_HASH\" != \"$$SAVED_HASH\" ]; then npm ci --include=dev && mkdir -p node_modules && echo $$CURRENT_HASH > $$LOCK_HASH_FILE; fi; npm run dev -- --hostname 0.0.0.0 --port 3000"
@@ -32,56 +33,59 @@ services:
         max-size: "10m"
         max-file: "3"
     image: python:3.12.10-slim-bookworm
+    mem_limit: 1536m
     user: "0:0"
     entrypoint: []
-    working_dir: /workspace
-    command: sh -lc "python -m pip install --no-cache-dir -e . && if [ \"${FRONTIER_INSTALL_RUNTIME_ENGINES:-0}\" = \"1\" ]; then python -m pip install --no-cache-dir '.[maf]'; fi && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    working_dir: /workspace/apps/backend
+    # Dependencies install into a venv on a named volume, keyed by a hash of
+    # requirements.txt — restarts reuse it instead of re-downloading every boot.
+    command: sh -lc "VENV=/opt/frontier-venv; HASH_FILE=$$VENV/.reqhash; CURRENT_HASH=$$(sha256sum requirements.txt | awk '{print $$1}'); SAVED_HASH=$$(cat $$HASH_FILE 2>/dev/null || true); if [ ! -x $$VENV/bin/python ] || [ \"$$CURRENT_HASH\" != \"$$SAVED_HASH\" ]; then python -m venv $$VENV && $$VENV/bin/pip install --no-cache-dir -r requirements.txt && if [ \"${FRONTIER_INSTALL_RUNTIME_ENGINES:-0}\" = \"1\" ]; then $$VENV/bin/pip install --no-cache-dir -r requirements-runtime-engines.txt; fi && echo $$CURRENT_HASH > $$HASH_FILE; fi; exec $$VENV/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
     environment:
+      # Backend + repo root on the path so `app` and `frontier_runtime` imports resolve.
       PYTHONPATH: /workspace/apps/backend:/workspace
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
       FRONTIER_RUNTIME_PROFILE: ${FRONTIER_RUNTIME_PROFILE:-local-lightweight}
       FRONTIER_API_BEARER_TOKEN: ${FRONTIER_API_BEARER_TOKEN:-}
+      # Bounded run-execution concurrency (resource plan 2.1 groundwork).
+      FRONTIER_WORKER_CONCURRENCY: ${FRONTIER_WORKER_CONCURRENCY:-2}
+      # Signed A2A transport configuration (required at startup).
+      A2A_JWT_SECRET: ${A2A_JWT_SECRET:-}
+      A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
+      A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-frontier}
+      A2A_JWT_AUD: ${A2A_JWT_AUD:-frontier-runtime}
+      A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-backend,orchestrator,research,code,review,coordinator}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      # NVIDIA NIM (hosted API catalog by default; point NIM_BASE_URL at a
+      # self-hosted NIM microservice to keep inference on-prem).
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NIM_BASE_URL: ${NIM_BASE_URL:-}
+      NIM_MODEL: ${NIM_MODEL:-}
+      # Local open-weight models served by the ollama sidecar.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
       FRONTIER_AGENT_ASSETS_ROOT: ${FRONTIER_AGENT_ASSETS_ROOT:-/workspace/examples/agents}
       FRONTIER_INSTALL_RUNTIME_ENGINES: ${FRONTIER_INSTALL_RUNTIME_ENGINES:-0}
       FRONTIER_SECRETS_ENCRYPTION_KEY: ${FRONTIER_SECRETS_ENCRYPTION_KEY:-}
-      A2A_JWT_SECRET: ${A2A_JWT_SECRET:-local-dev-a2a-jwt-secret-change-me}
       POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://frontier:frontier@postgres:5432/frontier}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       FRONTIER_MEMORY_ENABLE_LONG_TERM: ${FRONTIER_MEMORY_ENABLE_LONG_TERM:-1}
       FRONTIER_MEMORY_LEARNING_ENABLED: ${FRONTIER_MEMORY_LEARNING_ENABLED:-1}
       OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
-      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
-      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-frontier123}
+      # World-models / knowledge graph live in Postgres (PostgresWorldGraph) — no
+      # Neo4j, no JVM. With NEO4J_URI unset the backend uses the relational
+      # world-graph (frontier_kg_nodes/frontier_kg_edges) in the pgvector Postgres.
+      FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED: ${FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED:-1}
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./:/workspace
+      - frontier_backend_venv:/opt/frontier-venv
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_started
-      neo4j:
-        condition: service_started
-
-  casdoor:
-    environment:
-      CASDOOR_POSTGRES_PASSWORD: ${CASDOOR_POSTGRES_PASSWORD:-${POSTGRES_PASSWORD:-frontier}}
-
-  agent-research:
-    environment:
-      A2A_JWT_SECRET: ${A2A_JWT_SECRET:-local-dev-a2a-jwt-secret-change-me}
-
-  agent-code:
-    environment:
-      A2A_JWT_SECRET: ${A2A_JWT_SECRET:-local-dev-a2a-jwt-secret-change-me}
-
-  agent-review:
-    environment:
-      A2A_JWT_SECRET: ${A2A_JWT_SECRET:-local-dev-a2a-jwt-secret-change-me}
 
   postgres:
     logging:
@@ -90,6 +94,7 @@ services:
         max-size: "10m"
         max-file: "3"
     image: pgvector/pgvector:pg16
+    mem_limit: 512m
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-frontier}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-frontier}
@@ -111,25 +116,38 @@ services:
         max-size: "10m"
         max-file: "3"
     image: redis:7-alpine
+    mem_limit: 256m
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - frontier_redis_data:/data
 
-  neo4j:
+  # Local open-weight model runtime. Idles at ~50 MB; memory is consumed only
+  # while a model is loaded (cap below). Models persist on a named volume.
+  # For NVIDIA GPU acceleration uncomment the deploy block.
+  ollama:
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-    image: neo4j:5.23-community
-    environment:
-      NEO4J_AUTH: ${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:-frontier123}
+    image: ollama/ollama:latest
+    mem_limit: 8g
     ports:
-      - "127.0.0.1:7474:7474"
-      - "127.0.0.1:7687:7687"
+      - "127.0.0.1:11434:11434"
     volumes:
-      - frontier_neo4j_data:/data
+      - frontier_ollama_models:/root/.ollama
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # World-model / knowledge-graph capabilities are hosted in the pgvector
+  # Postgres above (PostgresWorldGraph → frontier_kg_nodes/frontier_kg_edges) —
+  # no Neo4j, no JVM. Frees ~1 GB RSS vs the old Neo4j sidecar.
 
   # Optional workers profile for integration runs.
   # Enable with: docker compose --profile stack -f docker-compose.local.yml up
@@ -141,6 +159,7 @@ services:
         max-file: "3"
     image: python:3.12.10-slim-bookworm
     profiles: ["stack"]
+    mem_limit: 512m
     working_dir: /workspace/apps/workers
     command: sh -lc "python -m http.server 8010"
     ports:
@@ -152,6 +171,7 @@ services:
 
 volumes:
   frontier_frontend_node_modules:
+  frontier_backend_venv:
+  frontier_ollama_models:
   frontier_postgres_data:
   frontier_redis_data:
-  frontier_neo4j_data:

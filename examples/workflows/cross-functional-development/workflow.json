@@ -1,0 +1,53 @@
+{
+  "id": "cross-functional-development",
+  "name": "Cross-Functional Development",
+  "description": "Give a spec to a cross-functional engineering team that COLLABORATES to deliver it: the Tech Lead frames the problem; backend, frontend, SDET/QA, security, devops/Azure and performance engineers each reason through it (their own chain-of-thought) and debate to a consensus design; the implementer builds + tests the code against that design; then Security ACTUALLY audits the code for vulnerabilities + threat models it, QA ACTUALLY runs the tests, and Performance reviews hotspots — feeding concrete fixes back to the implementer (bounded loop) — before the Tech Lead gates and hands back a completed, intent-matching feature. Executed by the xFrontier graph compiler with real repo/file/test tools in a bound workspace.",
+  "version": 2,
+  "status": "published",
+  "tags": ["development", "multi-agent", "team", "sdlc", "security", "qa", "oss"],
+  "graph": {
+    "schema_version": "frontier-graph/1.0",
+    "nodes": [
+      { "id": "trigger", "type": "frontier/trigger", "title": "Spec (Linear / file / inline)", "x": 60, "y": 360, "config": { "trigger_mode": "manual" } },
+      { "id": "facilitate", "type": "frontier/agent", "title": "Open & Facilitate — Tech Lead", "x": 300, "y": 360, "config": { "agent_id": "tech-lead-agent", "phase": "discuss" } },
+      { "id": "backend", "type": "frontier/agent", "title": "Backend Engineer", "x": 600, "y": 40, "config": { "agent_id": "backend-engineer-agent", "phase": "discuss" } },
+      { "id": "frontend", "type": "frontier/agent", "title": "Frontend Engineer", "x": 600, "y": 160, "config": { "agent_id": "frontend-engineer-agent", "phase": "discuss" } },
+      { "id": "sdet", "type": "frontier/agent", "title": "SDET / QA", "x": 600, "y": 280, "config": { "agent_id": "sdet-swe-agent", "phase": "discuss" } },
+      { "id": "security", "type": "frontier/agent", "title": "Security Engineer", "x": 600, "y": 400, "config": { "agent_id": "security-auditor-agent", "phase": "discuss" } },
+      { "id": "devops", "type": "frontier/agent", "title": "DevOps / Cloud (Azure)", "x": 600, "y": 520, "config": { "agent_id": "azure-cloud-engineer-agent", "phase": "discuss" } },
+      { "id": "performance", "type": "frontier/agent", "title": "Performance Engineer", "x": 600, "y": 640, "config": { "agent_id": "performance-engineer-agent", "phase": "discuss" } },
+      { "id": "consensus", "type": "frontier/agent", "title": "Consensus Design — Tech Lead", "x": 900, "y": 360, "config": { "agent_id": "tech-lead-agent", "phase": "consensus" } },
+      { "id": "build", "type": "frontier/agent", "title": "Build & Test — Implementer", "x": 1160, "y": 360, "config": { "agent_id": "sdet-swe-agent", "phase": "build", "harness_mode": "code" } },
+      { "id": "security-audit", "type": "frontier/agent", "title": "Security Audit (vulns + threat model)", "x": 1420, "y": 200, "config": { "agent_id": "security-auditor-agent", "phase": "verify", "harness_mode": "analyze" } },
+      { "id": "qa-verify", "type": "frontier/agent", "title": "QA — Run Tests", "x": 1420, "y": 360, "config": { "agent_id": "sdet-swe-agent", "phase": "verify", "harness_mode": "analyze" } },
+      { "id": "perf-verify", "type": "frontier/agent", "title": "Performance Review", "x": 1420, "y": 520, "config": { "agent_id": "performance-engineer-agent", "phase": "verify", "harness_mode": "analyze" } },
+      { "id": "gate", "type": "frontier/agent", "title": "Verify & Gate — Tech Lead", "x": 1700, "y": 360, "config": { "agent_id": "tech-lead-agent", "phase": "gate" } },
+      { "id": "output", "type": "frontier/output", "title": "Completed feature → human (+ PR)", "x": 1960, "y": 360, "config": { "destination": "github_pr", "format": "markdown" } }
+    ],
+    "links": [
+      { "from": "trigger", "to": "facilitate", "from_port": "out", "to_port": "in" },
+      { "from": "facilitate", "to": "backend", "from_port": "out", "to_port": "in" },
+      { "from": "facilitate", "to": "frontend", "from_port": "out", "to_port": "in" },
+      { "from": "facilitate", "to": "sdet", "from_port": "out", "to_port": "in" },
+      { "from": "facilitate", "to": "security", "from_port": "out", "to_port": "in" },
+      { "from": "facilitate", "to": "devops", "from_port": "out", "to_port": "in" },
+      { "from": "facilitate", "to": "performance", "from_port": "out", "to_port": "in" },
+      { "from": "backend", "to": "consensus", "from_port": "out", "to_port": "in" },
+      { "from": "frontend", "to": "consensus", "from_port": "out", "to_port": "in" },
+      { "from": "sdet", "to": "consensus", "from_port": "out", "to_port": "in" },
+      { "from": "security", "to": "consensus", "from_port": "out", "to_port": "in" },
+      { "from": "devops", "to": "consensus", "from_port": "out", "to_port": "in" },
+      { "from": "performance", "to": "consensus", "from_port": "out", "to_port": "in" },
+      { "from": "consensus", "to": "facilitate", "from_port": "continue_discussion", "to_port": "in" },
+      { "from": "consensus", "to": "build", "from_port": "agreed", "to_port": "in" },
+      { "from": "build", "to": "security-audit", "from_port": "out", "to_port": "in" },
+      { "from": "build", "to": "qa-verify", "from_port": "out", "to_port": "in" },
+      { "from": "build", "to": "perf-verify", "from_port": "out", "to_port": "in" },
+      { "from": "security-audit", "to": "gate", "from_port": "out", "to_port": "in" },
+      { "from": "qa-verify", "to": "gate", "from_port": "out", "to_port": "in" },
+      { "from": "perf-verify", "to": "gate", "from_port": "out", "to_port": "in" },
+      { "from": "gate", "to": "build", "from_port": "request_changes", "to_port": "in" },
+      { "from": "gate", "to": "output", "from_port": "approve", "to_port": "in" }
+    ]
+  }
+}

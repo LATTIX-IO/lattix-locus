@@ -27,6 +27,10 @@ vi.mock("next/navigation", () => ({
   }),
 }));
 
+vi.mock("@/components/composer-controls", () => ({
+  ComposerControls: () => null,
+}));
+
 vi.mock("@/lib/api", () => ({
   createWorkflowRun: createWorkflowRunMock,
   getAgentDefinitions: getAgentDefinitionsMock,
@@ -60,11 +64,11 @@ describe("TaskKickoffComposer", () => {
     fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
 
     await waitFor(() => expect(createWorkflowRunMock).toHaveBeenCalledTimes(1));
-    expect(createWorkflowRunMock).toHaveBeenCalledWith({
+    expect(createWorkflowRunMock).toHaveBeenCalledWith(expect.objectContaining({
       session_kind: "task",
       prompt: "Line one",
       tokens: [],
-    }, { timeoutMs: 120000 });
+    }), { timeoutMs: 120000 });
     expect(pushMock).toHaveBeenCalledWith("/inbox?session=run-2");
     expect(refreshMock).toHaveBeenCalled();
     expect(screen.getByText("Task started. Opening run run-2...")).toBeInTheDocument();

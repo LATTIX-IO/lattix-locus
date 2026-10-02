@@ -1,0 +1,8 @@
+# Optional agent-runtime engine adapters, installed only when
+# FRONTIER_INSTALL_RUNTIME_ENGINES=1 (see docker-compose.local.yml).
+# These are heavy; the default chat path needs none of them.
+langchain>=0.3.0
+langchain-openai>=0.2.0
+semantic-kernel>=1.17.0
+autogen-agentchat>=0.4.0
+neo4j>=5.23.0

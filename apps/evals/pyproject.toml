@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "frontier-evals"
+version = "0.1.0"
+description = "SWE-bench / DeepSWE evaluation harness for the Lattix xFrontier coding agent"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "click>=8.1.7",
+]
+
+[project.optional-dependencies]
+# Live SWE-bench grading + dataset loading (installed on the remote runner box).
+swebench = [
+  "datasets>=2.18.0",
+  "swebench>=2.1.0",
+]
+dev = [
+  "pytest>=8.3.0",
+]
+
+[project.scripts]
+frontier-evals = "frontier_evals.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["frontier_evals"]

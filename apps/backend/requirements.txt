@@ -1,0 +1,28 @@
+# Backend runtime dependencies for the local-first compose stack.
+# Mirrors [project].dependencies in the root pyproject.toml (keep in sync),
+# plus the optional runtime clients the backend imports lazily.
+PyJWT[crypto]>=2.10.1
+click>=8.1.7
+fastapi>=0.115.0
+httpx>=0.28.0
+presidio-analyzer>=2.2.355
+hvac>=2.3.0
+langgraph>=0.3.0
+langgraph-checkpoint-postgres>=2.0.0
+nats-py>=2.10.0
+opentelemetry-api>=1.30.0
+opentelemetry-exporter-otlp>=1.30.0
+opentelemetry-sdk>=1.30.0
+opa-python-client>=0.2.3
+# [binary] bundles libpq — required on slim images with no system Postgres client libs.
+psycopg[binary]>=3.2.0
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+PyYAML>=6.0
+python-dotenv>=1.0.1
+redis>=5.2.1
+structlog>=24.4.0
+uvicorn[standard]>=0.34.0
+zeroconf>=0.145.0
+# Lazily-imported optional clients used by the local-first profile:
+openai>=1.50.0

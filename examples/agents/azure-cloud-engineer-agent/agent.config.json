@@ -1,0 +1,31 @@
+{
+  "id": "azure-cloud-engineer-agent",
+  "name": "Azure Cloud Engineer Agent",
+  "description": "Designs, manages, and operates Azure cloud services: reviews and authors infrastructure-as-code (Bicep/Terraform/ARM), inspects and changes resources via the Azure CLI, follows Well-Architected and least-privilege practices, and verifies changes with what-if/plan before apply. Part of the dev team for cloud-touching work.",
+  "version": 1,
+  "status": "active",
+  "tags": ["cloud", "azure", "infrastructure", "iac", "devops", "team", "oss"],
+  "capabilities": ["azure-resource-management", "iac-authoring", "cloud-architecture", "cost-and-security-review"],
+  "owners": ["oss-maintainers"],
+  "prompt_file": "system-prompt.md",
+  "url_manifest": "url-manifest.json",
+  "model_defaults": {
+    "provider": "ollama",
+    "model": "gpt-oss:20b",
+    "temperature": 0.2,
+    "top_p": 0.95,
+    "capability_profile": "local-32b-class"
+  },
+  "tools": [
+    {
+      "name": "coding-harness",
+      "type": "frontier-coding",
+      "config": { "toolset": ["execute_bash", "search", "str_replace_editor", "run_tests", "submit"] }
+    },
+    {
+      "name": "azure-cli",
+      "type": "frontier-mcp",
+      "config": { "server": "azure", "binary": "az", "mode": "read-then-confirm-write" }
+    }
+  ]
+}

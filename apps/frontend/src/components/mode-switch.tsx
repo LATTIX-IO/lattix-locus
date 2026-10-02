@@ -14,27 +14,30 @@ export function ModeSwitch({
 
   return (
     <div
-      className="inline-flex items-center gap-0.5 rounded-[12px] border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--muted))_70%,white_30%)] p-0.5 shadow-[var(--fx-shadow-soft)]"
+      role="group"
+      aria-label="Mode switch"
+      className="inline-flex shrink-0 items-center gap-0 overflow-hidden rounded-md border border-[var(--ui-border)] bg-[hsl(var(--muted)/0.7)]"
     >
       <Link
         href="/inbox"
-        className={`rounded-[10px] px-3 py-1.5 text-[11px] font-medium no-underline transition ${
+        className={`whitespace-nowrap px-3 py-[5px] text-[11px] font-medium no-underline transition ${
           !inBuilder
-            ? "bg-[hsl(var(--card))] text-[hsl(var(--foreground))] border border-[var(--ui-border)]"
-            : "border border-transparent text-[var(--fx-muted)] hover:text-[hsl(var(--foreground))] hover:bg-[var(--fx-nav-hover)]"
+            ? "bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-[0_1px_2px_rgba(0,0,0,0.08)]"
+            : "text-[var(--fx-muted)] hover:text-[hsl(var(--foreground))] hover:bg-[var(--fx-nav-hover)]"
         }`}
       >
         User
       </Link>
+      <span aria-hidden="true" className="h-5 w-px bg-[var(--ui-border)]" />
       <Link
         href="/builder/workflows"
         aria-disabled={!canAccessBuilder}
-        className={`rounded-[10px] px-3 py-1.5 text-[11px] font-medium no-underline transition ${
+        className={`whitespace-nowrap px-3 py-[5px] text-[11px] font-medium no-underline transition ${
           !canAccessBuilder
-            ? "cursor-not-allowed border border-transparent text-[var(--fx-muted)] opacity-70"
+            ? "cursor-not-allowed text-[var(--fx-muted)] opacity-70"
             : inBuilder
-              ? "bg-[hsl(var(--card))] text-[hsl(var(--foreground))] border border-[var(--ui-border)]"
-              : "border border-transparent text-[var(--fx-muted)] hover:text-[hsl(var(--foreground))] hover:bg-[var(--fx-nav-hover)]"
+              ? "bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-[0_1px_2px_rgba(0,0,0,0.08)]"
+              : "text-[var(--fx-muted)] hover:text-[hsl(var(--foreground))] hover:bg-[var(--fx-nav-hover)]"
         }`}
         title={canAccessBuilder ? "Switch to builder mode" : "Builder mode requires a builder-capable identity."}
         onClick={(event) => {

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.tauri.app/capability/2",
+  "identifier": "default",
+  "description": "Permissions for the desktop shell: core APIs (event listen for the splash) + spawning the backend sidecar.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [{ "name": "bin/frontier-backend", "sidecar": true }]
+    }
+  ]
+}

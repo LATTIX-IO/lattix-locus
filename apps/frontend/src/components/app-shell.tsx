@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiStatusBanner } from "@/components/api-status-banner";
+import { ClassificationBanner, useClassificationBanner } from "@/components/classification-banner";
 import { ModeSwitch } from "@/components/mode-switch";
 import { LeftNav } from "@/components/navigation/left-nav";
 import { UserConsoleSidebar } from "@/components/navigation/user-console-sidebar";
@@ -98,15 +99,34 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const SHOW_READ_ONLY = false;
 
-  const CLASSIFICATION_HEIGHT = 28;
-  const TOP_NAV_HEIGHT = 56;
+  const CLASSIFICATION_HEIGHT = 32;
+  const TOP_NAV_HEIGHT = 48;
   const READ_ONLY_HEIGHT = 24;
 
-  const classificationBannerEnabled = platformSettings?.console_classification_banner_enabled ?? true;
-  const classificationBannerText = platformSettings?.console_classification_banner_text?.trim() || "Internal • Operational Console";
-  const classificationBannerBackground = normalizeBannerColor(platformSettings?.console_classification_banner_background_color, "#2e2a28");
-  const classificationBannerTextColor = normalizeBannerColor(platformSettings?.console_classification_banner_text_color, "#e7dcc0");
-  const topLayerOffset = (classificationBannerEnabled ? CLASSIFICATION_HEIGHT : 0) + (SHOW_READ_ONLY ? READ_ONLY_HEIGHT : 0);
+  // Platform settings (org-wide, server-persisted) are authoritative for the
+  // classification banner. The device-local banner state is the fallback when
+  // platform settings could not be loaded.
+  const [localClassificationBanner] = useClassificationBanner();
+  const classificationBannerEnabled = platformSettings
+    ? platformSettings.console_classification_banner_enabled ?? true
+    : localClassificationBanner.enabled;
+  const classificationBannerText = platformSettings
+    ? platformSettings.console_classification_banner_text?.trim() || "Internal • Operational Console"
+    : localClassificationBanner.text;
+  const classificationBannerColors = platformSettings
+    ? {
+        background: normalizeBannerColor(platformSettings.console_classification_banner_background_color, "#2e2a28"),
+        foreground: normalizeBannerColor(platformSettings.console_classification_banner_text_color, "#e7dcc0"),
+      }
+    : undefined;
+  const classificationBanner = {
+    ...localClassificationBanner,
+    enabled: classificationBannerEnabled,
+    text: classificationBannerText,
+  };
+  const classificationHeight = classificationBannerEnabled ? CLASSIFICATION_HEIGHT : 0;
+
+  const topLayerOffset = classificationHeight;
   const contentTopOffset = topLayerOffset + TOP_NAV_HEIGHT + (SHOW_READ_ONLY ? READ_ONLY_HEIGHT : 0);
 
   const sidebarWidthExpanded = 236;
@@ -120,6 +140,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return stored === "dark" ? "dark" : "light";
   });
   const [menuOpen, setMenuOpen] = useState(false);
+  // User mode offers two sidebars: the session list (Sessions) and the grouped
+  // chat tree plus console navigation (Library).
+  const [userSidebarView, setUserSidebarViewState] = useState<"sessions" | "library">(() =>
+    readLocalStorage("frontier-user-sidebar-view") === "library" ? "library" : "sessions",
+  );
+  const setUserSidebarView = (view: "sessions" | "library") => {
+    setUserSidebarViewState(view);
+    writeLocalStorage("frontier-user-sidebar-view", view);
+  };
   const [sidebarExpanded, setSidebarExpanded] = useState(() => {
     if (typeof window === "undefined") {
       return true;
@@ -265,17 +294,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   if (isPublicAuthRoute) {
     return (
       <div className="fx-app min-h-screen text-[var(--foreground)]">
-        <div className="fixed inset-x-0 top-0 z-30 border-b border-[var(--ui-border)] bg-[color-mix(in_srgb,var(--fx-header)_94%,transparent)] backdrop-blur-sm">
-          <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
-            <div className="flex min-w-0 items-center gap-3">
-              <span className="text-sm font-semibold tracking-[-0.02em] text-[hsl(var(--foreground))]">Lattix xFrontier</span>
-              <span className="fx-badge-local px-2 py-0.5 text-[10px]">Identity</span>
-            </div>
-            <span className="text-xs font-medium text-[var(--fx-muted)]">Authentication required</span>
-          </div>
-        </div>
+        <ClassificationBanner state={classificationBanner} colors={classificationBannerColors} top={0} height={CLASSIFICATION_HEIGHT} />
         <ApiStatusBanner />
-        <main className="min-h-screen pt-14">{children}</main>
+        <main className="min-h-screen" style={{ paddingTop: `${classificationHeight}px` }}>
+          {children}
+        </main>
       </div>
     );
   }
@@ -320,59 +343,108 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       >
         Skip to content
       </a>
-      {classificationBannerEnabled ? (
-        <div
-          className="fixed inset-x-0 z-[90] flex items-center justify-center border-b border-[var(--ui-border)] px-4 text-[11px] font-semibold tracking-[0.06em]"
-          style={{ top: "0px", height: `${CLASSIFICATION_HEIGHT}px`, background: classificationBannerBackground, color: classificationBannerTextColor }}
-        >
-          {classificationBannerText}
-        </div>
-      ) : null}
+      <ClassificationBanner state={classificationBanner} colors={classificationBannerColors} top={0} height={CLASSIFICATION_HEIGHT} />
 
       <header className="fx-header fixed inset-x-0 z-[80]" style={{ top: `${topLayerOffset}px`, height: `${TOP_NAV_HEIGHT}px` }}>
-        <div className="flex h-full items-center justify-between gap-4 px-3.5 md:px-5">
-          <div className="flex min-w-0 items-center gap-2.5">
+        <div className="flex h-full items-center justify-between gap-3 px-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
             <button
               onClick={() => setSidebarExpanded((value) => !value)}
-              className="fx-btn-secondary inline-flex h-8 w-8 items-center justify-center px-0 text-[11px]"
+              className="fx-btn-secondary inline-flex h-7 w-7 shrink-0 items-center justify-center text-xs"
               aria-label="Toggle sidebar"
             >
               <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
                 <path d="M2 4h12M2 8h12M2 12h12" />
               </svg>
             </button>
-            <span className="text-[0.94rem] font-semibold tracking-[-0.02em] text-[var(--foreground)]">Lattix</span>
-            <span className="fx-badge-local px-2.5 py-0.5 text-[10px] font-medium">Local</span>
-            <nav className="min-w-0 truncate text-[12px] text-[var(--fx-muted)]">
+            <span className="shrink-0 text-[13px] font-bold tracking-wide text-[var(--foreground)]">
+              Lattix xFrontier
+            </span>
+            <span className="fx-badge-local shrink-0 whitespace-nowrap px-2 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-[0.1em]">
+              Local
+            </span>
+            <nav
+              className="hidden min-w-0 items-center gap-1 truncate text-[11px] text-[var(--fx-muted)] sm:flex"
+              aria-label="Breadcrumb"
+            >
               {breadcrumbParts.map((part, index) => (
-                <span key={`${part}-${index}`} className="flex items-center gap-1">
-                  {index > 0 ? <span className="text-[var(--fx-muted)]">/</span> : null}
-                  <span className={index === breadcrumbParts.length - 1 ? "text-[hsl(var(--foreground))]" : ""}>{part}</span>
+                <span key={`${part}-${index}`} className="flex shrink-0 items-center">
+                  {index > 0 ? <span className="mx-1 text-[var(--fx-muted)]">/</span> : null}
+                  <span
+                    className={
+                      index === breadcrumbParts.length - 1
+                        ? "max-w-[18ch] truncate text-[var(--foreground)]"
+                        : "shrink-0"
+                    }
+                  >
+                    {part}
+                  </span>
                 </span>
               ))}
             </nav>
           </div>
 
-          <div className="relative flex items-center gap-2">
+          <div className="relative flex shrink-0 items-center gap-1.5">
             <a
               href="mailto:9ff6ac2b6c9d@intake.linear.app?subject=%5BFeedback%5D%20Lattix%20Frontier&body=%0A---%20Feedback%20---%0A%0AType%3A%20%5B%20Bug%20%7C%20Feature%20Request%20%7C%20Improvement%20%7C%20Other%20%5D%0A%0ADescription%3A%0A%0A%0ASteps%20to%20reproduce%20(if%20bug)%3A%0A1.%20%0A2.%20%0A3.%20%0A%0AExpected%20behavior%3A%0A%0A%0AActual%20behavior%3A%0A%0A%0AAdditional%20context%3A%0A"
-              className="fx-btn-secondary px-2.5 py-1.5 text-[11px] font-medium no-underline"
+              className="fx-btn-secondary hidden whitespace-nowrap px-2 py-1 text-[11px] no-underline md:inline-flex"
             >
               Feedback
             </a>
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_90%,hsl(var(--muted))_10%)] px-2.5 py-1 text-[11px] font-medium text-[var(--foreground)]" title={databaseBadge.title}>
-              <span className={`h-1.5 w-1.5 ${databaseBadge.dotClassName}`} />
+            <button
+              className="fx-btn-secondary hidden h-7 w-7 items-center justify-center px-0 md:inline-flex"
+              aria-label="Docs"
+              title="Docs & help"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M9.4 9.4a2.7 2.7 0 0 1 5.3.5c0 1.8-2.5 2.1-2.5 3.6" />
+                <circle cx="12.2" cy="16.8" r="0.9" fill="currentColor" stroke="none" />
+              </svg>
+            </button>
+            <button
+              className="fx-btn-secondary hidden h-7 w-7 items-center justify-center px-0 md:inline-flex"
+              aria-label="Notifications"
+              title="Notifications"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M6 9.5a6 6 0 0 1 12 0c0 4.2 1.5 5.5 1.5 5.5h-15S6 13.7 6 9.5z" />
+                <path d="M10.3 18.5a1.8 1.8 0 0 0 3.4 0" />
+              </svg>
+            </button>
+            <span
+              className="fx-db-chip inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-[3px] text-[10px] font-medium text-[var(--fx-muted)]"
+              title={databaseBadge.title}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${databaseBadge.dotClassName}`} aria-hidden="true" />
               {databaseBadge.label}
             </span>
             <ModeSwitch activeMode={activeMode} canAccessBuilder={canBuilder} />
             {activeMode === "user" ? (
-              <Link href="/workflows/start" className="fx-btn-primary px-3 py-1.5 text-[11px] font-medium tracking-[0.01em]">
+              <Link href="/workflows/start" className="fx-btn-primary whitespace-nowrap px-2.5 py-1 text-[11px] font-medium">
                 Start Workflow
               </Link>
             ) : null}
             <button
               onClick={() => setMenuOpen((value) => !value)}
-              className="fx-btn-secondary h-8 w-8 px-0 text-[11px] font-semibold"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-full border-2 border-[hsl(var(--primary))] bg-[hsl(var(--primary)/0.12)] font-mono text-[10px] font-bold text-[hsl(var(--primary))] transition-[filter] hover:brightness-95"
               aria-label="User menu"
               title={operatorLabel}
             >
@@ -453,7 +525,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      <div className="min-h-screen" style={{ paddingTop: `${contentTopOffset}px` }}>
+      <div
+        className="min-h-screen"
+        style={{ paddingTop: `${contentTopOffset}px`, ["--fx-content-top" as string]: `${contentTopOffset}px` } as React.CSSProperties}
+      >
         <aside
           className="fixed left-0 z-[70] overflow-hidden border-r border-[var(--ui-border)] bg-[var(--fx-sidebar)] transition-[width] duration-200 ease-out"
           style={{
@@ -464,12 +539,46 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           }}
         >
           {activeMode === "user" ? (
-            <UserConsoleSidebar
-              pathname={pathname}
-              selectedSessionId={selectedSessionId}
-              expanded={sidebarExpanded}
-              platformVersion={platformVersion}
-            />
+            sidebarExpanded ? (
+              <div className="flex h-full flex-col">
+                <div role="tablist" aria-label="Sidebar view" className="flex shrink-0 gap-1 border-b border-[var(--ui-border)] px-3 py-2">
+                  {(["sessions", "library"] as const).map((view) => (
+                    <button
+                      key={view}
+                      type="button"
+                      role="tab"
+                      aria-selected={userSidebarView === view}
+                      onClick={() => setUserSidebarView(view)}
+                      className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition ${
+                        userSidebarView === view
+                          ? "bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-[0_1px_2px_rgba(0,0,0,0.08)]"
+                          : "text-[var(--fx-muted)] hover:bg-[var(--fx-nav-hover)] hover:text-[hsl(var(--foreground))]"
+                      }`}
+                    >
+                      {view === "sessions" ? "Sessions" : "Library"}
+                    </button>
+                  ))}
+                </div>
+                <div className="min-h-0 flex-1">
+                  {userSidebarView === "sessions" ? (
+                    <UserConsoleSidebar
+                      pathname={pathname}
+                      selectedSessionId={selectedSessionId}
+                      expanded={sidebarExpanded}
+                      platformVersion={platformVersion}
+                    />
+                  ) : (
+                    <LeftNav
+                      mode="user"
+                      pathname={pathname}
+                      inAdmin={inAdmin && canAdmin}
+                      expanded={sidebarExpanded}
+                      platformVersion={platformVersion}
+                    />
+                  )}
+                </div>
+              </div>
+            ) : null
           ) : (
             <LeftNav
               mode={activeMode}
@@ -483,7 +592,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         <main
           id="main-content"
-          className="min-h-[calc(100vh-57px)] transition-[margin-left] duration-200"
+          className="min-h-[calc(100vh-var(--fx-content-top,57px))] transition-[margin-left] duration-200"
           style={{ marginLeft: `${sidebarExpanded ? sidebarWidthExpanded : sidebarWidthCollapsed}px` }}
         >
           <ApiStatusBanner />

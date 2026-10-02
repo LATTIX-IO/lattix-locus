@@ -2,7 +2,7 @@ export type FrontierNodeTemplate = {
   id: string;
   key: `frontier/${string}`;
   name: string;
-  category: "Core" | "Agent" | "Knowledge" | "Integration" | "Control" | "Logic";
+  category: "Core" | "Agent" | "Knowledge" | "Integration" | "Control" | "Logic" | "Cognition";
   description: string;
   color: string;
 };
@@ -23,6 +23,38 @@ export const frontierNodeTemplates: FrontierNodeTemplate[] = [
     category: "Agent",
     description: "Execute a delegated objective with a selected specialist agent.",
     color: "#1f7f53",
+  },
+  {
+    id: "c0c9a1f8-0b38-4cf0-92dc-25b6e43e4a01",
+    key: "frontier/goal",
+    name: "Goal",
+    category: "Cognition",
+    description: "Define intent, success criteria, constraints, priorities, and output contract.",
+    color: "#2962ff",
+  },
+  {
+    id: "8f5f1cec-b70f-49cf-aef6-0f8a0f8348da",
+    key: "frontier/evidence",
+    name: "Evidence",
+    category: "Cognition",
+    description: "Capture and validate evidence claims before synthesis and commitment.",
+    color: "#00796b",
+  },
+  {
+    id: "eb9c3fc3-8f1f-494c-bd18-8aefe7408686",
+    key: "frontier/assembly",
+    name: "Assembly",
+    category: "Cognition",
+    description: "Fuse goal and evidence into a bounded commitment proposal.",
+    color: "#6a1b9a",
+  },
+  {
+    id: "19708cbc-0efd-4fc4-9dc8-942b8f3629d7",
+    key: "frontier/commitment",
+    name: "Commitment",
+    category: "Cognition",
+    description: "Finalize or escalate a commitment using explicit confidence thresholds.",
+    color: "#ef6c00",
   },
   {
     id: "6f7f5a2d-5a7a-4ec0-9a0e-0df04ca4ee15",

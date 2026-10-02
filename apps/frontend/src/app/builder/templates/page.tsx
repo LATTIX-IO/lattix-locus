@@ -99,15 +99,33 @@ export default function TemplatesPage() {
 
   return (
     <section className="space-y-4">
-      <header>
-        <h1 className="text-2xl font-semibold">Templates</h1>
-        <p className="fx-muted">Single catalog of agent, workflow, and playbook templates with active library and archived views.</p>
-        <BuilderLibraryStatusBadges
-          counts={[
-            { label: "Active", count: templateCounts.active },
-            { label: "Archived", count: templateCounts.deprecated },
-          ]}
-        />
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Templates</h1>
+          <p className="fx-muted">Single catalog of agent, workflow, and playbook templates with active library and archived views.</p>
+          <BuilderLibraryStatusBadges
+            counts={[
+              { label: "Active", count: templateCounts.active },
+              { label: "Archived", count: templateCounts.deprecated },
+            ]}
+          />
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            className="fx-btn-primary px-3 py-2 text-sm font-medium"
+            onClick={() => router.push(`/builder/agents/${crypto.randomUUID()}`)}
+          >
+            New Agent
+          </button>
+          <button
+            type="button"
+            className="fx-btn-secondary px-3 py-2 text-sm font-medium"
+            onClick={() => router.push(`/builder/workflows/${crypto.randomUUID()}`)}
+          >
+            New Workflow
+          </button>
+        </div>
       </header>
 
       <div className="flex flex-wrap items-center gap-2 text-sm">

@@ -143,6 +143,43 @@ body {
   box-shadow: var(--fx-shadow-panel);
 }
 
+.fx-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-left: 3px solid var(--fx-primary);
+  padding-left: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.fx-section-header__title {
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: -0.005em;
+  color: hsl(var(--foreground));
+  margin: 0;
+}
+
+.fx-section-header__sub {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--fx-muted);
+}
+
+.fx-section-header__actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.fx-db-chip {
+  font-family: var(--font-mono), "Space Mono", ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .fx-input {
   background: var(--fx-input);
   border: 1px solid var(--ui-border);
@@ -167,15 +204,17 @@ body {
 }
 
 .fx-workspace-switcher {
-  border: 1px solid transparent;
-  border-radius: 12px;
-  padding: 0.75rem 0.85rem;
-  background: color-mix(in srgb, hsl(var(--card)) 92%, hsl(var(--muted)) 8%);
+  border: 1px solid var(--ui-border);
+  border-radius: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  background: hsl(var(--muted));
   transition: background 140ms ease, border-color 140ms ease;
+  cursor: pointer;
+  min-width: 0;
 }
 
 .fx-workspace-switcher:hover {
-  background: var(--fx-nav-hover);
+  background: color-mix(in srgb, hsl(var(--muted)) 75%, hsl(var(--card)) 25%);
   border-color: var(--fx-sidebar-divider);
 }
 
@@ -321,10 +360,11 @@ body {
 }
 
 .fx-nav-section-title {
-  padding: 0 0.6rem 0.45rem;
-  font-size: 0.68rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  padding: 0 0.6rem 0.3rem;
+  font-family: var(--font-mono), "Space Mono", ui-monospace, monospace;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--fx-sidebar-kicker);
 }
@@ -332,13 +372,13 @@ body {
 .fx-nav-item {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  min-height: 2.3rem;
+  gap: 0.6rem;
+  min-height: 2rem;
   border: 1px solid transparent;
-  border-radius: 10px;
-  padding: 0.5rem 0.65rem;
+  border-radius: 0.7rem;
+  padding: 0.4rem 0.6rem;
   color: hsl(var(--foreground));
-  font-size: 0.79rem;
+  font-size: 0.78rem;
   font-weight: 500;
   text-decoration: none;
   transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
@@ -442,6 +482,14 @@ input:focus-visible,
 textarea:focus-visible {
   outline: 2px solid var(--fx-focus-ring);
   outline-offset: 2px;
+}
+
+/* Opt-out for composer-style fields that present focus on their card container
+   instead. Must live here (unlayered): Tailwind v4 utilities sit in a cascade
+   layer, so no utility class can override the unlayered rule above. */
+textarea[data-no-focus-ring]:focus-visible,
+input[data-no-focus-ring]:focus-visible {
+  outline: none;
 }
 
 .fx-btn-primary:disabled,

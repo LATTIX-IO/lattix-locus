@@ -1,6 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import {
+  CLASSIFICATION_PRESETS,
+  type ClassificationPreset,
+  useClassificationBanner,
+} from "@/components/classification-banner";
+import { ComposerDefaultsSettings } from "@/components/composer-defaults-settings";
 import { SettingsRailCard, SettingsShell } from "@/components/settings-shell";
 import { getAtfAlignmentReport, getPlatformSettings, getUserSkills, savePlatformSettings, saveUserSkills } from "@/lib/api";
 import type { AtfAlignmentReport } from "@/types/frontier";
@@ -19,11 +25,26 @@ function parseSkillList(value: string): string[] {
 
 const sectionNav = [
   { id: "section-brand", label: "Brand & Identity", description: "Identity and support metadata exposed across the console." },
+  { id: "section-classification", label: "Classification Banner", description: "Device-local banner preset used when platform settings are unavailable." },
   { id: "section-security", label: "Security & Governance", description: "Default controls for approvals, secrets, and emergency posture." },
   { id: "section-runtime", label: "Runtime Policy", description: "Shared engine strategy and hybrid routing defaults." },
   { id: "section-user-defaults", label: "User Defaults", description: "Kickoff and review preferences applied to new work." },
+  { id: "section-composer-defaults", label: "Composer Defaults", description: "Default model, folder, and reasoning preferences for new work." },
   { id: "section-user-skills", label: "Personal /skills", description: "User-scoped slash skills available only to your operator profile." },
 ] as const;
+
+const CLASSIFICATION_PRESET_META: Array<{
+  key: ClassificationPreset;
+  label: string;
+  description: string;
+}> = [
+  { key: "neutral", label: "Neutral", description: "Informational banner with no classification signal." },
+  { key: "success", label: "All Clear", description: "Green check; zero-trust posture nominal." },
+  { key: "confidential", label: "Confidential", description: "Amber; handling guidance required." },
+  { key: "restricted", label: "Restricted", description: "Red; elevated access control." },
+  { key: "secret", label: "Secret", description: "Blue; secret-level controls in effect." },
+  { key: "topsecret", label: "Top Secret", description: "Black; highest-level classification." },
+];
 
 export default function SettingsPage() {
   const runtimeEngineOptions = ["native", "langgraph", "langchain", "semantic-kernel", "autogen"] as const;
@@ -34,6 +55,7 @@ export default function SettingsPage() {
     tooling: "semantic-kernel",
     collaboration: "autogen",
   } as const;
+  const [classificationBanner, setClassificationBanner] = useClassificationBanner();
   const [loaded, setLoaded] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null);
@@ -366,6 +388,72 @@ export default function SettingsPage() {
             </div>
           </article>
 
+          <article id="section-classification" className="fx-panel p-3 scroll-mt-32">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold">Classification banner</h2>
+                <p className="fx-muted text-xs">
+                  Device-local preset for the operator-visible strip. Org-wide banner text and colors configured above take precedence whenever platform settings are available.
+                </p>
+              </div>
+              <label className="inline-flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={classificationBanner.enabled}
+                  onChange={(event) => setClassificationBanner({ enabled: event.target.checked })}
+                />
+                <span>Visible</span>
+              </label>
+            </div>
+
+            <label className="mt-3 block text-xs">
+              Banner text
+              <input
+                className="fx-field mt-1 w-full px-2 py-2 font-mono text-[12px]"
+                value={classificationBanner.text}
+                placeholder="Internal · Operational Console"
+                onChange={(event) => setClassificationBanner({ text: event.target.value })}
+              />
+            </label>
+
+            <div className="mt-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">
+                Preset
+              </p>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {CLASSIFICATION_PRESET_META.map(({ key, label, description }) => {
+                  const preset = CLASSIFICATION_PRESETS[key];
+                  const isActive = classificationBanner.preset === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setClassificationBanner({ preset: key })}
+                      aria-pressed={isActive}
+                      className={`flex flex-col gap-2 rounded-md border px-2.5 py-2 text-left text-[11px] transition ${
+                        isActive
+                          ? "border-[hsl(var(--primary))] bg-[hsl(var(--primary)/0.08)]"
+                          : "border-[var(--ui-border)] hover:bg-[var(--fx-nav-hover)]"
+                      }`}
+                    >
+                      <span
+                        className="flex items-center justify-center rounded-sm px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.1em]"
+                        style={{
+                          background: preset.background,
+                          color: preset.foreground,
+                          border: `1px solid ${preset.border}`,
+                        }}
+                      >
+                        {label}
+                      </span>
+                      <span className="text-[10px] text-[var(--fx-muted)]">{description}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </article>
+
           <article id="section-security" className="fx-panel p-3 scroll-mt-32">
             <h2 className="text-sm font-semibold">Security and governance</h2>
             <p className="fx-muted text-xs">Default controls applied across workspace sessions and run execution.</p>
@@ -603,6 +691,8 @@ export default function SettingsPage() {
               </label>
             </div>
           </article>
+
+          <ComposerDefaultsSettings />
 
           <article id="section-user-skills" className="fx-panel p-3 scroll-mt-32">
             <div className="flex flex-wrap items-start justify-between gap-3">

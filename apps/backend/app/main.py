@@ -4,15 +4,18 @@ import json
 import math
 import os
 import re
+import sys
 import asyncio
 import logging
 import base64
 import hashlib
+import secrets as secrets_module
 import hmac
 import ipaddress
 import socket
 import threading
 import time
+import platform
 import tomllib
 import http.cookiejar
 import importlib
@@ -21,6 +24,9 @@ from importlib import metadata as importlib_metadata
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+UTC = timezone.utc
 from pathlib import Path
 from pprint import pformat
 from threading import Lock
@@ -31,11 +37,21 @@ from urllib import request as urllib_request
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from concurrent.futures import ThreadPoolExecutor
+
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
+
+try:  # optional — YAML export/import; JSON always works without it
+    import yaml as _yaml
+except Exception:  # noqa: BLE001
+    _yaml = None
+from pydantic import BaseModel, Field, ValidationError
+from app import cron as app_cron
+from app import knowledge as app_knowledge
+from app import local_models, mcp_client, skills_catalog
 from app.generated_artifacts import GeneratedArtifactService
 from app.integration_starters import INTEGRATION_STARTER_TEMPLATE_SEEDS
 from app.mcp_starters import MCP_STARTER_TEMPLATE_SEEDS
@@ -43,7 +59,15 @@ from app.platform_services import (
     Neo4jRunGraph,
     PostgresLongTermMemoryStore,
     PostgresStateStore,
+    PostgresWorldGraph,
     RedisMemoryStore,
+)
+from frontier_runtime.cognitive import (
+    ColumnState,
+    ConsensusEngine,
+    EvidenceColumn,
+    GoalColumn,
+    SynthesisColumn,
 )
 
 try:
@@ -98,10 +122,10 @@ try:
 except Exception:  # pragma: no cover - optional dependency during local setup
     OpenAI = None
 
-try:
-    from presidio_analyzer import AnalyzerEngine
-except Exception:  # pragma: no cover - optional dependency during local setup
-    AnalyzerEngine = None
+# presidio_analyzer (and its spaCy dependency tree) is imported lazily inside
+# _get_presidio_analyzer(): the eager import costs hundreds of MB of RSS and
+# seconds of cold start even when no guardrail ruleset enables NER-grade PII
+# scanning. The deterministic keyword/regex guardrail tier never needs it.
 
 
 LOGGER = logging.getLogger(__name__)
@@ -114,7 +138,12 @@ class WorkflowRunSummary(BaseModel):
     status: Literal["Running", "Blocked", "Needs Review", "Done", "Failed", "Archived"]
     updatedAt: str
     progressLabel: str
-    kind: Literal["workflow", "chat", "playbook", "task"] = "workflow"
+    # The surface that started the run, used for inbox/console categorization.
+    # "individual"/"agent" come from mainline run creation; "chat"/"task" come
+    # from the user-console chat workspace session kinds.
+    kind: Literal["individual", "agent", "workflow", "chat", "playbook", "task"] = "individual"
+    # Archived runs are hidden from the default run list / inbox nav.
+    archived: bool = False
 
 
 class WorkflowRunEvent(BaseModel):
@@ -128,6 +157,7 @@ class WorkflowRunEvent(BaseModel):
         "artifact_created",
         "approval_required",
         "approval_decision",
+        "tool_call",
         "error",
     ]
     title: str
@@ -137,18 +167,21 @@ class WorkflowRunEvent(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
+WorkflowRunKind = Literal["individual", "agent", "workflow", "chat", "playbook", "task"]
+
+
 def _normalize_workflow_run_kind(
     value: Any,
-) -> Literal["workflow", "chat", "playbook", "task"] | None:
+) -> WorkflowRunKind | None:
     candidate = str(value or "").strip().lower()
-    if candidate in {"workflow", "chat", "playbook", "task"}:
+    if candidate in {"individual", "agent", "workflow", "chat", "playbook", "task"}:
         return candidate  # type: ignore[return-value]
     return None
 
 
 def _resolve_workflow_run_kind(
     payload: dict[str, Any],
-) -> Literal["workflow", "chat", "playbook", "task"]:
+) -> WorkflowRunKind:
     explicit_kind = _normalize_workflow_run_kind(
         payload.get("session_kind") or payload.get("sessionKind") or payload.get("kind")
     )
@@ -266,6 +299,89 @@ class InboxItem(BaseModel):
     queue: Literal[
         "Needs Review", "Needs Approval", "Clarifications Requested", "Blocked by Guardrails"
     ]
+
+
+class SkillEvalCase(BaseModel):
+    """One graded eval case: a sample task and optional expectation."""
+
+    prompt: str
+    expectation: str = ""
+
+
+class SkillEvalResult(BaseModel):
+    """Outcome of running a skill's eval dataset against its rubric."""
+
+    score: float = 0.0
+    passed: bool = False
+    summary: str = ""
+    case_count: int = 0
+    ran_at: str = ""
+    model: str = ""
+
+
+class SkillSecurityFinding(BaseModel):
+    """A single issue raised by the skill security blast chamber."""
+
+    code: str
+    message: str = ""
+    severity: str = "medium"
+    source: str = "rule"
+    stage: str = "static"
+
+
+class SkillSecurityScan(BaseModel):
+    """Result of running an (imported) skill through the security blast chamber.
+
+    Skills are prompt procedures, not executable code, so the "sandbox" here is
+    the guarded LLM-execution + content-scan path: a static scan of the skill
+    body, then a dry-run whose output is scanned through the same guardrail
+    signals. A skill stays quarantined until both stages clear.
+    """
+
+    cleared: bool = False
+    static_passed: bool = False
+    dry_run_passed: bool = False
+    dry_run_mode: str = ""
+    summary: str = ""
+    ran_at: str = ""
+    findings: list[SkillSecurityFinding] = Field(default_factory=list)
+
+
+class SkillDefinition(BaseModel):
+    """A governed, measurable operating procedure injected into agent context.
+
+    The content/markdown model comes from the SKILL.md format; the maturity
+    tiers and eval harness are aligned to the Savant skills maturity solution:
+    a skill carries a tier, a lifecycle maturity, ownership/dependency
+    governance, and a rubric+dataset eval that produces a measurable score used
+    to gate promotion between tiers.
+    """
+
+    id: str
+    name: str
+    description: str = ""
+    content: str = ""
+    status: Literal["enabled", "disabled"] = "enabled"
+    tags: list[str] = Field(default_factory=list)
+    source: Literal["bundled", "custom"] = "custom"
+    auto_inject: bool = True
+    version: int = 1
+    updated_at: str = ""
+    usage_count: int = 0
+    last_used_at: str = ""
+    # Savant maturity model
+    tier: Literal["tier1", "tier2", "tier3"] = "tier3"
+    maturity: Literal["draft", "incubating", "validated", "standard"] = "draft"
+    owner: str = ""
+    dependencies: list[str] = Field(default_factory=list)
+    # Eval / testing harness
+    eval_rubric: str = ""
+    eval_dataset: list[SkillEvalCase] = Field(default_factory=list)
+    last_eval: SkillEvalResult | None = None
+    # Import & security blast chamber
+    import_source: str = ""
+    quarantine_status: Literal["none", "pending", "cleared", "blocked"] = "none"
+    security_scan: SkillSecurityScan | None = None
 
 
 class WorkflowDefinition(BaseModel):
@@ -422,6 +538,51 @@ class PlatformSettings(BaseModel):
     block_retrieval_calls: bool = False
     require_authenticated_requests: bool = False
     require_a2a_runtime_headers: bool = False
+    # AI inference provider configuration. Values here override environment
+    # variables. Secret fields are write-only through the API: masked on read,
+    # empty submissions leave the stored value unchanged, and the literal
+    # "__clear__" removes a stored key.
+    openai_api_key: str = ""
+    openai_model: str = ""
+    openai_fallback_model: str = ""
+    nim_api_key: str = ""
+    nim_base_url: str = ""
+    nim_default_model: str = ""
+    ollama_base_url: str = ""
+    ollama_default_model: str = ""
+    # Unified per-provider configuration map keyed by provider id (openai,
+    # anthropic, azure, google, mistral, xai, nim, ollama). Each entry may set
+    # api_key / base_url / default_model. Takes precedence over the legacy flat
+    # fields above and over environment variables.
+    ai_providers: dict[str, dict[str, str]] = Field(default_factory=dict)
+
+
+class NodeFieldSpec(BaseModel):
+    """Declarative typed input for a node (Langflow-style component schema).
+
+    The studio renders config panels generically from these specs instead of
+    hand-coding a form per node type: one schema drives label, control type,
+    validation, options, defaults, and advanced/secret treatment.
+    """
+
+    name: str
+    label: str
+    field_type: Literal[
+        "text", "textarea", "number", "slider", "bool", "dropdown", "secret", "code"
+    ] = "text"
+    description: str = ""
+    required: bool = False
+    advanced: bool = False
+    default: Any = None
+    options: list[str] = Field(default_factory=list)
+    placeholder: str = ""
+    # Slider/number bounds (ignored by other field types).
+    min: float | None = None
+    max: float | None = None
+    step: float | None = None
+    # When set, the studio refreshes `options` from this provider/source id
+    # (e.g. "models:openai") rather than using the static list above.
+    options_source: str = ""
 
 
 class NodeDefinition(BaseModel):
@@ -430,6 +591,7 @@ class NodeDefinition(BaseModel):
     description: str
     category: str = "Core"
     color: str = "#6ca0ff"
+    inputs: list[NodeFieldSpec] = Field(default_factory=list)
 
 
 class IntegrationDefinition(BaseModel):
@@ -787,6 +949,9 @@ _RUNTIME_PROFILE_ALIASES = {
     "hosted": "hosted",
     "production": "hosted",
     "prod": "hosted",
+    "local-native": "local-native",
+    "local_native": "local-native",
+    "native": "local-native",
 }
 
 
@@ -811,6 +976,13 @@ _RUNTIME_PROFILES = {
         require_a2a_runtime_headers=True,
         public_health_minimal=True,
         description="Hosted/non-local profile with authenticated operator surfaces and required signed A2A runtime headers.",
+    ),
+    "local-native": RuntimeProfile(
+        name="local-native",
+        require_authenticated_requests=True,
+        require_a2a_runtime_headers=False,
+        public_health_minimal=True,
+        description="Native single-user desktop install (no Docker): kernel/OS sandbox per agent, native sidecars, token auth.",
     ),
 }
 
@@ -1818,6 +1990,39 @@ def _normalize_local_casdoor_username(username: str) -> str:
     return f"built-in/{candidate}"
 
 
+def _casdoor_safe_username(value: str) -> str:
+    """Derive a Casdoor-legal username from an email or free-form input.
+
+    The sign-up form submits the email address as the username; Casdoor only
+    allows alphanumerics, underscores, and hyphens (no consecutive or
+    leading/trailing separators).
+    """
+    candidate = str(value or "").strip().lower().partition("@")[0]
+    candidate = re.sub(r"[^a-z0-9_-]+", "-", candidate)
+    candidate = re.sub(r"[-_]{2,}", "-", candidate)
+    candidate = candidate.strip("-_")
+    return candidate or "operator"
+
+
+def _casdoor_email_suffix(email: str) -> str:
+    return hashlib.sha256(str(email or "").strip().lower().encode("utf-8")).hexdigest()[:6]
+
+
+def _casdoor_login_name_candidates(name: str) -> list[str]:
+    """Login names to try for a sign-in identifier (usually an email): the raw
+    value plus the deterministic derivations used at registration."""
+    candidates = [name]
+    if "@" in name:
+        safe = _casdoor_safe_username(name)
+        candidates.append(safe)
+        candidates.append(f"{safe}-{_casdoor_email_suffix(name)}")
+    deduped: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in deduped:
+            deduped.append(candidate)
+    return deduped
+
+
 def _casdoor_get_account(
     opener: urllib_request.OpenerDirector, base_url: str, headers: dict[str, str]
 ) -> dict[str, Any] | None:
@@ -1832,32 +2037,51 @@ def _casdoor_get_account(
     return None
 
 
-def _casdoor_login_admin(
-    opener: urllib_request.OpenerDirector, base_url: str, headers: dict[str, str]
-) -> None:
-    login_url = (
-        f"{base_url.rstrip('/')}"
-        "/api/login?clientId=app-built-in&responseType=code&redirectUri=http://localhost"
-        "&scope=openid%20profile%20email&state=frontier-local-auth"
-    )
-    login_payload = urllib_parse.urlencode(
+def _casdoor_session_login(
+    opener: urllib_request.OpenerDirector,
+    base_url: str,
+    headers: dict[str, str],
+    *,
+    username: str,
+    password: str,
+) -> dict[str, Any]:
+    """Plain Casdoor session login (`type: login`).
+
+    Casdoor expects a JSON body here; form-urlencoded payloads are rejected by
+    its JSON parser with "invalid character ... looking for beginning of value".
+    """
+    owner, _, name = str(username or "").strip().partition("/")
+    if not name:
+        owner, name = "built-in", owner
+    login_payload = json.dumps(
         {
             "application": "app-built-in",
-            "organization": "built-in",
-            "username": "built-in/admin",
-            "password": "123",
+            "organization": owner or "built-in",
+            "username": name,
+            "password": password,
+            "type": "login",
+            "signinMethod": "Password",
+            "autoSignin": True,
         }
     ).encode("utf-8")
-    response = _casdoor_urlopen_json(
+    return _casdoor_urlopen_json(
         opener,
-        login_url,
+        f"{base_url.rstrip('/')}/api/login",
         method="POST",
         data=login_payload,
         headers={
             **headers,
-            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Type": "application/json",
             "Accept": "application/json",
         },
+    )
+
+
+def _casdoor_login_admin(
+    opener: urllib_request.OpenerDirector, base_url: str, headers: dict[str, str]
+) -> None:
+    response = _casdoor_session_login(
+        opener, base_url, headers, username="built-in/admin", password="123"
     )
     if _casdoor_get_account(opener, base_url, headers) is not None:
         return
@@ -1873,42 +2097,30 @@ def _authenticate_local_casdoor_user(username: str, password: str) -> dict[str, 
 
     auth_error = ""
     transport_error = ""
+    owner, _, raw_name = normalized_username.partition("/")
     for base_url, headers in _casdoor_http_base_candidates():
-        cookie_jar = http.cookiejar.CookieJar()
-        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar))
-        login_url = (
-            f"{base_url.rstrip('/')}"
-            "/api/login?clientId=app-built-in&responseType=code&redirectUri=http://localhost"
-            "&scope=openid%20profile%20email&state=frontier-local-auth"
-        )
-        login_payload = urllib_parse.urlencode(
-            {
-                "application": "app-built-in",
-                "organization": "built-in",
-                "username": normalized_username,
-                "password": password_value,
-            }
-        ).encode("utf-8")
-        try:
-            login_response = _casdoor_urlopen_json(
-                opener,
-                login_url,
-                method="POST",
-                data=login_payload,
-                headers={
-                    **headers,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Accept": "application/json",
-                },
-            )
-            account_data = _casdoor_get_account(opener, base_url, headers)
-            if account_data is not None:
-                return account_data
-            auth_error = str(login_response.get("msg") or "Invalid username or password")
-        except urllib_error.HTTPError as exc:
-            transport_error = f"HTTP {exc.code}"
-        except (urllib_error.URLError, TimeoutError, OSError, RuntimeError) as exc:
-            transport_error = str(exc)
+        for login_name in _casdoor_login_name_candidates(raw_name):
+            cookie_jar = http.cookiejar.CookieJar()
+            opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar))
+            try:
+                login_response = _casdoor_session_login(
+                    opener,
+                    base_url,
+                    headers,
+                    username=f"{owner}/{login_name}",
+                    password=password_value,
+                )
+                account_data = _casdoor_get_account(opener, base_url, headers)
+                if account_data is not None:
+                    return account_data
+                auth_error = str(login_response.get("msg") or "Invalid username or password")
+            except urllib_error.HTTPError as exc:
+                transport_error = f"HTTP {exc.code}"
+            except (urllib_error.URLError, TimeoutError, OSError, RuntimeError) as exc:
+                # Connection-level noise from fallback candidates must not mask a
+                # meaningful error already captured from a reachable candidate.
+                if not transport_error:
+                    transport_error = str(exc)
     raise HTTPException(
         status_code=401,
         detail=auth_error or transport_error or "Invalid username or password",
@@ -1920,8 +2132,8 @@ def _provision_local_casdoor_user(
 ) -> dict[str, Any]:
     _require_local_casdoor_password_auth()
     normalized_username = _normalize_local_casdoor_username(username)
-    owner, _, name = normalized_username.partition("/")
-    if not name:
+    owner, _, raw_name = normalized_username.partition("/")
+    if not raw_name:
         raise HTTPException(status_code=400, detail="Username is invalid")
     normalized_email = str(email or "").strip()
     normalized_display_name = str(display_name or "").strip()
@@ -1933,6 +2145,12 @@ def _provision_local_casdoor_user(
     if len(password_value) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters long")
 
+    # The form submits an email as the username; Casdoor forbids '@'/'.' in
+    # usernames. Derive a legal name, with a deterministic email-hash suffix
+    # as the fallback when two different emails share a local part.
+    safe_name = _casdoor_safe_username(raw_name)
+    suffixed_name = f"{safe_name}-{_casdoor_email_suffix(normalized_email)}"
+
     provisioning_error = ""
     transport_error = ""
     for base_url, headers in _casdoor_http_base_candidates():
@@ -1940,18 +2158,53 @@ def _provision_local_casdoor_user(
         opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar))
         try:
             _casdoor_login_admin(opener, base_url, headers)
-            user_id = urllib_parse.quote(f"{owner}/{name}", safe="")
-            existing = _casdoor_urlopen_json(
+
+            # Bootstrap rule: the first real account on a local deployment
+            # becomes the platform admin; everyone after that is a regular
+            # member until an admin elevates them. The bundled Casdoor
+            # bootstrap account ("admin") does not count as a real user, and
+            # admin is only granted when the user list is positively confirmed.
+            is_first_user = False
+            users_response = _casdoor_urlopen_json(
                 opener,
-                f"{base_url.rstrip('/')}/api/get-user?id={user_id}",
+                f"{base_url.rstrip('/')}/api/get-users?owner={urllib_parse.quote(owner, safe='')}",
                 headers={**headers, "Accept": "application/json"},
             )
-            existing_data = existing.get("data") if isinstance(existing.get("data"), dict) else None
-            if (
-                existing.get("status") == "ok"
-                and isinstance(existing_data, dict)
-                and str(existing_data.get("name") or "").strip() == name
+            if users_response.get("status") == "ok" and isinstance(
+                users_response.get("data"), list
             ):
+                is_first_user = not any(
+                    isinstance(item, dict)
+                    and str(item.get("name") or "").strip() not in {"", "admin"}
+                    for item in users_response["data"]
+                )
+
+            target_name = ""
+            for candidate_name in (safe_name, suffixed_name):
+                user_id = urllib_parse.quote(f"{owner}/{candidate_name}", safe="")
+                existing = _casdoor_urlopen_json(
+                    opener,
+                    f"{base_url.rstrip('/')}/api/get-user?id={user_id}",
+                    headers={**headers, "Accept": "application/json"},
+                )
+                existing_data = (
+                    existing.get("data") if isinstance(existing.get("data"), dict) else None
+                )
+                if (
+                    existing.get("status") == "ok"
+                    and isinstance(existing_data, dict)
+                    and str(existing_data.get("name") or "").strip() == candidate_name
+                ):
+                    existing_email = str(existing_data.get("email") or "").strip().lower()
+                    if existing_email == normalized_email.lower():
+                        raise HTTPException(
+                            status_code=409,
+                            detail="An account with that email already exists — use Sign In instead",
+                        )
+                    continue
+                target_name = candidate_name
+                break
+            if not target_name:
                 raise HTTPException(
                     status_code=409, detail="An account with that username already exists"
                 )
@@ -1963,14 +2216,14 @@ def _provision_local_casdoor_user(
                 data=json.dumps(
                     {
                         "owner": owner,
-                        "name": name,
+                        "name": target_name,
                         "displayName": normalized_display_name,
                         "email": normalized_email,
                         "password": password_value,
                         "passwordType": "plain",
                         "signupApplication": "app-built-in",
                         "type": "normal-user",
-                        "isAdmin": False,
+                        "isAdmin": is_first_user,
                         "isForbidden": False,
                         "isDeleted": False,
                     }
@@ -1990,7 +2243,10 @@ def _provision_local_casdoor_user(
         except urllib_error.HTTPError as exc:
             transport_error = f"HTTP {exc.code}"
         except (urllib_error.URLError, TimeoutError, OSError, RuntimeError) as exc:
-            transport_error = str(exc)
+            # Connection-level noise from fallback candidates must not mask a
+            # meaningful error already captured from a reachable candidate.
+            if not transport_error:
+                transport_error = str(exc)
     raise HTTPException(
         status_code=502,
         detail=provisioning_error
@@ -2036,6 +2292,89 @@ def _mint_operator_session_token_from_casdoor_account(account: dict[str, Any]) -
     )
     return mint_runtime_token(
         subject, ttl_seconds=_operator_session_ttl_seconds(), additional_claims=claims
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Native local-password auth (single-user desktop / local-native; no Casdoor).
+# The operator credential is stored under the app home; login/register mint a
+# local operator session token (admin+builder) — the same mechanism Casdoor uses.
+# --------------------------------------------------------------------------- #
+def _native_password_auth_enabled() -> bool:
+    if _local_casdoor_password_auth_enabled():
+        return False  # Casdoor path takes precedence when configured
+    profile = _active_runtime_profile().name
+    return profile in {"local-native"} or _local_authenticated_operator_bootstrap_enabled()
+
+
+def _native_app_home() -> Path:
+    explicit = str(os.getenv("FRONTIER_APP_HOME") or "").strip()
+    if explicit:
+        return Path(explicit)
+    sqlite_path = str(os.getenv("FRONTIER_SQLITE_STATE_PATH") or "").strip()
+    if sqlite_path:
+        try:
+            return Path(sqlite_path).resolve().parents[2]  # <home>/data/state/state.db -> <home>
+        except Exception:  # noqa: BLE001
+            pass
+    home = Path.home()
+    system = platform.system().lower()
+    if system == "windows":
+        base = Path(os.getenv("LOCALAPPDATA") or (home / "AppData" / "Local"))
+        return base / "Lattix" / "xFrontier"
+    if system == "darwin":
+        return home / "Library" / "Application Support" / "Lattix" / "xFrontier"
+    return home / ".local" / "share" / "lattix" / "xfrontier"
+
+
+def _native_account_file() -> Path:
+    return _native_app_home() / ".secrets" / "operator-account.json"
+
+
+def _native_hash_password(password: str, salt: bytes | None = None) -> tuple[str, str]:
+    import hashlib
+
+    salt = salt or os.urandom(16)
+    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=32)
+    return salt.hex(), digest.hex()
+
+
+def _native_load_account() -> dict[str, Any] | None:
+    path = _native_account_file()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _native_verify_password(account: dict[str, Any], password: str) -> bool:
+    import hmac as _hmac
+
+    try:
+        salt = bytes.fromhex(str(account.get("salt") or ""))
+        _, computed = _native_hash_password(password, salt)
+        return _hmac.compare_digest(computed, str(account.get("hash") or ""))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _mint_native_operator_token(username: str, *, display_name: str = "", email: str = "") -> str:
+    username = str(username or "operator").strip() or "operator"
+    claims = {
+        "actor": username,
+        "preferred_username": username,
+        "name": display_name or username,
+        "email": email,
+        "principal_type": "user",
+        "principal_id": f"user:local/{username}",
+        # admin + builder grant full local access (see _request_has_*_access).
+        "roles": ["member", "admin", "builder"],
+    }
+    return mint_runtime_token(
+        username, ttl_seconds=_operator_session_ttl_seconds(), additional_claims=claims
     )
 
 
@@ -3305,12 +3644,219 @@ def _resolve_node_runtime_engine(runtime_info: dict[str, Any], role: str) -> dic
     }
 
 
+_PROVIDER_SECRET_FIELDS = ("openai_api_key", "nim_api_key")
+_PROVIDER_CLEAR_SENTINEL = "__clear__"
+
+# Chat provider registry. Every entry exposes an OpenAI-compatible
+# chat-completions endpoint, so one SDK covers all of them. Provider-qualified
+# model ids ("anthropic/claude-sonnet-4-6") route through this table; bare ids
+# default to OpenAI.
+_PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
+    "openai": {
+        "label": "OpenAI",
+        "default_base_url": "",
+        "key_env": ["OPENAI_API_KEY"],
+        "model_env": "OPENAI_MODEL",
+        "default_model": "gpt-5.2",
+        "key_required": True,
+    },
+    "anthropic": {
+        "label": "Anthropic Claude",
+        "default_base_url": "https://api.anthropic.com/v1",
+        "key_env": ["ANTHROPIC_API_KEY"],
+        "model_env": "ANTHROPIC_MODEL",
+        "default_model": "claude-sonnet-4-6",
+        "key_required": True,
+    },
+    "azure": {
+        "label": "Microsoft Azure OpenAI",
+        # Resource-specific: https://<resource>.openai.azure.com/openai/v1
+        "default_base_url": "",
+        "key_env": ["AZURE_OPENAI_API_KEY"],
+        "model_env": "AZURE_OPENAI_DEPLOYMENT",
+        "default_model": "",
+        "key_required": True,
+        "base_url_required": True,
+    },
+    "google": {
+        "label": "Google Gemini",
+        "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "key_env": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+        "model_env": "GEMINI_MODEL",
+        "default_model": "gemini-2.5-pro",
+        "key_required": True,
+    },
+    "mistral": {
+        "label": "Mistral",
+        "default_base_url": "https://api.mistral.ai/v1",
+        "key_env": ["MISTRAL_API_KEY"],
+        "model_env": "MISTRAL_MODEL",
+        "default_model": "mistral-large-latest",
+        "key_required": True,
+    },
+    "xai": {
+        "label": "xAI Grok",
+        "default_base_url": "https://api.x.ai/v1",
+        "key_env": ["XAI_API_KEY"],
+        "model_env": "XAI_MODEL",
+        "default_model": "grok-4",
+        "key_required": True,
+    },
+    "nim": {
+        "label": "NVIDIA NIM",
+        "default_base_url": "https://integrate.api.nvidia.com/v1",
+        "key_env": ["NVIDIA_API_KEY", "NIM_API_KEY"],
+        "model_env": "NIM_MODEL",
+        "default_model": "meta/llama-3.3-70b-instruct",
+        "key_required": True,
+    },
+    "ollama": {
+        "label": "Local (Ollama)",
+        "default_base_url": "",  # resolved via local_models
+        "key_env": [],
+        "model_env": "OLLAMA_MODEL",
+        "default_model": "llama3.2:3b",
+        "key_required": False,
+    },
+}
+
+
+def _provider_setting(name: str) -> str:
+    """Platform-settings value for a legacy flat provider field."""
+    try:
+        return str(getattr(store.platform_settings, name, "") or "").strip()
+    except Exception:  # noqa: BLE001 - store may not be initialized in edge paths
+        return ""
+
+
+def _provider_settings_entry(provider: str) -> dict[str, str]:
+    """Per-provider config from the unified ai_providers settings map."""
+    try:
+        entry = store.platform_settings.ai_providers.get(provider)
+    except Exception:  # noqa: BLE001
+        return {}
+    if not isinstance(entry, dict):
+        return {}
+    return {str(key): str(value or "").strip() for key, value in entry.items()}
+
+
+# Legacy flat settings fields kept for persisted-state compatibility.
+_LEGACY_PROVIDER_FIELDS: dict[tuple[str, str], str] = {
+    ("openai", "api_key"): "openai_api_key",
+    ("openai", "default_model"): "openai_model",
+    ("nim", "api_key"): "nim_api_key",
+    ("nim", "base_url"): "nim_base_url",
+    ("nim", "default_model"): "nim_default_model",
+    ("ollama", "base_url"): "ollama_base_url",
+    ("ollama", "default_model"): "ollama_default_model",
+}
+
+
+def _provider_config_value(provider: str, field: str) -> str:
+    """Resolution order: ai_providers map -> legacy flat field -> environment."""
+    value = _provider_settings_entry(provider).get(field, "")
+    if value:
+        return value
+    legacy_field = _LEGACY_PROVIDER_FIELDS.get((provider, field))
+    if legacy_field:
+        value = _provider_setting(legacy_field)
+        if value:
+            return value
+    registry = _PROVIDER_REGISTRY.get(provider, {})
+    if field == "api_key":
+        for env_name in registry.get("key_env", []):
+            env_value = str(os.getenv(env_name) or "").strip()
+            if env_value:
+                return env_value
+        return ""
+    if field == "base_url":
+        env_value = str(os.getenv(f"{provider.upper()}_BASE_URL") or "").strip()
+        return env_value or str(registry.get("default_base_url") or "")
+    if field == "default_model":
+        model_env = str(registry.get("model_env") or "")
+        env_value = str(os.getenv(model_env) or "").strip() if model_env else ""
+        return env_value or str(registry.get("default_model") or "")
+    return ""
+
+
+def _provider_api_key(provider: str) -> str:
+    return _provider_config_value(provider, "api_key")
+
+
+def _provider_base_url(provider: str) -> str:
+    return _provider_config_value(provider, "base_url").rstrip("/")
+
+
+def _provider_default_model(provider: str) -> str:
+    return _provider_config_value(provider, "default_model")
+
+
+def _provider_configured(provider: str) -> bool:
+    registry = _PROVIDER_REGISTRY.get(provider, {})
+    key = _provider_api_key(provider)
+    key_ok = bool(key) and "change" not in key.lower() and "your-" not in key.lower()
+    if registry.get("key_required", True) and not key_ok:
+        return False
+    if registry.get("base_url_required") and not _provider_base_url(provider):
+        return False
+    return True
+
+
+def _openai_api_key() -> str:
+    return _provider_api_key("openai")
+
+
 def _default_openai_model() -> str:
-    return os.getenv("OPENAI_MODEL", "gpt-5.2")
+    return _provider_default_model("openai")
 
 
 def _fallback_openai_model() -> str:
-    return os.getenv("OPENAI_FALLBACK_MODEL", "gpt-5.1")
+    return _provider_setting("openai_fallback_model") or os.getenv(
+        "OPENAI_FALLBACK_MODEL", "gpt-5.1"
+    )
+
+
+def _nim_api_key() -> str:
+    return _provider_api_key("nim")
+
+
+def _nim_base_url() -> str:
+    return _provider_base_url("nim")
+
+
+def _default_nim_model() -> str:
+    return _provider_default_model("nim")
+
+
+def _default_ollama_model() -> str:
+    return _provider_default_model("ollama")
+
+
+def _apply_provider_settings_side_effects() -> None:
+    """Propagate provider settings to cached clients and helper modules."""
+    global _OPENAI_CLIENT  # noqa: PLW0603
+    _OPENAI_CLIENT = None
+    _PROVIDER_CLIENTS.clear()
+    local_models.set_base_url_override(
+        _provider_settings_entry("ollama").get("base_url", "")
+        or _provider_setting("ollama_base_url")
+    )
+
+
+def _resolve_chat_provider(model: str) -> tuple[str, str]:
+    """Split a provider-qualified model id into (provider, bare_model).
+
+    "nim/meta/llama-3.3-70b-instruct" -> ("nim", "meta/llama-3.3-70b-instruct")
+    "ollama/llama3.2:3b"              -> ("ollama", "llama3.2:3b")
+    anything else                      -> ("openai", model)
+    """
+    candidate = str(model or "").strip()
+    lowered = candidate.lower()
+    for provider in _PROVIDER_REGISTRY:
+        token = f"{provider}/"
+        if lowered.startswith(token):
+            return provider, candidate[len(token) :].strip()
+    return "openai", candidate
 
 
 def _strip_leading_agent_mentions(text: str) -> str:
@@ -3712,7 +4258,7 @@ def _resolve_agent_chat_model(agent: AgentDefinition | None) -> str:
 
 
 def _openai_status() -> RuntimeProviderStatus:
-    key = os.getenv("OPENAI_API_KEY", "").strip()
+    key = _openai_api_key()
     has_client = OpenAI is not None
     is_placeholder_key = (
         key.lower().startswith("replace-")
@@ -3730,14 +4276,61 @@ def _openai_status() -> RuntimeProviderStatus:
 
 _OPENAI_CLIENT: Any | None = None
 _PRESIDIO_ANALYZER: Any | None = None
-_POSTGRES_STATE = PostgresStateStore(os.getenv("POSTGRES_DSN", ""))
+_PRESIDIO_UNAVAILABLE = False
+# Lazily resolved presidio_analyzer.AnalyzerEngine class (tests may inject a stub).
+AnalyzerEngine: Any | None = None
+
+
+def _build_state_backends() -> tuple[Any, Any | None]:
+    """Select the state/audit persistence backend.
+
+    POSTGRES_DSN wins when set. Otherwise FRONTIER_SQLITE_STATE_PATH opts into
+    the zero-container SQLite backend (resource plan 2.3). Classes are resolved
+    via getattr so injected/fake platform_services modules without the newer
+    classes fall back to legacy snapshot behavior.
+    """
+    services = importlib.import_module("app.platform_services")
+    dsn = os.getenv("POSTGRES_DSN", "").strip()
+    sqlite_path = os.getenv("FRONTIER_SQLITE_STATE_PATH", "").strip()
+    if not dsn and sqlite_path:
+        sqlite_state_cls = getattr(services, "SQLiteStateStore", None)
+        sqlite_audit_cls = getattr(services, "SQLiteAuditLog", None)
+        if sqlite_state_cls is not None:
+            return (
+                sqlite_state_cls(sqlite_path),
+                sqlite_audit_cls(sqlite_path) if sqlite_audit_cls is not None else None,
+            )
+    audit_cls = getattr(services, "PostgresAuditLog", None)
+    return PostgresStateStore(dsn), (audit_cls(dsn) if audit_cls is not None else None)
+
+
+# Name kept for backward compatibility (tests and tooling reference it); the
+# actual backend may be Postgres or SQLite depending on environment.
+_POSTGRES_STATE, _AUDIT_LOG = _build_state_backends()
 _REDIS_MEMORY = RedisMemoryStore(os.getenv("REDIS_URL", ""))
 _POSTGRES_MEMORY = PostgresLongTermMemoryStore(os.getenv("POSTGRES_DSN", ""))
-_NEO4J_GRAPH = Neo4jRunGraph(
-    os.getenv("NEO4J_URI", ""),
-    os.getenv("NEO4J_USERNAME", ""),
-    os.getenv("NEO4J_PASSWORD", ""),
-)
+
+
+def _build_world_graph() -> Any:
+    """Select the world-model graph backend.
+
+    Default is the **Postgres** relational graph (no Java) — the world-graph
+    lives in the same Postgres that backs state + long-term memory. Neo4j stays
+    available only as an explicit legacy opt-in (``NEO4J_URI`` set), e.g. for an
+    existing hosted deployment.
+    """
+    if str(os.getenv("NEO4J_URI", "") or "").strip():
+        return Neo4jRunGraph(
+            os.getenv("NEO4J_URI", ""),
+            os.getenv("NEO4J_USERNAME", ""),
+            os.getenv("NEO4J_PASSWORD", ""),
+        )
+    return PostgresWorldGraph(os.getenv("POSTGRES_DSN", ""))
+
+
+# Name kept for backward compatibility (all call sites use this); the backend is
+# Postgres by default, Neo4j only when NEO4J_URI is explicitly configured.
+_NEO4J_GRAPH = _build_world_graph()
 
 
 def _get_openai_client() -> Any | None:
@@ -3746,8 +4339,46 @@ def _get_openai_client() -> Any | None:
     if not status.configured:
         return None
     if _OPENAI_CLIENT is None:
-        _OPENAI_CLIENT = OpenAI(api_key=os.getenv("OPENAI_API_KEY", "").strip())
+        _OPENAI_CLIENT = OpenAI(api_key=_openai_api_key())
     return _OPENAI_CLIENT
+
+
+_PROVIDER_CLIENTS: dict[str, Any] = {}
+
+
+def _get_chat_client(provider: str) -> tuple[Any | None, str]:
+    """Resolve an OpenAI-SDK-compatible client for a chat provider.
+
+    NIM and Ollama both expose OpenAI-compatible chat-completions endpoints,
+    so one SDK covers all three providers. Returns (client, unavailable_reason).
+    """
+    if OpenAI is None:
+        return None, "OpenAI SDK unavailable"
+    registry = _PROVIDER_REGISTRY.get(provider)
+    if registry is None:
+        return None, f"Unknown chat provider '{provider}'"
+    if provider == "openai":
+        client = _get_openai_client()
+        if client is None:
+            return None, "OpenAI API key missing/placeholder or OpenAI SDK unavailable"
+        return client, ""
+    if provider in _PROVIDER_CLIENTS:
+        return _PROVIDER_CLIENTS[provider], ""
+    if provider == "ollama":
+        # Ollama ignores the API key but the SDK requires a non-empty value.
+        client = OpenAI(api_key="ollama", base_url=local_models.ollama_openai_base_url())
+    else:
+        key = _provider_api_key(provider)
+        if registry.get("key_required", True) and (
+            not key or "change" in key.lower() or "your-" in key.lower()
+        ):
+            return None, f"{registry['label']} API key missing or placeholder"
+        base_url = _provider_base_url(provider)
+        if not base_url:
+            return None, f"{registry['label']} endpoint is not configured"
+        client = OpenAI(api_key=key or "unused", base_url=base_url)
+    _PROVIDER_CLIENTS[provider] = client
+    return client, ""
 
 
 def _module_available(module_name: str) -> bool:
@@ -5461,16 +6092,23 @@ def _run_framework_human_review(
 
 
 def _get_presidio_analyzer() -> Any | None:
-    global _PRESIDIO_ANALYZER  # noqa: PLW0603
-    if AnalyzerEngine is None:
-        return None
+    global _PRESIDIO_ANALYZER, _PRESIDIO_UNAVAILABLE, AnalyzerEngine  # noqa: PLW0603
+    # NER-grade PII scanning is opt-in: the deterministic keyword/regex tier
+    # always applies, and the analyzer costs hundreds of MB of RSS.
     if not _env_flag("FRONTIER_ENABLE_PRESIDIO_PII_ANALYZER", False):
         return None
-    if _PRESIDIO_ANALYZER is None:
-        try:
-            _PRESIDIO_ANALYZER = AnalyzerEngine()
-        except Exception:  # noqa: BLE001
-            _PRESIDIO_ANALYZER = None
+    if _PRESIDIO_ANALYZER is not None or _PRESIDIO_UNAVAILABLE:
+        return _PRESIDIO_ANALYZER
+    try:
+        engine_cls = AnalyzerEngine
+        if engine_cls is None:
+            from presidio_analyzer import AnalyzerEngine as engine_cls
+
+            AnalyzerEngine = engine_cls
+        _PRESIDIO_ANALYZER = engine_cls()
+    except Exception:  # noqa: BLE001 - optional dependency; deterministic tier still applies
+        _PRESIDIO_UNAVAILABLE = True
+        _PRESIDIO_ANALYZER = None
     return _PRESIDIO_ANALYZER
 
 
@@ -6087,30 +6725,232 @@ def _run_openai_chat(
     model: str,
     temperature: float,
     messages: list[dict[str, str]] | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_executor: Callable[[str, dict[str, Any]], str] | None = None,
+    max_tool_calls: int = 8,
+    on_tool_event: Callable[[str, dict[str, Any], str, bool], None] | None = None,
+    reasoning_effort: str = "",
     runtime: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    try:
-        chunks, meta = _collect_chat_response_chunks(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=model,
-            temperature=temperature,
-            messages=messages,
-            runtime=runtime,
-        )
-        return ("".join(chunks).strip(), meta)
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001
+    # An explicit provider runtime (e.g. a user-scoped provider credential from
+    # /runtime/user-providers) is served by the streaming provider adapters.
+    # Tool loops still require the chat.completions client path below.
+    if runtime is not None and not tools:
+        try:
+            chunks, meta = _collect_chat_response_chunks(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=model,
+                temperature=temperature,
+                messages=messages,
+                runtime=runtime,
+            )
+            return ("".join(chunks).strip(), meta)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            return (
+                "",
+                {
+                    "provider": str(runtime.get("provider") or "openai"),
+                    "model": str(runtime.get("model") or model or ""),
+                    "mode": "simulated",
+                    "reason": f"Provider call failed: {str(exc)[:180]}",
+                },
+            )
+
+    provider, bare_model = _resolve_chat_provider(model)
+    client, unavailable_reason = _get_chat_client(provider)
+    if client is None:
         return (
-            "",
+            f"[simulated:{model}] {user_prompt[:280]}",
             {
-                "provider": str((runtime or {}).get("provider") or "openai"),
-                "model": str((runtime or {}).get("model") or model or ""),
+                "provider": provider,
+                "model": model,
                 "mode": "simulated",
-                "reason": f"Provider call failed: {str(exc)[:180]}",
+                "reason": unavailable_reason,
             },
         )
+
+    if messages is None:
+        messages = []
+        if system_prompt.strip():
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_prompt})
+
+    attempt_models: list[str] = []
+    if provider == "openai":
+        primary_model = bare_model or _default_openai_model()
+        secondary_model = _fallback_openai_model().strip()
+        if not secondary_model:
+            secondary_model = "gpt-5.1"
+        candidate_models = [primary_model]
+        if secondary_model and secondary_model not in candidate_models:
+            candidate_models.append(secondary_model)
+    else:
+        primary_model = bare_model or _provider_default_model(provider)
+        candidate_models = [primary_model]
+
+    last_error = ""
+    for candidate_model in candidate_models:
+        attempt_models.append(candidate_model)
+        response_api_error = ""
+
+        # The Responses API is OpenAI-specific; NIM/Ollama use chat.completions.
+        # Tool loops always go through chat.completions for cross-provider parity.
+        responses_client = (
+            getattr(client, "responses", None) if provider == "openai" and not tools else None
+        )
+        if responses_client is not None and hasattr(responses_client, "create"):
+            try:
+                response_api = responses_client.create(
+                    model=candidate_model,
+                    input=messages,
+                    reasoning={"summary": "auto"},
+                    temperature=temperature,
+                )
+                text, reasoning_summaries = _extract_openai_responses_payload(response_api)
+                if text:
+                    return (
+                        text,
+                        {
+                            "provider": "openai",
+                            "model": candidate_model,
+                            "requested_model": primary_model,
+                            "attempted_models": attempt_models,
+                            "fallback_used": candidate_model != primary_model,
+                            "mode": "live",
+                            "response_api": "responses",
+                            "reasoning": {
+                                "summary_mode": "auto",
+                                "available": len(reasoning_summaries) > 0,
+                                "summaries": reasoning_summaries,
+                            },
+                        },
+                    )
+            except Exception as exc:  # noqa: BLE001
+                response_api_error = str(exc)
+
+        try:
+            conversation: list[dict[str, Any]] = list(messages)
+            tool_calls_made = 0
+            tools_exhausted = False
+            while True:
+                request_kwargs: dict[str, Any] = {
+                    "model": candidate_model,
+                    "temperature": temperature,
+                    "messages": conversation,
+                }
+                if reasoning_effort:
+                    # OpenAI reasoning models take a top-level reasoning_effort;
+                    # OpenAI-compatible local servers (Ollama/gpt-oss) take it in
+                    # the request body and ignore it if unsupported.
+                    if provider == "openai":
+                        request_kwargs["reasoning_effort"] = reasoning_effort
+                    else:
+                        request_kwargs["extra_body"] = {"reasoning_effort": reasoning_effort}
+                if tools and tool_executor is not None and not tools_exhausted:
+                    request_kwargs["tools"] = tools
+                    request_kwargs["tool_choice"] = "auto"
+                response = client.chat.completions.create(**request_kwargs)
+                choice_message = response.choices[0].message
+                tool_calls = list(getattr(choice_message, "tool_calls", None) or [])
+                if not tool_calls or tool_executor is None:
+                    text = (choice_message.content or "").strip()
+                    break
+
+                conversation.append(
+                    {
+                        "role": "assistant",
+                        "content": choice_message.content or None,
+                        "tool_calls": [
+                            {
+                                "id": tool_call.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tool_call.function.name,
+                                    "arguments": tool_call.function.arguments,
+                                },
+                            }
+                            for tool_call in tool_calls
+                        ],
+                    }
+                )
+                for tool_call in tool_calls:
+                    tool_name = str(tool_call.function.name or "")
+                    try:
+                        tool_args = json.loads(tool_call.function.arguments or "{}")
+                        if not isinstance(tool_args, dict):
+                            tool_args = {}
+                    except json.JSONDecodeError:
+                        tool_args = {}
+                    if tool_calls_made >= max_tool_calls:
+                        tool_output = (
+                            "Tool-call limit reached for this run; answer with the "
+                            "information already gathered."
+                        )
+                        tools_exhausted = True
+                        succeeded = False
+                    else:
+                        tool_calls_made += 1
+                        try:
+                            tool_output = tool_executor(tool_name, tool_args)
+                            succeeded = True
+                        except Exception as tool_exc:  # noqa: BLE001
+                            tool_output = f"Tool '{tool_name}' failed: {str(tool_exc)[:300]}"
+                            succeeded = False
+                    if on_tool_event is not None:
+                        try:
+                            on_tool_event(tool_name, tool_args, tool_output, succeeded)
+                        except Exception:  # noqa: BLE001 - event emission is best-effort
+                            pass
+                    conversation.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": str(tool_output)[:8000],
+                        }
+                    )
+                if tool_calls_made >= max_tool_calls:
+                    tools_exhausted = True
+
+            return (
+                text,
+                {
+                    "provider": provider,
+                    "model": candidate_model,
+                    "requested_model": primary_model,
+                    "attempted_models": attempt_models,
+                    "fallback_used": candidate_model != primary_model,
+                    "mode": "live",
+                    "response_api": "chat.completions",
+                    "tools_available": len(tools or []),
+                    "tool_calls_made": tool_calls_made,
+                    "reasoning": {
+                        "summary_mode": "auto",
+                        "available": False,
+                        "summaries": [],
+                    },
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            completion_error = str(exc)
+            if response_api_error:
+                last_error = f"responses.create failed: {response_api_error[:120]} ; chat.completions failed: {completion_error[:120]}"
+            else:
+                last_error = completion_error
+            continue
+
+    return (
+        f"[fallback:{primary_model}] {user_prompt[:280]}",
+        {
+            "provider": provider,
+            "model": primary_model,
+            "attempted_models": attempt_models,
+            "mode": "simulated",
+            "reason": f"{provider} call failed: {last_error[:180]}",
+        },
+    )
 
 
 def _configured_agent_assets_root(repo_root: Path) -> Path | None:
@@ -6125,6 +6965,18 @@ def _configured_agent_assets_root(repo_root: Path) -> Path | None:
 
 
 def _repository_root() -> Path:
+    # Frozen desktop build (PyInstaller): bundled data — including examples/agents
+    # and examples/workflows — is unpacked under _MEIPASS (onefile) or sits next
+    # to the executable (onedir). Resolve there so the seed loaders find them.
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass and (Path(meipass) / "examples").is_dir():
+            return Path(meipass)
+        exe_dir = Path(sys.executable).resolve().parent
+        if (exe_dir / "examples").is_dir():
+            return exe_dir
+        if meipass:
+            return Path(meipass)
     current = Path(__file__).resolve()
     for parent in current.parents:
         if (parent / "pyproject.toml").exists() or (parent / "docker-compose.yml").exists():
@@ -6277,6 +7129,39 @@ def _load_seeded_agents_from_repo() -> dict[str, AgentDefinition]:
             config_json=canonical_config,
         )
 
+    return seeded
+
+
+def _load_seeded_workflows_from_repo() -> dict[str, "WorkflowDefinition"]:
+    """Load callable workflow definitions shipped in examples/workflows/."""
+    repo_root = _repository_root()
+    root = (repo_root / "examples" / "workflows").resolve()
+    seeded: dict[str, WorkflowDefinition] = {}
+    if not root.is_dir():
+        return seeded
+    for wf_dir in sorted(root.iterdir()):
+        config_path = wf_dir / "workflow.json"
+        if not (wf_dir.is_dir() and config_path.exists()):
+            continue
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        source_id = str(config.get("id") or wf_dir.name)
+        wf_id = (
+            source_id
+            if _is_uuid(source_id)
+            else str(uuid5(NAMESPACE_URL, f"frontier-workflow:{source_id}"))
+        )
+        graph = config.get("graph") if isinstance(config.get("graph"), dict) else {}
+        seeded[wf_id] = WorkflowDefinition(
+            id=wf_id,
+            name=str(config.get("name") or _slug_to_name(wf_dir.name)),
+            description=str(config.get("description") or ""),
+            version=_normalize_version(config.get("version")),
+            status="published",
+            graph_json=graph,
+        )
     return seeded
 
 
@@ -6735,13 +7620,76 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
+        if normalized_type == "frontier/goal":
+            if not str(node.config.get("intent") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="GOAL_INTENT_REQUIRED",
+                        message="Goal nodes require config.intent.",
+                        path=f"{node_path}.config.intent",
+                    )
+                )
+
+        if normalized_type == "frontier/evidence":
+            required_evidence = node.config.get("required_evidence")
+            if required_evidence is not None and not isinstance(required_evidence, list):
+                issues.append(
+                    GraphValidationIssue(
+                        code="EVIDENCE_REQUIRED_LIST_INVALID",
+                        message="Evidence nodes require config.required_evidence to be a list when provided.",
+                        path=f"{node_path}.config.required_evidence",
+                    )
+                )
+
+        if normalized_type == "frontier/assembly":
+            if len(_incoming_to_port(node_id, "goal")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="ASSEMBLY_GOAL_INPUT_REQUIRED",
+                        message="Assembly nodes require a goal input connection to port 'goal'.",
+                        path=f"{node_path}.inputs.goal",
+                    )
+                )
+            if len(_incoming_to_port(node_id, "evidence")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="ASSEMBLY_EVIDENCE_INPUT_REQUIRED",
+                        message="Assembly nodes require an evidence input connection to port 'evidence'.",
+                        path=f"{node_path}.inputs.evidence",
+                    )
+                )
+            threshold_raw = node.config.get("confidence_threshold", 0.6)
+            try:
+                threshold = float(threshold_raw)
+            except (TypeError, ValueError):
+                threshold = -1.0
+            if threshold < 0.0 or threshold > 1.0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="ASSEMBLY_CONFIDENCE_THRESHOLD_INVALID",
+                        message="Assembly nodes require config.confidence_threshold between 0.0 and 1.0.",
+                        path=f"{node_path}.config.confidence_threshold",
+                    )
+                )
+
+        if normalized_type == "frontier/commitment":
+            if len(_incoming_to_port(node_id, "commitment")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="COMMITMENT_INPUT_REQUIRED",
+                        message="Commitment nodes require a commitment input connection to port 'commitment'.",
+                        path=f"{node_path}.inputs.commitment",
+                    )
+                )
+
         if normalized_type.startswith("frontier/agent"):
             if "skills" in node.config:
                 _normalized_skills, skill_issues = _validate_graph_skill_paths(
                     node.config.get("skills"), path=f"{node_path}.config.skills"
                 )
                 issues.extend(skill_issues)
-            if not str(node.config.get("agent_id") or "").strip():
+            has_agent_id = bool(str(node.config.get("agent_id") or "").strip())
+            if not has_agent_id:
                 issues.append(
                     GraphValidationIssue(
                         code="AGENT_ID_REQUIRED",
@@ -6749,11 +7697,16 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                         path=f"{node_path}.config.agent_id",
                     )
                 )
-            if not str(node.config.get("model") or "").strip():
+            # When the node is bound to an agent (agent_id), its model and system
+            # prompt are resolved from that agent definition at runtime, so they
+            # need NOT be set inline on the node. Only an UNBOUND agent node must
+            # carry its own model/prompt. (Previously these were always required,
+            # which made every agent-referencing workflow fail to publish.)
+            if not has_agent_id and not str(node.config.get("model") or "").strip():
                 issues.append(
                     GraphValidationIssue(
                         code="AGENT_MODEL_REQUIRED",
-                        message="Agent nodes require config.model.",
+                        message="Agent nodes without an agent_id require config.model.",
                         path=f"{node_path}.config.model",
                     )
                 )
@@ -6770,11 +7723,11 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
 
             has_prompt_input = len(_incoming_to_port(node_id, "prompt")) > 0
             has_inline_prompt = bool(str(node.config.get("system_prompt") or "").strip())
-            if not has_prompt_input and not has_inline_prompt:
+            if not has_agent_id and not has_prompt_input and not has_inline_prompt:
                 issues.append(
                     GraphValidationIssue(
                         code="AGENT_PROMPT_REQUIRED",
-                        message="Agent nodes require either a prompt connection to port 'prompt' or config.system_prompt.",
+                        message="Agent nodes without an agent_id require a prompt connection to port 'prompt' or config.system_prompt.",
                         path=f"{node_path}.inputs.prompt",
                     )
                 )
@@ -7117,6 +8070,10 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                 or len(_incoming_to_port(node_id, "approved")) > 0
                 or len(_incoming_to_port(node_id, "approved_output")) > 0
                 or len(_incoming_to_port(node_id, "payload")) > 0
+                # A flow connection into 'in' also carries the upstream result —
+                # multi-agent workflows wire gate/approve -> output via 'in', and
+                # the runtime treats that incoming as the payload.
+                or len(_incoming_to_port(node_id, "in")) > 0
             )
             if not has_result_input:
                 issues.append(
@@ -7155,7 +8112,11 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
 
     if not issues:
         order = _topological_order(node_ids, payload.links)
-        if order is None:
+        # A cycle is only invalid for the native sequential executor. Multi-agent
+        # graphs are intentionally cyclic (consensus/gate fix loops) and route to
+        # the LangGraph compiler, which bounds those loops via loop_counts — so a
+        # cycle is valid exactly when the graph qualifies for the compiler.
+        if order is None and not _should_use_compiler(payload):
             issues.append(
                 GraphValidationIssue(
                     code="GRAPH_CYCLE",
@@ -7165,6 +8126,21 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
             )
 
     return GraphValidationResult(valid=len(issues) == 0, issues=issues)
+
+
+# Cognitive column state carried alongside a port projection so that a
+# cognitive consumer (e.g. frontier/assembly) still receives the upstream
+# column state when the edge selects a specific output port such as "out".
+_COGNITIVE_STATE_RESULT_KEYS = ("goal_state", "evidence_state", "synthesis_state")
+
+
+def _project_port_value(source_result: dict[str, Any], from_port: str) -> dict[str, Any]:
+    projected = source_result.get(from_port)
+    value = dict(projected) if isinstance(projected, dict) else {from_port: projected}
+    for key in _COGNITIVE_STATE_RESULT_KEYS:
+        if key in source_result and key not in value:
+            value[key] = source_result[key]
+    return value
 
 
 def _incoming_values(
@@ -7177,8 +8153,7 @@ def _incoming_values(
         source_result = node_results[edge.from_node]
         from_port = str(edge.from_port or "").strip()
         if from_port and isinstance(source_result, dict) and from_port in source_result:
-            projected = source_result.get(from_port)
-            incoming.append(projected if isinstance(projected, dict) else {from_port: projected})
+            incoming.append(_project_port_value(source_result, from_port))
             continue
         incoming.append(source_result)
     return incoming
@@ -7198,10 +8173,7 @@ def _incoming_values_by_port(
         source_result = node_results[edge.from_node]
         from_port = str(edge.from_port or "").strip()
         if from_port and isinstance(source_result, dict) and from_port in source_result:
-            projected = source_result.get(from_port)
-            grouped[str(edge.to_port or "in")].append(
-                projected if isinstance(projected, dict) else {from_port: projected}
-            )
+            grouped[str(edge.to_port or "in")].append(_project_port_value(source_result, from_port))
             continue
         grouped[str(edge.to_port or "in")].append(source_result)
     return grouped
@@ -7214,6 +8186,35 @@ def _port_values(
     for name in port_names:
         merged.extend(by_port.get(name, []))
     return merged
+
+
+def _column_state_from_payload(
+    *, column_id: str, assembly_id: str, payload: dict[str, Any] | None
+) -> ColumnState:
+    source = payload if isinstance(payload, dict) else {}
+    belief_set = source.get("belief_set") if isinstance(source.get("belief_set"), dict) else {}
+    evidence_refs = (
+        source.get("evidence_refs") if isinstance(source.get("evidence_refs"), list) else []
+    )
+    confidence_raw = source.get("confidence", 0.0)
+    try:
+        confidence = max(0.0, min(1.0, float(confidence_raw)))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    adaptation_metrics = (
+        source.get("adaptation_metrics")
+        if isinstance(source.get("adaptation_metrics"), dict)
+        else {}
+    )
+    return ColumnState(
+        column_id=column_id,
+        assembly_id=str(source.get("assembly_id") or assembly_id),
+        belief_set=dict(belief_set),
+        evidence_refs=[str(item) for item in evidence_refs if str(item or "").strip()],
+        confidence=confidence,
+        last_updated=str(source.get("last_updated") or _now_iso()),
+        adaptation_metrics=dict(adaptation_metrics),
+    )
 
 
 def _safe_json(value: Any) -> str:
@@ -9805,6 +10806,128 @@ def _execute_node(
             },
         }
 
+    if node_type == "frontier/goal":
+        goal_column = GoalColumn()
+        goal_state = goal_column.observe(
+            assembly_id=node.id,
+            config=node.config if isinstance(node.config, dict) else {},
+            run_input=run_input,
+        )
+        goal_message = goal_column.emit_message(goal_state)
+        return {
+            "goal": goal_state.belief_set,
+            "goal_state": goal_state.model_dump(),
+            "belief_update": goal_message.__dict__,
+            "confidence": goal_state.confidence,
+            "out": goal_state.belief_set,
+        }
+
+    if node_type == "frontier/evidence":
+        evidence_column = EvidenceColumn()
+        evidence_state = evidence_column.observe(
+            assembly_id=node.id,
+            config=node.config if isinstance(node.config, dict) else {},
+            run_input=run_input,
+            incoming_context=incoming,
+        )
+        evidence_message = evidence_column.emit_message(evidence_state)
+        return {
+            "evidence": evidence_state.belief_set.get("evidence", []),
+            "evidence_state": evidence_state.model_dump(),
+            "evidence_claim": evidence_message.__dict__,
+            "confidence": evidence_state.confidence,
+            "out": evidence_state.belief_set.get("evidence", []),
+        }
+
+    if node_type == "frontier/assembly":
+        by_port = incoming_by_port or {}
+        goal_inputs = _port_values(by_port, "goal")
+        evidence_inputs = _port_values(by_port, "evidence")
+        goal_payload = goal_inputs[-1] if goal_inputs else {}
+        evidence_payload = evidence_inputs[-1] if evidence_inputs else {}
+        goal_state = _column_state_from_payload(
+            column_id="goal",
+            assembly_id=node.id,
+            payload=goal_payload.get("goal_state") if isinstance(goal_payload, dict) else None,
+        )
+        evidence_state = _column_state_from_payload(
+            column_id="evidence",
+            assembly_id=node.id,
+            payload=evidence_payload.get("evidence_state")
+            if isinstance(evidence_payload, dict)
+            else None,
+        )
+        synthesis_state = SynthesisColumn().observe(
+            assembly_id=node.id,
+            goal_state=goal_state,
+            evidence_state=evidence_state,
+        )
+        threshold_raw = node.config.get("confidence_threshold", 0.6)
+        try:
+            confidence_threshold = max(0.0, min(1.0, float(threshold_raw)))
+        except (TypeError, ValueError):
+            confidence_threshold = 0.6
+        commitment = ConsensusEngine().fuse(
+            goal_state=goal_state,
+            evidence_state=evidence_state,
+            synthesis_state=synthesis_state,
+            confidence_threshold=confidence_threshold,
+        )
+        return {
+            "assembly": {
+                "assembly_id": node.id,
+                "consensus_policy": str(node.config.get("consensus_policy") or "weighted-support"),
+                "inference_mode": str(node.config.get("inference_mode") or "bounded"),
+            },
+            "synthesis": synthesis_state.belief_set,
+            "synthesis_state": synthesis_state.model_dump(),
+            "commitment": commitment.model_dump(),
+            "dissent": {
+                "columns": commitment.dissenting_columns,
+                "blockers": commitment.blockers,
+            },
+            "confidence": commitment.confidence,
+            "out": commitment.model_dump(),
+        }
+
+    if node_type == "frontier/commitment":
+        by_port = incoming_by_port or {}
+        commitment_inputs = _port_values(by_port, "commitment")
+        commitment_payload = commitment_inputs[-1] if commitment_inputs else {}
+        commitment_data = (
+            dict(commitment_payload.get("commitment"))
+            if isinstance(commitment_payload, dict)
+            and isinstance(commitment_payload.get("commitment"), dict)
+            else {}
+        )
+        if not commitment_data and isinstance(commitment_payload, dict):
+            commitment_data = dict(commitment_payload)
+        confidence_raw = commitment_data.get("confidence", 0.0)
+        try:
+            confidence = max(0.0, min(1.0, float(confidence_raw)))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        threshold_raw = node.config.get("confidence_threshold", 0.6)
+        try:
+            confidence_threshold = max(0.0, min(1.0, float(threshold_raw)))
+        except (TypeError, ValueError):
+            confidence_threshold = 0.6
+        blocked = confidence < confidence_threshold or bool(commitment_data.get("blockers"))
+        autonomy_level = str(node.config.get("autonomy_level") or "bounded")
+        published_commitment = {
+            **commitment_data,
+            "autonomy_level": autonomy_level,
+            "status": "escalated" if blocked else "committed",
+            "confidence_threshold": confidence_threshold,
+        }
+        return {
+            "commitment": published_commitment,
+            "result": published_commitment,
+            "published": published_commitment,
+            "blocked": blocked,
+            "out": published_commitment,
+        }
+
     if node_type == "frontier/manifold":
         runtime_info = (
             execution_state.get("runtime_info")
@@ -11068,6 +12191,8 @@ class InMemoryStore:
                 status="published",
             ),
         }
+        for _wf_id, _wf in _load_seeded_workflows_from_repo().items():
+            self.workflow_definitions[_wf_id] = _wf
 
         seeded_agents = _load_seeded_agents_from_repo()
         default_chat_agent_id = _default_chat_agent_id()
@@ -11982,6 +13107,46 @@ class InMemoryStore:
             ),
         }
 
+        self.skills: dict[str, SkillDefinition] = {
+            str(seed["id"]): SkillDefinition(
+                id=str(seed["id"]),
+                name=str(seed["name"]),
+                description=str(seed.get("description") or ""),
+                content=str(seed.get("content") or ""),
+                tags=[str(tag) for tag in seed.get("tags", [])],
+                source="bundled",
+            )
+            for seed in skills_catalog.SKILL_SEEDS
+        }
+
+        # Webhook trigger tokens: token -> {workflow_id, actor, label, created_at}.
+        # Lets external systems start a run for a workflow without an operator
+        # session (token is the credential; never exposed after creation).
+        self.workflow_triggers: dict[str, dict[str, str]] = {}
+
+        # Cron schedule triggers: id -> {workflow_id, actor, label, cron,
+        # enabled, created_at, last_fired_minute}. Evaluated by the scheduler
+        # loop at minute resolution.
+        self.workflow_schedules: dict[str, dict[str, Any]] = {}
+
+        # Knowledge collections: id -> {id, name, description, created_at,
+        # document_count, chunk_count}. Chunks live in the pgvector long-term
+        # memory store under the collection's knowledge bucket.
+        self.knowledge_collections: dict[str, dict[str, Any]] = {}
+
+        # User-defined inbox folders for organizing historical chats/runs.
+        # id -> {id, name, created_at, run_ids: [str]}.
+        self.inbox_groups: dict[str, dict[str, Any]] = {}
+
+        # Per-user composer/chat preferences, keyed by actor/principal id.
+        # actor -> {default_working_folder, preferred_model,
+        #           preferred_reasoning_effort, default_mode}.
+        self.user_settings: dict[str, dict[str, Any]] = {}
+
+        # Approved out-of-bounds folder grants, keyed by resolved repo_path.
+        # repo_path -> [extra_path, ...] merged into the workspace on later runs.
+        self.workspace_grants: dict[str, list[str]] = {}
+
         self.collaboration_sessions: dict[str, CollaborationSession] = {}
         self.audit_events: list[AuditEvent] = []
         self.a2a_seen_nonces: dict[str, str] = {}
@@ -12089,6 +13254,7 @@ def _cors_allowed_headers() -> list[str]:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allowed_origins(),
+    allow_credentials=True,  # required so the operator session cookie flows cross-origin
     allow_methods=_cors_allowed_methods(),
     allow_headers=_cors_allowed_headers(),
 )
@@ -12866,17 +14032,20 @@ def _append_audit_event(
     metadata: dict[str, Any] | None = None,
 ) -> None:
     audit_metadata = redact_sensitive_payload(dict(metadata)) if isinstance(metadata, dict) else {}
-    store.audit_events.insert(
-        0,
-        AuditEvent(
-            id=str(uuid4()),
-            action=action,
-            actor=str(actor or "anonymous"),
-            outcome=outcome,
-            created_at=_now_iso(),
-            metadata=audit_metadata,
-        ),
+    audit_event = AuditEvent(
+        id=str(uuid4()),
+        action=action,
+        actor=str(actor or "anonymous"),
+        outcome=outcome,
+        created_at=_now_iso(),
+        metadata=audit_metadata,
     )
+    store.audit_events.insert(0, audit_event)
+    if _AUDIT_LOG is not None and _AUDIT_LOG.enabled:
+        try:
+            _AUDIT_LOG.append(audit_event.model_dump())
+        except Exception:  # noqa: BLE001 - audit write-through is best-effort
+            pass
     if len(store.audit_events) > 2000:
         dropped = len(store.audit_events) - 2000
         newest = store.audit_events[0]
@@ -13036,6 +14205,28 @@ def _enforce_request_authn(
             used_bearer_token = True
             if bearer_auth_kind == "none":
                 bearer_auth_kind = "jwt"
+
+    if (
+        not used_bearer_token
+        and _local_authenticated_operator_bootstrap_enabled()
+        and _active_runtime_profile().name == "local-native"
+    ):
+        # Single-user desktop install (binds 127.0.0.1 only): the local operator
+        # is implicitly authenticated as admin+builder — no login wall, no cookie.
+        runtime_token_claims = {
+            "actor": "operator",
+            "preferred_username": "operator",
+            "name": "Operator",
+            "principal_id": "user:local/operator",
+            "principal_type": "user",
+            "roles": ["member", "admin", "builder"],
+        }
+        try:
+            runtime_token_identity = token_identity_from_claims(runtime_token_claims)
+        except Exception:  # noqa: BLE001
+            runtime_token_identity = None
+        used_bearer_token = True
+        bearer_auth_kind = "bootstrap"
 
     resolved_actor = actor
     if runtime_token_identity is not None:
@@ -13647,14 +14838,22 @@ def _validate_platform_settings_update(
     ):
         immutable_violations.append("a2a_replay_protection must remain enabled")
     if (
-        "require_authenticated_requests" in payload
-        and payload.get("require_authenticated_requests") is False
-        and _active_runtime_profile().require_authenticated_requests
+        _active_runtime_profile().require_authenticated_requests
         and not candidate.require_authenticated_requests
     ):
-        immutable_violations.append(
-            "require_authenticated_requests cannot be disabled in secure runtime profiles"
+        explicit_disable = "require_authenticated_requests" in payload and not bool(
+            payload.get("require_authenticated_requests")
         )
+        if explicit_disable and current.require_authenticated_requests:
+            immutable_violations.append(
+                "require_authenticated_requests cannot be disabled in secure runtime profiles"
+            )
+        else:
+            # Persisted settings may predate the secure profile. The profile
+            # enforces authentication at the request layer regardless, so align
+            # the stored flag with the baseline instead of failing unrelated
+            # settings updates.
+            candidate.require_authenticated_requests = True
     if (
         "require_a2a_runtime_headers" in payload
         and payload.get("require_a2a_runtime_headers") is False
@@ -13683,11 +14882,7 @@ def _validate_platform_settings_update(
         immutable_violations.append(
             "mcp_require_local_server requires FRONTIER_CONFIRM_REMOTE_MCP_SERVERS=true before it can be disabled in hosted runtime profiles"
         )
-    if (
-        candidate.a2a_require_signed_messages
-        and not candidate.a2a_trusted_subjects
-        and ({"a2a_require_signed_messages", "a2a_trusted_subjects"} & set(payload.keys()))
-    ):
+    if candidate.a2a_require_signed_messages and not candidate.a2a_trusted_subjects:
         immutable_violations.append(
             "a2a_trusted_subjects must contain at least one trusted subject when signed A2A is enabled"
         )
@@ -14511,7 +15706,7 @@ def _upsert_generated_artifact_summaries(artifacts: list[GeneratedCodeArtifact])
 
 
 def _serialize_store_state() -> dict[str, Any]:
-    return {
+    state = {
         "workflow_definitions": [item.model_dump() for item in store.workflow_definitions.values()],
         "agent_definitions": [item.model_dump() for item in store.agent_definitions.values()],
         "guardrail_rulesets": [item.model_dump() for item in store.guardrail_rulesets.values()],
@@ -14554,9 +15749,21 @@ def _serialize_store_state() -> dict[str, Any]:
         "collaboration_sessions": [
             item.model_dump() for item in store.collaboration_sessions.values()
         ],
-        "audit_events": [item.model_dump() for item in store.audit_events],
         "a2a_seen_nonces": store.a2a_seen_nonces,
+        "skills": [item.model_dump() for item in store.skills.values()],
+        "workflow_triggers": store.workflow_triggers,
+        "workflow_schedules": store.workflow_schedules,
+        "knowledge_collections": store.knowledge_collections,
+        "inbox_groups": store.inbox_groups,
+        "user_settings": store.user_settings,
+        "workspace_grants": store.workspace_grants,
     }
+    if _AUDIT_LOG is None or not _AUDIT_LOG.enabled:
+        # Without the append-only audit table, audit events ride in the state
+        # snapshot (legacy behavior). With it, they are persisted per-event and
+        # excluded here so routine mutations stop rewriting the audit blob.
+        state["audit_events"] = [item.model_dump() for item in store.audit_events]
+    return state
 
 
 def _apply_store_state(payload: dict[str, Any]) -> None:
@@ -14825,6 +16032,86 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
                 continue
         store.audit_events = hydrated_audit_events
 
+    skills_payload = payload.get("skills")
+    if isinstance(skills_payload, list):
+        hydrated_skills: dict[str, SkillDefinition] = {}
+        for item in skills_payload:
+            try:
+                model = SkillDefinition.model_validate(item)
+                hydrated_skills[model.id] = model
+            except Exception:  # noqa: BLE001
+                continue
+        if hydrated_skills:
+            store.skills = hydrated_skills
+
+    triggers_payload = payload.get("workflow_triggers")
+    if isinstance(triggers_payload, dict):
+        hydrated_triggers: dict[str, dict[str, str]] = {}
+        for token, meta in triggers_payload.items():
+            if isinstance(meta, dict) and meta.get("workflow_id"):
+                hydrated_triggers[str(token)] = {
+                    "id": str(meta.get("id") or uuid4()),
+                    "workflow_id": str(meta.get("workflow_id") or ""),
+                    "actor": str(meta.get("actor") or ""),
+                    "label": str(meta.get("label") or ""),
+                    "created_at": str(meta.get("created_at") or ""),
+                }
+        store.workflow_triggers = hydrated_triggers
+
+    schedules_payload = payload.get("workflow_schedules")
+    if isinstance(schedules_payload, dict):
+        hydrated_schedules: dict[str, dict[str, Any]] = {}
+        for schedule_id, meta in schedules_payload.items():
+            if isinstance(meta, dict) and meta.get("workflow_id") and meta.get("cron"):
+                hydrated_schedules[str(schedule_id)] = {
+                    "id": str(meta.get("id") or schedule_id),
+                    "workflow_id": str(meta.get("workflow_id") or ""),
+                    "actor": str(meta.get("actor") or ""),
+                    "label": str(meta.get("label") or ""),
+                    "cron": str(meta.get("cron") or ""),
+                    "enabled": bool(meta.get("enabled", True)),
+                    "created_at": str(meta.get("created_at") or ""),
+                    "last_fired_minute": str(meta.get("last_fired_minute") or ""),
+                }
+        store.workflow_schedules = hydrated_schedules
+
+    knowledge_payload = payload.get("knowledge_collections")
+    if isinstance(knowledge_payload, dict):
+        hydrated_knowledge: dict[str, dict[str, Any]] = {}
+        for collection_id, meta in knowledge_payload.items():
+            if isinstance(meta, dict) and meta.get("id"):
+                hydrated_knowledge[str(collection_id)] = dict(meta)
+        store.knowledge_collections = hydrated_knowledge
+
+    inbox_groups_payload = payload.get("inbox_groups")
+    if isinstance(inbox_groups_payload, dict):
+        hydrated_groups: dict[str, dict[str, Any]] = {}
+        for group_id, meta in inbox_groups_payload.items():
+            if isinstance(meta, dict) and meta.get("id"):
+                hydrated_groups[str(group_id)] = {
+                    "id": str(meta.get("id") or group_id),
+                    "name": str(meta.get("name") or "Untitled"),
+                    "created_at": str(meta.get("created_at") or ""),
+                    "run_ids": [str(rid) for rid in (meta.get("run_ids") or []) if str(rid)],
+                }
+        store.inbox_groups = hydrated_groups
+
+    user_settings_payload = payload.get("user_settings")
+    if isinstance(user_settings_payload, dict):
+        hydrated_user_settings: dict[str, dict[str, Any]] = {}
+        for actor_key, prefs in user_settings_payload.items():
+            if isinstance(prefs, dict):
+                hydrated_user_settings[str(actor_key)] = _normalize_user_settings(prefs)
+        store.user_settings = hydrated_user_settings
+
+    grants_payload = payload.get("workspace_grants")
+    if isinstance(grants_payload, dict):
+        hydrated_grants: dict[str, list[str]] = {}
+        for repo_path, paths in grants_payload.items():
+            if isinstance(paths, list):
+                hydrated_grants[str(repo_path)] = [str(p) for p in paths if str(p).strip()]
+        store.workspace_grants = hydrated_grants
+
     seen_nonces_payload = payload.get("a2a_seen_nonces")
     if isinstance(seen_nonces_payload, dict):
         normalized_seen: dict[str, str] = {}
@@ -14836,9 +16123,37 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
         store.a2a_seen_nonces = normalized_seen
 
 
+# Last successfully written JSON encoding per store section. Lets _persist_store_state
+# skip rewriting sections whose content did not change since the previous persist.
+_PERSIST_SECTION_CACHE: dict[str, str] = {}
+
+
+def _persist_json_default(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if isinstance(value, set):
+        return sorted(value)
+    return str(value)
+
+
 def _persist_store_state() -> None:
     try:
-        _POSTGRES_STATE.save_state(_serialize_store_state())
+        payload = _serialize_store_state()
+        save_sections = getattr(_POSTGRES_STATE, "save_state_sections", None)
+        if not callable(save_sections):
+            # Custom/test state stores that only implement save_state get the
+            # legacy full-snapshot behavior.
+            _POSTGRES_STATE.save_state(payload)
+            return
+        changed: dict[str, str] = {}
+        for section, value in payload.items():
+            encoded = json.dumps(value, default=_persist_json_default)
+            if _PERSIST_SECTION_CACHE.get(section) != encoded:
+                changed[section] = encoded
+        if not changed:
+            return
+        save_sections(changed, replace_all=len(changed) == len(payload))
+        _PERSIST_SECTION_CACHE.update(changed)
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning("Failed to persist state store snapshot: %s", exc, exc_info=True)
         return
@@ -14898,6 +16213,10 @@ def _merge_missing_bootstrap_content() -> None:
         if playbook_id not in store.playbooks:
             store.playbooks[playbook_id] = playbook
 
+    for skill_id, skill in bootstrap.skills.items():
+        if skill_id not in store.skills:
+            store.skills[skill_id] = skill
+
 
 def _sync_repo_agents_into_store(*, update_existing: bool = False) -> None:
     seeded = _load_seeded_agents_from_repo()
@@ -14920,6 +16239,46 @@ def _sync_repo_agents_into_store(*, update_existing: bool = False) -> None:
         existing.config_json = merged_config
         existing.version = max(existing.version, seeded_agent.version)
         store.agent_definitions[agent_id] = existing
+
+
+def _sync_repo_workflows_into_store(*, update_existing: bool = False) -> None:
+    # examples/workflows are repo-canonical templates, so they are refreshed from
+    # the repo on each startup (name/description/graph), unlike DB-authored ones.
+    for wf_id, seeded_wf in _load_seeded_workflows_from_repo().items():
+        existing = store.workflow_definitions.get(wf_id)
+        if existing is None:
+            store.workflow_definitions[wf_id] = seeded_wf
+            continue
+        graph_changed = existing.graph_json != seeded_wf.graph_json
+        had_pointer = bool(str(getattr(existing, "published_revision_id", "") or "").strip())
+        existing.name = seeded_wf.name
+        existing.description = seeded_wf.description
+        existing.status = "published"
+        existing.graph_json = seeded_wf.graph_json
+        existing.version = max(existing.version, seeded_wf.version)
+        # The runtime resolves the PUBLISHED revision snapshot via the pointer, not
+        # the current graph_json. If the graph changed (or a stale empty snapshot is
+        # still pointed at), record a fresh published revision and repoint to it —
+        # otherwise a workflow published earlier while empty keeps running as a
+        # single agent even after its graph is restored from the seed.
+        if graph_changed or not had_pointer:
+            try:
+                revision = _record_definition_revision(
+                    entity_type="workflow_definition",
+                    entity_id=wf_id,
+                    actor="system/seed-sync",
+                    action="seed-sync",
+                    snapshot=existing,
+                    metadata={"seeded": True, "published_pointer": True},
+                )
+                existing.published_revision_id = revision.id
+                existing.published_at = revision.created_at
+                existing.active_revision_id = revision.id
+                existing.active_at = revision.created_at
+                revision.snapshot = existing.model_dump()
+            except Exception:  # noqa: BLE001 — re-snapshot is best-effort
+                pass
+        store.workflow_definitions[wf_id] = existing
 
 
 @app.on_event("startup")
@@ -14962,6 +16321,20 @@ def _startup_initialize_state() -> None:
         _apply_store_state(state)
         for integration_id, integration in pre_startup_integrations.items():
             store.integrations.setdefault(integration_id, integration)
+    _apply_provider_settings_side_effects()
+
+    if _AUDIT_LOG is not None and _AUDIT_LOG.enabled:
+        try:
+            hydrated_audit: list[AuditEvent] = []
+            for item in _AUDIT_LOG.load_recent(limit=2000):
+                try:
+                    hydrated_audit.append(AuditEvent.model_validate(item))
+                except Exception:  # noqa: BLE001
+                    continue
+            if hydrated_audit:
+                store.audit_events = hydrated_audit
+        except Exception:  # noqa: BLE001 - audit hydration is best-effort
+            pass
 
     _merge_missing_bootstrap_content()
 
@@ -14969,12 +16342,26 @@ def _startup_initialize_state() -> None:
     sync_repo_updates_existing = _env_flag("FRONTIER_REPO_AGENTS_UPDATE_EXISTING", False)
     if sync_repo_agents:
         _sync_repo_agents_into_store(update_existing=sync_repo_updates_existing)
+        _sync_repo_workflows_into_store(update_existing=sync_repo_updates_existing)
 
     _canonicalize_all_agent_definitions()
     _ensure_default_chat_agent_present()
     _ensure_definition_history_seeded()
     _validate_runtime_security_configuration()
     validate_route_inventory(app)
+
+    # Pre-warm the (lazy) Presidio analyzer off the request path: first-call
+    # engine construction can take minutes and must never block a run create.
+    if _env_flag("FRONTIER_PREWARM_PII_ANALYZER", True):
+        threading.Thread(
+            target=_get_presidio_analyzer, name="frontier-pii-prewarm", daemon=True
+        ).start()
+
+    # Cron schedule trigger loop (resource plan Phase D). Disable with
+    # FRONTIER_SCHEDULER_ENABLED=0 (e.g. for multi-replica deployments where a
+    # single leader should own scheduling).
+    if _env_flag("FRONTIER_SCHEDULER_ENABLED", True):
+        threading.Thread(target=_scheduler_loop, name="frontier-scheduler", daemon=True).start()
 
     _persist_store_state()
 
@@ -18039,6 +19426,28 @@ def complete_oidc_browser_login(request: Request) -> RedirectResponse:
 
 @app.post("/auth/login")
 def login_with_local_password(payload: PasswordLoginRequest, request: Request) -> JSONResponse:
+    if _native_password_auth_enabled():
+        account = _native_load_account()
+        if not account:
+            raise HTTPException(
+                status_code=400, detail="No local account yet. Create one to get started."
+            )
+        username = str(payload.username or "").strip()
+        if username.lower() != str(account.get("username") or "").strip().lower() or (
+            not _native_verify_password(account, payload.password)
+        ):
+            raise HTTPException(status_code=401, detail="Invalid username or password.")
+        token = _mint_native_operator_token(
+            account["username"],
+            display_name=str(account.get("display_name") or ""),
+            email=str(account.get("email") or ""),
+        )
+        response = JSONResponse(
+            {"ok": True, "authenticated": True, "provider": "local-native", "mode": "password"}
+        )
+        _set_operator_session_cookie(response, request, token)
+        return response
+
     account = _authenticate_local_casdoor_user(payload.username, payload.password)
     token = _mint_operator_session_token_from_casdoor_account(account)
     response = JSONResponse(
@@ -18057,6 +19466,36 @@ def login_with_local_password(payload: PasswordLoginRequest, request: Request) -
 def register_with_local_password(
     payload: PasswordRegisterRequest, request: Request
 ) -> JSONResponse:
+    if _native_password_auth_enabled():
+        username = str(payload.username or "").strip()
+        if not username or not str(payload.password or "").strip():
+            raise HTTPException(status_code=400, detail="Username and password are required.")
+        salt_hex, hash_hex = _native_hash_password(payload.password)
+        account = {
+            "username": username,
+            "display_name": str(payload.display_name or "").strip() or username,
+            "email": str(payload.email or "").strip(),
+            "salt": salt_hex,
+            "hash": hash_hex,
+        }
+        path = _native_account_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(account), encoding="utf-8")
+        token = _mint_native_operator_token(
+            username, display_name=account["display_name"], email=account["email"]
+        )
+        response = JSONResponse(
+            {
+                "ok": True,
+                "authenticated": True,
+                "provider": "local-native",
+                "mode": "password",
+                "created": True,
+            }
+        )
+        _set_operator_session_cookie(response, request, token)
+        return response
+
     account = _provision_local_casdoor_user(
         username=payload.username,
         email=payload.email,
@@ -18082,6 +19521,402 @@ def logout_operator(request: Request) -> JSONResponse:
     response = JSONResponse({"ok": True})
     _clear_operator_session_cookie(response, request)
     return response
+
+
+@app.get("/system/active-agents")
+def system_active_agents() -> dict[str, Any]:
+    """How many agent runs are currently in progress (for the desktop quit guard)."""
+    try:
+        active = sum(
+            1 for run in store.runs.values() if str(getattr(run, "status", "")) == "Running"
+        )
+    except Exception:  # noqa: BLE001
+        active = 0
+    return {"active": int(active)}
+
+
+@app.post("/system/shutdown")
+def system_shutdown(request: Request) -> JSONResponse:
+    """Desktop only: tear down every spawned child process (frontend, DB, model,
+    agents), then exit. Restricted to the native desktop profile."""
+    if (
+        _active_runtime_profile().name not in {"local-native"}
+        and not _local_authenticated_operator_bootstrap_enabled()
+    ):
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        from frontier_tooling.desktop import shutdown_supervisors
+
+        shutdown_supervisors()
+    except Exception:  # noqa: BLE001
+        pass
+    # Exit just after responding so the caller gets a clean 200 first.
+    threading.Timer(0.4, lambda: os._exit(0)).start()
+    return JSONResponse({"ok": True, "shutting_down": True})
+
+
+# ---------------------------------------------------------------------------
+# Export / import — agents, workflows, playbooks as JSON or YAML. Exports stream
+# a downloadable document; imports parse JSON/YAML and apply via the existing
+# create/update handlers so all validation + persistence is reused.
+# ---------------------------------------------------------------------------
+def _dump_definition_document(payload: Any, fmt: str) -> tuple[bytes, str]:
+    normalized = (fmt or "json").strip().lower()
+    if normalized in {"yaml", "yml"}:
+        if _yaml is None:
+            raise HTTPException(
+                status_code=400, detail="YAML support is not available on this server."
+            )
+        text = _yaml.safe_dump(
+            payload, sort_keys=False, default_flow_style=False, allow_unicode=True
+        )
+        return text.encode("utf-8"), "application/x-yaml"
+    return (json.dumps(payload, indent=2, sort_keys=False) + "\n").encode(
+        "utf-8"
+    ), "application/json"
+
+
+def _parse_definition_document(content: str, fmt: str) -> Any:
+    normalized = (fmt or "auto").strip().lower()
+    text = content if isinstance(content, str) else str(content or "")
+    looks_json = text.lstrip()[:1] in {"{", "["}
+    if normalized in {"yaml", "yml"} or (normalized == "auto" and not looks_json):
+        if _yaml is not None:
+            try:
+                return _yaml.safe_load(text)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}")
+    try:
+        return json.loads(text)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Could not parse import document: {exc}")
+
+
+def _export_response(payload: Any, *, fmt: str, filename_stem: str) -> Response:
+    body, media_type = _dump_definition_document(payload, fmt)
+    ext = "yaml" if (fmt or "").strip().lower() in {"yaml", "yml"} else "json"
+    safe = "".join(ch if (ch.isalnum() or ch in "._-") else "-" for ch in filename_stem) or "export"
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{safe}.{ext}"'},
+    )
+
+
+def _import_request_document(payload: dict[str, Any]) -> Any:
+    # Accept either {"format","content":"<raw file text>"} (the UI reads the file
+    # and posts its text) or a raw definition object posted directly.
+    if (
+        isinstance(payload, dict)
+        and isinstance(payload.get("content"), str)
+        and ("format" in payload or set(payload.keys()) <= {"content", "format"})
+    ):
+        return _parse_definition_document(payload["content"], str(payload.get("format") or "auto"))
+    return payload
+
+
+def _agent_id_for_reference(token: str) -> str | None:
+    """Canonical agent id for a node reference that may be an id, a name, or a
+    source slug. Matches across ALL agent definitions (published or draft)."""
+    requested = str(token or "").strip().lower()
+    if not requested:
+        return None
+    requested_slug = _slugify(requested)
+    for agent in store.agent_definitions.values():
+        keys = _agent_lookup_keys(agent)
+        if requested in keys or (requested_slug and requested_slug in keys):
+            return agent.id
+    return None
+
+
+def _workflow_id_for_reference(token: str) -> str | None:
+    """Canonical workflow id for a reference that may be an id or a name."""
+    requested = str(token or "").strip().lower()
+    if not requested:
+        return None
+    requested_slug = _slugify(requested)
+    for workflow in store.workflow_definitions.values():
+        keys = {workflow.id.strip().lower(), _slugify(workflow.name)}
+        if requested in keys or (requested_slug and requested_slug in keys):
+            return workflow.id
+    return None
+
+
+def _resolve_graph_definition_refs(graph_json: Any, *, context: str) -> dict[str, Any]:
+    """Resolve agent/workflow references in an imported graph to canonical stored
+    ids (matching by id OR name), rewriting each node's config. If any reference
+    does not match an existing definition, raise 400 telling the user which
+    agents/workflows must be created first — the import does not partially apply."""
+    normalized = _normalize_graph_json_payload(graph_json)
+    nodes = normalized.get("nodes") if isinstance(normalized.get("nodes"), list) else []
+    missing_agents: list[str] = []
+    missing_workflows: list[str] = []
+    rewritten: list[Any] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            rewritten.append(node)
+            continue
+        node = dict(node)
+        ntype = str(node.get("type") or "").lower()
+        cfg = dict(node.get("config")) if isinstance(node.get("config"), dict) else {}
+        agent_token = str(cfg.get("agent_id") or cfg.get("agent_name") or "").strip()
+        if "agent" in ntype and agent_token:
+            resolved = _agent_id_for_reference(agent_token)
+            if resolved is None:
+                missing_agents.append(agent_token)
+            else:
+                cfg["agent_id"] = resolved
+                cfg.pop("agent_name", None)
+        wf_token = str(
+            cfg.get("workflow_definition_id") or cfg.get("workflow_id") or cfg.get("workflow") or ""
+        ).strip()
+        if wf_token and (
+            "workflow" in ntype or "workflow_definition_id" in cfg or "workflow_id" in cfg
+        ):
+            resolved_wf = _workflow_id_for_reference(wf_token)
+            if resolved_wf is None:
+                missing_workflows.append(wf_token)
+            else:
+                cfg["workflow_definition_id"] = resolved_wf
+        node["config"] = cfg
+        rewritten.append(node)
+    if missing_agents or missing_workflows:
+        missing_agents = sorted(set(missing_agents))
+        missing_workflows = sorted(set(missing_workflows))
+        bits: list[str] = []
+        if missing_agents:
+            bits.append(f"agents [{', '.join(missing_agents)}]")
+        if missing_workflows:
+            bits.append(f"workflows [{', '.join(missing_workflows)}]")
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": (
+                    f"This {context.lower()} references {' and '.join(bits)} that do not exist yet. "
+                    f"Create or import those first, then re-import this {context.lower()}."
+                ),
+                "missing_agents": missing_agents,
+                "missing_workflows": missing_workflows,
+            },
+        )
+    normalized["nodes"] = rewritten
+    return normalized
+
+
+def _prepare_imported_graph_doc(doc: dict[str, Any], *, context: str) -> dict[str, Any]:
+    """Map a seed-format ``graph`` to ``graph_json`` and resolve+validate its
+    agent/workflow references for an imported workflow or playbook document."""
+    graph_src = (
+        doc.get("graph_json")
+        or doc.get("graph")
+        or (doc.get("config_json", {}) if isinstance(doc.get("config_json"), dict) else {}).get(
+            "graph_json"
+        )
+        or {}
+    )
+    resolved_graph = _resolve_graph_definition_refs(graph_src, context=context)
+    new_doc = {key: value for key, value in doc.items() if key != "graph"}
+    new_doc["graph_json"] = resolved_graph
+    return new_doc
+
+
+@app.get("/agent-definitions/{item_id}/export")
+def export_agent_definition(item_id: str, request: Request, format: str = "json") -> Response:
+    _enforce_request_authn(request, action="agent.definition.export")
+    item = store.agent_definitions.get(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return _export_response(
+        item.model_dump(), fmt=format, filename_stem=f"agent-{item.name or item_id}"
+    )
+
+
+@app.post("/agent-definitions/import")
+def import_agent_definition(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    doc = _import_request_document(payload)
+    if not isinstance(doc, dict):
+        raise HTTPException(
+            status_code=400, detail="Agent import must be a single definition object."
+        )
+    requested_status = str(doc.get("status") or "").strip().lower()
+    save_agent_definition(request, doc)  # enforces admin + validates + persists
+    agent_id = str(doc.get("id") or "")
+    # Publish on import so the agent resolves at runtime with its real system
+    # prompt, model, and tools. Otherwise multi-agent workflow nodes that
+    # reference it fall back to a generic specialist persona (found=False),
+    # degrading the team. Agent seed files mark themselves "active"/"published".
+    published = False
+    publish_warning: str | None = None
+    if agent_id and requested_status in {"published", "active"}:
+        try:
+            publish_agent_definition(agent_id, request)
+            published = True
+        except HTTPException as exc:
+            publish_warning = str(getattr(exc, "detail", "") or "publish failed")
+    result: dict[str, Any] = {"ok": True, "id": agent_id, "published": published}
+    if publish_warning:
+        result["publish_warning"] = publish_warning
+    return result
+
+
+@app.get("/workflow-definitions/{item_id}/export")
+def export_workflow_definition_doc(
+    item_id: str, request: Request, format: str = "json"
+) -> Response:
+    _enforce_request_authn(request, action="workflow.definition.export")
+    item = store.workflow_definitions.get(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return _export_response(
+        item.model_dump(), fmt=format, filename_stem=f"workflow-{item.name or item_id}"
+    )
+
+
+@app.post("/workflow-definitions/import")
+def import_workflow_definition(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    doc = _import_request_document(payload)
+    if not isinstance(doc, dict):
+        raise HTTPException(
+            status_code=400, detail="Workflow import must be a single definition object."
+        )
+    # Resolve agent references by name→id and fail if any referenced agent is
+    # missing (tells the user to create those agents first).
+    doc = _prepare_imported_graph_doc(doc, context="Workflow")
+    requested_status = str(doc.get("status") or "").strip().lower()
+    save_workflow_definition(request, doc)  # enforces builder + validates + persists (as draft)
+    wf_id = str(doc.get("id") or "")
+    # Honor a "published" import so the workflow is immediately runnable as its
+    # full multi-agent graph: the run dispatcher only sends PUBLISHED workflows
+    # through the LangGraph compiler — a draft silently falls back to a single
+    # agent, dropping consensus/fan-out/gate/team behavior. Seeded examples are
+    # published the same way, so importing them should match.
+    published = False
+    publish_warning: str | None = None
+    if wf_id and requested_status == "published":
+        try:
+            publish_workflow_definition(wf_id, request)
+            published = True
+        except HTTPException as exc:  # graph validation etc. — keep the draft, report why
+            publish_warning = str(getattr(exc, "detail", "") or "publish failed")
+    result: dict[str, Any] = {"ok": True, "id": wf_id, "published": published}
+    if publish_warning:
+        result["publish_warning"] = publish_warning
+    return result
+
+
+def _upsert_playbook_from_doc(request: Request, doc: dict[str, Any]) -> str:
+    actor = _enforce_builder_access(request, action="playbook.import")
+    _enforce_emergency_write_policy("playbook.import", actor)
+    if not isinstance(doc, dict):
+        raise HTTPException(
+            status_code=400, detail="Playbook import must be a single definition object."
+        )
+    if not str(doc.get("id") or "").strip():
+        doc = {**doc, "id": str(uuid4())}
+    # Resolve agent/workflow references by name→id and fail if any are missing.
+    doc = _prepare_imported_graph_doc(doc, context="Playbook")
+    try:
+        playbook = PlaybookDefinition.model_validate(doc)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Invalid playbook definition: {exc}")
+    store.playbooks[playbook.id] = playbook
+    return playbook.id
+
+
+@app.get("/playbooks/{playbook_id}/export")
+def export_playbook(playbook_id: str, request: Request, format: str = "json") -> Response:
+    _enforce_request_authn(request, action="playbook.export")
+    item = store.playbooks.get(playbook_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Playbook not found")
+    return _export_response(
+        item.model_dump(), fmt=format, filename_stem=f"playbook-{item.name or playbook_id}"
+    )
+
+
+@app.post("/playbooks/import")
+def import_playbook(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    doc = _import_request_document(payload)
+    pid = _upsert_playbook_from_doc(request, doc if isinstance(doc, dict) else {})
+    _persist_store_state()
+    return {"ok": True, "id": pid}
+
+
+@app.get("/bundle/export")
+def export_bundle(request: Request, format: str = "json") -> Response:
+    _enforce_request_authn(request, action="bundle.export")
+    bundle = {
+        "schema": "frontier-bundle/1.0",
+        "exported_at": _now_iso(),
+        "agents": [a.model_dump() for a in store.agent_definitions.values()],
+        "workflows": [w.model_dump() for w in store.workflow_definitions.values()],
+        "playbooks": [p.model_dump() for p in store.playbooks.values()],
+    }
+    return _export_response(bundle, fmt=format, filename_stem="lattix-bundle")
+
+
+@app.post("/bundle/import")
+def import_bundle(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    doc = _import_request_document(payload)
+    if not isinstance(doc, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="Bundle import must be an object with agents/workflows/playbooks.",
+        )
+    counts = {"agents": 0, "workflows": 0, "playbooks": 0}
+    errors: list[str] = []
+    # Mirror the single-item import: publish definitions that declare a live
+    # status so bundle-imported workflows run as full multi-agent graphs and
+    # their agents resolve with real prompts/models/tools (not generic fallbacks).
+    for entry in doc.get("agents") or []:
+        try:
+            save_agent_definition(request, entry)
+            counts["agents"] += 1
+            aid = str(entry.get("id") or "") if isinstance(entry, dict) else ""
+            if aid and str(entry.get("status") or "").strip().lower() in {"published", "active"}:
+                try:
+                    publish_agent_definition(aid, request)
+                except HTTPException as exc:
+                    errors.append(f"agent {aid} publish: {getattr(exc, 'detail', exc)}")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(
+                f"agent {entry.get('id', '?') if isinstance(entry, dict) else '?'}: {exc}"
+            )
+    for entry in doc.get("workflows") or []:
+        try:
+            if isinstance(entry, dict):
+                # Agents were imported above, so name→id refs resolve here.
+                entry = _prepare_imported_graph_doc(entry, context="Workflow")
+            save_workflow_definition(request, entry)
+            counts["workflows"] += 1
+            wid = str(entry.get("id") or "") if isinstance(entry, dict) else ""
+            if wid and str(entry.get("status") or "").strip().lower() == "published":
+                try:
+                    publish_workflow_definition(wid, request)
+                except HTTPException as exc:
+                    errors.append(f"workflow {wid} publish: {getattr(exc, 'detail', exc)}")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(
+                f"workflow {entry.get('id', '?') if isinstance(entry, dict) else '?'}: {exc}"
+            )
+    for entry in doc.get("playbooks") or []:
+        try:
+            _upsert_playbook_from_doc(request, entry if isinstance(entry, dict) else {})
+            counts["playbooks"] += 1
+        except Exception as exc:  # noqa: BLE001
+            errors.append(
+                f"playbook {entry.get('id', '?') if isinstance(entry, dict) else '?'}: {exc}"
+            )
+    _persist_store_state()
+    return {"ok": not errors, **counts, "errors": errors}
 
 
 def _build_health_payload() -> dict[str, Any]:
@@ -18356,11 +20191,239 @@ def get_local_integration_readiness(request: Request) -> dict[str, Any]:
     }
 
 
+def _masked_provider_settings_view(data: dict[str, Any]) -> dict[str, Any]:
+    """Provider API keys are write-only: never returned, never audited in clear."""
+    masked = dict(data)
+    for field in _PROVIDER_SECRET_FIELDS:
+        configured = bool(str(masked.get(field) or "").strip())
+        masked[field] = ""
+        masked[f"{field}_configured"] = configured
+    providers = masked.get("ai_providers")
+    if isinstance(providers, dict):
+        masked_providers: dict[str, dict[str, Any]] = {}
+        for provider, entry in providers.items():
+            entry_view: dict[str, Any] = dict(entry) if isinstance(entry, dict) else {}
+            configured = bool(str(entry_view.get("api_key") or "").strip())
+            entry_view["api_key"] = ""
+            entry_view["api_key_configured"] = configured
+            masked_providers[str(provider)] = entry_view
+        masked["ai_providers"] = masked_providers
+    return masked
+
+
+_CHAT_MODES = ("chat", "plan", "execute")
+_REASONING_EFFORTS = ("", "low", "medium", "high")
+
+
+def _normalize_user_settings(prefs: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a per-user settings dict to the known, safe shape."""
+    src = prefs if isinstance(prefs, dict) else {}
+    mode = str(src.get("default_mode") or "execute").strip().lower()
+    if mode not in _CHAT_MODES:
+        mode = "execute"
+    effort = str(src.get("preferred_reasoning_effort") or "").strip().lower()
+    if effort not in _REASONING_EFFORTS:
+        effort = ""
+    return {
+        "default_working_folder": str(src.get("default_working_folder") or "").strip(),
+        "preferred_model": str(src.get("preferred_model") or "").strip(),
+        "preferred_reasoning_effort": effort,
+        "default_mode": mode,
+    }
+
+
+def _user_settings_for(actor: str) -> dict[str, Any]:
+    stored = store.user_settings.get(str(actor or "").strip())
+    return _normalize_user_settings(stored or {})
+
+
+def _composer_options(payload: dict[str, Any]) -> dict[str, Any]:
+    """Extract + normalize the per-chat composer selections from a run payload:
+    model, reasoning_effort, mode, mcp_server_ids, skill_ids, workspace."""
+    src = payload if isinstance(payload, dict) else {}
+    mode = str(src.get("mode") or "execute").strip().lower()
+    if mode not in _CHAT_MODES:
+        mode = "execute"
+    effort = str(src.get("reasoning_effort") or "").strip().lower()
+    if effort not in _REASONING_EFFORTS:
+        effort = ""
+
+    def _idset(key: str) -> set[str] | None:
+        val = src.get(key)
+        if isinstance(val, list):
+            return {str(v).strip().lower() for v in val if str(v).strip()}
+        return None
+
+    return {
+        "model": str(src.get("model") or "").strip(),
+        "reasoning_effort": effort,
+        "mode": mode,
+        "mcp_server_ids": _idset("mcp_server_ids"),
+        "skill_ids": _idset("skill_ids"),
+        "workspace": src.get("workspace") if isinstance(src.get("workspace"), dict) else None,
+    }
+
+
+@app.get("/user/settings")
+def get_user_settings(request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="user.settings.read")
+    return _user_settings_for(actor)
+
+
+@app.put("/user/settings")
+def save_user_settings(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="user.settings.save")
+    normalized = _normalize_user_settings(payload)
+    store.user_settings[str(actor)] = normalized
+    _persist_store_state()
+    _append_audit_event("user.settings.save", actor, "allowed")
+    return normalized
+
+
+# Mounted host projects root (bind-mounted into the backend + agent containers via
+# docker-compose). User "working folders" are subpaths confined to this root so the
+# agents can actually read/edit them from inside the container.
+_PROJECTS_ROOT = os.getenv("FRONTIER_PROJECTS_ROOT", "/projects")
+
+
+def _projects_root_path() -> Path:
+    return Path(_PROJECTS_ROOT)
+
+
+def _path_within(root: Path, target: Path) -> bool:
+    try:
+        target.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_working_folder(value: str) -> str | None:
+    """Resolve a user-supplied working folder to an absolute path confined to the
+    mounted projects root. Returns the resolved path, or None if it escapes the
+    root. Relative values are taken under the root; a leading 'projects/' is
+    tolerated."""
+    raw = str(value or "").strip().replace("\\", "/")
+    if not raw:
+        return None
+    try:
+        root = _projects_root_path().resolve()
+    except Exception:  # noqa: BLE001
+        return None
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        target = candidate
+    else:
+        rel = raw[len("projects/") :] if raw.lower().startswith("projects/") else raw
+        target = root / rel
+    try:
+        target = target.resolve()
+    except Exception:  # noqa: BLE001
+        return None
+    return str(target) if _path_within(root, target) else None
+
+
+@app.get("/workspace/folders")
+def list_workspace_folders(request: Request, path: str = "") -> dict[str, Any]:
+    """List immediate subfolders under the mounted projects root for the
+    working-folder picker. `path` (optional) drills into a subfolder."""
+    _enforce_request_authn(request, action="workspace.folders.list")
+    root = _projects_root_path()
+    base = (
+        _resolve_working_folder(path) if path else (str(root.resolve()) if root.exists() else None)
+    )
+    result: dict[str, Any] = {
+        "root": str(root),
+        "path": base or "",
+        "exists": False,
+        "is_git": False,
+        "folders": [],
+    }
+    if not base or not Path(base).is_dir():
+        return result
+    base_path = Path(base)
+    result["exists"] = True
+    result["is_git"] = (base_path / ".git").exists()
+    folders: list[dict[str, str]] = []
+    try:
+        for child in sorted(base_path.iterdir(), key=lambda p: p.name.lower()):
+            if child.is_dir() and not child.name.startswith("."):
+                folders.append({"name": child.name, "path": str(child)})
+    except Exception:  # noqa: BLE001
+        pass
+    result["folders"] = folders[:200]
+    return result
+
+
+@app.get("/mcp/servers")
+def list_mcp_servers(request: Request) -> dict[str, Any]:
+    """List MCP integrations for the per-chat tool selector."""
+    _enforce_request_authn(request, action="mcp.servers.list")
+    servers: list[dict[str, Any]] = []
+    for integration in store.integrations.values():
+        metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+        if str(metadata.get("protocol") or "").lower() != "mcp":
+            continue
+        servers.append(
+            {
+                "id": integration.id,
+                "slug": _slugify(integration.name),
+                "name": integration.name,
+                "configured": integration.status == "configured",
+                "transport": str(metadata.get("transport") or "http").lower(),
+                "base_url": integration.base_url or "",
+            }
+        )
+    servers.sort(key=lambda s: str(s["name"]).lower())
+    return {"servers": servers}
+
+
+@app.get("/workflow-runs/{run_id}/escalations")
+def list_run_escalations(run_id: str, request: Request) -> dict[str, Any]:
+    """Out-of-folder access requests raised by a run's agents (allow_outside=ask)."""
+    _enforce_request_authn(request, action="workflow.run.escalations.read")
+    details = store.run_details.get(run_id) or {}
+    escalations = details.get("escalations")
+    return {"escalations": escalations if isinstance(escalations, list) else []}
+
+
+@app.post("/workflow-runs/{run_id}/escalations/{escalation_id}/approve")
+def approve_run_escalation(run_id: str, escalation_id: str, request: Request) -> dict[str, Any]:
+    """Grant an agent access to a folder outside its bound working folder. The
+    grant is remembered for that repo and merged into extra_paths on later runs."""
+    actor = _enforce_request_authn(request, payload={}, action="workflow.run.escalations.approve")
+    details = store.run_details.get(run_id) or {}
+    escalations = details.get("escalations")
+    if not isinstance(escalations, list):
+        raise HTTPException(status_code=404, detail="No escalations for this run")
+    target = next(
+        (e for e in escalations if isinstance(e, dict) and e.get("id") == escalation_id), None
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="Escalation not found")
+    target["status"] = "approved"
+    target["approved_by"] = actor
+    target["approved_at"] = _now_iso()
+    repo = str(target.get("workspace_root") or "")
+    path = str(target.get("path") or "")
+    if repo and path:
+        grants = store.workspace_grants.setdefault(repo, [])
+        if path not in grants:
+            grants.append(path)
+    _persist_store_state()
+    _append_audit_event(
+        "workflow.run.escalations.approve", actor, "allowed", {"run_id": run_id, "path": path}
+    )
+    return {"ok": True, "escalation": target}
+
+
 @app.get("/platform/settings")
 def get_platform_settings(request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="platform.settings.read")
     _append_audit_event("platform.settings.read", actor, "allowed")
-    response = store.platform_settings.model_dump()
+    response = _masked_provider_settings_view(store.platform_settings.model_dump())
     baseline = _default_immutable_security_baseline()
     response["require_authenticated_requests"] = _effective_require_authenticated_requests()
     response["require_a2a_runtime_headers"] = _effective_require_a2a_runtime_headers()
@@ -18424,6 +20487,42 @@ def save_platform_settings(
     actor = _enforce_admin_access(request, payload=payload, action="platform.settings.save")
     current_settings = store.platform_settings
     current = current_settings.model_dump()
+
+    # Secret provider fields are write-only: empty submissions keep the stored
+    # value, the clear sentinel removes it.
+    payload = dict(payload)
+    for field in _PROVIDER_SECRET_FIELDS:
+        if field in payload:
+            value = str(payload[field] or "").strip()
+            if not value:
+                payload.pop(field)
+            elif value == _PROVIDER_CLEAR_SENTINEL:
+                payload[field] = ""
+    if isinstance(payload.get("ai_providers"), dict):
+        merged_providers: dict[str, dict[str, str]] = {
+            provider: dict(entry)
+            for provider, entry in (current.get("ai_providers") or {}).items()
+            if isinstance(entry, dict)
+        }
+        for provider, entry in payload["ai_providers"].items():
+            if not isinstance(entry, dict):
+                continue
+            provider_id = str(provider).strip().lower()
+            if provider_id not in _PROVIDER_REGISTRY:
+                continue
+            target = merged_providers.setdefault(provider_id, {})
+            for field in ("base_url", "default_model"):
+                if field in entry:
+                    target[field] = str(entry.get(field) or "").strip()
+            if "api_key" in entry:
+                key_value = str(entry.get("api_key") or "").strip()
+                if key_value == _PROVIDER_CLEAR_SENTINEL:
+                    target["api_key"] = ""
+                elif key_value:
+                    target["api_key"] = key_value
+                # blank submissions keep the stored key
+        payload["ai_providers"] = merged_providers
+
     merged = {**current}
     for key in current.keys():
         if key in payload:
@@ -18469,24 +20568,40 @@ def save_platform_settings(
             merged["allow_local_network_hostnames"] = [
                 item.strip() for item in requested_local_hostnames.split(",") if item.strip()
             ]
-        elif requested_local_hostnames:
+        elif requested_local_hostnames is True:
             merged["allow_local_network_hostnames"] = list(
                 current_settings.allow_local_network_hostnames or ["localhost", ".local"]
             )
-        else:
+        elif requested_local_hostnames is False or requested_local_hostnames is None:
             merged["allow_local_network_hostnames"] = []
-    candidate_settings = PlatformSettings.model_validate(merged)
+        # Any other type is left as submitted so model validation rejects it
+        # with a 400 instead of being silently coerced.
+    try:
+        candidate_settings = PlatformSettings.model_validate(merged)
+    except ValidationError as exc:
+        errors = [
+            {
+                "field": ".".join(str(part) for part in error.get("loc", [])),
+                "message": str(error.get("msg") or "invalid value"),
+            }
+            for error in exc.errors()[:5]
+        ]
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Invalid platform settings payload", "errors": errors},
+        ) from exc
     _validate_platform_settings_update(
         current_settings, candidate_settings, payload=payload, actor=actor
     )
     store.platform_settings = candidate_settings
+    _apply_provider_settings_side_effects()
     _append_config_mutation_audit(
         "platform.settings.save",
         actor,
         entity_type="platform_settings",
         entity_id="platform",
-        before=current,
-        after=candidate_settings.model_dump(),
+        before=_masked_provider_settings_view(current),
+        after=_masked_provider_settings_view(candidate_settings.model_dump()),
         extra={"updated_keys": [key for key in payload.keys() if key in current]},
     )
     _persist_store_state()
@@ -18713,9 +20828,811 @@ def get_active_workflows() -> list[dict[str, Any]]:
     ]
 
 
+def _sync_run_execution_enabled() -> bool:
+    """Escape hatch (FRONTIER_SYNC_RUN_EXECUTION) to execute runs inline in the request."""
+    return str(os.getenv("FRONTIER_SYNC_RUN_EXECUTION", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _resolve_integration_bearer(integration: IntegrationDefinition) -> str:
+    """Resolve an integration's credential from its secret reference.
+
+    Supported reference forms: ``env:VAR_NAME`` (local-first) and Vault paths
+    (``secret/...``). Raw credentials are never stored in integrations.
+    """
+    ref = str(integration.secret_ref or "").strip()
+    if not ref:
+        return ""
+    if ref.startswith("env:"):
+        return str(os.getenv(ref[4:].strip()) or "").strip()
+    if ref.startswith("secret/"):
+        try:
+            from frontier_runtime.security import VaultClient
+
+            data = VaultClient().read_secret(ref)
+            for key in ("token", "api_key", "bearer", "value", "password"):
+                value = str(data.get(key) or "").strip()
+                if value:
+                    return value
+        except Exception:  # noqa: BLE001 - unresolved secrets simply disable the integration
+            return ""
+    return ""
+
+
+def _mcp_server_allowed(base_url: str) -> bool:
+    platform = store.platform_settings
+    if not platform.mcp_require_local_server:
+        return True
+    host = str(urlsplit(base_url).hostname or "")
+    if _hostname_is_local(host):
+        return True
+    normalized = base_url.rstrip("/")
+    for allowed in platform.allowed_mcp_server_urls or []:
+        allowed_clean = str(allowed or "").strip().rstrip("/")
+        if allowed_clean and normalized.startswith(allowed_clean):
+            return True
+    return False
+
+
+_MCP_MAX_TOOLS_PER_SERVER = 40
+
+
+def _gather_mcp_run_tools(
+    selected_integration_ids: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, tuple[Any, str]], list[str]]:
+    """Collect callable tools from configured MCP integrations.
+
+    Returns (OpenAI tool schemas, qualified-name dispatch map, source names).
+    Gates applied: integration must be `configured` (drafts never expose tools),
+    MCP protocol over HTTP/SSE, server allowed by the MCP locality policy,
+    credentials resolvable, and tool names clear the high-risk patterns.
+
+    When ``selected_integration_ids`` is provided (non-None), only integrations
+    whose id or name-slug is in the set are exposed (per-chat MCP selection).
+    An empty set therefore exposes no tools.
+    """
+    platform = store.platform_settings
+    if platform.block_tool_calls:
+        return [], {}, []
+    selection = (
+        {str(s).strip().lower() for s in selected_integration_ids if str(s).strip()}
+        if selected_integration_ids is not None
+        else None
+    )
+    schemas: list[dict[str, Any]] = []
+    dispatch: dict[str, tuple[Any, str]] = {}
+    sources: list[str] = []
+    high_risk = [
+        str(pattern or "").strip().lower()
+        for pattern in (platform.high_risk_tool_patterns or [])
+        if str(pattern or "").strip()
+    ]
+
+    for integration in store.integrations.values():
+        if integration.status != "configured":
+            continue
+        if selection is not None and not (
+            integration.id.lower() in selection or _slugify(integration.name) in selection
+        ):
+            continue
+        metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+        if str(metadata.get("protocol") or "").lower() != "mcp":
+            continue
+        transport = str(metadata.get("transport") or "http").lower()
+        if transport not in {"http", "sse", "streamable-http"}:
+            continue  # stdio servers need the plugin runtime; not exposed yet
+        base_url = str(integration.base_url or "").strip()
+        if not base_url or not _mcp_server_allowed(base_url):
+            continue
+        token = _resolve_integration_bearer(integration)
+        if integration.auth_type != "none" and not token:
+            continue
+        try:
+            server = mcp_client.McpHttpClient(base_url, bearer_token=token, timeout_seconds=15.0)
+            tools = server.list_tools()
+        except Exception:  # noqa: BLE001 - unreachable servers contribute no tools
+            continue
+
+        prefix = (_slugify(integration.name) or integration.id[:8]).replace("-", "_")
+        exposed = 0
+        for tool in tools[:_MCP_MAX_TOOLS_PER_SERVER]:
+            tool_name = str(tool["name"])
+            qualified = f"{prefix}__{tool_name}"[:64]
+            risk_haystack = f"{integration.name} {tool_name}".lower()
+            if any(pattern in risk_haystack for pattern in high_risk):
+                continue  # high-risk tools stay behind explicit approval flows
+            if qualified in dispatch:
+                continue
+            schemas.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": qualified,
+                        "description": (
+                            tool["description"] or f"{tool_name} via {integration.name}"
+                        )[:1024],
+                        "parameters": tool["input_schema"],
+                    },
+                }
+            )
+            dispatch[qualified] = (server, tool_name)
+            exposed += 1
+        if exposed:
+            sources.append(integration.name)
+    return schemas, dispatch, sources
+
+
+_SKILLS_PROMPT_CHAR_BUDGET = 6000
+
+
+def _augment_system_prompt_with_skills(
+    system_prompt: str, selected_skill_ids: set[str] | None = None
+) -> str:
+    """Append enabled auto-inject skills to the agent system prompt.
+
+    Symphony-style skills are operating procedures the agent should follow;
+    the total injected size is bounded so skills can never crowd out the
+    agent's own prompt.
+    """
+    selection = (
+        {str(s).strip().lower() for s in selected_skill_ids if str(s).strip()}
+        if selected_skill_ids is not None
+        else None
+    )
+    sections: list[str] = []
+    used = 0
+    injected: list[SkillDefinition] = []
+    for skill in sorted(store.skills.values(), key=lambda item: item.name.lower()):
+        if skill.status != "enabled":
+            continue
+        if selection is not None:
+            # explicit per-chat selection: include the chosen skills regardless
+            # of auto_inject; skip everything not selected.
+            if not (skill.id.lower() in selection or _slugify(skill.name) in selection):
+                continue
+        elif not skill.auto_inject:
+            continue
+        if skill.quarantine_status in {"pending", "blocked"}:
+            # Imported skills that have not cleared the blast chamber never reach context.
+            continue
+        body = skill.content.strip()
+        if not body:
+            continue
+        block = f"### Skill: {skill.name}\n{body}"
+        if used + len(block) > _SKILLS_PROMPT_CHAR_BUDGET:
+            continue
+        used += len(block)
+        sections.append(block)
+        injected.append(skill)
+    if not sections:
+        return system_prompt
+    injected_at = _now_iso()
+    for skill in injected:
+        skill.usage_count += 1
+        skill.last_used_at = injected_at
+    return (
+        system_prompt
+        + "\n\n## Platform skills\nFollow these operating procedures when they apply to the task:\n\n"
+        + "\n\n".join(sections)
+    )
+
+
+# --- Mention-driven multi-agent collaboration ---------------------------------
+
+_AGENT_MENTION_RE = re.compile(r"@([a-z0-9][a-z0-9_-]{1,79})", re.IGNORECASE)
+_DEFAULT_COLLABORATION_TURNS = 6
+_MAX_COLLABORATION_TURNS = 20
+
+
+def _extract_agent_mentions(text: str) -> list[str]:
+    """Ordered, de-duplicated @handles referenced in text."""
+    seen: list[str] = []
+    for match in _AGENT_MENTION_RE.finditer(str(text or "")):
+        token = match.group(1).lower()
+        if token not in seen:
+            seen.append(token)
+    return seen
+
+
+# /workflow and !playbook mentions (word-boundary; false positives are harmless
+# because dispatch only fires when the token resolves to a published target).
+_WORKFLOW_MENTION_RE = re.compile(r"(?:^|\s)/([a-z0-9][a-z0-9_-]{1,79})", re.IGNORECASE)
+_PLAYBOOK_MENTION_RE = re.compile(r"(?:^|\s)!([a-z0-9][a-z0-9_-]{1,79})", re.IGNORECASE)
+
+
+def _extract_mentions(pattern: re.Pattern[str], text: str) -> list[str]:
+    seen: list[str] = []
+    for match in pattern.finditer(str(text or "")):
+        token = match.group(1).lower()
+        if token not in seen:
+            seen.append(token)
+    return seen
+
+
+def _resolve_active_playbook(token: str) -> "PlaybookDefinition | None":
+    requested = str(token or "").strip().lower()
+    if not requested:
+        return None
+    slug = _slugify(requested)
+    for playbook in store.playbooks.values():
+        if getattr(playbook, "status", "active") != "active":
+            continue
+        keys = {playbook.id.lower(), _slugify(playbook.name)}
+        if requested in keys or (slug and slug in keys):
+            return playbook
+    return None
+
+
+def _graph_json_has_nodes(graph_json: Any) -> bool:
+    if not isinstance(graph_json, dict):
+        return False
+    try:
+        return bool(_graph_payload_from_json(graph_json).nodes)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _resolve_collaboration_turns(agent_def: "AgentDefinition", payload: dict[str, Any]) -> int:
+    """Turn cap, configurable per playbook/workflow (kickoff payload) or per agent
+    (config_json), falling back to a conservative default."""
+    config = getattr(agent_def, "config_json", {}) or {}
+    for candidate in (
+        payload.get("max_collaboration_turns"),
+        config.get("max_collaboration_turns"),
+    ):
+        try:
+            value = int(candidate)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return min(value, _MAX_COLLABORATION_TURNS)
+    return _DEFAULT_COLLABORATION_TURNS
+
+
+# Agents iterate until they judge their answer complete (marker protocol), with
+# a generous safety ceiling. Override per agent via config_json.max_iterations
+# or per run via the kickoff payload.
+_DEFAULT_AGENT_MAX_ITERATIONS = 12
+_AGENT_MAX_ITERATIONS_CEILING = 50
+_AGENT_CONTINUE_MARKER = "<CONTINUE>"
+_AGENT_DONE_MARKER = "<DONE>"
+
+
+def _resolve_agent_max_iterations(agent_def: "AgentDefinition", payload: dict[str, Any]) -> int:
+    config = getattr(agent_def, "config_json", {}) or {}
+    for candidate in (payload.get("max_iterations"), config.get("max_iterations")):
+        try:
+            value = int(candidate)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return min(value, _AGENT_MAX_ITERATIONS_CEILING)
+    return _DEFAULT_AGENT_MAX_ITERATIONS
+
+
+def _emit_agent_progress(
+    run_id: str,
+    *,
+    work_id: str,
+    agent_def: "AgentDefinition",
+    phase: str,
+    text: str,
+    event_type: str = "step_completed",
+    thread_id: str | None = None,
+    parent_event_id: str | None = None,
+) -> None:
+    """Append a live work-log event (streamed to the console over SSE).
+
+    Progress events share a ``work_id`` with the agent's final message so the
+    UI can fold them into that message's activity log.
+    """
+    metadata: dict[str, Any] = {
+        "selected_agent_id": agent_def.id,
+        "selected_agent_name": agent_def.name,
+        "work_id": work_id,
+        "progress": True,
+        "phase": phase,
+    }
+    if thread_id:
+        metadata["thread_id"] = thread_id
+    if parent_event_id:
+        metadata["parent_event_id"] = parent_event_id
+    store.run_events.setdefault(run_id, []).append(
+        WorkflowRunEvent(
+            id=f"evt-{uuid4()}",
+            type=event_type,  # type: ignore[arg-type]
+            title=f"{agent_def.name} — {phase}",
+            summary=(str(text or "").strip() or "…")[:500],
+            createdAt=_now_iso(),
+            metadata=metadata,
+        )
+    )
+
+
+def _run_agent_iterations(
+    run_id: str,
+    agent_def: "AgentDefinition",
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    work_id: str,
+    max_iterations: int,
+    temperature: float = 0.3,
+    tools: list[dict[str, Any]] | None = None,
+    tool_executor: Callable[[str, dict[str, Any]], str] | None = None,
+    max_tool_calls: int = 8,
+    on_tool_event: Callable[[str, dict[str, Any], str, bool], None] | None = None,
+    thread_id: str | None = None,
+    parent_event_id: str | None = None,
+    reasoning_effort: str = "",
+) -> tuple[str, dict[str, Any]]:
+    """Run an agent as an iterative work loop with a live progress log.
+
+    Each pass the agent either finishes (``<DONE>``) or asks to keep working
+    (``<CONTINUE>``); interim thoughts, model reasoning summaries, and tool
+    calls stream to the run as progress events so the user can watch the agent
+    work. Returns the final (text, meta) like ``_run_openai_chat``.
+    """
+    _emit_agent_progress(
+        run_id,
+        work_id=work_id,
+        agent_def=agent_def,
+        phase="working",
+        text="Started working on the task.",
+        event_type="step_started",
+        thread_id=thread_id,
+        parent_event_id=parent_event_id,
+    )
+    iteration_instruction = (
+        "\n\nWork iteratively. If you still need more passes to produce a complete, correct "
+        f"answer (more research, tool use, or refinement), end your reply with {_AGENT_CONTINUE_MARKER}. "
+        f"When your answer is final and complete, end it with {_AGENT_DONE_MARKER}."
+    )
+    conversation_prompt = user_prompt + iteration_instruction
+    interim_notes: list[str] = []
+    final_text = ""
+    final_meta: dict[str, Any] = {}
+    for iteration in range(1, max(1, max_iterations) + 1):
+        text, meta = _run_openai_chat(
+            system_prompt=system_prompt,
+            user_prompt=conversation_prompt,
+            model=model,
+            temperature=temperature,
+            tools=tools,
+            tool_executor=tool_executor,
+            max_tool_calls=max_tool_calls,
+            on_tool_event=on_tool_event,
+            reasoning_effort=reasoning_effort,
+        )
+        final_meta = meta
+        if str(meta.get("mode")) != "live":
+            final_text = text
+            break
+
+        reasoning = meta.get("reasoning") if isinstance(meta.get("reasoning"), dict) else {}
+        for summary in list(reasoning.get("summaries") or [])[:2]:
+            thought = str(summary or "").strip()
+            if thought:
+                _emit_agent_progress(
+                    run_id,
+                    work_id=work_id,
+                    agent_def=agent_def,
+                    phase="thought",
+                    text=thought,
+                    thread_id=thread_id,
+                    parent_event_id=parent_event_id,
+                )
+
+        stripped = text.strip()
+        wants_continue = _AGENT_CONTINUE_MARKER in stripped[-200:]
+        cleaned = (
+            stripped.replace(_AGENT_CONTINUE_MARKER, "").replace(_AGENT_DONE_MARKER, "").strip()
+        )
+        if wants_continue and iteration < max_iterations:
+            interim_notes.append(cleaned)
+            _emit_agent_progress(
+                run_id,
+                work_id=work_id,
+                agent_def=agent_def,
+                phase=f"iteration {iteration}",
+                text=cleaned or "Continuing…",
+                thread_id=thread_id,
+                parent_event_id=parent_event_id,
+            )
+            conversation_prompt = (
+                user_prompt
+                + "\n\nYour work so far (continue from here, do not repeat it):\n"
+                + "\n---\n".join(interim_notes[-4:])
+                + iteration_instruction
+            )
+            continue
+        final_text = cleaned
+        break
+    final_text = (
+        final_text.replace(_AGENT_CONTINUE_MARKER, "").replace(_AGENT_DONE_MARKER, "").strip()
+        or final_text
+    )
+    return final_text, final_meta
+
+
+def _workflow_member_agents(graph_json: dict[str, Any]) -> list[dict[str, str]]:
+    """Resolve the distinct agents a workflow/playbook graph employs (its
+    ``frontier/agent`` nodes), mapped to canonical published definitions."""
+    members: list[dict[str, str]] = []
+    seen: set[str] = set()
+    try:
+        payload = _graph_payload_from_json(graph_json)
+    except Exception:  # noqa: BLE001
+        return members
+    for node in payload.nodes:
+        if not _normalize_node_type(node.type).startswith("frontier/agent"):
+            continue
+        cfg = node.config if isinstance(node.config, dict) else {}
+        token = str(cfg.get("agent_id") or "").strip()
+        if not token:
+            continue
+        defn = _resolve_published_agent_definition(token)
+        agent_id = defn.id if defn else token
+        if agent_id in seen:
+            continue
+        seen.add(agent_id)
+        members.append({"id": agent_id, "name": defn.name if defn else token})
+    return members
+
+
+def _assign_agents_to_run(run_id: str, members: list[dict[str, str]]) -> None:
+    """Persist agents as 'assigned' to a chat (deduped by id). Drives the
+    participant roster even before/without those agents posting a message."""
+    if not members:
+        return
+    details = store.run_details.setdefault(run_id, {})
+    existing = details.get("assigned_agents")
+    by_id: dict[str, dict[str, str]] = {}
+    if isinstance(existing, list):
+        for item in existing:
+            if isinstance(item, dict) and item.get("id"):
+                by_id[str(item["id"])] = {
+                    "id": str(item["id"]),
+                    "name": str(item.get("name") or "Agent"),
+                }
+    for member in members:
+        if member.get("id"):
+            by_id[str(member["id"])] = {
+                "id": str(member["id"]),
+                "name": str(member.get("name") or "Agent"),
+            }
+    details["assigned_agents"] = list(by_id.values())
+
+
+def _run_participants(run_id: str) -> dict[str, Any]:
+    """Roster of who is in this run's conversation: the human plus every agent
+    that has participated (or been invited), with an active flag.
+
+    An agent is "active" when it has spoken since the user's latest message, or
+    the run is currently executing. This drives the participant avatar stack.
+    """
+    events = store.run_events.get(run_id, [])
+    last_user_index = -1
+    for index, event in enumerate(events):
+        if event.type == "user_message":
+            last_user_index = index
+
+    run = store.runs.get(run_id)
+    running = bool(run and run.status == "Running")
+
+    agents: list[dict[str, Any]] = []
+    seen: dict[str, dict[str, Any]] = {}
+    # Persistently-assigned agents (from @mention / workflow / playbook) are part
+    # of the roster even if they have not yet posted a message.
+    details = store.run_details.get(run_id) or {}
+    for assigned in details.get("assigned_agents") or []:
+        if not isinstance(assigned, dict) or not assigned.get("id"):
+            continue
+        agent_id = str(assigned["id"])
+        if agent_id in seen:
+            continue
+        entry = {"id": agent_id, "name": str(assigned.get("name") or "Agent"), "active": running}
+        seen[agent_id] = entry
+        agents.append(entry)
+    for index, event in enumerate(events):
+        meta = event.metadata or {}
+        if event.type != "agent_message" or not meta.get("selected_agent_id"):
+            continue
+        agent_id = str(meta["selected_agent_id"])
+        entry = seen.get(agent_id)
+        if entry is None:
+            entry = {
+                "id": agent_id,
+                "name": str(meta.get("selected_agent_name") or "Agent"),
+                "active": False,
+            }
+            seen[agent_id] = entry
+            agents.append(entry)
+        if index > last_user_index or running:
+            entry["active"] = True
+    return {"user": {"label": "You", "active": True}, "agents": agents}
+
+
+def _agent_decides_to_respond(
+    agent_def: "AgentDefinition",
+    *,
+    from_name: str,
+    message: str,
+    transcript: str,
+    pinned: bool = False,
+) -> dict[str, Any]:
+    """The mention-gate: a called agent decides whether it needs to respond."""
+    pinned_note = (
+        "You are a pinned member of this run's team — the message is addressed to the whole "
+        "team, so respond with your part unless you genuinely have nothing new to add. "
+        if pinned
+        else ""
+    )
+    prompt = (
+        f"You are the agent '{agent_def.name}'. In a multi-agent run, {from_name} addressed "
+        f'you:\n\n"{message[:1500]}"\n\nRecent conversation:\n{transcript[:2000]}\n\n'
+        f"{pinned_note}Decide whether YOU specifically need to respond. Respond if you can add "
+        "something the others cannot, or you were asked a direct question. Reply with ONLY a "
+        'JSON object: {"respond": true|false, "reason": "<one short sentence>"}.'
+    )
+    text, meta = _run_openai_chat(
+        system_prompt="You are a precise routing gate. Reply with JSON only.",
+        user_prompt=prompt,
+        model=_resolve_agent_chat_model(agent_def),
+        temperature=0.0,
+    )
+    # Fail OPEN: if the gate can't get a clean decision (the local model didn't
+    # run "live", timed out, or returned non-JSON), the agent should still
+    # participate — a missing teammate is worse than an extra contribution. Only
+    # an explicit {"respond": false} from the model declines.
+    respond = True
+    reason = "Participating (gate decision defaulted)."
+    try:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            parsed = json.loads(match.group(0))
+            respond = bool(parsed.get("respond", respond))
+            reason = str(parsed.get("reason") or reason)
+    except (ValueError, TypeError):
+        pass
+    return {"respond": respond, "reason": reason[:200], "mode": str(meta.get("mode") or "")}
+
+
+def _run_agent_collaboration(
+    *,
+    run_id: str,
+    root_event_id: str,
+    initial_agent_id: str,
+    initial_agent_name: str,
+    seed_text: str,
+    transcript_seed: str,
+    max_turns: int,
+    mask_secrets: bool,
+    seed_tokens: list[str] | None = None,
+) -> int:
+    """Mention-driven loop: agents @-call each other and decide whether to respond.
+
+    Each invoked agent's message threads under the message that called it
+    (``parent_event_id``); all share the opening message's ``thread_id``. Bounded
+    by ``max_turns`` and a per-(agent, parent) visited set so it always terminates.
+
+    ``seed_tokens`` are pinned roster members invoked even without an @mention in
+    the seed text — so a run's tagged team stays engaged across follow-ups.
+    """
+    turns = 0
+    transcript_lines = [transcript_seed]
+    visited: set[tuple[str, str]] = set()
+    queue: list[tuple[str, str, str, str, bool]] = [
+        (token, root_event_id, initial_agent_name, seed_text, False)
+        for token in _extract_agent_mentions(seed_text)
+    ]
+    for token in seed_tokens or []:
+        queue.append((token, root_event_id, initial_agent_name, seed_text, True))
+    while queue and turns < max_turns:
+        token, parent_event_id, from_name, message_text, pinned = queue.pop(0)
+        agent_def = _resolve_published_agent_definition(token)
+        if agent_def is None:
+            continue
+        if agent_def.id == initial_agent_id and parent_event_id == root_event_id:
+            continue  # the author doesn't reply to its own opening message
+        visited_key = (agent_def.id, parent_event_id)
+        if visited_key in visited:
+            continue
+        visited.add(visited_key)
+
+        transcript = "\n".join(transcript_lines[-8:])
+        decision = _agent_decides_to_respond(
+            agent_def,
+            from_name=from_name,
+            message=message_text,
+            transcript=transcript,
+            pinned=pinned,
+        )
+        turns += 1
+
+        if not decision["respond"]:
+            store.run_events[run_id].append(
+                WorkflowRunEvent(
+                    id=f"evt-{uuid4()}",
+                    type="agent_message",
+                    title=f"{agent_def.name} declined",
+                    summary=(
+                        f"_{agent_def.name} chose not to respond — "
+                        f"{decision['reason'] or 'no action needed'}._"
+                    ),
+                    createdAt=_now_iso(),
+                    metadata={
+                        "selected_agent_id": agent_def.id,
+                        "selected_agent_name": agent_def.name,
+                        "parent_event_id": parent_event_id,
+                        "thread_id": root_event_id,
+                        "decision": decision,
+                        "declined": True,
+                    },
+                )
+            )
+            continue
+
+        agent_system = _augment_system_prompt_with_skills(
+            _resolve_agent_system_prompt(agent_def, requested_token=token)[0]
+        )
+        collaboration_prompt = (
+            f"You are collaborating with other agents on the user's request. {from_name} said:\n\n"
+            f"{message_text[:3000]}\n\nConversation so far:\n{transcript}\n\n"
+            "First reason about what the user actually needs and what the prior turns established. "
+            "Then contribute your specific expertise to move the work toward a correct, complete "
+            "answer — add new substance and address gaps, do not merely agree or restate. Only "
+            "@-mention another agent (by @their-handle) when their input is genuinely required "
+            "next; otherwise give your best complete answer for your part."
+        )
+        work_id = f"work-{uuid4()}"
+        output, meta = _run_agent_iterations(
+            run_id,
+            agent_def,
+            system_prompt=agent_system,
+            user_prompt=collaboration_prompt,
+            model=_resolve_agent_chat_model(agent_def),
+            work_id=work_id,
+            max_iterations=_resolve_agent_max_iterations(agent_def, {}),
+            temperature=0.3,
+            thread_id=root_event_id,
+            parent_event_id=parent_event_id,
+        )
+        if str(meta.get("mode")) != "live":
+            break  # provider unavailable — stop rather than emit simulated chatter
+
+        display = _redact_sensitive_text(output) if mask_secrets else output
+        summary, _ = _truncate_text_with_metadata(display)
+        event_id = f"evt-{uuid4()}"
+        store.run_events[run_id].append(
+            WorkflowRunEvent(
+                id=event_id,
+                type="agent_message",
+                title=f"{agent_def.name} response",
+                summary=summary,
+                createdAt=_now_iso(),
+                metadata={
+                    "model": meta,
+                    "selected_agent_id": agent_def.id,
+                    "selected_agent_name": agent_def.name,
+                    "parent_event_id": parent_event_id,
+                    "thread_id": root_event_id,
+                    "work_id": work_id,
+                    "decision": decision,
+                    # Full, untruncated answer for the chat view (summary is for previews).
+                    "full_text": display,
+                },
+            )
+        )
+        transcript_lines.append(f"{agent_def.name}: {output}")
+        for next_token in _extract_agent_mentions(output):
+            queue.append((next_token, event_id, agent_def.name, output, False))
+
+    # Final synthesis: the lead agent reasons over the whole exchange and states
+    # the conclusion mapped back to the user's intent, so the run converges on a
+    # clear answer instead of trailing off.
+    if turns > 0:
+        primary_def = store.agent_definitions.get(initial_agent_id)
+        if primary_def is not None:
+            transcript = "\n".join(transcript_lines[-12:])
+            synthesis_system = _augment_system_prompt_with_skills(
+                _resolve_agent_system_prompt(
+                    primary_def, requested_token=_slugify(primary_def.name)
+                )[0]
+            )
+            synthesis_prompt = (
+                "The multi-agent exchange below is complete. As the lead, reason over it and write "
+                "the FINAL answer for the user: state the conclusion, how it maps to the original "
+                "ask, the key supporting points contributed by each agent, and any caveats or open "
+                "items. Be complete and self-contained — this is what the user reads as the result."
+                f"\n\nExchange:\n{transcript}"
+            )
+            synthesis_output, synthesis_meta = _run_openai_chat(
+                system_prompt=synthesis_system,
+                user_prompt=synthesis_prompt,
+                model=_resolve_agent_chat_model(primary_def),
+                temperature=0.3,
+            )
+            if str(synthesis_meta.get("mode")) == "live":
+                synthesis_display = (
+                    _redact_sensitive_text(synthesis_output) if mask_secrets else synthesis_output
+                )
+                synthesis_summary, _ = _truncate_text_with_metadata(synthesis_display)
+                store.run_events[run_id].append(
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="agent_message",
+                        title=f"{primary_def.name} — conclusion",
+                        summary=synthesis_summary,
+                        createdAt=_now_iso(),
+                        metadata={
+                            "model": synthesis_meta,
+                            "selected_agent_id": primary_def.id,
+                            "selected_agent_name": primary_def.name,
+                            "thread_id": root_event_id,
+                            "full_text": synthesis_display,
+                            "synthesis": True,
+                        },
+                    )
+                )
+                turns += 1
+    return turns
+
+
+def _run_worker_concurrency() -> int:
+    try:
+        configured = int(os.getenv("FRONTIER_WORKER_CONCURRENCY", "2"))
+    except ValueError:
+        configured = 2
+    return max(1, min(16, configured))
+
+
+# Bounded executor for run execution: a burst of run creations queues here
+# instead of consuming the API server's shared request threadpool. This is the
+# seam the future external worker (resource plan 2.1) replaces.
+def _new_run_executor() -> ThreadPoolExecutor:
+    return ThreadPoolExecutor(
+        max_workers=_run_worker_concurrency(), thread_name_prefix="frontier-run"
+    )
+
+
+_RUN_EXECUTOR = _new_run_executor()
+_RUN_EXECUTOR_LOCK = Lock()
+_RUN_EXECUTOR_SHUT_DOWN = False
+
+
+def _submit_run_task(fn: Callable[[], Any]) -> None:
+    """Submit run work to the bounded executor.
+
+    The executor is shut down on app shutdown; if the app is started again in
+    the same process (e.g. a new ASGI lifespan), a fresh executor is created
+    instead of failing with "cannot schedule new futures after shutdown".
+    """
+    global _RUN_EXECUTOR, _RUN_EXECUTOR_SHUT_DOWN
+    with _RUN_EXECUTOR_LOCK:
+        if _RUN_EXECUTOR_SHUT_DOWN:
+            _RUN_EXECUTOR = _new_run_executor()
+            _RUN_EXECUTOR_SHUT_DOWN = False
+        _RUN_EXECUTOR.submit(fn)
+
+
+@app.on_event("shutdown")
+def _shutdown_run_executor() -> None:
+    global _RUN_EXECUTOR_SHUT_DOWN
+    with _RUN_EXECUTOR_LOCK:
+        _RUN_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+        _RUN_EXECUTOR_SHUT_DOWN = True
+
+
 @app.post("/workflow-runs")
 def create_workflow_run(
-    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+    request: Request,
+    payload: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, str]:
     actor = _enforce_request_authn(request, payload=payload, action="workflow.run.create")
     _enforce_emergency_write_policy("workflow.run.create", actor)
@@ -18735,7 +21652,12 @@ def create_workflow_run(
             _enforce_run_access(request, actor, follow_up_run_id, action="workflow.run.update")
 
     run_id = existing_run.id if existing_run is not None else str(uuid4())
-    run_kind = _resolve_workflow_run_kind(payload)
+    # Console chat-workspace hint (explicit session kind / follow-up context);
+    # reconciled with the mainline target-based kind below.
+    console_run_kind = _resolve_workflow_run_kind(payload)
+    explicit_kind = _normalize_workflow_run_kind(
+        payload.get("session_kind") or payload.get("sessionKind") or payload.get("kind")
+    )
     explicit_title = str(payload.get("title") or "").strip()
     title = explicit_title or str(payload.get("workflowName") or "Workflow Run")
     title_source: Literal["system", "generated", "user"] = "user" if explicit_title else "system"
@@ -18746,7 +21668,6 @@ def create_workflow_run(
     if existing_run is not None:
         title = existing_run.title
         title_source = existing_run.title_source
-        run_kind = existing_run.kind
 
     requested_agent_tokens = [
         str(token.get("value", "")).strip()
@@ -18814,6 +21735,26 @@ def create_workflow_run(
     if requested_workflows and title == "Workflow Run":
         title = f"Workflow Run — {requested_workflows[0]}"
 
+    requested_playbook_tokens = _normalize_string_list(
+        payload.get("playbooks") or payload.get("playbook") or []
+    )
+    run_kind: WorkflowRunKind
+    if existing_run is not None:
+        # Follow-ups keep the kind of the run they continue.
+        run_kind = existing_run.kind
+    elif explicit_kind is not None:
+        run_kind = explicit_kind
+    elif requested_playbook_tokens or payload.get("playbook_id"):
+        run_kind = "playbook"
+    elif requested_workflows:
+        run_kind = "workflow"
+    elif requested_agents:
+        run_kind = "agent"
+    elif console_run_kind in {"chat", "playbook", "workflow"}:
+        run_kind = console_run_kind
+    else:
+        run_kind = "individual"
+
     if len(requested_agents) > store.platform_settings.collaboration_max_agents:
         raise HTTPException(
             status_code=400,
@@ -18840,7 +21781,7 @@ def create_workflow_run(
             actor="system/default-chat-agent"
         )
 
-    if not explicit_title:
+    if not explicit_title and existing_run is None:
         title, inferred_title_source = _generate_workflow_run_title(
             prompt_text=prompt_text,
             run_kind=run_kind,
@@ -18943,6 +21884,31 @@ def create_workflow_run(
         )
         return {"id": run_id, "status": "blocked"}
 
+    composer_opts = _composer_options(payload)
+
+    system_prompt, system_prompt_source = _resolve_agent_system_prompt(
+        selected_agent_definition,
+        requested_token=selected_agent_token or _DEFAULT_CHAT_AGENT_SOURCE_ID,
+    )
+    system_prompt = _augment_system_prompt_with_skills(
+        system_prompt, selected_skill_ids=composer_opts["skill_ids"]
+    )
+
+    selected_model = composer_opts["model"] or _resolve_agent_chat_model(selected_agent_definition)
+    request_prompt = _with_architecture_contract(
+        model_prompt or "Execute the requested workflow task.",
+        enabled=_should_enforce_architecture_contract(
+            selected_agent=selected_agent_definition, prompt_text=model_prompt
+        ),
+    )
+    if composer_opts["mode"] == "plan":
+        request_prompt += (
+            "\n\nFocus: PLAN ONLY. Produce a concrete, step-by-step execution plan "
+            "(approach, files/components, tests, risks). Do not execute tools or modify files."
+        )
+
+    # Follow-ups continue an existing run: keep its access context, graph,
+    # artifacts and traces rather than starting from scratch.
     existing_detail = (
         store.run_details.get(run_id) if isinstance(store.run_details.get(run_id), dict) else {}
     )
@@ -18951,6 +21917,22 @@ def create_workflow_run(
         if isinstance(existing_detail.get("access"), dict)
         else _build_run_access_context(request, actor)
     )
+
+    # If this run targets a published multi-agent workflow (cyclic or >=2 agent
+    # nodes), execute the real graph through the LangGraph compiler instead of
+    # the single-agent fast path.
+    workflow_graph_json: dict[str, Any] | None = None
+    if run_kind == "workflow" and requested_workflows:
+        _wf_def = _resolve_published_workflow_definition(requested_workflows[0])
+        if (
+            _wf_def is not None
+            and isinstance(_wf_def.graph_json, dict)
+            and _workflow_graph_qualifies_for_compiler(_wf_def.graph_json)
+        ):
+            workflow_graph_json = _wf_def.graph_json
+            if title == "Workflow Run" or title.startswith("Workflow Run —"):
+                title = _wf_def.name or title
+
     default_graph_nodes = [
         {"id": "n-trigger", "title": "Trigger", "type": "trigger", "x": 80, "y": 110},
         {
@@ -18997,7 +21979,7 @@ def create_workflow_run(
         title_source=title_source,
         status="Running",
         updatedAt="just now",
-        progressLabel="Queued" if existing_run is None else "Responding",
+        progressLabel="Executing agent" if existing_run is None else "Responding",
         kind=run_kind,
     )
     store.run_events.setdefault(run_id, [])
@@ -19030,69 +22012,167 @@ def create_workflow_run(
         "title_source": title_source,
         "artifacts": existing_artifacts,
         "status": "Running",
-        "graph": {"nodes": graph_nodes, "links": graph_links},
-        "agent_traces": [
-            *existing_agent_traces,
-            {
-                "agent": selected_agent,
-                "reasoningSummary": "Queued for live model execution.",
-                "actions": ["Parsed kickoff prompt", "Queued agent execution"],
-                "output": "",
-            },
-        ],
+        "graph": workflow_graph_json or {"nodes": graph_nodes, "links": graph_links},
+        "agent_traces": list(existing_agent_traces),
         "approvals": {"required": False, "pending": False},
         "runtime": {"mode": "live", "state": "queued"},
         "response_text": "",
         "access": access_context,
+        "mode": composer_opts["mode"],
+        "working_folder": (composer_opts["workspace"] or {}).get("repo_path", ""),
     }
     store.run_streams[run_id] = []
     store.run_stream_complete[run_id] = False
     _append_run_stream_event(run_id, "status", {"status": "queued"})
+    _append_audit_event(
+        "workflow.run.create", actor, "allowed", {"run_id": run_id, "status": "started"}
+    )
     _persist_store_state()
 
-    def _complete_run() -> None:
+    def _finish_stream() -> None:
+        if not store.run_stream_complete.get(run_id):
+            _mark_run_stream_complete(run_id)
+
+    def _resolve_user_scoped_runtime() -> dict[str, Any] | None:
+        """Return a user-scoped provider runtime (/runtime/user-providers) when one applies.
+
+        Platform/env-configured providers (OpenAI, NIM, Ollama, ...) keep using the
+        mainline client path; a missing user runtime (412) falls back to it. Any
+        other policy rejection is re-raised so the run fails closed.
+        """
+        explicitly_requested = isinstance(payload.get("runtime"), dict) or bool(
+            str(payload.get("provider") or "").strip()
+        )
         try:
-            system_prompt, system_prompt_source = _resolve_agent_system_prompt(
-                selected_agent_definition,
-                requested_token=selected_agent_token or _DEFAULT_CHAT_AGENT_SOURCE_ID,
-            )
-            selected_model = _resolve_agent_chat_model(selected_agent_definition)
-            resolved_runtime = _resolve_request_chat_runtime(
+            candidate_runtime = _resolve_request_chat_runtime(
                 request=request,
                 actor=actor,
                 payload=payload,
                 agent_definition=selected_agent_definition,
                 fallback_model=selected_model,
             )
-            selected_model = str(resolved_runtime.get("model") or selected_model).strip()
-            request_prompt = _with_architecture_contract(
-                model_prompt or "Execute the requested workflow task.",
-                enabled=_should_enforce_architecture_contract(
-                    selected_agent=selected_agent_definition, prompt_text=model_prompt
-                ),
-            )
+        except HTTPException as exc:
+            if exc.status_code == 412:
+                return None
+            raise
+        if str(candidate_runtime.get("source") or "") == "user_config" or explicitly_requested:
+            return candidate_runtime
+        return None
 
-            response_buffer: list[str] = []
+    def _execute_run() -> None:
+        try:
+            if workflow_graph_json is not None:
+                _run_compiled_workflow_run(
+                    run_id=run_id,
+                    title=title,
+                    run_kind=run_kind,
+                    graph_json=workflow_graph_json,
+                    prompt=request_prompt,
+                    payload=payload,
+                    access_context=access_context,
+                )
+                compiled_detail = store.run_details.get(run_id)
+                _append_run_stream_event(
+                    run_id,
+                    "final",
+                    {
+                        "text": str(
+                            (compiled_detail or {}).get("response_text") or ""
+                            if isinstance(compiled_detail, dict)
+                            else ""
+                        )
+                    },
+                )
+                _finish_stream()
+                return
+            # Mode gate: only "execute" exposes MCP tools; "plan"/"chat" are
+            # analysis/conversation only. MCP selection filters the set.
+            if composer_opts["mode"] == "execute":
+                tool_schemas, tool_dispatch, tool_sources = _gather_mcp_run_tools(
+                    selected_integration_ids=composer_opts["mcp_server_ids"]
+                )
+            else:
+                tool_schemas, tool_dispatch, tool_sources = [], {}, []
 
-            def _on_chunk(chunk: str) -> None:
-                if not chunk:
-                    return
-                response_buffer.append(chunk)
-                detail = store.run_details.get(run_id)
-                if isinstance(detail, dict):
-                    detail["response_text"] = "".join(response_buffer)
-                    store.run_details[run_id] = detail
-                _append_run_stream_event(run_id, "delta", {"text": chunk})
+            def _execute_mcp_tool(name: str, arguments: dict[str, Any]) -> str:
+                entry = tool_dispatch.get(name)
+                if entry is None:
+                    raise RuntimeError(f"Unknown tool '{name}'")
+                server, real_name = entry
+                return server.call_tool(real_name, arguments)
 
-            chunks, model_meta = _collect_chat_response_chunks(
-                system_prompt=system_prompt,
-                user_prompt=request_prompt,
-                model=selected_model,
-                temperature=0.2,
-                runtime=resolved_runtime,
-                on_chunk=_on_chunk,
-            )
-            response_text = "".join(chunks).strip()
+            primary_work_id = f"work-{uuid4()}"
+
+            def _emit_tool_event(
+                name: str, arguments: dict[str, Any], output: str, succeeded: bool
+            ) -> None:
+                store.run_events.setdefault(run_id, []).append(
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="tool_call",
+                        title=f"Tool {'call' if succeeded else 'error'}: {name}",
+                        summary=(str(output) or "(no output)")[:500],
+                        createdAt=_now_iso(),
+                        metadata={
+                            "tool": name,
+                            "arguments": {
+                                str(key): str(value)[:200]
+                                for key, value in (arguments or {}).items()
+                            },
+                            "succeeded": succeeded,
+                            "selected_agent_id": selected_agent_id,
+                            "selected_agent_name": selected_agent,
+                            "work_id": primary_work_id,
+                            "progress": True,
+                            "phase": "tool",
+                        },
+                    )
+                )
+
+            user_runtime = None if tool_schemas else _resolve_user_scoped_runtime()
+            if user_runtime is not None:
+                # User-scoped provider: stream deltas to /workflow-runs/{id}/stream.
+                response_buffer: list[str] = []
+
+                def _on_chunk(chunk: str) -> None:
+                    if not chunk:
+                        return
+                    response_buffer.append(chunk)
+                    detail = store.run_details.get(run_id)
+                    if isinstance(detail, dict):
+                        detail["response_text"] = "".join(response_buffer)
+                        store.run_details[run_id] = detail
+                    _append_run_stream_event(run_id, "delta", {"text": chunk})
+
+                chunks, model_meta = _collect_chat_response_chunks(
+                    system_prompt=system_prompt,
+                    user_prompt=request_prompt,
+                    model=str(user_runtime.get("model") or selected_model).strip(),
+                    temperature=0.2,
+                    runtime=user_runtime,
+                    on_chunk=_on_chunk,
+                )
+                response_text = "".join(chunks).strip()
+            else:
+                response_text, model_meta = _run_agent_iterations(
+                    run_id,
+                    selected_agent_definition,
+                    system_prompt=system_prompt,
+                    user_prompt=request_prompt,
+                    model=selected_model,
+                    work_id=primary_work_id,
+                    max_iterations=_resolve_agent_max_iterations(
+                        selected_agent_definition, payload
+                    ),
+                    temperature=0.2,
+                    tools=tool_schemas or None,
+                    tool_executor=_execute_mcp_tool if tool_dispatch else None,
+                    max_tool_calls=max(1, int(store.platform_settings.max_tool_calls_per_run or 8)),
+                    on_tool_event=_emit_tool_event,
+                    reasoning_effort=composer_opts["reasoning_effort"],
+                )
+            if tool_sources:
+                model_meta = {**model_meta, "tool_sources": tool_sources}
 
             if str(model_meta.get("mode") or "") != "live":
                 reason = str(
@@ -19114,7 +22194,7 @@ def create_workflow_run(
                     progressLabel="Provider configuration error",
                     kind=run_kind,
                 )
-                store.run_events[run_id].extend(
+                store.run_events.setdefault(run_id, []).extend(
                     [
                         WorkflowRunEvent(
                             id=f"evt-{uuid4()}",
@@ -19142,11 +22222,18 @@ def create_workflow_run(
                         ),
                     ]
                 )
+                failed_prior_detail = (
+                    store.run_details.get(run_id)
+                    if isinstance(store.run_details.get(run_id), dict)
+                    else {}
+                )
                 store.run_details[run_id] = {
-                    "artifacts": [failure_artifact.model_dump()],
+                    **failed_prior_detail,
+                    "artifacts": [*existing_artifacts, failure_artifact.model_dump()],
                     "status": "Failed",
                     "graph": {"nodes": graph_nodes, "links": graph_links},
                     "agent_traces": [
+                        *existing_agent_traces,
                         {
                             "agent": selected_agent,
                             "reasoningSummary": "Execution halted due to provider authentication/configuration error.",
@@ -19156,7 +22243,7 @@ def create_workflow_run(
                                 "Failed provider auth/config check",
                             ],
                             "output": reason,
-                        }
+                        },
                     ],
                     "response_text": reason,
                     "approvals": {"required": False, "pending": False},
@@ -19164,14 +22251,14 @@ def create_workflow_run(
                     "access": access_context,
                 }
                 _append_run_stream_event(run_id, "error", {"message": reason})
+                _persist_store_state()
                 _append_audit_event(
                     "workflow.run.create",
                     actor,
                     "error",
                     {"run_id": run_id, "status": "failed_provider"},
                 )
-                _persist_store_state()
-                _mark_run_stream_complete(run_id)
+                _finish_stream()
                 return
 
             guardrail_output_triggered = False
@@ -19228,16 +22315,23 @@ def create_workflow_run(
             run_status: Literal["Running", "Blocked", "Needs Review", "Done", "Failed"] = (
                 "Blocked"
                 if guardrail_output_triggered
-                else ("Needs Review" if approval_required else "Running")
+                else ("Needs Review" if approval_required else "Done")
             )
 
+            progress_label = (
+                "Complete"
+                if run_status == "Done"
+                else (
+                    "Awaiting approval" if run_status == "Needs Review" else "Blocked by guardrail"
+                )
+            )
             store.runs[run_id] = WorkflowRunSummary(
                 id=run_id,
                 title=title,
                 title_source=title_source,
                 status=run_status,
                 updatedAt="just now",
-                progressLabel="Step 2/3",
+                progressLabel=progress_label,
                 kind=run_kind,
             )
             event_response_text = response_text
@@ -19264,10 +22358,11 @@ def create_workflow_run(
             if not reasoning_summary_text:
                 reasoning_summary_text = "Processed the task prompt and generated a response."
 
-            store.run_events[run_id].extend(
+            primary_agent_event_id = f"evt-{uuid4()}"
+            store.run_events.setdefault(run_id, []).extend(
                 [
                     WorkflowRunEvent(
-                        id=f"evt-{uuid4()}",
+                        id=primary_agent_event_id,
                         type="agent_message",
                         title=f"{selected_agent} response",
                         summary=event_response_summary,
@@ -19277,7 +22372,11 @@ def create_workflow_run(
                             "model": model_meta,
                             "selected_agent_id": selected_agent_id,
                             "selected_agent_name": selected_agent,
+                            "thread_id": primary_agent_event_id,
+                            "work_id": primary_work_id,
                             "system_prompt_source": system_prompt_source,
+                            # Full, untruncated answer for the chat view.
+                            "full_text": event_response_text,
                             "summary_truncated": bool(event_response_meta["truncated"]),
                             "summary_original_length": int(event_response_meta["original_length"]),
                             "summary_max_chars": int(event_response_meta["max_chars"]),
@@ -19322,6 +22421,24 @@ def create_workflow_run(
                     )
                 )
 
+            if not guardrail_output_triggered:
+                try:
+                    _run_agent_collaboration(
+                        run_id=run_id,
+                        root_event_id=primary_agent_event_id,
+                        initial_agent_id=selected_agent_id,
+                        initial_agent_name=selected_agent,
+                        seed_text=f"{request_prompt}\n{response_text}",
+                        transcript_seed=f"{selected_agent}: {response_text}",
+                        max_turns=_resolve_collaboration_turns(selected_agent_definition, payload),
+                        mask_secrets=store.platform_settings.mask_secrets_in_events,
+                        # Every requested agent is pinned to the run's team, even
+                        # if the model's reply doesn't repeat their @mention.
+                        seed_tokens=requested_agents[1:],
+                    )
+                except Exception:  # noqa: BLE001 - collaboration is best-effort
+                    pass
+
             prior_detail = (
                 store.run_details.get(run_id)
                 if isinstance(store.run_details.get(run_id), dict)
@@ -19337,7 +22454,6 @@ def create_workflow_run(
                 if isinstance(prior_detail.get("agent_traces"), list)
                 else []
             )
-
             store.run_details[run_id] = {
                 **prior_detail,
                 "title": title,
@@ -19404,13 +22520,13 @@ def create_workflow_run(
             )
             _append_run_stream_event(run_id, "final", {"text": response_text, "model": model_meta})
             _append_audit_event(
-                "workflow.run.create",
+                "workflow.run.execute",
                 actor,
                 "allowed",
-                {"run_id": run_id, "status": "started"},
+                {"run_id": run_id, "status": run_status.lower()},
             )
             _persist_store_state()
-            _mark_run_stream_complete(run_id)
+            _finish_stream()
         except Exception as exc:  # noqa: BLE001
             message = _sanitize_runtime_error_message(exc)
             store.runs[run_id] = WorkflowRunSummary(
@@ -19419,53 +22535,470 @@ def create_workflow_run(
                 title_source=title_source,
                 status="Failed",
                 updatedAt="just now",
-                progressLabel="Execution failed",
+                progressLabel="Execution error",
                 kind=run_kind,
             )
             store.run_events.setdefault(run_id, []).append(
                 WorkflowRunEvent(
                     id=f"evt-{uuid4()}",
                     type="error",
-                    title="Run failed",
+                    title="Agent execution failed",
                     summary=message,
                     createdAt=_now_iso(),
                     metadata={"selected_agent_id": selected_agent_id},
                 )
             )
-            detail = (
+            failed_detail = (
                 store.run_details.get(run_id)
                 if isinstance(store.run_details.get(run_id), dict)
                 else {}
             )
-            detail["status"] = "Failed"
-            detail["response_text"] = str(detail.get("response_text") or "")
-            detail["access"] = access_context
-            store.run_details[run_id] = detail
+            failed_detail["status"] = "Failed"
+            failed_detail["response_text"] = str(failed_detail.get("response_text") or "")
+            failed_detail["access"] = access_context
+            store.run_details[run_id] = failed_detail
             _append_run_stream_event(run_id, "error", {"message": message})
             _append_audit_event(
-                "workflow.run.create",
+                "workflow.run.execute",
                 actor,
                 "error",
-                {"run_id": run_id, "status": "failed_runtime", "message": message},
+                {"run_id": run_id, "status": "failed_execution", "message": message},
             )
             _persist_store_state()
-            _mark_run_stream_complete(run_id)
+            _finish_stream()
 
-    threading.Thread(target=_complete_run, daemon=True).start()
+    if _sync_run_execution_enabled():
+        _execute_run()
+    else:
+        _submit_run_task(_execute_run)
     return {"id": run_id, "status": "started"}
 
 
 @app.get("/workflow-runs")
-def get_workflow_runs(request: Request, status: str | None = None) -> list[dict[str, Any]]:
+def get_workflow_runs(
+    request: Request, status: str | None = None, include_archived: bool = False
+) -> list[dict[str, Any]]:
     actor = _enforce_request_authn(request, action="workflow.run.list")
     items = list(store.runs.values())
     visible_run_ids = _visible_run_ids(request, actor)
     items = [item for item in items if item.id in visible_run_ids]
+    # Archived runs are hidden from the inbox/nav unless explicitly requested,
+    # either via include_archived or by filtering on status=Archived.
+    requested_archived = bool(status) and str(status).strip().lower() == "archived"
+    if not include_archived and not requested_archived:
+        items = [item for item in items if not getattr(item, "archived", False)]
     if status:
         items = [item for item in items if item.status.lower() == status.lower()]
     else:
         items = [item for item in items if item.status != "Archived"]
     return [item.model_dump() for item in items]
+
+
+def _dispatch_graph_target_in_chat(
+    run_id: str,
+    *,
+    target_name: str,
+    graph_json: dict[str, Any],
+    message: str,
+    transcript: str,
+    composer_opts: dict[str, Any],
+) -> None:
+    """Run a workflow/playbook graph mid-chat, passing the chat context + the
+    user's latest message as the spec, and fold its events + handback into the
+    existing chat stream (without clobbering the chat run's details)."""
+    spec = (f"Conversation context so far:\n{transcript}\n\nUser request:\n{message}").strip()
+    workspace = composer_opts.get("workspace")
+    if not workspace:
+        stored = (store.run_details.get(run_id) or {}).get("working_folder")
+        if stored:
+            workspace = {"repo_path": stored, "allow_outside": "ask"}
+    run_payload: dict[str, Any] = {
+        "message": spec,
+        "spec": spec,
+        "mode": composer_opts.get("mode") or "execute",
+    }
+    if composer_opts.get("model"):
+        run_payload["model"] = composer_opts["model"]
+    if composer_opts.get("reasoning_effort"):
+        run_payload["reasoning_effort"] = composer_opts["reasoning_effort"]
+    if workspace:
+        run_payload["workspace"] = workspace
+
+    base = _graph_payload_from_json(graph_json)
+    gp = GraphPayload(
+        schema_version=base.schema_version, nodes=base.nodes, links=base.links, input=run_payload
+    )
+
+    store.run_events.setdefault(run_id, []).append(
+        WorkflowRunEvent(
+            id=f"evt-{uuid4()}",
+            type="step_started",
+            title=f"Calling {target_name}",
+            summary=f"Running '{target_name}' with the chat context + your request.",
+            createdAt=_now_iso(),
+            metadata={"phase": "workflow", "target": target_name},
+        )
+    )
+
+    def _chat_sink(kind: str, data: dict[str, Any]) -> None:
+        """Stream each agent's reasoning + message (and the implementer's tool
+        work) into the chat as it happens, so the user sees the back-and-forth."""
+        if kind == "node_completed" and data.get("agent_id"):
+            defn = _resolve_published_agent_definition(str(data.get("agent_id") or ""))
+            agent_id = defn.id if defn else str(data.get("agent_id") or "")
+            agent_name = defn.name if defn else str(data.get("title") or "Agent")
+            node_label = str(data.get("title") or agent_name)
+            work_id = f"work-{uuid4()}"
+            reasoning = str(data.get("reasoning") or "").strip()
+            if reasoning:
+                store.run_events.setdefault(run_id, []).append(
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="step_completed",
+                        title=f"{agent_name} — reasoning",
+                        summary=reasoning[:500],
+                        createdAt=_now_iso(),
+                        metadata={
+                            "selected_agent_id": agent_id,
+                            "selected_agent_name": agent_name,
+                            "work_id": work_id,
+                            "progress": True,
+                            "phase": "thought",
+                            "full_text": reasoning,
+                        },
+                    )
+                )
+            response = str(data.get("response") or "").strip()
+            if response:
+                display = (
+                    _redact_sensitive_text(response)
+                    if store.platform_settings.mask_secrets_in_events
+                    else response
+                )
+                msg_summary, _m = _truncate_text_with_metadata(display)
+                ev_id = f"evt-{uuid4()}"
+                store.run_events.setdefault(run_id, []).append(
+                    WorkflowRunEvent(
+                        id=ev_id,
+                        type="agent_message",
+                        title=f"{agent_name} · {node_label}",
+                        summary=msg_summary,
+                        createdAt=_now_iso(),
+                        metadata={
+                            "selected_agent_id": agent_id,
+                            "selected_agent_name": agent_name,
+                            "thread_id": ev_id,
+                            "work_id": work_id,
+                            "full_text": display,
+                            "phase": "workflow",
+                            "target": target_name,
+                        },
+                    )
+                )
+            if str(data.get("patch") or "").strip():
+                store.run_events.setdefault(run_id, []).append(
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="step_completed",
+                        title=f"{agent_name} — produced a patch",
+                        summary=str(data.get("patch"))[:500],
+                        createdAt=_now_iso(),
+                        metadata={
+                            "selected_agent_id": agent_id,
+                            "selected_agent_name": agent_name,
+                            "phase": "workflow",
+                            "full_text": str(data.get("patch")),
+                        },
+                    )
+                )
+        elif kind == "node_failed":
+            store.run_events.setdefault(run_id, []).append(
+                WorkflowRunEvent(
+                    id=f"evt-{uuid4()}",
+                    type="error",
+                    title=f"{data.get('title') or 'Node'} failed",
+                    summary=str(data.get("error") or "")[:300],
+                    createdAt=_now_iso(),
+                    metadata={"phase": "workflow"},
+                )
+            )
+        elif kind.startswith(("swe.", "codex.", "analyze.")) or kind in {
+            "loop_bound",
+            "workspace_provisioned",
+            "code_node_degraded",
+            "team_node_started",
+            "code_node_started",
+            "codex_node_started",
+            "codex_unavailable",
+            "analyze_node_started",
+        }:
+            detail = {k: v for k, v in data.items() if k != "node_id"}
+            note = str(data.get("note") or "").strip()
+            store.run_events.setdefault(run_id, []).append(
+                WorkflowRunEvent(
+                    id=f"evt-{uuid4()}",
+                    type="step_completed",
+                    title=kind.replace("swe.", "build · ").replace("_", " ").strip().title(),
+                    summary=(note[:300] if note else (str(detail)[:300] if detail else "ok")),
+                    createdAt=_now_iso(),
+                    metadata={"phase": "workflow", "progress": True},
+                )
+            )
+
+    _node_results, _events, changed_files = _compile_and_run_frontier_graph(
+        gp, run_id=run_id, on_event=_chat_sink
+    )
+    _merge_changed_files(run_id, changed_files)
+
+    current = store.runs.get(run_id)
+    if current is not None:
+        current.status = "Needs Review"
+        current.progressLabel = f"{target_name} — team handed back"
+        current.updatedAt = "just now"
+    _persist_store_state()
+
+
+@app.post("/workflow-runs/{run_id}/messages")
+def send_run_message(
+    run_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Continue an existing run: append the user's message to THIS run's
+    conversation and respond in place, instead of spawning a new linked run."""
+    actor = _enforce_request_authn(request, payload=payload, action="workflow.run.message")
+    _enforce_run_access(request, actor, run_id, action="workflow.run.message")
+    _enforce_emergency_write_policy("workflow.run.message", actor)
+    run = store.runs.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="A message is required")
+
+    blocked_terms = _text_contains_blocked_keywords(
+        message, store.platform_settings.global_blocked_keywords
+    )
+    if blocked_terms:
+        raise HTTPException(status_code=400, detail="Message blocked by keyword policy")
+
+    events = store.run_events.setdefault(run_id, [])
+    events.append(
+        WorkflowRunEvent(
+            id=f"evt-{uuid4()}",
+            type="user_message",
+            title="Message",
+            summary=message,
+            createdAt=_now_iso(),
+            metadata={"actor": actor},
+        )
+    )
+
+    # Agents tagged into a run are PINNED: the whole roster stays engaged on
+    # follow-ups instead of reverting to a single responder. Roster = every
+    # agent that has participated, in first-appearance order.
+    roster: list[AgentDefinition] = []
+    roster_ids: set[str] = set()
+    for event in events:
+        meta = event.metadata or {}
+        if event.type == "agent_message" and meta.get("selected_agent_id"):
+            roster_agent = store.agent_definitions.get(str(meta["selected_agent_id"]))
+            if roster_agent is not None and roster_agent.id not in roster_ids:
+                roster_ids.add(roster_agent.id)
+                roster.append(roster_agent)
+
+    # Primary responder: an explicit @mention wins, else the run's original
+    # primary (first roster agent), else the default chat agent.
+    agent_def = None
+    for token in _extract_agent_mentions(message):
+        mentioned = _resolve_published_agent_definition(token)
+        if mentioned is not None:
+            agent_def = mentioned
+            if mentioned.id not in roster_ids:
+                roster_ids.add(mentioned.id)
+                roster.append(mentioned)
+            break
+    if agent_def is None and roster:
+        agent_def = roster[0]
+    if agent_def is None:
+        agent_def = _ensure_default_chat_agent_present(actor="system/default-chat-agent")
+
+    pinned_seed_tokens = [_slugify(member.name) for member in roster if member.id != agent_def.id]
+
+    run.status = "Running"
+    run.progressLabel = "Responding"
+    run.updatedAt = "just now"
+
+    # Recent conversation turns give the model the session context.
+    recent: list[str] = []
+    for event in events[-12:]:
+        meta = event.metadata or {}
+        if event.type == "user_message":
+            recent.append(f"User: {meta.get('full_text') or event.summary}")
+        elif event.type == "agent_message" and not meta.get("declined"):
+            speaker = meta.get("selected_agent_name") or "Agent"
+            recent.append(f"{speaker}: {meta.get('full_text') or event.summary}")
+    transcript = "\n".join(recent[-10:])
+    captured_agent = agent_def
+    composer_opts = _composer_options(payload)
+
+    # Remember the working folder for the session so later turns inherit it.
+    if (composer_opts.get("workspace") or {}).get("repo_path"):
+        details = store.run_details.setdefault(run_id, {})
+        details["working_folder"] = composer_opts["workspace"]["repo_path"]
+
+    # Mid-chat dispatch target: a /workflow or !playbook mention runs that target
+    # (with chat context + the user's message) instead of a plain chat reply.
+    dispatch_name: str | None = None
+    dispatch_graph: dict[str, Any] | None = None
+    for tok in _extract_mentions(_WORKFLOW_MENTION_RE, message):
+        wf_cand = _resolve_published_workflow_definition(tok)
+        if wf_cand is not None and _graph_json_has_nodes(wf_cand.graph_json):
+            dispatch_name, dispatch_graph = wf_cand.name, wf_cand.graph_json
+            break
+    if dispatch_graph is None:
+        for tok in _extract_mentions(_PLAYBOOK_MENTION_RE, message):
+            pb_cand = _resolve_active_playbook(tok)
+            if pb_cand is not None and _graph_json_has_nodes(pb_cand.graph_json):
+                dispatch_name, dispatch_graph = pb_cand.name, pb_cand.graph_json
+                break
+
+    # Keep the chat's assigned-agent roster in sync: a /workflow or !playbook
+    # adds all of its member agents; a plain/@mention turn adds the responder.
+    if dispatch_graph is not None:
+        _assign_agents_to_run(run_id, _workflow_member_agents(dispatch_graph))
+    else:
+        _assign_agents_to_run(run_id, [{"id": captured_agent.id, "name": captured_agent.name}])
+
+    def _respond() -> None:
+        try:
+            if dispatch_graph is not None and dispatch_name is not None:
+                _dispatch_graph_target_in_chat(
+                    run_id,
+                    target_name=dispatch_name,
+                    graph_json=dispatch_graph,
+                    message=message,
+                    transcript=transcript,
+                    composer_opts=composer_opts,
+                )
+                return
+            system_prompt = _augment_system_prompt_with_skills(
+                _resolve_agent_system_prompt(
+                    captured_agent, requested_token=_slugify(captured_agent.name)
+                )[0],
+                selected_skill_ids=composer_opts["skill_ids"],
+            )
+            plan_directive = (
+                "\n\nFocus: PLAN ONLY — produce an execution plan, do not execute or modify files."
+                if composer_opts["mode"] == "plan"
+                else ""
+            )
+            user_prompt = (
+                f"Conversation so far:\n{transcript}\n\nNew message from the user:\n{message}\n\n"
+                "Respond to the user's new message in the context of this conversation. Reason "
+                "about what they are asking before answering; give a complete, self-contained reply."
+                + plan_directive
+            )
+            followup_work_id = f"work-{uuid4()}"
+            response_text, model_meta = _run_agent_iterations(
+                run_id,
+                captured_agent,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=composer_opts["model"] or _resolve_agent_chat_model(captured_agent),
+                work_id=followup_work_id,
+                max_iterations=_resolve_agent_max_iterations(captured_agent, payload),
+                temperature=0.3,
+                reasoning_effort=composer_opts["reasoning_effort"],
+            )
+            display = (
+                _redact_sensitive_text(response_text)
+                if store.platform_settings.mask_secrets_in_events
+                else response_text
+            )
+            summary, _meta = _truncate_text_with_metadata(display)
+            event_id = f"evt-{uuid4()}"
+            store.run_events[run_id].append(
+                WorkflowRunEvent(
+                    id=event_id,
+                    type="agent_message",
+                    title=f"{captured_agent.name} response",
+                    summary=summary,
+                    createdAt=_now_iso(),
+                    metadata={
+                        "model": model_meta,
+                        "selected_agent_id": captured_agent.id,
+                        "selected_agent_name": captured_agent.name,
+                        "thread_id": event_id,
+                        "work_id": followup_work_id,
+                        "full_text": display,
+                    },
+                )
+            )
+            live = str(model_meta.get("mode")) == "live"
+            if live:
+                try:
+                    _run_agent_collaboration(
+                        run_id=run_id,
+                        root_event_id=event_id,
+                        initial_agent_id=captured_agent.id,
+                        initial_agent_name=captured_agent.name,
+                        seed_text=f"{message}\n{response_text}",
+                        transcript_seed=f"{captured_agent.name}: {response_text}",
+                        max_turns=_resolve_collaboration_turns(captured_agent, payload),
+                        mask_secrets=store.platform_settings.mask_secrets_in_events,
+                        # The run's pinned roster stays engaged on every follow-up.
+                        seed_tokens=pinned_seed_tokens,
+                    )
+                except Exception:  # noqa: BLE001 - collaboration is best-effort
+                    pass
+            current = store.runs.get(run_id)
+            if current is not None:
+                current.status = "Done" if live else "Failed"
+                current.progressLabel = "Complete" if live else "Provider unavailable"
+                current.updatedAt = "just now"
+            _persist_store_state()
+        except Exception as exc:  # noqa: BLE001
+            store.run_events.setdefault(run_id, []).append(
+                WorkflowRunEvent(
+                    id=f"evt-{uuid4()}",
+                    type="error",
+                    title="Message handling failed",
+                    summary=str(exc)[:300],
+                    createdAt=_now_iso(),
+                )
+            )
+            current = store.runs.get(run_id)
+            if current is not None:
+                current.status = "Failed"
+                current.progressLabel = "Message error"
+            _persist_store_state()
+
+    _submit_run_task(_respond)
+    _append_audit_event("workflow.run.message", actor, "allowed", {"run_id": run_id})
+    _persist_store_state()
+    return {"ok": True, "run_id": run_id}
+
+
+@app.post("/workflow-runs/{run_id}/rename")
+def rename_workflow_run(
+    run_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="workflow.run.rename")
+    _enforce_run_access(request, actor, run_id, action="workflow.run.rename")
+    run = store.runs.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="A new title is required")
+    run.title = title[:200]
+    run.title_source = "user"
+    detail = store.run_details.get(run_id)
+    if isinstance(detail, dict):
+        detail["title"] = run.title
+        detail["title_source"] = run.title_source
+    _append_audit_event("workflow.run.rename", actor, "allowed", {"run_id": run_id})
+    _persist_store_state()
+    return run.model_dump()
 
 
 @app.patch("/workflow-runs/{run_id}")
@@ -19600,7 +23133,8 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
         if detail_changed:
             store.run_details[run_id] = detail
             _persist_store_state()
-        return detail
+        # Participants are computed fresh per read (active flags change turn to turn).
+        return {**detail, "participants": _run_participants(run_id)}
 
     payload: dict[str, Any] = {}
     for event in store.run_events.get(run_id, []):
@@ -19715,14 +23249,1438 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
     }
     store.run_details[run_id] = detail
 
-    return detail
+    return {**detail, "participants": _run_participants(run_id)}
 
 
 @app.get("/workflow-runs/{run_id}/events")
-def get_workflow_run_events(run_id: str, request: Request) -> list[dict[str, Any]]:
+def get_workflow_run_events(
+    run_id: str, request: Request, after: str | None = None
+) -> list[dict[str, Any]]:
     actor = _enforce_request_authn(request, action="workflow.run.events.read")
     _enforce_run_access(request, actor, run_id, action="workflow.run.events.read")
-    return _serialize_workflow_run_events(run_id)
+    serialized = _serialize_workflow_run_events(run_id)
+    if after:
+        for index, item in enumerate(serialized):
+            if item.get("id") == after:
+                serialized = serialized[index + 1 :]
+                break
+    return serialized
+
+
+_RUN_STREAM_MAX_SECONDS = 300
+_RUN_STREAM_POLL_INTERVAL_SECONDS = 1.0
+_RUN_TERMINAL_STATUSES = {"Done", "Failed", "Blocked"}
+
+
+@app.get("/workflow-runs/{run_id}/events/stream")
+async def stream_workflow_run_events(
+    run_id: str, request: Request, after: str | None = None
+) -> StreamingResponse:
+    """Server-sent-events bridge for live run consoles.
+
+    One idle connection replaces client-side polling. The stream closes itself
+    once the run reaches a terminal status with no pending approval (or after
+    _RUN_STREAM_MAX_SECONDS; clients reconnect with ?after=<last_event_id>).
+    Async generator: no worker thread is held while the connection idles.
+    """
+    actor = _enforce_request_authn(request, action="workflow.run.events.stream")
+    _enforce_run_access(request, actor, run_id, action="workflow.run.events.stream")
+
+    def _sse_frame(event_name: str, payload: dict[str, Any]) -> str:
+        return (
+            f"event: {event_name}\ndata: {json.dumps(payload, default=_persist_json_default)}\n\n"
+        )
+
+    async def event_stream():
+        last_event_id = str(after or "")
+        last_status_frame = ""
+        deadline = time.monotonic() + _RUN_STREAM_MAX_SECONDS
+        while time.monotonic() < deadline:
+            if await request.is_disconnected():
+                return
+
+            events = list(store.run_events.get(run_id, []))
+            start_index = 0
+            if last_event_id:
+                for index, event in enumerate(events):
+                    if event.id == last_event_id:
+                        start_index = index + 1
+                        break
+            for event in events[start_index:]:
+                last_event_id = event.id
+                yield f"id: {event.id}\n" + _sse_frame("run_event", event.model_dump())
+
+            run = store.runs.get(run_id)
+            detail = store.run_details.get(run_id)
+            approvals = (
+                detail.get("approvals")
+                if isinstance(detail, dict) and isinstance(detail.get("approvals"), dict)
+                else {}
+            )
+            status_frame = _sse_frame(
+                "run_status",
+                {
+                    "status": run.status if run else "unknown",
+                    "progress_label": run.progressLabel if run else "",
+                    "approval_pending": bool(approvals.get("pending")),
+                },
+            )
+            if status_frame != last_status_frame:
+                last_status_frame = status_frame
+                yield status_frame
+
+            if (run is None or run.status in _RUN_TERMINAL_STATUSES) and not bool(
+                approvals.get("pending")
+            ):
+                yield _sse_frame("stream_end", {"reason": "terminal"})
+                return
+
+            yield ": keep-alive\n\n"
+            await asyncio.sleep(_RUN_STREAM_POLL_INTERVAL_SECONDS)
+        yield _sse_frame("stream_end", {"reason": "timeout"})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _workflow_definition_by_id(workflow_id: str) -> WorkflowDefinition | None:
+    item = store.workflow_definitions.get(str(workflow_id))
+    return item if isinstance(item, WorkflowDefinition) else None
+
+
+@app.get("/workflow-definitions/{item_id}/triggers")
+def list_workflow_triggers(item_id: str, request: Request) -> list[dict[str, Any]]:
+    _enforce_builder_access(request, action="workflow.trigger.list")
+    triggers: list[dict[str, Any]] = []
+    for token, meta in store.workflow_triggers.items():
+        if meta.get("workflow_id") != item_id:
+            continue
+        # The token is shown only at creation; list responses expose a
+        # fingerprint + opaque id (for revoke) — never the live token.
+        triggers.append(
+            {
+                "id": meta.get("id", ""),
+                "token_fingerprint": f"…{token[-6:]}" if len(token) >= 6 else "…",
+                "label": meta.get("label", ""),
+                "created_at": meta.get("created_at", ""),
+            }
+        )
+    return triggers
+
+
+@app.post("/workflow-definitions/{item_id}/triggers")
+def create_workflow_trigger(
+    item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="workflow.trigger.create")
+    _enforce_emergency_write_policy("workflow.trigger.create", actor)
+    workflow = _workflow_definition_by_id(item_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow definition not found")
+    token = secrets_module.token_urlsafe(32)
+    store.workflow_triggers[token] = {
+        "id": str(uuid4()),
+        "workflow_id": item_id,
+        "actor": actor,
+        "label": str(payload.get("label") or "Webhook trigger"),
+        "created_at": _now_iso(),
+    }
+    _append_audit_event("workflow.trigger.create", actor, "allowed", {"workflow_id": item_id})
+    _persist_store_state()
+    # The full token is returned exactly once.
+    return {
+        "ok": True,
+        "token": token,
+        "webhook_url": f"/triggers/webhook/{token}",
+        "label": store.workflow_triggers[token]["label"],
+    }
+
+
+@app.delete("/triggers/{token}")
+def revoke_workflow_trigger(token: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_builder_access(request, action="workflow.trigger.revoke")
+    _enforce_emergency_write_policy("workflow.trigger.revoke", actor)
+    # Accept either the opaque trigger id (from list responses) or the raw token.
+    existing = store.workflow_triggers.pop(token, None)
+    if existing is None:
+        for stored_token, meta in list(store.workflow_triggers.items()):
+            if meta.get("id") == token:
+                existing = store.workflow_triggers.pop(stored_token, None)
+                break
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    _append_audit_event(
+        "workflow.trigger.revoke",
+        actor,
+        "allowed",
+        {"workflow_id": existing.get("workflow_id", "")},
+    )
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.post("/triggers/webhook/{token}")
+def fire_workflow_trigger(
+    token: str,
+    request: Request,
+    payload: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, str]:
+    """Start a run for a workflow via a per-workflow trigger token.
+
+    The token is the sole credential (no operator session needed). It resolves
+    the owning workflow and actor, then runs through the normal run-creation
+    path — guardrails, executor, and audit all apply unchanged.
+    """
+    meta = store.workflow_triggers.get(token)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Unknown or revoked trigger token")
+    workflow = _workflow_definition_by_id(meta.get("workflow_id", ""))
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow for this trigger no longer exists")
+    if str(workflow.status) != "published":
+        raise HTTPException(status_code=409, detail="Workflow is not published")
+
+    actor = meta.get("actor") or "system/webhook-trigger"
+    # Pre-authorize as the trigger owner so create_workflow_run's auth check
+    # passes without an operator session (honored via request.state).
+    request.state.frontier_auth_context = {"authenticated": True, "actor": actor}
+
+    prompt = str(payload.get("prompt") or "").strip() or "Run triggered via webhook."
+    _append_audit_event("workflow.trigger.fire", actor, "allowed", {"workflow_id": workflow.id})
+    run_payload = {
+        "title": f"Webhook: {workflow.name}",
+        "prompt": prompt,
+        "tokens": [{"kind": "workflow", "value": _slugify(workflow.name)}],
+        "context": {"source": "webhook_trigger", "trigger_label": meta.get("label", "")},
+    }
+    return create_workflow_run(request, run_payload)
+
+
+class _TriggerRequestShim:
+    """Minimal request stand-in for non-HTTP run creation (the scheduler).
+
+    create_workflow_run reads the request only through `_enforce_request_authn`
+    and `_build_run_access_context`, both of which use `.state`/`.headers`; a
+    shim carrying a pre-resolved auth context satisfies them.
+    """
+
+    def __init__(self, actor: str) -> None:
+        self.state = SimpleNamespace(frontier_auth_context={"authenticated": True, "actor": actor})
+        self.headers: dict[str, str] = {}
+
+
+def _fire_scheduled_run(schedule: dict[str, Any]) -> None:
+    workflow = _workflow_definition_by_id(str(schedule.get("workflow_id") or ""))
+    if workflow is None or str(workflow.status) != "published":
+        return
+    actor = str(schedule.get("actor") or "system/schedule-trigger")
+    _append_audit_event(
+        "workflow.schedule.fire",
+        actor,
+        "allowed",
+        {"workflow_id": workflow.id, "schedule_id": schedule.get("id", "")},
+    )
+    run_payload = {
+        "title": f"Scheduled: {workflow.name}",
+        "prompt": f"Scheduled run for {workflow.name} ({schedule.get('cron', '')}).",
+        "tokens": [{"kind": "workflow", "value": _slugify(workflow.name)}],
+        "context": {"source": "schedule_trigger", "schedule_label": schedule.get("label", "")},
+    }
+    create_workflow_run(_TriggerRequestShim(actor), run_payload)  # type: ignore[arg-type]
+
+
+def _scheduler_tick(now: datetime | None = None) -> int:
+    """Fire all due schedules for the current minute. Returns count fired."""
+    moment = now or datetime.now(UTC)
+    minute_key = moment.strftime("%Y%m%d%H%M")
+    if store.platform_settings.block_new_runs:
+        return 0
+    fired = 0
+    for schedule in list(store.workflow_schedules.values()):
+        if not schedule.get("enabled", True):
+            continue
+        if schedule.get("last_fired_minute") == minute_key:
+            continue  # already fired this minute (guards sub-minute ticks)
+        cron_expr = str(schedule.get("cron") or "")
+        try:
+            if not app_cron.cron_matches(cron_expr, moment):
+                continue
+        except ValueError:
+            continue
+        schedule["last_fired_minute"] = minute_key
+        try:
+            _fire_scheduled_run(schedule)
+            fired += 1
+        except Exception:  # noqa: BLE001 - one bad schedule must not stall the loop
+            continue
+    if fired:
+        _persist_store_state()
+    return fired
+
+
+def _scheduler_loop() -> None:
+    while True:
+        try:
+            _scheduler_tick()
+        except Exception:  # noqa: BLE001 - the loop must survive transient errors
+            pass
+        # Tick every 30s; the minute-key dedupe prevents double-firing.
+        time.sleep(30)
+
+
+def _schedule_response(schedule: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": schedule.get("id", ""),
+        "workflow_id": schedule.get("workflow_id", ""),
+        "label": schedule.get("label", ""),
+        "cron": schedule.get("cron", ""),
+        "enabled": bool(schedule.get("enabled", True)),
+        "created_at": schedule.get("created_at", ""),
+        "last_fired_minute": schedule.get("last_fired_minute", ""),
+    }
+
+
+@app.get("/workflow-definitions/{item_id}/schedules")
+def list_workflow_schedules(item_id: str, request: Request) -> list[dict[str, Any]]:
+    _enforce_builder_access(request, action="workflow.schedule.list")
+    return [
+        _schedule_response(schedule)
+        for schedule in store.workflow_schedules.values()
+        if schedule.get("workflow_id") == item_id
+    ]
+
+
+@app.post("/workflow-definitions/{item_id}/schedules")
+def create_workflow_schedule(
+    item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="workflow.schedule.create")
+    _enforce_emergency_write_policy("workflow.schedule.create", actor)
+    workflow = _workflow_definition_by_id(item_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow definition not found")
+    cron_expr = str(payload.get("cron") or "").strip()
+    if not app_cron.is_valid_cron(cron_expr):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid cron expression (expected 5 fields: minute hour day month weekday)",
+        )
+    schedule_id = str(uuid4())
+    store.workflow_schedules[schedule_id] = {
+        "id": schedule_id,
+        "workflow_id": item_id,
+        "actor": actor,
+        "label": str(payload.get("label") or "Scheduled run"),
+        "cron": cron_expr,
+        "enabled": bool(payload.get("enabled", True)),
+        "created_at": _now_iso(),
+        "last_fired_minute": "",
+    }
+    _append_audit_event(
+        "workflow.schedule.create",
+        actor,
+        "allowed",
+        {"workflow_id": item_id, "cron": cron_expr},
+    )
+    _persist_store_state()
+    return _schedule_response(store.workflow_schedules[schedule_id])
+
+
+@app.post("/schedules/{schedule_id}/toggle")
+def toggle_workflow_schedule(
+    schedule_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="workflow.schedule.toggle")
+    _enforce_emergency_write_policy("workflow.schedule.toggle", actor)
+    schedule = store.workflow_schedules.get(schedule_id)
+    if schedule is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    schedule["enabled"] = bool(payload.get("enabled", not schedule.get("enabled", True)))
+    _append_audit_event(
+        "workflow.schedule.toggle",
+        actor,
+        "allowed",
+        {"schedule_id": schedule_id, "enabled": schedule["enabled"]},
+    )
+    _persist_store_state()
+    return _schedule_response(schedule)
+
+
+@app.delete("/schedules/{schedule_id}")
+def delete_workflow_schedule(schedule_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_builder_access(request, action="workflow.schedule.delete")
+    _enforce_emergency_write_policy("workflow.schedule.delete", actor)
+    if store.workflow_schedules.pop(schedule_id, None) is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    _append_audit_event("workflow.schedule.delete", actor, "allowed", {"schedule_id": schedule_id})
+    _persist_store_state()
+    return {"ok": True}
+
+
+PLATFORM_VECTOR_STORE_ID = "platform"
+
+
+def _knowledge_collection_view(collection: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": collection.get("id", ""),
+        "name": collection.get("name", ""),
+        "description": collection.get("description", ""),
+        "created_at": collection.get("created_at", ""),
+        "document_count": int(collection.get("document_count", 0)),
+        "chunk_count": int(collection.get("chunk_count", 0)),
+        "vector_store_id": str(collection.get("vector_store_id") or PLATFORM_VECTOR_STORE_ID),
+    }
+
+
+def _platform_vector_store_ready() -> bool:
+    """The built-in pgvector long-term store is the default RAG backend."""
+    return bool(
+        _POSTGRES_MEMORY.enabled
+        and _POSTGRES_MEMORY.healthcheck()
+        and _POSTGRES_MEMORY.vector_enabled
+    )
+
+
+def _knowledge_vector_stores() -> list[dict[str, Any]]:
+    """Vector stores usable to back knowledge collections.
+
+    The platform's own pgvector long-term store is always listed as the built-in
+    backend. Any integration of ``type == "vector"`` configured under
+    builder/integrations is surfaced too, so RAG storage is selected through the
+    integrations system rather than hardcoded. External vector-store drivers are
+    not yet implemented, so they list with ``ready: false`` until one ships.
+    """
+    platform_ready = _platform_vector_store_ready()
+    stores: list[dict[str, Any]] = [
+        {
+            "id": PLATFORM_VECTOR_STORE_ID,
+            "name": "Platform vector store (pgvector)",
+            "kind": "builtin",
+            "ready": platform_ready,
+            "status": "configured" if platform_ready else "unavailable",
+            "embedding_model": _POSTGRES_MEMORY.embedding_model,
+            "note": ""
+            if platform_ready
+            else "Long-term memory store (Postgres + pgvector + embeddings) is not available.",
+        }
+    ]
+    for integration in store.integrations.values():
+        if getattr(integration, "type", "") != "vector":
+            continue
+        stores.append(
+            {
+                "id": integration.id,
+                "name": integration.name,
+                "kind": "integration",
+                "ready": False,
+                "status": integration.status,
+                "embedding_model": "",
+                "note": "External vector-store driver is not yet available; connection is recorded for routing.",
+            }
+        )
+    return stores
+
+
+def _knowledge_vector_store_map() -> dict[str, dict[str, Any]]:
+    return {item["id"]: item for item in _knowledge_vector_stores()}
+
+
+def _knowledge_memory_layers() -> list[dict[str, Any]]:
+    """Honest snapshot of every memory/knowledge tier the platform exposes."""
+    total_docs = sum(int(c.get("document_count", 0)) for c in store.knowledge_collections.values())
+    total_chunks = sum(int(c.get("chunk_count", 0)) for c in store.knowledge_collections.values())
+    long_term_ready = bool(_POSTGRES_MEMORY.enabled and _POSTGRES_MEMORY.healthcheck())
+    return [
+        {
+            "id": "short_term",
+            "name": "Short-term memory",
+            "backend": "Redis",
+            "scope": "Per-session working memory and recent conversation turns.",
+            "enabled": bool(_REDIS_MEMORY.enabled),
+            "healthy": bool(_REDIS_MEMORY.enabled and _REDIS_MEMORY.healthcheck()),
+            "stats": {},
+        },
+        {
+            "id": "long_term",
+            "name": "Long-term memory",
+            "backend": "Postgres + pgvector",
+            "scope": "Durable, embedded memories with semantic recall across sessions.",
+            "enabled": bool(_POSTGRES_MEMORY.enabled),
+            "healthy": long_term_ready,
+            "stats": {
+                "vector_search": bool(_POSTGRES_MEMORY.vector_enabled),
+                "embedding_model": _POSTGRES_MEMORY.embedding_model,
+            },
+        },
+        {
+            "id": "world_graph",
+            "name": "World / knowledge graph",
+            "backend": "Neo4j",
+            "scope": "Entity and relationship graph projected from runs and consolidated memory.",
+            "enabled": bool(_NEO4J_GRAPH.enabled),
+            "healthy": bool(_NEO4J_GRAPH.enabled and _NEO4J_GRAPH.healthcheck()),
+            "stats": {},
+        },
+        {
+            "id": "knowledge",
+            "name": "Knowledge collections",
+            "backend": "pgvector (RAG)",
+            "scope": "Document collections chunked and embedded for retrieval and citation.",
+            "enabled": long_term_ready,
+            "healthy": long_term_ready and bool(_POSTGRES_MEMORY.vector_enabled),
+            "stats": {
+                "collections": len(store.knowledge_collections),
+                "documents": total_docs,
+                "chunks": total_chunks,
+            },
+        },
+    ]
+
+
+@app.get("/knowledge/collections")
+def list_knowledge_collections(request: Request) -> list[dict[str, Any]]:
+    _enforce_builder_access(request, action="knowledge.collection.list")
+    return [
+        _knowledge_collection_view(item)
+        for item in sorted(
+            store.knowledge_collections.values(),
+            key=lambda c: str(c.get("name", "")).lower(),
+        )
+    ]
+
+
+@app.post("/knowledge/collections")
+def create_knowledge_collection(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="knowledge.collection.create")
+    _enforce_emergency_write_policy("knowledge.collection.create", actor)
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Collection name is required")
+    vector_store_id = str(payload.get("vector_store_id") or "").strip() or PLATFORM_VECTOR_STORE_ID
+    if vector_store_id != PLATFORM_VECTOR_STORE_ID:
+        # The built-in platform store is always bindable (transient health is
+        # enforced at ingest); external vector integrations require a driver.
+        chosen_store = _knowledge_vector_store_map().get(vector_store_id)
+        if chosen_store is None:
+            raise HTTPException(status_code=400, detail="Unknown vector store")
+        if not chosen_store.get("ready"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Vector store '{chosen_store.get('name', vector_store_id)}' is not available: "
+                    f"{chosen_store.get('note') or 'no driver available'}"
+                ),
+            )
+    collection_id = str(uuid4())
+    store.knowledge_collections[collection_id] = {
+        "id": collection_id,
+        "name": name,
+        "description": str(payload.get("description") or ""),
+        "created_at": _now_iso(),
+        "document_count": 0,
+        "chunk_count": 0,
+        "vector_store_id": vector_store_id,
+    }
+    _append_audit_event(
+        "knowledge.collection.create", actor, "allowed", {"collection_id": collection_id}
+    )
+    _persist_store_state()
+    return _knowledge_collection_view(store.knowledge_collections[collection_id])
+
+
+@app.delete("/knowledge/collections/{collection_id}")
+def delete_knowledge_collection(collection_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_builder_access(request, action="knowledge.collection.delete")
+    _enforce_emergency_write_policy("knowledge.collection.delete", actor)
+    if store.knowledge_collections.pop(collection_id, None) is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    _append_audit_event(
+        "knowledge.collection.delete", actor, "allowed", {"collection_id": collection_id}
+    )
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.post("/knowledge/collections/{collection_id}/documents")
+def add_knowledge_document(
+    collection_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="knowledge.document.add")
+    _enforce_emergency_write_policy("knowledge.document.add", actor)
+    collection = store.knowledge_collections.get(collection_id)
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    vector_store_id = str(collection.get("vector_store_id") or PLATFORM_VECTOR_STORE_ID)
+    if vector_store_id != PLATFORM_VECTOR_STORE_ID:
+        raise HTTPException(
+            status_code=501,
+            detail="The vector store bound to this collection has no available driver yet",
+        )
+    if not (_POSTGRES_MEMORY.enabled and _POSTGRES_MEMORY.healthcheck()):
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge ingestion requires the long-term memory store (Postgres + embeddings)",
+        )
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Document text is required")
+    document_name = str(payload.get("name") or "document").strip() or "document"
+
+    chunks = app_knowledge.chunk_text(text)
+    if not chunks:
+        raise HTTPException(status_code=400, detail="Document produced no indexable content")
+    bucket = app_knowledge.collection_bucket(collection_id)
+    document_id = str(uuid4())
+    for index, chunk in enumerate(chunks):
+        _POSTGRES_MEMORY.append_entry(
+            bucket_id=bucket,
+            session_id=collection_id,
+            memory_scope="knowledge",
+            source="knowledge",
+            entry={
+                "content": chunk,
+                "document_id": document_id,
+                "document_name": document_name,
+                "chunk_index": index,
+            },
+        )
+    collection["document_count"] = int(collection.get("document_count", 0)) + 1
+    collection["chunk_count"] = int(collection.get("chunk_count", 0)) + len(chunks)
+    _append_audit_event(
+        "knowledge.document.add",
+        actor,
+        "allowed",
+        {"collection_id": collection_id, "document_id": document_id, "chunks": len(chunks)},
+    )
+    _persist_store_state()
+    return {
+        "ok": True,
+        "document_id": document_id,
+        "chunks_indexed": len(chunks),
+        "collection": _knowledge_collection_view(collection),
+    }
+
+
+@app.post("/knowledge/collections/{collection_id}/search")
+def search_knowledge_collection(
+    collection_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    _enforce_builder_access(request, payload=payload, action="knowledge.search")
+    if store.knowledge_collections.get(collection_id) is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    query = str(payload.get("query") or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="A search query is required")
+    if not (_POSTGRES_MEMORY.enabled and _POSTGRES_MEMORY.healthcheck()):
+        return {"query": query, "results": [], "reason": "long-term memory store unavailable"}
+    try:
+        limit = max(1, min(20, int(payload.get("top_k", 5))))
+    except (TypeError, ValueError):
+        limit = 5
+    entries = _POSTGRES_MEMORY.search_entries(
+        query,
+        bucket_id=app_knowledge.collection_bucket(collection_id),
+        memory_scope="knowledge",
+        limit=limit,
+    )
+    results = [
+        {
+            "content": entry.get("content", ""),
+            "document_name": entry.get("document_name")
+            or entry.get("metadata", {}).get("document_name", ""),
+            "chunk_index": entry.get(
+                "chunk_index", entry.get("metadata", {}).get("chunk_index", 0)
+            ),
+            "score": entry.get("score"),
+        }
+        for entry in entries
+    ]
+    return {"query": query, "results": results}
+
+
+@app.get("/knowledge/memory-layers")
+def list_knowledge_memory_layers(request: Request) -> dict[str, Any]:
+    _enforce_builder_access(request, action="knowledge.memory.layers")
+    return {"layers": _knowledge_memory_layers()}
+
+
+@app.get("/knowledge/vector-stores")
+def list_knowledge_vector_stores(request: Request) -> dict[str, Any]:
+    _enforce_builder_access(request, action="knowledge.vector.list")
+    return {"vector_stores": _knowledge_vector_stores()}
+
+
+@app.get("/skills")
+def get_skills(request: Request) -> list[dict[str, Any]]:
+    _enforce_request_authn(request, action="skill.list")
+    return [
+        item.model_dump()
+        for item in sorted(store.skills.values(), key=lambda skill: skill.name.lower())
+    ]
+
+
+@app.post("/skills")
+def save_skill(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="skill.save")
+    _enforce_emergency_write_policy("skill.save", actor)
+
+    skill_id = str(payload.get("id") or "").strip() or f"skill-{uuid4()}"
+    existing = store.skills.get(skill_id)
+    name = str(payload.get("name") or (existing.name if existing else "")).strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Skill name is required")
+
+    status_value = str(payload.get("status") or (existing.status if existing else "enabled"))
+    if status_value not in {"enabled", "disabled"}:
+        status_value = "enabled"
+
+    resolved_quarantine = existing.quarantine_status if existing else "none"
+    if status_value == "enabled" and resolved_quarantine in {"pending", "blocked"}:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This imported skill must pass the security blast chamber before it can be "
+                "enabled. Run a security scan first."
+            ),
+        )
+
+    skill = SkillDefinition(
+        id=skill_id,
+        name=name,
+        description=str(
+            payload.get("description")
+            if "description" in payload
+            else (existing.description if existing else "")
+        ),
+        content=str(
+            payload.get("content")
+            if "content" in payload
+            else (existing.content if existing else "")
+        ),
+        status=status_value,
+        tags=_normalize_string_list(
+            payload.get("tags") if "tags" in payload else (existing.tags if existing else [])
+        ),
+        source=existing.source if existing else "custom",
+        auto_inject=bool(
+            payload.get("auto_inject")
+            if "auto_inject" in payload
+            else (existing.auto_inject if existing else True)
+        ),
+        version=(existing.version + 1) if existing else 1,
+        updated_at=_now_iso(),
+        tier=str(
+            payload.get("tier") if "tier" in payload else (existing.tier if existing else "tier3")
+        ),
+        maturity=str(
+            payload.get("maturity")
+            if "maturity" in payload
+            else (existing.maturity if existing else "draft")
+        ),
+        owner=str(
+            payload.get("owner") if "owner" in payload else (existing.owner if existing else "")
+        ),
+        dependencies=_normalize_string_list(
+            payload.get("dependencies")
+            if "dependencies" in payload
+            else (existing.dependencies if existing else [])
+        ),
+        eval_rubric=str(
+            payload.get("eval_rubric")
+            if "eval_rubric" in payload
+            else (existing.eval_rubric if existing else "")
+        ),
+        eval_dataset=[
+            SkillEvalCase(
+                prompt=str(case.get("prompt") or ""),
+                expectation=str(case.get("expectation") or ""),
+            )
+            for case in (
+                payload.get("eval_dataset")
+                if isinstance(payload.get("eval_dataset"), list)
+                else ([c.model_dump() for c in existing.eval_dataset] if existing else [])
+            )
+            if isinstance(case, dict) and str(case.get("prompt") or "").strip()
+        ],
+        # last_eval is preserved across edits; only the eval endpoint updates it.
+        last_eval=existing.last_eval if existing else None,
+        # Import/quarantine state is owned by the import + scan endpoints.
+        import_source=existing.import_source if existing else "",
+        quarantine_status=resolved_quarantine,
+        security_scan=existing.security_scan if existing else None,
+    )
+    store.skills[skill_id] = skill
+    _append_audit_event(
+        "skill.save",
+        actor,
+        "allowed",
+        {
+            "skill_id": skill_id,
+            "status": skill.status,
+            "version": skill.version,
+            "tier": skill.tier,
+            "maturity": skill.maturity,
+        },
+    )
+    _persist_store_state()
+    return skill.model_dump()
+
+
+_SKILL_TIER_RANK = {"tier3": 1, "tier2": 2, "tier1": 3}
+_SKILL_MATURITY_ORDER = ["draft", "incubating", "validated", "standard"]
+_SKILL_EVAL_PASS_THRESHOLD = 0.7
+
+
+@app.post("/skills/{skill_id}/eval")
+def run_skill_eval(
+    skill_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Run the skill's eval dataset against its rubric and record a score.
+
+    Each case executes the skill, then an LLM judge grades the output against
+    the rubric (0–1). The averaged score is stored as the skill's latest eval
+    and drives maturity (validated at/above the pass threshold).
+    """
+    actor = _enforce_builder_access(request, payload=payload, action="skill.eval")
+    skill = store.skills.get(skill_id)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    # Allow ad-hoc cases in the request, else use the saved dataset.
+    raw_cases = (
+        payload.get("eval_dataset")
+        if isinstance(payload.get("eval_dataset"), list)
+        else [c.model_dump() for c in skill.eval_dataset]
+    )
+    cases = [
+        {"prompt": str(c.get("prompt") or ""), "expectation": str(c.get("expectation") or "")}
+        for c in raw_cases
+        if isinstance(c, dict) and str(c.get("prompt") or "").strip()
+    ]
+    if not cases:
+        raise HTTPException(status_code=400, detail="No eval cases — add an eval dataset first")
+    rubric = str(payload.get("eval_rubric") or skill.eval_rubric or "").strip()
+    if not rubric:
+        rubric = "Score how well the response follows the skill's procedure and produces a correct, useful result."
+    model = str(payload.get("model") or "").strip() or _default_openai_model()
+
+    skill_system_prompt = (
+        "You are an agent on the Lattix xFrontier platform. Follow this operating "
+        f"procedure exactly when handling the task:\n\n### Skill: {skill.name}\n{skill.content.strip()}"
+    )
+    case_results: list[dict[str, Any]] = []
+    scores: list[float] = []
+    mode = "live"
+    for case in cases:
+        output, model_meta = _run_openai_chat(
+            system_prompt=skill_system_prompt,
+            user_prompt=case["prompt"],
+            model=model,
+            temperature=0.2,
+        )
+        if str(model_meta.get("mode")) != "live":
+            mode = "simulated"
+        judge_prompt = (
+            "You are grading an AI response against a rubric. Respond with ONLY a JSON object "
+            '{"score": <0.0-1.0>, "reason": "<short>"}.\n\n'
+            f"RUBRIC:\n{rubric}\n\n"
+            f"TASK:\n{case['prompt']}\n\n"
+            + (f"EXPECTATION:\n{case['expectation']}\n\n" if case["expectation"] else "")
+            + f"RESPONSE:\n{output[:4000]}"
+        )
+        judge_text, judge_meta = _run_openai_chat(
+            system_prompt="You are a precise, terse evaluator.",
+            user_prompt=judge_prompt,
+            model=model,
+            temperature=0.0,
+        )
+        case_score = 0.0
+        reason = ""
+        try:
+            parsed = json.loads(re.search(r"\{.*\}", judge_text, re.DOTALL).group(0))
+            case_score = max(0.0, min(1.0, float(parsed.get("score", 0.0))))
+            reason = str(parsed.get("reason") or "")
+        except Exception:  # noqa: BLE001 - ungradeable output scores 0
+            if str(judge_meta.get("mode")) != "live":
+                mode = "simulated"
+            reason = "Judge output could not be parsed."
+        scores.append(case_score)
+        case_results.append(
+            {"prompt": case["prompt"][:200], "score": case_score, "reason": reason[:300]}
+        )
+
+    avg_score = round(sum(scores) / len(scores), 3) if scores else 0.0
+    passed = avg_score >= _SKILL_EVAL_PASS_THRESHOLD
+    skill.last_eval = SkillEvalResult(
+        score=avg_score,
+        passed=passed,
+        summary=f"{len([s for s in scores if s >= _SKILL_EVAL_PASS_THRESHOLD])}/{len(scores)} cases passed",
+        case_count=len(scores),
+        ran_at=_now_iso(),
+        model=model,
+    )
+    # Validated maturity is earned by passing eval; never auto-demote.
+    if passed and _SKILL_MATURITY_ORDER.index(skill.maturity) < _SKILL_MATURITY_ORDER.index(
+        "validated"
+    ):
+        skill.maturity = "validated"
+    _append_audit_event(
+        "skill.eval",
+        actor,
+        "allowed",
+        {"skill_id": skill_id, "score": avg_score, "passed": passed, "mode": mode},
+    )
+    _persist_store_state()
+    return {
+        "skill_id": skill_id,
+        "score": avg_score,
+        "passed": passed,
+        "mode": mode,
+        "maturity": skill.maturity,
+        "cases": case_results,
+        "last_eval": skill.last_eval.model_dump(),
+    }
+
+
+@app.post("/skills/{skill_id}/promote")
+def promote_skill(
+    skill_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Promote a skill one maturity tier (tier3 → tier2 → tier1).
+
+    Gated: promotion requires a passing eval on record, mirroring Savant's
+    measure-before-graduate model.
+    """
+    actor = _enforce_builder_access(request, payload=payload, action="skill.promote")
+    _enforce_emergency_write_policy("skill.promote", actor)
+    skill = store.skills.get(skill_id)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    if not (skill.last_eval and skill.last_eval.passed):
+        raise HTTPException(
+            status_code=400,
+            detail="Promotion requires a passing eval — run the skill eval first",
+        )
+    current_rank = _SKILL_TIER_RANK.get(skill.tier, 1)
+    if current_rank >= 3:
+        raise HTTPException(status_code=400, detail="Skill is already at the top tier")
+    skill.tier = {1: "tier2", 2: "tier1"}[current_rank]
+    if skill.tier == "tier1":
+        skill.maturity = "standard"
+    _append_audit_event(
+        "skill.promote", actor, "allowed", {"skill_id": skill_id, "tier": skill.tier}
+    )
+    _persist_store_state()
+    return skill.model_dump()
+
+
+# --- Skill import + security blast chamber -------------------------------------
+
+_SKILL_IMPORT_MAX_BYTES = 200_000
+_SKILL_IMPORT_PROBE_TASK = (
+    "Introduce yourself in one sentence, then state plainly what you will and will not "
+    "do while following your operating procedure."
+)
+
+
+def _validated_skill_import_url(url: str) -> str:
+    """Validate a skill-import URL and refuse SSRF-prone internal targets."""
+    parsed = urlsplit(str(url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("Skill import URL must use http or https")
+    if not parsed.hostname:
+        raise ValueError("Skill import URL must include a host")
+    if parsed.username or parsed.password:
+        raise ValueError("Skill import URL must not embed credentials")
+    host = parsed.hostname.lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        raise ValueError("Refusing to import from a loopback host")
+    try:
+        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+        infos = socket.getaddrinfo(parsed.hostname, port, proto=socket.IPPROTO_TCP)
+    except OSError as exc:
+        raise ValueError(f"Could not resolve import host: {exc}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise ValueError("Refusing to import from a private, loopback or reserved address")
+    return parsed.geturl()
+
+
+def _fetch_remote_skill(url: str) -> tuple[str, str]:
+    """Fetch skill content from a validated remote URL; returns (content, name)."""
+    import httpx
+
+    safe_url = _validated_skill_import_url(url)
+    response = httpx.request(
+        "GET",
+        safe_url,
+        headers={
+            "Accept": "text/markdown, text/plain, */*",
+            "User-Agent": "lattix-xfrontier-skill-import/1.0",
+        },
+        timeout=10.0,
+        follow_redirects=False,
+    )
+    response.raise_for_status()
+    text = response.text[:_SKILL_IMPORT_MAX_BYTES]
+    name = ""
+    segments = [seg for seg in urlsplit(safe_url).path.split("/") if seg]
+    if segments:
+        name = segments[-1].rsplit(".", 1)[0].replace("-", " ").replace("_", " ").strip().title()
+    return text, name
+
+
+def _scan_skill_text(text: str, *, stage: str) -> list[SkillSecurityFinding]:
+    """Scan text through the platform's deterministic + FOSS guardrail signals."""
+    result = _evaluate_guardrail(
+        text,
+        {
+            "enable_foss_signals": True,
+            "detect_prompt_injection": True,
+            "detect_exfiltration": True,
+            "detect_command_injection": True,
+            "detect_pii": True,
+        },
+        stage=stage,
+    )
+    issues = result.get("output_info", {}).get("issues", [])
+    return [
+        SkillSecurityFinding(
+            code=str(issue.get("code") or "ISSUE"),
+            message=str(issue.get("message") or ""),
+            severity=str(issue.get("severity") or "medium"),
+            source=str(issue.get("source") or "rule"),
+            stage=stage,
+        )
+        for issue in issues
+        if isinstance(issue, dict)
+    ]
+
+
+def _run_skill_blast_chamber(skill: SkillDefinition) -> SkillSecurityScan:
+    """Run an imported skill through the static-scan → dry-run security pipeline."""
+    static_findings = _scan_skill_text(skill.content, stage="static")
+    static_passed = not any(f.severity.lower() == "high" for f in static_findings)
+
+    dry_run_findings: list[SkillSecurityFinding] = []
+    dry_run_mode = "skipped"
+    if static_passed and skill.content.strip():
+        system_prompt = (
+            "You are an agent on the Lattix xFrontier platform. Follow this operating "
+            f"procedure exactly when handling the task:\n\n### Skill: {skill.name}\n"
+            f"{skill.content.strip()}"
+        )
+        output, model_meta = _run_openai_chat(
+            system_prompt=system_prompt,
+            user_prompt=_SKILL_IMPORT_PROBE_TASK,
+            model=_default_openai_model(),
+            temperature=0.2,
+        )
+        dry_run_mode = str(model_meta.get("mode") or "live")
+        dry_run_findings = _scan_skill_text(output, stage="dry_run_output")
+    dry_run_passed = static_passed and not any(
+        f.severity.lower() == "high" for f in dry_run_findings
+    )
+
+    findings = static_findings + dry_run_findings
+    cleared = static_passed and dry_run_passed
+    high = len([f for f in findings if f.severity.lower() == "high"])
+    summary = (
+        "Cleared: no high-severity findings in the skill body or its dry-run output."
+        if cleared
+        else f"Blocked: {high} high-severity finding(s) across the static scan and dry-run."
+    )
+    return SkillSecurityScan(
+        cleared=cleared,
+        static_passed=static_passed,
+        dry_run_passed=dry_run_passed,
+        dry_run_mode=dry_run_mode,
+        summary=summary,
+        ran_at=_now_iso(),
+        findings=findings,
+    )
+
+
+@app.post("/skills/import")
+def import_skill(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Import a skill from an online source into quarantine, then run the blast chamber.
+
+    Imported skills land disabled and quarantined; they are immediately scanned
+    (static content scan + a guarded dry-run whose output is scanned) and can only
+    be enabled once the scan clears.
+    """
+    actor = _enforce_builder_access(request, payload=payload, action="skill.import")
+    _enforce_emergency_write_policy("skill.import", actor)
+
+    url = str(payload.get("url") or "").strip()
+    content = str(payload.get("content") or "")
+    name = str(payload.get("name") or "").strip()
+    source_label = url or str(payload.get("source") or "manual import")
+
+    if url and not content.strip():
+        try:
+            content, fetched_name = _fetch_remote_skill(url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - network/parse failures are user-facing
+            raise HTTPException(
+                status_code=502, detail=f"Unable to fetch skill from URL: {str(exc)[:180]}"
+            ) from exc
+        if not name:
+            name = fetched_name
+    if not content.strip():
+        raise HTTPException(
+            status_code=400, detail="Provide a skill URL to fetch or paste skill content"
+        )
+    if not name:
+        name = "Imported skill"
+
+    skill_id = f"skill-{uuid4()}"
+    skill = SkillDefinition(
+        id=skill_id,
+        name=name,
+        description=str(payload.get("description") or ""),
+        content=content,
+        status="disabled",
+        source="custom",
+        auto_inject=False,
+        version=1,
+        updated_at=_now_iso(),
+        tier="tier3",
+        maturity="draft",
+        import_source=source_label,
+        quarantine_status="pending",
+    )
+    store.skills[skill_id] = skill
+    _append_audit_event(
+        "skill.import", actor, "allowed", {"skill_id": skill_id, "source": source_label[:200]}
+    )
+
+    scan = _run_skill_blast_chamber(skill)
+    skill.security_scan = scan
+    skill.quarantine_status = "cleared" if scan.cleared else "blocked"
+    _append_audit_event(
+        "skill.scan",
+        actor,
+        "allowed" if scan.cleared else "blocked",
+        {
+            "skill_id": skill_id,
+            "cleared": scan.cleared,
+            "high_findings": len([f for f in scan.findings if f.severity.lower() == "high"]),
+        },
+    )
+    _persist_store_state()
+    return skill.model_dump()
+
+
+@app.post("/skills/{skill_id}/scan")
+def scan_skill(
+    skill_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Re-run the security blast chamber for a skill and update its quarantine state."""
+    actor = _enforce_builder_access(request, payload=payload, action="skill.scan")
+    skill = store.skills.get(skill_id)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    scan = _run_skill_blast_chamber(skill)
+    skill.security_scan = scan
+    if skill.quarantine_status in {"pending", "blocked", "cleared"}:
+        skill.quarantine_status = "cleared" if scan.cleared else "blocked"
+    _append_audit_event(
+        "skill.scan",
+        actor,
+        "allowed" if scan.cleared else "blocked",
+        {"skill_id": skill_id, "cleared": scan.cleared},
+    )
+    _persist_store_state()
+    return {
+        "skill_id": skill_id,
+        "quarantine_status": skill.quarantine_status,
+        "security_scan": scan.model_dump(),
+    }
+
+
+@app.post("/skills/{skill_id}/test")
+def test_skill(
+    skill_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Dry-run a skill: execute a sample task with only this skill injected.
+
+    Lets builders validate that a procedure produces the intended behavior
+    before enabling it platform-wide.
+    """
+    actor = _enforce_builder_access(request, payload=payload, action="skill.test")
+    skill = store.skills.get(skill_id)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    sample_task = str(payload.get("prompt") or "").strip()
+    if not sample_task:
+        raise HTTPException(status_code=400, detail="A sample task prompt is required")
+    model = str(payload.get("model") or "").strip() or _default_openai_model()
+
+    system_prompt = (
+        "You are an agent on the Lattix xFrontier platform. Follow this operating "
+        "procedure exactly when handling the task:\n\n"
+        f"### Skill: {skill.name}\n{skill.content.strip()}"
+    )
+    response_text, model_meta = _run_openai_chat(
+        system_prompt=system_prompt,
+        user_prompt=sample_task,
+        model=model,
+        temperature=0.2,
+    )
+    _append_audit_event(
+        "skill.test",
+        actor,
+        "allowed",
+        {"skill_id": skill_id, "model": model, "mode": str(model_meta.get("mode") or "")},
+    )
+    return {
+        "skill_id": skill_id,
+        "model": model_meta.get("model"),
+        "provider": model_meta.get("provider"),
+        "mode": model_meta.get("mode"),
+        "reason": model_meta.get("reason"),
+        "output": response_text,
+    }
+
+
+@app.delete("/skills/{skill_id}")
+def delete_skill(skill_id: str, request: Request) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, action="skill.delete")
+    _enforce_emergency_write_policy("skill.delete", actor)
+    existing = store.skills.get(skill_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    if existing.source == "bundled":
+        raise HTTPException(
+            status_code=400, detail="Bundled skills cannot be deleted — disable them instead"
+        )
+    store.skills.pop(skill_id, None)
+    _append_audit_event("skill.delete", actor, "allowed", {"skill_id": skill_id})
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.get("/integrations/catalog")
+def get_integration_catalog(request: Request) -> list[dict[str, Any]]:
+    _enforce_builder_access(request, action="integration.catalog.read")
+    installed_catalog_ids = {
+        str(item.metadata_json.get("catalog_id") or "")
+        for item in store.integrations.values()
+        if isinstance(item.metadata_json, dict)
+    }
+    entries: list[dict[str, Any]] = []
+    for entry in skills_catalog.INTEGRATION_CATALOG:
+        payload = dict(entry)
+        payload["installed"] = entry["catalog_id"] in installed_catalog_ids
+        entries.append(payload)
+    return entries
+
+
+@app.post("/integrations/catalog/{catalog_id}/install")
+def install_catalog_integration(catalog_id: str, request: Request) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, action="integration.catalog.install")
+    _enforce_emergency_write_policy("integration.catalog.install", actor)
+    entry = skills_catalog.catalog_entry(catalog_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Catalog entry not found")
+
+    for item in store.integrations.values():
+        if (
+            isinstance(item.metadata_json, dict)
+            and str(item.metadata_json.get("catalog_id") or "") == entry["catalog_id"]
+        ):
+            return {"ok": True, "id": item.id, "already_installed": True}
+
+    metadata_json = dict(entry.get("metadata_json") or {})
+    metadata_json["catalog_id"] = entry["catalog_id"]
+    integration_id = str(uuid4())
+    integration = IntegrationDefinition(
+        id=integration_id,
+        name=str(entry["name"]),
+        type=str(entry.get("type") or "custom"),
+        status="draft",
+        base_url=str(entry.get("base_url") or ""),
+        auth_type=str(entry.get("auth_type") or "none"),
+        metadata_json=metadata_json,
+        capabilities=[str(item) for item in entry.get("capabilities", [])],
+        egress_allowlist=[str(item) for item in entry.get("egress_allowlist", [])],
+        publisher=str(entry.get("publisher") or "custom"),
+    )
+    store.integrations[integration_id] = integration
+    _append_audit_event(
+        "integration.catalog.install",
+        actor,
+        "allowed",
+        {"catalog_id": entry["catalog_id"], "integration_id": integration_id},
+    )
+    _persist_store_state()
+    return {"ok": True, "id": integration_id, "already_installed": False}
+
+
+@app.get("/models/providers/{provider_id}/models")
+def list_provider_models(provider_id: str, request: Request) -> dict[str, Any]:
+    """List the models a configured provider currently offers.
+
+    Used by the settings UI to populate default-model dropdowns. Errors return
+    an empty list with a reason — the UI falls back to free-text entry.
+    """
+    _enforce_request_authn(request, action="models.provider.models.read")
+    provider = str(provider_id or "").strip().lower()
+    if provider not in _PROVIDER_REGISTRY:
+        raise HTTPException(status_code=404, detail="Unknown provider")
+
+    if provider == "ollama":
+        available = local_models.ollama_available()
+        models = [item["id"] for item in local_models.installed_models()] if available else []
+        return {"provider": provider, "configured": available, "models": sorted(models)}
+
+    if not _provider_configured(provider):
+        return {"provider": provider, "configured": False, "models": []}
+
+    client, unavailable_reason = _get_chat_client(provider)
+    if client is None:
+        return {
+            "provider": provider,
+            "configured": False,
+            "models": [],
+            "reason": unavailable_reason,
+        }
+    try:
+        model_ids: set[str] = set()
+        for item in client.models.list():
+            model_id = str(getattr(item, "id", "") or "").strip()
+            if model_id:
+                model_ids.add(model_id)
+            if len(model_ids) >= 500:
+                break
+        return {"provider": provider, "configured": True, "models": sorted(model_ids)}
+    except Exception as exc:  # noqa: BLE001 - provider listing is best-effort
+        return {
+            "provider": provider,
+            "configured": True,
+            "models": [],
+            "reason": str(exc)[:200],
+        }
+
+
+@app.get("/models/overview")
+def get_models_overview(request: Request) -> dict[str, Any]:
+    _enforce_request_authn(request, action="models.overview.read")
+    openai_state = _openai_status()
+    nim_key = _nim_api_key()
+    nim_configured = bool(nim_key) and "change" not in nim_key.lower()
+    ollama_up = local_models.ollama_available()
+    installed = {item["id"]: item for item in local_models.installed_models()} if ollama_up else {}
+    pulls = local_models.pull_states()
+
+    catalog: list[dict[str, Any]] = []
+    for item in local_models.LOCAL_MODEL_CATALOG:
+        model_id = str(item["id"])
+        entry = dict(item)
+        entry["installed"] = model_id in installed
+        entry["pull"] = pulls.get(model_id)
+        entry["reference"] = f"ollama/{model_id}"
+        catalog.append(entry)
+
+    external: list[dict[str, Any]] = []
+    for provider_id, registry in _PROVIDER_REGISTRY.items():
+        if provider_id == "ollama":
+            configured = ollama_up
+        else:
+            configured = _provider_configured(provider_id)
+        default_model = _provider_default_model(provider_id)
+        external.append(
+            {
+                "id": provider_id,
+                "label": registry["label"],
+                "configured": configured,
+                "base_url": (
+                    local_models.ollama_base_url()
+                    if provider_id == "ollama"
+                    else _provider_base_url(provider_id)
+                ),
+                "default_model": default_model,
+                "reference_example": (
+                    default_model if provider_id == "openai" else f"{provider_id}/{default_model}"
+                ),
+                "key_required": bool(registry.get("key_required", True)),
+            }
+        )
+
+    return {
+        "providers": {
+            "openai": {
+                "configured": openai_state.configured,
+                "default_model": _default_openai_model(),
+            },
+            "nim": {
+                "configured": nim_configured,
+                "base_url": _nim_base_url(),
+                "default_model": _default_nim_model(),
+                "reference_example": f"nim/{_default_nim_model()}",
+            },
+            "ollama": {
+                "available": ollama_up,
+                "base_url": local_models.ollama_base_url(),
+                "default_model": _default_ollama_model(),
+                "installed_models": sorted(installed.values(), key=lambda item: item["id"]),
+            },
+        },
+        "external": external,
+        "catalog": catalog,
+    }
+
+
+@app.post("/models/local/pull")
+def pull_local_model(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="models.local.pull")
+    _enforce_emergency_write_policy("models.local.pull", actor)
+    model_id = str(payload.get("model") or "").strip()
+    try:
+        state = local_models.start_pull(model_id)
+    except ValueError as exc:
+        _append_audit_event("models.local.pull", actor, "blocked", {"model": model_id})
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    _append_audit_event("models.local.pull", actor, "allowed", {"model": model_id})
+    return {"ok": True, "model": model_id, "pull": state}
+
+
+@app.delete("/models/local/{model_id}")
+def delete_local_model(model_id: str, request: Request) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, action="models.local.delete")
+    _enforce_emergency_write_policy("models.local.delete", actor)
+    try:
+        removed = local_models.delete_model(model_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)[:200]) from exc
+    _append_audit_event(
+        "models.local.delete", actor, "allowed", {"model": model_id, "removed": removed}
+    )
+    return {"ok": True, "removed": removed}
 
 
 @app.get("/workflow-runs/{run_id}/stream")
@@ -19734,14 +24692,17 @@ def stream_workflow_run(run_id: str, request: Request) -> StreamingResponse:
         last_index = 0
         keepalive_every = 15.0
         last_keepalive = time.monotonic()
-        while True:
+        deadline = time.monotonic() + _RUN_STREAM_MAX_SECONDS
+        while time.monotonic() < deadline:
             stream_items = store.run_streams.get(run_id, [])
             while last_index < len(stream_items):
                 item = stream_items[last_index]
                 last_index += 1
-                yield f"data: {json.dumps(item)}\n\n"
+                yield f"data: {json.dumps(item, default=_persist_json_default)}\n\n"
 
-            if store.run_stream_complete.get(run_id):
+            # Runs that never opened a delta stream (e.g. blocked at intake or
+            # created before streaming existed) have nothing further to send.
+            if store.run_stream_complete.get(run_id, True):
                 break
 
             now = time.monotonic()
@@ -19771,6 +24732,7 @@ def archive_workflow_run(run_id: str, request: Request) -> dict[str, bool]:
     run.status = "Archived"
     run.progressLabel = "Archived"
     run.updatedAt = "just now"
+    run.archived = True  # hides it from the default run list / inbox nav
     store.runs[run_id] = run
 
     if run_id in store.run_details and isinstance(store.run_details[run_id], dict):
@@ -19831,6 +24793,7 @@ def submit_approval(
     decision = str(_payload.get("decision") or "")
     if run_id:
         _enforce_run_access(request, actor, run_id, action="approval.submit")
+    feedback = str(_payload.get("feedback") or "").strip()
     if run_id and run_id in store.run_details:
         details = store.run_details[run_id]
         approvals = details.get("approvals") if isinstance(details.get("approvals"), dict) else {}
@@ -19840,6 +24803,7 @@ def submit_approval(
             if run_id in store.runs:
                 store.runs[run_id].status = "Done"
                 store.runs[run_id].progressLabel = "Complete"
+                store.runs[run_id].updatedAt = "just now"
             store.inbox = [item for item in store.inbox if item.runId != run_id]
         elif decision == "changes_requested":
             approvals["pending"] = True
@@ -19847,8 +24811,31 @@ def submit_approval(
             if run_id in store.runs:
                 store.runs[run_id].status = "Needs Review"
                 store.runs[run_id].progressLabel = "Awaiting updates"
+                store.runs[run_id].updatedAt = "just now"
         details["approvals"] = approvals
         store.run_details[run_id] = details
+        if decision in {"approved", "changes_requested"}:
+            decision_summary = (
+                "Run approved by operator."
+                if decision == "approved"
+                else "Operator requested changes before approval."
+            )
+            if feedback:
+                decision_summary = f"{decision_summary} Feedback: {feedback[:500]}"
+            store.run_events.setdefault(run_id, []).append(
+                WorkflowRunEvent(
+                    id=f"evt-{uuid4()}",
+                    type="approval_decision",
+                    title="Approval decision recorded",
+                    summary=decision_summary,
+                    createdAt=_now_iso(),
+                    metadata={
+                        "decision": decision,
+                        "artifact_id": str(_payload.get("artifact_id") or ""),
+                        "actor": actor,
+                    },
+                )
+            )
     _persist_store_state()
     _append_audit_event(
         "approval.submit", actor, "allowed", {"run_id": run_id, "decision": decision}
@@ -19862,6 +24849,85 @@ def get_inbox(request: Request) -> list[dict[str, Any]]:
     visible_run_ids = _visible_run_ids(request, actor)
     items = [item for item in store.inbox if item.runId in visible_run_ids]
     return [item.model_dump() for item in items]
+
+
+def _inbox_group_view(group: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": group.get("id", ""),
+        "name": group.get("name", ""),
+        "created_at": group.get("created_at", ""),
+        "run_ids": list(group.get("run_ids", [])),
+    }
+
+
+@app.get("/inbox/groups")
+def list_inbox_groups(request: Request) -> list[dict[str, Any]]:
+    _enforce_request_authn(request, action="inbox.groups.list")
+    return [
+        _inbox_group_view(group)
+        for group in sorted(
+            store.inbox_groups.values(), key=lambda g: str(g.get("name", "")).lower()
+        )
+    ]
+
+
+@app.post("/inbox/groups")
+def create_inbox_group(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="inbox.groups.create")
+    _enforce_emergency_write_policy("inbox.groups.create", actor)
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Folder name is required")
+    group_id = str(uuid4())
+    store.inbox_groups[group_id] = {
+        "id": group_id,
+        "name": name,
+        "created_at": _now_iso(),
+        "run_ids": [],
+    }
+    _append_audit_event("inbox.groups.create", actor, "allowed", {"group_id": group_id})
+    _persist_store_state()
+    return _inbox_group_view(store.inbox_groups[group_id])
+
+
+@app.post("/inbox/groups/{group_id}")
+def update_inbox_group(
+    group_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="inbox.groups.update")
+    _enforce_emergency_write_policy("inbox.groups.update", actor)
+    group = store.inbox_groups.get(group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    if "name" in payload:
+        new_name = str(payload.get("name") or "").strip()
+        if not new_name:
+            raise HTTPException(status_code=400, detail="Folder name cannot be empty")
+        group["name"] = new_name
+    run_ids = [str(rid) for rid in group.get("run_ids", []) if str(rid)]
+    add_run_id = str(payload.get("add_run_id") or "").strip()
+    if add_run_id and add_run_id not in run_ids:
+        run_ids.append(add_run_id)
+    remove_run_id = str(payload.get("remove_run_id") or "").strip()
+    if remove_run_id:
+        run_ids = [rid for rid in run_ids if rid != remove_run_id]
+    group["run_ids"] = run_ids
+    _append_audit_event("inbox.groups.update", actor, "allowed", {"group_id": group_id})
+    _persist_store_state()
+    return _inbox_group_view(group)
+
+
+@app.delete("/inbox/groups/{group_id}")
+def delete_inbox_group(group_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, action="inbox.groups.delete")
+    _enforce_emergency_write_policy("inbox.groups.delete", actor)
+    if store.inbox_groups.pop(group_id, None) is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    _append_audit_event("inbox.groups.delete", actor, "allowed", {"group_id": group_id})
+    _persist_store_state()
+    return {"ok": True}
 
 
 @app.get("/integrations")
@@ -20961,6 +26027,20 @@ def get_observability_dashboard(request: Request, limit: int = 20) -> dict[str, 
         [item for item in traces if str(item.status).lower() in {"failed", "blocked"}]
     )
 
+    skills_view = [
+        {
+            "id": skill.id,
+            "name": skill.name,
+            "status": skill.status,
+            "source": skill.source,
+            "auto_inject": skill.auto_inject,
+            "version": skill.version,
+            "usage_count": skill.usage_count,
+            "last_used_at": skill.last_used_at,
+        }
+        for skill in sorted(store.skills.values(), key=lambda item: item.usage_count, reverse=True)
+    ]
+
     return {
         "summary": {
             "total_runs": total_runs,
@@ -20968,8 +26048,13 @@ def get_observability_dashboard(request: Request, limit: int = 20) -> dict[str, 
             "token_estimate": total_tokens,
             "cost_estimate_usd": total_cost,
             "average_latency_ms": avg_latency,
+            "skills_enabled": len(
+                [skill for skill in store.skills.values() if skill.status == "enabled"]
+            ),
+            "skill_injections_total": sum(skill.usage_count for skill in store.skills.values()),
         },
         "runs": [item.model_dump() for item in traces],
+        "skills": skills_view,
     }
 
 
@@ -21558,8 +26643,14 @@ def save_workflow_definition(
         payload.get("description") or (existing.description if existing else "")
     )
     _validate_security_guardrail_reference(security_config, label="Workflow security policy")
+    # Accept the graph under `graph_json` (export/UI format) OR the top-level
+    # `graph` key used by the seed-format example files (examples/workflows/*/
+    # workflow.json) so those import without silently dropping the canvas graph.
     normalized_graph_json = _ensure_supported_graph_json(
-        payload.get("graph_json") or payload.get("config_json", {}).get("graph_json") or {},
+        payload.get("graph_json")
+        or payload.get("graph")
+        or payload.get("config_json", {}).get("graph_json")
+        or {},
         context_label="Workflow definition",
     )
     normalized_graph_json = _validate_builder_graph_models(
@@ -21663,9 +26754,12 @@ def publish_workflow_definition(item_id: str, request: Request) -> dict[str, Any
     )
     item.published_revision_id = published_revision.id
     item.published_at = published_revision.created_at
-    if not str(item.active_revision_id or "").strip():
-        item.active_revision_id = published_revision.id
-        item.active_at = published_revision.created_at
+    # Publishing promotes the new revision to ACTIVE (the version the runtime
+    # serves). This must advance on EVERY publish — previously it only set active
+    # on the first publish, so re-publishing left runs resolving the old/empty
+    # revision. The activate/rollback endpoint can still re-pin active afterward.
+    item.active_revision_id = published_revision.id
+    item.active_at = published_revision.created_at
     published_revision.metadata["published_pointer"] = True
     published_revision.snapshot = item.model_dump()
     store.workflow_definitions[item_id] = item
@@ -22122,9 +27216,12 @@ def publish_agent_definition(item_id: str, request: Request) -> dict[str, Any]:
     )
     item.published_revision_id = published_revision.id
     item.published_at = published_revision.created_at
-    if not str(item.active_revision_id or "").strip():
-        item.active_revision_id = published_revision.id
-        item.active_at = published_revision.created_at
+    # Publishing promotes the new revision to ACTIVE (the version the runtime
+    # serves). This must advance on EVERY publish — previously it only set active
+    # on the first publish, so re-publishing left runs resolving the old/empty
+    # revision. The activate/rollback endpoint can still re-pin active afterward.
+    item.active_revision_id = published_revision.id
+    item.active_at = published_revision.created_at
     published_revision.metadata["published_pointer"] = True
     published_revision.snapshot = item.model_dump()
     store.agent_definitions[item_id] = item
@@ -22376,6 +27473,180 @@ def activate_agent_definition(
     }
 
 
+_NODE_INPUT_SCHEMAS: dict[str, list[NodeFieldSpec]] = {
+    "frontier/trigger": [
+        NodeFieldSpec(
+            name="trigger_type",
+            label="Trigger type",
+            field_type="dropdown",
+            options=["manual", "schedule", "webhook", "event"],
+            default="manual",
+            description="How runs from this workflow are initiated.",
+        ),
+        NodeFieldSpec(
+            name="schedule_cron",
+            label="Schedule (cron)",
+            field_type="text",
+            advanced=True,
+            placeholder="0 9 * * 1-5",
+            description="Cron expression when trigger type is schedule.",
+        ),
+    ],
+    "frontier/agent": [
+        NodeFieldSpec(
+            name="agent_id",
+            label="Agent",
+            field_type="dropdown",
+            required=True,
+            options_source="agents",
+            description="Published agent that executes this node's objective.",
+        ),
+        NodeFieldSpec(
+            name="model",
+            label="Model override",
+            field_type="dropdown",
+            advanced=True,
+            options_source="models",
+            placeholder="provider default",
+            description="Provider-qualified model id (e.g. nim/<model>, ollama/<model>).",
+        ),
+        NodeFieldSpec(
+            name="temperature",
+            label="Temperature",
+            field_type="slider",
+            default=0.2,
+            min=0.0,
+            max=1.0,
+            step=0.01,
+            advanced=True,
+        ),
+        NodeFieldSpec(
+            name="objective",
+            label="Objective",
+            field_type="textarea",
+            description="What this agent node should accomplish.",
+        ),
+    ],
+    "frontier/prompt": [
+        NodeFieldSpec(
+            name="system_prompt",
+            label="System prompt",
+            field_type="textarea",
+            required=True,
+            description="Reusable system instructions passed to downstream agent nodes.",
+        ),
+    ],
+    "frontier/tool-call": [
+        NodeFieldSpec(
+            name="integration_id",
+            label="Integration",
+            field_type="dropdown",
+            required=True,
+            options_source="integrations",
+            description="Configured integration (MCP server or API) to invoke.",
+        ),
+        NodeFieldSpec(
+            name="tool_name",
+            label="Tool / operation",
+            field_type="text",
+            description="Specific tool or operation exposed by the integration.",
+        ),
+        NodeFieldSpec(
+            name="arguments_json",
+            label="Arguments (JSON)",
+            field_type="code",
+            advanced=True,
+            placeholder='{"query": "..."}',
+        ),
+    ],
+    "frontier/retrieval": [
+        NodeFieldSpec(
+            name="source",
+            label="Knowledge source",
+            field_type="dropdown",
+            options_source="retrieval_sources",
+            description="Vector DB, document collection, or KB to retrieve from.",
+        ),
+        NodeFieldSpec(
+            name="top_k",
+            label="Top K",
+            field_type="number",
+            default=5,
+            min=1,
+            max=50,
+            step=1,
+        ),
+        NodeFieldSpec(
+            name="rerank",
+            label="Rerank results",
+            field_type="bool",
+            default=False,
+            advanced=True,
+        ),
+    ],
+    "frontier/guardrail": [
+        NodeFieldSpec(
+            name="ruleset_id",
+            label="Guardrail ruleset",
+            field_type="dropdown",
+            options_source="guardrail_rulesets",
+            description="Published ruleset applied to content passing through this node.",
+        ),
+        NodeFieldSpec(
+            name="stage",
+            label="Stage",
+            field_type="dropdown",
+            options=["input", "output", "both"],
+            default="both",
+        ),
+    ],
+    "frontier/commitment": [
+        NodeFieldSpec(
+            name="confidence_threshold",
+            label="Confidence threshold",
+            field_type="slider",
+            default=0.7,
+            min=0.0,
+            max=1.0,
+            step=0.01,
+            description="Minimum confidence to finalize rather than escalate.",
+        ),
+        NodeFieldSpec(
+            name="escalation_target",
+            label="Escalation target",
+            field_type="text",
+            advanced=True,
+            placeholder="human-review",
+        ),
+    ],
+    "frontier/human-review": [
+        NodeFieldSpec(
+            name="reviewers",
+            label="Reviewers",
+            field_type="text",
+            placeholder="comma-separated actors or roles",
+        ),
+        NodeFieldSpec(
+            name="block_on_timeout",
+            label="Block on timeout",
+            field_type="bool",
+            default=True,
+            advanced=True,
+        ),
+    ],
+    "frontier/manifold": [
+        NodeFieldSpec(
+            name="logic",
+            label="Join logic",
+            field_type="dropdown",
+            options=["AND", "OR"],
+            default="AND",
+            description="Require all inbound flows (AND) or any (OR).",
+        ),
+    ],
+}
+
+
 @app.get("/node-definitions")
 def get_node_definitions(request: Request, include_internal: bool = False) -> list[dict[str, Any]]:
     _enforce_builder_access(request, action="node.definition.list")
@@ -22386,6 +27657,34 @@ def get_node_definitions(request: Request, include_internal: bool = False) -> li
             description="Workflow entrypoint for user kickoff, schedule, or external event.",
             category="Core",
             color="#6ca0ff",
+        ),
+        NodeDefinition(
+            type_key="frontier/goal",
+            title="Goal",
+            description="Define intent, success criteria, constraints, priorities, and output contract.",
+            category="Cognition",
+            color="#2962ff",
+        ),
+        NodeDefinition(
+            type_key="frontier/evidence",
+            title="Evidence",
+            description="Capture and validate evidence claims before synthesis and commitment.",
+            category="Cognition",
+            color="#00796b",
+        ),
+        NodeDefinition(
+            type_key="frontier/assembly",
+            title="Assembly",
+            description="Fuse goal and evidence signals into a bounded cognitive commitment proposal.",
+            category="Cognition",
+            color="#6a1b9a",
+        ),
+        NodeDefinition(
+            type_key="frontier/commitment",
+            title="Commitment",
+            description="Finalize or escalate a bounded commitment using explicit confidence thresholds.",
+            category="Cognition",
+            color="#ef6c00",
         ),
         NodeDefinition(
             type_key="frontier/agent",
@@ -22504,6 +27803,9 @@ def get_node_definitions(request: Request, include_internal: bool = False) -> li
                 color="#4f5966",
             ),
         )
+    for node in base_nodes:
+        if not node.inputs and node.type_key in _NODE_INPUT_SCHEMAS:
+            node.inputs = _NODE_INPUT_SCHEMAS[node.type_key]
     return [node.model_dump() for node in base_nodes]
 
 
@@ -22596,9 +27898,12 @@ def publish_guardrail_ruleset(item_id: str, request: Request) -> dict[str, bool]
     )
     item.published_revision_id = published_revision.id
     item.published_at = published_revision.created_at
-    if not str(item.active_revision_id or "").strip():
-        item.active_revision_id = published_revision.id
-        item.active_at = published_revision.created_at
+    # Publishing promotes the new revision to ACTIVE (the version the runtime
+    # serves). This must advance on EVERY publish — previously it only set active
+    # on the first publish, so re-publishing left runs resolving the old/empty
+    # revision. The activate/rollback endpoint can still re-pin active afterward.
+    item.active_revision_id = published_revision.id
+    item.active_at = published_revision.created_at
     published_revision.metadata["published_pointer"] = True
     published_revision.snapshot = item.model_dump()
     store.guardrail_rulesets[item_id] = item
@@ -22810,6 +28115,478 @@ def validate_graph(payload: GraphPayload) -> dict[str, Any]:
     return result.model_dump()
 
 
+def _augment_node_system_prompt(base: str, node_instructions: str) -> str:
+    """A workflow agent node may carry its own ``system_prompt``/``instructions``
+    in its config. That text is ADDITIVE: it is appended to the agent's base
+    system prompt (from the Agent Builder) so the same agent can be specialized
+    per workflow step without forking the agent definition."""
+    extra = str(node_instructions or "").strip()
+    if not extra:
+        return base
+    return f"{base}\n\n## Step instructions (this workflow node)\n{extra}"
+
+
+def _agent_resolution_for_node(config: dict[str, Any]) -> Any:
+    """Resolve a ``frontier/agent`` node's ``config`` to the studio agent's real
+    system prompt + model (gpt-oss:20b on local Ollama) for the graph compiler.
+
+    The node's ``agent_id`` selects the agent and its full config (prompt, model,
+    tools); an optional node-level ``system_prompt``/``instructions`` is appended
+    on top (additive), it does not replace the agent's own prompt."""
+    from app.graph_compiler import AgentResolution
+
+    cfg = config if isinstance(config, dict) else {}
+    agent_id = str(cfg.get("agent_id") or "").strip()
+    node_instructions = str(cfg.get("system_prompt") or cfg.get("instructions") or "").strip()
+    base_url = local_models.ollama_openai_base_url()
+
+    mode = str(cfg.get("harness_mode") or cfg.get("execution_mode") or "").strip().lower()
+    if mode not in {"chat", "code", "team", "analyze"}:
+        phase = str(cfg.get("phase") or "").strip().lower()
+        if cfg.get("harness") is True or phase in {"build", "implement", "code"}:
+            mode = "code"
+        elif cfg.get("team") is True or phase in {"cross-functional", "team"}:
+            mode = "team"
+        elif phase in {"verify", "audit", "security", "qa", "performance", "perf", "review"}:
+            mode = "analyze"
+        else:
+            mode = "chat"
+
+    # Coding backend for code nodes: native SweAgent (default) or the Codex
+    # subprocess backend. Node config wins, else the platform env default.
+    backend = (
+        str(cfg.get("harness_backend") or os.getenv("FRONTIER_HARNESS_BACKEND") or "native")
+        .strip()
+        .lower()
+    )
+    if backend not in {"native", "codex"}:
+        backend = "native"
+
+    defn = _resolve_published_agent_definition(agent_id) if agent_id else None
+    if defn is None:
+        fallback_prompt = (
+            "You are a specialist engineer in a collaborative workflow. Reason in your "
+            "discipline, be concrete and minimal, and respond to your teammates."
+        )
+        return AgentResolution(
+            agent_id=agent_id or "agent",
+            system_prompt=_augment_node_system_prompt(fallback_prompt, node_instructions),
+            model=_default_ollama_model(),
+            provider="ollama",
+            base_url=base_url,
+            execution_mode=mode,
+            harness_backend=backend,
+            found=False,
+        )
+
+    config_json = defn.config_json if isinstance(defn.config_json, dict) else {}
+    model_defaults = (
+        config_json.get("model_defaults")
+        if isinstance(config_json.get("model_defaults"), dict)
+        else {}
+    )
+    system_prompt, _src = _resolve_agent_system_prompt(defn, requested_token=agent_id)
+    system_prompt = _augment_node_system_prompt(system_prompt, node_instructions)
+    model = str(model_defaults.get("model") or "").strip() or _default_ollama_model()
+    provider = str(model_defaults.get("provider") or "ollama").strip() or "ollama"
+
+    def _as_float(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    return AgentResolution(
+        agent_id=agent_id,
+        system_prompt=system_prompt,
+        model=model,
+        provider=provider,
+        base_url=base_url,
+        temperature=_as_float(model_defaults.get("temperature"), 0.2),
+        top_p=_as_float(model_defaults.get("top_p"), 0.95),
+        capability_profile=str(model_defaults.get("capability_profile") or ""),
+        execution_mode=mode,
+        harness_backend=backend,
+        found=True,
+    )
+
+
+def _make_harness_chat_client(resolution: Any) -> Any:
+    """Build the harness OpenAI-compatible client pointed at the local model
+    endpoint (Ollama by default). One client type serves chat, code (SweAgent)
+    and team (CollaborativeTeam) nodes."""
+    from frontier_runtime.harness.llm import OpenAIChatClient
+
+    base = resolution.base_url or local_models.ollama_openai_base_url()
+    return OpenAIChatClient(
+        model=resolution.model,
+        base_url=base,
+        api_key="ollama",
+        provider="openai-compatible",
+        request_timeout=600.0,
+    )
+
+
+def _should_use_compiler(payload: GraphPayload) -> bool:
+    """Use the LangGraph compiler when the native sequential executor cannot
+    faithfully run the canvas: cyclic graphs (consensus/fix loops) or genuine
+    multi-agent graphs (>=2 agent nodes). Single-agent acyclic graphs keep the
+    native path (and its runtime-engine metadata) unchanged."""
+    has_cycle = _topological_order([node.id for node in payload.nodes], payload.links) is None
+    agent_nodes = sum(
+        1 for node in payload.nodes if _normalize_node_type(node.type).startswith("frontier/agent")
+    )
+    return has_cycle or agent_nodes >= 2
+
+
+def _compile_and_run_frontier_graph(
+    payload: GraphPayload,
+    *,
+    run_id: str,
+    on_event: Callable[[str, dict[str, Any]], None] | None = None,
+) -> tuple[dict[str, dict[str, Any]], list[GraphRunEvent]]:
+    """Compile the canvas graph into a real LangGraph StateGraph and run it.
+
+    Agent nodes use their studio system prompt + gpt-oss:20b; named output ports
+    become conditional edges; consensus/fix loops are bounded; build/implementer
+    nodes delegate to the harness coding loop in the bound workspace. Returns
+    ``(node_results, events)`` shaped like the native path so the response model
+    and UI are unchanged.
+    """
+    from . import graph_compiler as gc
+
+    events: list[GraphRunEvent] = []
+
+    def emit(kind: str, data: dict[str, Any]) -> None:
+        if on_event is not None:
+            try:
+                on_event(kind, data)
+            except Exception:  # noqa: BLE001 - event sink must never break a run
+                pass
+        node_id = str(data.get("node_id") or kind)
+        etype = (
+            kind if kind in {"node_started", "node_completed", "node_failed"} else "node_completed"
+        )
+        title = str(data.get("title") or kind.replace("_", " ").title())
+        detail = {k: v for k, v in data.items() if k not in {"node_id", "title"}}
+        events.append(
+            GraphRunEvent(
+                id=f"evt-{uuid4()}",
+                node_id=node_id,
+                type=etype,  # type: ignore[arg-type]
+                title=title[:120],
+                summary=(
+                    str(data.get("note") or "").strip()[:300]
+                    or (str(detail)[:300] if detail else "")
+                    or "ok"
+                ),
+                created_at=_now_iso(),
+            )
+        )
+
+    run_input = payload.input if isinstance(payload.input, dict) else {}
+    runtime = run_input.get("runtime") if isinstance(run_input.get("runtime"), dict) else {}
+    session_id = str(
+        runtime.get("session_id") or run_input.get("session_id") or f"session:{run_id}"
+    )
+    execution_state: dict[str, Any] = {
+        "run_id": run_id,
+        "runtime": runtime,
+        "session_id": session_id,
+        "runtime_info": _resolve_runtime_engine(run_input, store.platform_settings),
+        "effective_security_policy": _resolve_execution_security_policy(run_input),
+    }
+
+    def execute_native(
+        node: Any,
+        incoming: list[dict[str, Any]],
+        incoming_by_port: dict[str, list[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        return _execute_node(
+            node=node,
+            incoming=incoming,
+            incoming_by_port=incoming_by_port,
+            run_input=run_input,
+            execution_state=execution_state,
+            mem_store=store.memory_by_session,
+        )
+
+    # Resolve the bound working folder to a real path under the mounted projects
+    # root (escape-safe). An unresolved/escaping path is dropped (no binding).
+    workspace = None
+    ws = run_input.get("workspace")
+    if isinstance(ws, dict) and ws.get("repo_path"):
+        resolved = _resolve_working_folder(str(ws.get("repo_path")))
+        if resolved:
+            # merge previously-approved out-of-bounds grants for this repo
+            granted = list(store.workspace_grants.get(resolved, []))
+            extra = [str(p) for p in (ws.get("extra_paths") or [])] + granted
+            workspace = {**ws, "repo_path": resolved, "extra_paths": extra}
+
+    def _record_escalation(request_obj: dict[str, Any]) -> None:
+        details = store.run_details.setdefault(run_id, {})
+        escalations = details.setdefault("escalations", [])
+        if not isinstance(escalations, list):
+            escalations = []
+            details["escalations"] = escalations
+        entry = {
+            "id": f"esc-{uuid4()}",
+            "path": str(request_obj.get("path") or ""),
+            "workspace_root": str(request_obj.get("workspace_root") or ""),
+            "policy": str(request_obj.get("policy") or "ask"),
+            "status": "pending",
+            "created_at": _now_iso(),
+        }
+        escalations.append(entry)
+        emit("permission_required", {"node_id": "workspace", "path": entry["path"]})
+
+    try:
+        max_loops = int(run_input.get("max_loop_iterations") or 4)
+    except (TypeError, ValueError):
+        max_loops = 4
+
+    run_mode = str(run_input.get("mode") or "execute").strip().lower()
+    if run_mode not in _CHAT_MODES:
+        run_mode = "execute"
+    override_model = str(run_input.get("model") or "").strip()
+    override_effort = str(run_input.get("reasoning_effort") or "").strip().lower()
+    if override_effort not in _REASONING_EFFORTS:
+        override_effort = ""
+
+    def resolve_agent(cfg: dict[str, Any]) -> Any:
+        res = _agent_resolution_for_node(cfg)
+        if override_model:
+            provider, bare = _resolve_chat_provider(override_model)
+            res.model = bare or res.model
+            res.provider = provider or res.provider
+            if res.provider == "ollama":
+                res.base_url = local_models.ollama_openai_base_url()
+        if override_effort:
+            res.reasoning_effort = override_effort
+        return res
+
+    deps = gc.CompilerDeps(
+        resolve_agent=resolve_agent,
+        make_chat_client=_make_harness_chat_client,
+        execute_native=execute_native,
+        run_id=run_id,
+        repo_root=str(_repository_root()),
+        workspace=workspace,
+        emit=emit,
+        on_escalation=_record_escalation,
+        max_loop_iterations=max(1, min(max_loops, 12)),
+        node_timeout_s=600,
+        mode=run_mode,
+    )
+
+    compiled = gc.compile_frontier_graph(list(payload.nodes), list(payload.links), deps)
+    result = gc.run_compiled_graph(compiled, run_input, deps)
+    node_results = result.get("node_results", {})
+    if not isinstance(node_results, dict):
+        node_results = {}
+    changed_files = (
+        result.get("changed_files") if isinstance(result.get("changed_files"), list) else []
+    )
+    return node_results, events, changed_files
+
+
+def _merge_changed_files(run_id: str, changed: list[dict[str, Any]]) -> None:
+    """Persist files-touched + per-file diffs on the run (merged by path)."""
+    if not changed:
+        return
+    details = store.run_details.setdefault(run_id, {})
+    existing = details.get("changed_files")
+    by_path: dict[str, dict[str, Any]] = {}
+    if isinstance(existing, list):
+        for item in existing:
+            if isinstance(item, dict) and item.get("path"):
+                by_path[str(item["path"])] = item
+    for item in changed:
+        if isinstance(item, dict) and item.get("path"):
+            by_path[str(item["path"])] = item
+    details["changed_files"] = list(by_path.values())
+
+
+def _resolve_published_workflow_definition(token: str) -> WorkflowDefinition | None:
+    requested = str(token or "").strip().lower()
+    if not requested:
+        return None
+    requested_slug = _slugify(requested)
+    for workflow in _iter_active_runtime_definitions("workflow_definition"):
+        if not isinstance(workflow, WorkflowDefinition):
+            continue
+        keys = {workflow.id.lower(), _slugify(workflow.name)}
+        if requested in keys or (requested_slug and requested_slug in keys):
+            return workflow
+    return None
+
+
+def _workflow_graph_qualifies_for_compiler(graph_json: dict[str, Any]) -> bool:
+    """A workflow definition runs through the multi-agent compiler when its graph
+    is cyclic or has >=2 agent nodes (otherwise the single-agent fast path runs)."""
+    if not isinstance(graph_json, dict):
+        return False
+    try:
+        payload = _graph_payload_from_json(graph_json)
+    except Exception:  # noqa: BLE001
+        return False
+    if not payload.nodes:
+        return False
+    return _should_use_compiler(payload)
+
+
+def _run_compiled_workflow_run(
+    *,
+    run_id: str,
+    title: str,
+    run_kind: str,
+    graph_json: dict[str, Any],
+    prompt: str,
+    payload: dict[str, Any],
+    access_context: dict[str, Any],
+) -> None:
+    """Execute a published multi-agent workflow definition through the LangGraph
+    compiler in the background run thread, translating its node results + events
+    into the inbox run's events/artifacts/graph view."""
+    gp = _graph_payload_from_json(graph_json)
+    workspace = payload.get("workspace") if isinstance(payload.get("workspace"), dict) else None
+    gp_input: dict[str, Any] = {
+        "message": prompt,
+        "spec": prompt,
+        "session_id": f"session:{run_id}",
+        "mode": str(payload.get("mode") or "execute"),
+    }
+    if workspace:
+        gp_input["workspace"] = workspace
+    if str(payload.get("model") or "").strip():
+        gp_input["model"] = str(payload.get("model")).strip()
+    if str(payload.get("reasoning_effort") or "").strip():
+        gp_input["reasoning_effort"] = str(payload.get("reasoning_effort")).strip()
+    gp = GraphPayload(
+        schema_version=gp.schema_version, nodes=gp.nodes, links=gp.links, input=gp_input
+    )
+
+    try:
+        node_results, compiled_events, changed_files = _compile_and_run_frontier_graph(
+            gp, run_id=run_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        store.runs[run_id] = WorkflowRunSummary(
+            id=run_id,
+            title=title,
+            status="Failed",
+            updatedAt="just now",
+            progressLabel="Multi-agent run failed",
+            kind=run_kind,  # type: ignore[arg-type]
+        )
+        store.run_events.setdefault(run_id, []).append(
+            WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="error",
+                title="Multi-agent workflow failed",
+                summary=_sanitize_runtime_error_message(exc),
+                createdAt=_now_iso(),
+                metadata={},
+            )
+        )
+        store.run_details[run_id] = {
+            "artifacts": [],
+            "status": "Failed",
+            "graph": graph_json,
+            "agent_traces": [],
+            "response_text": _sanitize_runtime_error_message(exc),
+            "approvals": {"required": False, "pending": False},
+            "access": access_context,
+        }
+        _persist_store_state()
+        return
+
+    # translate compiler events -> inbox run events
+    for ev in compiled_events:
+        store.run_events.setdefault(run_id, []).append(
+            WorkflowRunEvent(
+                id=ev.id,
+                type=("error" if ev.type == "node_failed" else "agent_message"),
+                title=ev.title,
+                summary=ev.summary,
+                createdAt=ev.created_at,
+                metadata={"node_id": ev.node_id, "phase": "graph"},
+            )
+        )
+
+    # final response = the most downstream human-facing message
+    response_text = "Multi-agent workflow completed."
+    for key in ("output", "gate", "build", "consensus"):
+        candidate = node_results.get(key)
+        if isinstance(candidate, dict) and (candidate.get("response") or candidate.get("message")):
+            response_text = str(candidate.get("response") or candidate.get("message"))
+            break
+    else:
+        for candidate in node_results.values():
+            if isinstance(candidate, dict) and candidate.get("response"):
+                response_text = str(candidate["response"])
+                break
+
+    agent_traces = [
+        {
+            "agent": str(res.get("title") or res.get("agent_id") or node_id),
+            "reasoningSummary": str(res.get("summary") or "")[:300],
+            "actions": [f"mode={res.get('mode', 'chat')}", f"route={res.get('route', '')}"],
+            "output": str(res.get("response") or res.get("message") or "")[:2000],
+        }
+        for node_id, res in node_results.items()
+        if isinstance(res, dict)
+    ]
+
+    artifacts: list[ArtifactSummary] = []
+    main_artifact = ArtifactSummary(
+        id=str(uuid4()), name="Completed Feature — Team Handback", status="Needs Review", version=1
+    )
+    _upsert_artifact_summary(main_artifact)
+    artifacts.append(main_artifact)
+    for node_id, res in node_results.items():
+        if isinstance(res, dict) and str(res.get("patch") or "").strip():
+            patch_artifact = ArtifactSummary(
+                id=str(uuid4()),
+                name=f"Patch — {res.get('title') or node_id}",
+                status="Needs Review",
+                version=1,
+            )
+            _upsert_artifact_summary(patch_artifact)
+            artifacts.append(patch_artifact)
+
+    store.runs[run_id] = WorkflowRunSummary(
+        id=run_id,
+        title=title,
+        status="Needs Review",
+        updatedAt="just now",
+        progressLabel="Team handed back a completed feature",
+        kind=run_kind,  # type: ignore[arg-type]
+    )
+    store.run_events.setdefault(run_id, []).append(
+        WorkflowRunEvent(
+            id=f"evt-{uuid4()}",
+            type="artifact_created",
+            title="Team handback ready",
+            summary=response_text[:500],
+            createdAt=_now_iso(),
+            metadata={"artifact_id": main_artifact.id},
+        )
+    )
+    store.run_details[run_id] = {
+        "artifacts": [a.model_dump() for a in artifacts],
+        "status": "Needs Review",
+        "graph": graph_json,
+        "agent_traces": agent_traces,
+        "response_text": response_text,
+        "node_results": node_results,
+        "changed_files": changed_files,
+        "approvals": {"required": True, "pending": True},
+        "access": access_context,
+    }
+    _persist_store_state()
+
+
 @app.post("/graph/runs")
 def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
     actor = _enforce_request_authn(
@@ -22863,6 +28640,62 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
                 "max_collaborators": max_collaborators,
             },
         )
+
+    # Multi-agent / cyclic graphs (e.g. the cross-functional development team)
+    # compile to a real LangGraph StateGraph; the native sequential executor
+    # below cannot run cycles and ignores per-agent prompts/models.
+    if _should_use_compiler(payload):
+        try:
+            compiled_results, compiled_events, compiled_changed = _compile_and_run_frontier_graph(
+                payload, run_id=run_id
+            )
+            _merge_changed_files(run_id, compiled_changed)
+            runtime_snapshot = {
+                "selected_engine": "langgraph",
+                "executed_engine": "langgraph",
+                "mode": "native",
+                "strategy": "single",
+                "engine": "frontier-graph-compiler",
+            }
+            result = GraphRunResult(
+                run_id=run_id,
+                status="completed",
+                execution_order=list(compiled_results.keys()),
+                node_results=compiled_results,
+                events=compiled_events,
+                validation=validation,
+                runtime=runtime_snapshot,
+            )
+            _append_audit_event(
+                "graph.run",
+                actor,
+                "allowed",
+                {"run_id": run_id, "status": result.status, "engine": "compiler"},
+            )
+            return result.model_dump()
+        except Exception as exc:  # noqa: BLE001
+            result = GraphRunResult(
+                run_id=run_id,
+                status="failed",
+                execution_order=[],
+                node_results={},
+                events=[
+                    GraphRunEvent(
+                        id=f"evt-{uuid4()}",
+                        node_id="compiler",
+                        type="node_failed",
+                        title="Graph compilation/run failed",
+                        summary=_sanitize_runtime_error_message(exc),
+                        created_at=_now_iso(),
+                    )
+                ],
+                validation=validation,
+                runtime={"engine": "frontier-graph-compiler"},
+            )
+            _append_audit_event(
+                "graph.run", actor, "error", {"run_id": run_id, "status": result.status}
+            )
+            return result.model_dump()
 
     order = _topological_order([node.id for node in payload.nodes], payload.links) or []
     node_by_id = {node.id: node for node in payload.nodes}

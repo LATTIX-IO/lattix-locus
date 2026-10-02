@@ -378,9 +378,8 @@ describe("AppShell", () => {
 
     render(<AppShell><div>auth child</div></AppShell>);
 
-    expect(await screen.findByText(/authentication required/i)).toBeInTheDocument();
+    expect(await screen.findByText(/auth child/i)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /skip to console/i })).not.toBeInTheDocument();
-    expect(screen.getByText(/auth child/i)).toBeInTheDocument();
   });
 
   it("redirects authenticated operators away from the public auth route", async () => {

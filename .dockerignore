@@ -17,3 +17,18 @@ lattix-frontier-frontend/.next
 lattix-frontier-frontend/node_modules
 lattix-frontier-frontend/dev.log
 lattix-frontier-frontend/.pytest_cache
+
+# Secrets and local state — never bake into images
+.env
+.env.*
+apps/frontend/.env.local
+.installer
+.frontier
+.sandbox
+.tmp-auth-cookie.txt
+CLAUDE.local.md
+.claude
+.codex
+.desloppify
+.ai-memory/local
+docs/perf/baselines

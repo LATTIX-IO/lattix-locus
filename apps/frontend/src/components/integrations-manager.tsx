@@ -5,12 +5,15 @@ import {
   connectIntegrationOAuth,
   deleteIntegration,
   disconnectIntegrationOAuth,
+  getIntegrationCatalog,
   getIntegrationOAuthStatus,
   getIntegrationStarterTemplates,
   getIntegrations,
+  installCatalogIntegration,
   refreshIntegrationOAuth,
   saveIntegration,
   testIntegration,
+  type IntegrationCatalogEntry,
 } from "@/lib/api";
 import { McpConnectionsPanel } from "@/components/mcp-connections-panel";
 import type {
@@ -449,6 +452,37 @@ export function IntegrationsManager() {
   const [oauthAccountLabel, setOauthAccountLabel] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<IntegrationCatalogEntry[]>([]);
+  const [installingId, setInstallingId] = useState<string | null>(null);
+
+  async function refreshCatalog() {
+    try {
+      setCatalog(await getIntegrationCatalog());
+    } catch {
+      // Catalog is additive; the manager remains usable without it.
+    }
+  }
+
+  useEffect(() => {
+    void refreshCatalog();
+  }, []);
+
+  async function installFromCatalog(entry: IntegrationCatalogEntry) {
+    setInstallingId(entry.catalog_id);
+    try {
+      const result = await installCatalogIntegration(entry.catalog_id);
+      setStatusMessage(
+        result.already_installed
+          ? `${entry.name} is already installed.`
+          : `${entry.name} added as a draft — configure its credentials below.`,
+      );
+      await Promise.all([refresh(), refreshCatalog()]);
+    } catch (err) {
+      setStatusMessage(err instanceof Error ? err.message : `Unable to install ${entry.name}.`);
+    } finally {
+      setInstallingId(null);
+    }
+  }
 
   const selectedTemplate = starterTemplates.find((item) => item.id === selectedTemplateId) ?? null;
   const previewTemplate = starterTemplates.find((item) => item.id === previewTemplateId) ?? selectedTemplate ?? starterTemplates[0] ?? null;
@@ -846,24 +880,63 @@ export function IntegrationsManager() {
   }
 
   return (
-    <section className="space-y-5">
-      <header className="flex flex-wrap items-start justify-between gap-4 rounded-[1.7rem] border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_97%,hsl(var(--background))_3%)] px-5 py-4 shadow-[0_22px_56px_rgba(15,23,42,0.06)]">
-        <div className="max-w-2xl">
-          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Builder workspace</p>
-          <h1 className="mt-2 text-[1.5rem] font-semibold tracking-[-0.03em] text-[var(--foreground)]">Integration Manager</h1>
-          <p className="mt-2 text-sm leading-6 text-[var(--fx-muted)]">Configure local connectors for tools, data stores, queues, and APIs without losing the runtime posture or secret-handling rules attached to them.</p>
+    <section className="space-y-4">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Integrations</h1>
+          <p className="fx-muted">Connect MCP servers and APIs for tools, data stores, and queues.</p>
         </div>
-        <div className="grid min-w-[220px] gap-2 sm:grid-cols-2">
-          <div className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.8)] px-3 py-2.5">
-            <p className="text-[0.72rem] font-medium text-[var(--fx-muted)]">Configured</p>
-            <p className="mt-1 text-lg font-semibold text-[var(--foreground)]">{items.length}</p>
-          </div>
-          <div className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.8)] px-3 py-2.5">
-            <p className="text-[0.72rem] font-medium text-[var(--fx-muted)]">Auth modes</p>
-            <p className="mt-1 text-lg font-semibold text-[var(--foreground)]">5</p>
-          </div>
-        </div>
+        <button
+          type="button"
+          className="fx-btn-primary px-3 py-2 text-sm font-medium"
+          onClick={() => {
+            resetForm();
+            setStatusMessage("");
+            document.getElementById("integration-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
+          }}
+        >
+          Add Custom
+        </button>
       </header>
+
+      <div className="fx-panel p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide">Catalog — MCP servers &amp; APIs</h2>
+          <span className="fx-muted text-xs">Preloaded, vetted entries. Credentials are configured after install.</span>
+        </div>
+        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {catalog.map((entry) => {
+            const protocol = String(entry.metadata_json?.protocol ?? "http");
+            return (
+              <div key={entry.catalog_id} className="border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2.5 text-xs">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-medium text-[var(--foreground)]">{entry.name}</p>
+                  <span className="fx-muted rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[10px] uppercase">
+                    {protocol === "mcp" ? "MCP" : "API"}
+                  </span>
+                </div>
+                <p className="fx-muted mt-1 truncate">{entry.capabilities.join(", ")}</p>
+                <div className="mt-2 flex items-center justify-between">
+                  <span className="fx-muted text-[10px] uppercase">{entry.auth_type === "none" ? "no auth" : entry.auth_type}</span>
+                  {entry.installed ? (
+                    <span className="text-[hsl(var(--state-success))]">Installed</span>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={installingId === entry.catalog_id}
+                      onClick={() => void installFromCatalog(entry)}
+                      className="fx-btn-secondary px-2 py-1 text-[11px] font-medium disabled:opacity-60"
+                    >
+                      {installingId === entry.catalog_id ? "Adding..." : "Add"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          {catalog.length === 0 ? <p className="fx-muted text-xs">Catalog unavailable.</p> : null}
+        </div>
+      </div>
 
       {oauthPanelItem && oauthPanelStatus ? (
         <div className="fx-panel rounded-[1.6rem] p-5 shadow-[0_20px_48px_rgba(15,23,42,0.05)]">
@@ -982,10 +1055,10 @@ export function IntegrationsManager() {
         </div>
       ) : null}
 
-      <div className="fx-panel rounded-[1.6rem] p-5 shadow-[0_20px_48px_rgba(15,23,42,0.05)]">
+      <div id="integration-form" className="fx-panel scroll-mt-24 rounded-[1.6rem] p-5 shadow-[0_20px_48px_rgba(15,23,42,0.05)]">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">New connector</p>
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Custom connector</p>
             <h2 className="mt-2 text-[1.1rem] font-semibold tracking-[-0.02em] text-[var(--foreground)]">{editingId ? "Edit integration" : "Add integration"}</h2>
             <p className="mt-1 text-sm leading-6 text-[var(--fx-muted)]">Register the endpoint, choose the auth shape the runtime can actually exercise, and map skill capabilities so generic tool calls can resolve to the right connector.</p>
           </div>
@@ -1575,11 +1648,12 @@ export function IntegrationsManager() {
               </tr>
             ) : items.length === 0 ? (
               <tr>
-                <td className="px-3 py-3 text-xs text-[var(--foreground)]" colSpan={8}>No integrations configured yet.</td>
+                <td className="px-3 py-3 text-xs text-[var(--foreground)]" colSpan={8}>No integrations configured yet. Install one from the catalog above, or use Add Custom to connect an API or MCP server.</td>
               </tr>
             ) : (
               items.map((item) => {
                 const oauthStatus = oauthStatuses[item.id] ?? item.oauth_status ?? null;
+                const isMcp = String(readAuthConfig(item.metadata_json).protocol ?? item.metadata_json?.protocol ?? "") === "mcp";
                 return (
                   <tr key={item.id} className="border-t border-[var(--fx-border)] align-top hover:bg-[hsl(var(--muted)/0.16)]">
                     <td className="px-3 py-3 font-medium text-[var(--foreground)]">
@@ -1599,7 +1673,12 @@ export function IntegrationsManager() {
                       </div>
                     </td>
                     <td className="px-3 py-3">
-                      <span className="fx-pill px-2.5 py-1 text-[0.72rem] font-medium text-[var(--foreground)]">{item.type}</span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="fx-pill px-2.5 py-1 text-[0.72rem] font-medium text-[var(--foreground)]">{item.type}</span>
+                        <span className="fx-muted rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[10px] uppercase">
+                          {isMcp ? "MCP" : "API"}
+                        </span>
+                      </div>
                     </td>
                     <td className="px-3 py-3">
                       <span className={`inline-flex rounded-full border px-2.5 py-1 text-[0.72rem] font-medium ${integrationStatusTone(item.status)}`}>

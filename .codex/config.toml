@@ -1,1 +1,16 @@
-model_reasoning_effort = "medium"
+# Keep repository-local Codex defaults valid even when this checkout is opened
+# from a host with older global defaults.
+service_tier = "fast"
+model_reasoning_effort = "xhigh"
+
+# OmniRoute exposes an OpenAI Responses-compatible endpoint. The API key stays
+# in the environment and must never be committed to this repository.
+[model_providers.omniroute]
+name = "OmniRoute"
+base_url = "http://127.0.0.1:20128/v1"
+env_key = "OMNIROUTE_API_KEY"
+env_key_instructions = "Create a dashboard key in the local OmniRoute instance and export it as OMNIROUTE_API_KEY."
+wire_api = "responses"
+request_max_retries = 2
+stream_max_retries = 2
+stream_idle_timeout_ms = 300000

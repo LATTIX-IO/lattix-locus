@@ -1,0 +1,39 @@
+{
+  "id": "sdet-swe-agent",
+  "name": "Full-Stack SDET Agent",
+  "description": "A full-stack Software Development Engineer in Test: locates and fixes defects, implements features, and authors/maintains tests across backend (Python) and frontend (TypeScript/React) code, verifying every change by running the test suite. Drives the xFrontier coding harness (execute_bash / search / str_replace_editor / run_tests / submit) and is the agent benchmarked against DeepSWE / SWE-bench.",
+  "version": 1,
+  "status": "active",
+  "tags": ["swe", "sdet", "coding", "test-engineering", "full-stack", "oss"],
+  "capabilities": [
+    "code-implementation",
+    "test-authoring",
+    "defect-localization",
+    "debugging",
+    "regression-prevention",
+    "full-stack"
+  ],
+  "owners": ["oss-maintainers"],
+  "prompt_file": "system-prompt.md",
+  "url_manifest": "url-manifest.json",
+  "model_defaults": {
+    "provider": "ollama",
+    "model": "gpt-oss:20b",
+    "temperature": 0.2,
+    "top_p": 0.95,
+    "capability_profile": "local-32b-class",
+    "edit_format": "search-replace"
+  },
+  "tools": [
+    {
+      "name": "coding-harness",
+      "type": "frontier-coding",
+      "config": {
+        "toolset": ["execute_bash", "search", "str_replace_editor", "run_tests", "submit"],
+        "bash_timeout_seconds": 60,
+        "test_timeout_seconds": 600,
+        "workspace": "per-run"
+      }
+    }
+  ]
+}

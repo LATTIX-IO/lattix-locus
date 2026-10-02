@@ -12,6 +12,14 @@ vi.mock("next/link", () => ({
   default: ({ children, href, ...props }: { children: ReactNode; href: string }) => <a href={href} {...props}>{children}</a>,
 }));
 
+vi.mock("@/components/typed-delete-button", () => ({
+  TypedDeleteButton: ({ itemName }: { itemName: string }) => <button type="button">Delete {itemName}</button>,
+}));
+
+vi.mock("@/components/import-export-controls", () => ({
+  ImportExportControls: () => null,
+}));
+
 vi.mock("@/components/builder-library-actions", () => ({
   BuilderLibraryActions: ({ status, openHref }: { status: string; openHref: string }) => (
     <div>

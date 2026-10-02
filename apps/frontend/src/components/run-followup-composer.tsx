@@ -3,10 +3,32 @@
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { createWorkflowRun, getAgentDefinitions, getPublishedWorkflows, getRuntimeProviders, getUserRuntimeProviders } from "@/lib/api";
-import type { AgentDefinition, WorkflowDefinition } from "@/types/frontier";
+import {
+  createWorkflowRun,
+  getAgentDefinitions,
+  getPlaybooks,
+  getPublishedWorkflows,
+  getRuntimeProviders,
+  getUserRuntimeProviders,
+  sendRunMessage,
+  type ComposerOptions,
+} from "@/lib/api";
+import type { AgentDefinition, PlaybookDefinition, WorkflowDefinition } from "@/types/frontier";
+import { ComposerControls } from "@/components/composer-controls";
 
-type TokenKind = "data" | "tag" | "workflow" | "agent";
+type TokenKind = "data" | "tag" | "workflow" | "agent" | "playbook";
+
+type MentionTrigger = "@" | "/" | "!";
+
+/**
+ * How a message is delivered:
+ * - "same-run": appended to THIS run's conversation via sendRunMessage; the live
+ *   event stream renders the reply in place. Uses the inline composer controls
+ *   (model / reasoning / mode / MCP servers / working folder).
+ * - "follow-up-run": starts a follow-up chat run seeded with recent context and
+ *   the selected runtime provider/model.
+ */
+export type FollowupDeliveryMode = "same-run" | "follow-up-run";
 
 type ParsedToken = {
   kind: TokenKind;
@@ -14,7 +36,7 @@ type ParsedToken = {
 };
 
 type MentionSuggestion = {
-  trigger: "@" | "/";
+  trigger: MentionTrigger;
   value: string;
   label: string;
 };
@@ -65,7 +87,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 };
 
 function parseTokens(text: string): ParsedToken[] {
-  const matches = text.match(/([$#/@])[^\s$#/@]+/g) ?? [];
+  const matches = text.match(/([$#/@!])[^\s$#/@!]+/g) ?? [];
 
   return matches.map((token) => {
     const prefix = token[0];
@@ -74,6 +96,7 @@ function parseTokens(text: string): ParsedToken[] {
     if (prefix === "$") return { kind: "data", value };
     if (prefix === "#") return { kind: "tag", value };
     if (prefix === "/") return { kind: "workflow", value };
+    if (prefix === "!") return { kind: "playbook", value };
     return { kind: "agent", value };
   });
 }
@@ -87,7 +110,7 @@ function slugify(value: string): string {
     .slice(0, 80);
 }
 
-function getActiveMentionToken(text: string, cursor: number): { trigger: "@" | "/"; query: string; start: number; end: number } | null {
+function getActiveMentionToken(text: string, cursor: number): { trigger: MentionTrigger; query: string; start: number; end: number } | null {
   if (cursor < 0 || cursor > text.length) {
     return null;
   }
@@ -99,16 +122,16 @@ function getActiveMentionToken(text: string, cursor: number): { trigger: "@" | "
   start += 1;
 
   const token = text.slice(start, cursor);
-  if (!token || (token[0] !== "@" && token[0] !== "/")) {
+  if (!token || (token[0] !== "@" && token[0] !== "/" && token[0] !== "!")) {
     return null;
   }
 
-  if (token.length > 1 && /[@/]/.test(token.slice(1))) {
+  if (token.length > 1 && /[@/!]/.test(token.slice(1))) {
     return null;
   }
 
   return {
-    trigger: token[0] as "@" | "/",
+    trigger: token[0] as MentionTrigger,
     query: token.slice(1),
     start,
     end: cursor,
@@ -117,9 +140,11 @@ function getActiveMentionToken(text: string, cursor: number): { trigger: "@" | "
 
 type Props = {
   runId: string;
-  recentContext: string;
+  recentContext?: string;
   initialRuntime?: RuntimeSeed;
   onStatusChange?: (status: FollowupComposerStatus) => void;
+  /** Defaults to "follow-up-run". */
+  delivery?: FollowupDeliveryMode;
 };
 
 const COMPOSER_MIN_HEIGHT = 44;
@@ -191,7 +216,14 @@ function buildModelOptions(runtimeOptions: ComposerRuntimeOption[]): ComposerMod
   );
 }
 
-export function RunFollowupComposer({ runId, recentContext, initialRuntime, onStatusChange }: Props) {
+export function RunFollowupComposer({
+  runId,
+  recentContext = "",
+  initialRuntime,
+  onStatusChange,
+  delivery = "follow-up-run",
+}: Props) {
+  const sameRun = delivery === "same-run";
   const router = useRouter();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const controlsMenuRef = useRef<HTMLDivElement | null>(null);
@@ -200,6 +232,8 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [publishedAgents, setPublishedAgents] = useState<AgentDefinition[]>([]);
   const [publishedWorkflows, setPublishedWorkflows] = useState<WorkflowDefinition[]>([]);
+  const [publishedPlaybooks, setPublishedPlaybooks] = useState<PlaybookDefinition[]>([]);
+  const [composerOpts, setComposerOpts] = useState<ComposerOptions>({});
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitInfo, setSubmitInfo] = useState<string | null>(null);
@@ -217,11 +251,14 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
     let cancelled = false;
 
     async function loadComposerData() {
-      const [agentDefs, workflowDefs, userProviders, runtimeProviders] = await Promise.allSettled([
-        getAgentDefinitions(),
-        getPublishedWorkflows(),
-        getUserRuntimeProviders(),
-        getRuntimeProviders(),
+      // Each loader is wrapped so a synchronous throw becomes a settled rejection.
+      const [agentDefs, workflowDefs, playbookDefs, userProviders, runtimeProviders] = await Promise.allSettled([
+        Promise.resolve().then(() => getAgentDefinitions()),
+        Promise.resolve().then(() => getPublishedWorkflows()),
+        Promise.resolve().then(() => getPlaybooks()),
+        // Same-run delivery uses ComposerControls for model selection instead.
+        sameRun ? Promise.resolve([]) : Promise.resolve().then(() => getUserRuntimeProviders()),
+        sameRun ? Promise.resolve({ providers: [] }) : Promise.resolve().then(() => getRuntimeProviders()),
       ]);
       if (cancelled) {
         return;
@@ -232,6 +269,9 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
       }
       if (workflowDefs.status === "fulfilled") {
         setPublishedWorkflows(workflowDefs.value.filter((workflow) => workflow.status === "published"));
+      }
+      if (playbookDefs.status === "fulfilled") {
+        setPublishedPlaybooks(playbookDefs.value.filter((playbook) => playbook.status === "published"));
       }
 
       if (userProviders.status === "fulfilled" || runtimeProviders.status === "fulfilled") {
@@ -252,7 +292,7 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [sameRun]);
 
   useEffect(() => {
     if (runtimeOptions.length === 0) {
@@ -327,6 +367,17 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
         .slice(0, 8);
     }
 
+    if (activeMention.trigger === "!") {
+      return publishedPlaybooks
+        .map((playbook) => ({
+          trigger: "!" as const,
+          value: slugify(playbook.name) || slugify(playbook.id),
+          label: playbook.name,
+        }))
+        .filter((item) => item.value.includes(query) || item.label.toLowerCase().includes(query))
+        .slice(0, 8);
+    }
+
     return publishedWorkflows
       .map((workflow) => ({
         trigger: "/" as const,
@@ -335,7 +386,7 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
       }))
       .filter((item) => item.value.includes(query) || item.label.toLowerCase().includes(query))
       .slice(0, 8);
-  }, [activeMention, publishedAgents, publishedWorkflows]);
+  }, [activeMention, publishedAgents, publishedWorkflows, publishedPlaybooks]);
 
   useEffect(() => {
     setActiveSuggestionIndex(0);
@@ -385,11 +436,17 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
       label: `${workflow.name} (v${workflow.version})`,
       typeLabel: "Workflow",
     }));
+    const playbookOptions = publishedPlaybooks.map((playbook) => ({
+      id: `playbook:${playbook.id}`,
+      token: `!${slugify(playbook.name) || slugify(playbook.id)}`,
+      label: playbook.name,
+      typeLabel: "Playbook",
+    }));
     const query = commandQuery.trim().toLowerCase();
-    return [...agentOptions, ...workflowOptions]
+    return [...agentOptions, ...workflowOptions, ...playbookOptions]
       .filter((option) => !query || option.token.toLowerCase().includes(query) || option.label.toLowerCase().includes(query))
       .slice(0, 8);
-  }, [commandQuery, publishedAgents, publishedWorkflows]);
+  }, [commandQuery, publishedAgents, publishedWorkflows, publishedPlaybooks]);
 
   useEffect(() => {
     if (!controlsOpen) {
@@ -508,16 +565,39 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const message = draft.trim();
-    if (!message) {
+    if (!message || isSubmitting) {
       return;
     }
     setSubmitError(null);
     setSubmitInfo(null);
     setCreatedRunId(null);
 
+    if (sameRun) {
+      try {
+        setIsSubmitting(true);
+        // Sends into THIS run's conversation; the live event stream renders the
+        // user message and the agent's reply in place.
+        await sendRunMessage(runId, message, composerOpts as Record<string, unknown>);
+        setCreatedRunId(runId);
+        setSubmitInfo("Message sent.");
+        setDraft("");
+        setComposerCollapsed(false);
+        window.dispatchEvent(new CustomEvent("frontier:runs-changed"));
+        router.refresh();
+        requestAnimationFrame(() => textareaRef.current?.focus());
+      } catch (error) {
+        const messageText = error instanceof Error ? error.message : "Unable to send the message.";
+        setSubmitError(messageText);
+      } finally {
+        setIsSubmitting(false);
+      }
+      return;
+    }
+
     const parsedTokens = parseTokens(message);
     const publishedAgentSlugs = new Set(publishedAgents.map((agent) => slugify(agent.name) || slugify(agent.id)));
     const publishedWorkflowSlugs = new Set(publishedWorkflows.map((workflow) => slugify(workflow.name) || slugify(workflow.id)));
+    const publishedPlaybookSlugs = new Set(publishedPlaybooks.map((playbook) => slugify(playbook.name) || slugify(playbook.id)));
 
     const filteredTokens = parsedTokens.filter((token) => {
       if (token.kind === "agent") {
@@ -526,8 +606,12 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
       if (token.kind === "workflow") {
         return publishedWorkflowSlugs.has(token.value);
       }
+      if (token.kind === "playbook") {
+        return publishedPlaybookSlugs.has(token.value);
+      }
       return true;
     });
+    const playbooks = filteredTokens.filter((token) => token.kind === "playbook").map((token) => token.value);
     const runtimePayload = activeRuntimeOption && selectedModel
       ? {
           provider: activeRuntimeOption.provider,
@@ -541,6 +625,7 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
         session_kind: "chat",
         prompt: message,
         tokens: filteredTokens,
+        ...(playbooks.length > 0 ? { playbooks } : {}),
         context: {
           source_run_id: runId,
           mode: "follow_up",
@@ -593,11 +678,12 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
           onClick={(event) => setCursorPosition((event.target as HTMLTextAreaElement).selectionStart ?? draft.length)}
           onKeyUp={(event) => setCursorPosition((event.target as HTMLTextAreaElement).selectionStart ?? draft.length)}
           onKeyDown={handleTextareaKeyDown}
-          placeholder="Message this run... (use @agent or /workflow)"
+          placeholder="Message this run... (use @agent, /workflow, or !playbook)"
           className="w-full resize-none bg-transparent py-[0.65rem] text-[0.82rem] leading-6 text-[hsl(var(--foreground))] outline-none placeholder:text-[var(--fx-muted)]"
         />
 
         <div className="flex items-center gap-2 self-end pb-0.5">
+          {sameRun ? null : (
           <button
             type="button"
             onClick={() => setControlsOpen((current) => !current)}
@@ -606,6 +692,7 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
           >
             <span className="truncate">{currentModelLabel}</span>
           </button>
+          )}
           <button
             type="button"
             aria-label={controlsOpen ? "Hide follow-up controls" : "Show follow-up controls"}
@@ -643,12 +730,15 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
         >
           <div className="border-b border-[color-mix(in_srgb,var(--ui-border)_72%,transparent)] px-3 py-2">
             <p className="text-[11px] font-medium tracking-[0.04em] text-[var(--fx-muted)]">Composer Tools</p>
-            <p className="mt-1 text-[11px] text-[var(--fx-muted)]">
-              {currentModelLabel}
-            </p>
+            {sameRun ? null : (
+              <p className="mt-1 text-[11px] text-[var(--fx-muted)]">
+                {currentModelLabel}
+              </p>
+            )}
           </div>
 
           <div className="space-y-3 px-3 py-3">
+            {sameRun ? null : (
             <label className="block text-[11px] text-[var(--fx-muted)]">
               Current model
               <select
@@ -664,8 +754,9 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
                 ))}
               </select>
             </label>
+            )}
 
-            {runtimeLoadError ? <p className="text-[11px] text-[var(--fx-danger)]">{runtimeLoadError}</p> : null}
+            {!sameRun && runtimeLoadError ? <p className="text-[11px] text-[var(--fx-danger)]">{runtimeLoadError}</p> : null}
 
             <div className="space-y-2">
               <p className="text-[11px] font-medium tracking-[0.04em] text-[var(--fx-muted)]">Command Insert</p>
@@ -674,7 +765,7 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
                 aria-label="Search follow-up commands"
                 value={commandQuery}
                 onChange={(event) => setCommandQuery(event.target.value)}
-                placeholder="Search @agents or /workflows"
+                placeholder="Search @agents, /workflows, or !playbooks"
                 className="fx-field w-full px-2 py-1.5 text-[11px]"
               />
               <div className="overflow-hidden rounded-[12px] border border-[color-mix(in_srgb,var(--ui-border)_72%,transparent)] bg-[hsl(var(--card)/0.72)]">
@@ -697,7 +788,7 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
                     ))}
                   </ul>
                 ) : (
-                  <p className="px-3 py-2 text-[11px] text-[var(--fx-muted)]">No matching published agents or workflows.</p>
+                  <p className="px-3 py-2 text-[11px] text-[var(--fx-muted)]">No matching published agents, workflows, or playbooks.</p>
                 )}
               </div>
             </div>
@@ -708,7 +799,11 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
       {activeMention && mentionSuggestions.length > 0 ? (
         <div className="overflow-hidden rounded-[14px] border border-[var(--ui-border)] bg-[hsl(var(--card))] shadow-[var(--fx-shadow-panel)]">
           <div className="px-2.5 py-1.5 text-[10px] font-medium tracking-[0.04em] text-[var(--fx-muted)]">
-            {activeMention.trigger === "@" ? "Published Agents" : "Published Workflows"}
+            {activeMention.trigger === "@"
+              ? "Published Agents"
+              : activeMention.trigger === "!"
+                ? "Published Playbooks"
+                : "Published Workflows"}
           </div>
           <ul className="max-h-40 overflow-auto text-xs">
             {mentionSuggestions.map((suggestion, index) => (
@@ -734,9 +829,15 @@ export function RunFollowupComposer({ runId, recentContext, initialRuntime, onSt
         </div>
       ) : null}
 
+      {sameRun ? (
+        <div className="rounded-[12px] border border-[var(--ui-border)] bg-[hsl(var(--card))] px-3 py-1.5">
+          <ComposerControls onChange={setComposerOpts} />
+        </div>
+      ) : null}
+
       <div className="flex items-center justify-between gap-2">
         <p className="fx-muted text-[11px]">
-          Published @agents and /workflows are supported. Without either, this routes through the default chat agent.
+          Published @agents, /workflows, and !playbooks are supported. Without any, this routes through the default chat agent.
         </p>
       </div>
 

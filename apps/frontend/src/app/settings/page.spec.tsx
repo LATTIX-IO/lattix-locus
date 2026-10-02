@@ -64,6 +64,10 @@ const { getPlatformSettingsMock, savePlatformSettingsMock, getAtfAlignmentReport
   savePlatformSettingsMock: vi.fn<(payload: Record<string, unknown>) => Promise<{ ok: boolean }>>(async () => ({ ok: true })),
 }));
 
+vi.mock("@/components/composer-defaults-settings", () => ({
+  ComposerDefaultsSettings: () => null,
+}));
+
 vi.mock("@/lib/api", () => ({
   getPlatformSettings: getPlatformSettingsMock,
   getAtfAlignmentReport: getAtfAlignmentReportMock,

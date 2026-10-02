@@ -1,0 +1,22 @@
+{
+  "id": "backend-engineer-agent",
+  "name": "Backend Engineer Agent",
+  "description": "Server-side engineer on the cross-functional team: reasons about APIs, data models, business logic, persistence, concurrency, and error handling. Contributes its own analysis and proposals to the team design discussion, then implements and tests the backend portion of the agreed design.",
+  "version": 1,
+  "status": "active",
+  "tags": ["swe", "backend", "api", "data", "team", "oss"],
+  "capabilities": ["backend-design", "api-design", "data-modeling", "implementation"],
+  "owners": ["oss-maintainers"],
+  "prompt_file": "system-prompt.md",
+  "url_manifest": "url-manifest.json",
+  "model_defaults": {
+    "provider": "ollama",
+    "model": "gpt-oss:20b",
+    "temperature": 0.2,
+    "top_p": 0.95,
+    "capability_profile": "local-32b-class"
+  },
+  "tools": [
+    { "name": "coding-harness", "type": "frontier-coding", "config": { "toolset": ["execute_bash", "search", "str_replace_editor", "run_tests", "submit"] } }
+  ]
+}

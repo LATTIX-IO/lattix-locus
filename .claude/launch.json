@@ -7,6 +7,18 @@
       "runtimeArgs": ["node_modules/next/dist/bin/next", "dev", "--port", "3001"],
       "port": 3001,
       "cwd": "apps/frontend"
+    },
+    {
+      "name": "local-stack",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": ["compose", "-f", "docker-compose.local.yml", "up"],
+      "port": 3000
+    },
+    {
+      "name": "secure-stack",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": ["compose", "-f", "docker-compose.yml", "up"],
+      "port": 8000
     }
   ]
 }
