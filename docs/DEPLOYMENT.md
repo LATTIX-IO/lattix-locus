@@ -4,14 +4,13 @@
 
 Prerequisites:
 
-- Docker
-- Python 3.12+
+- None for the default bootstrap path; the bootstrap installs Python 3.12+ and Docker Desktop/Engine when they are missing
 
 Steps:
 
 1. Run `curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh`, or on Windows run `powershell -ExecutionPolicy Bypass -c "iwr https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.ps1 -UseBasicParsing | iex"`.
-2. Follow the interactive installer prompts.
-3. The installer auto-runs `lattix up` for the secure stack once installation completes.
+2. Let the bootstrap install supported Python and Docker prerequisites if the machine is still clean, then follow the interactive installer prompts.
+3. The installer creates a managed runtime under the install root, installs the CLI into that runtime, and auto-runs `lattix up` for the secure stack once installation completes.
 4. Open `http://xfrontier.local` (or your configured `LOCAL_STACK_HOST`) for the gateway-routed frontend and use the local gateway or host-only admin bindings for health checks.
 5. Validate with `lattix health` and `make test`.
 

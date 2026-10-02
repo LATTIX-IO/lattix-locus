@@ -4,6 +4,36 @@ $TempRoot = if ([string]::IsNullOrWhiteSpace($env:TEMP)) { '.\tmp' } else { $env
 $BootstrapDir = Join-Path $TempRoot 'frontier-install'
 $InstallerUrl = 'https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/frontier-installer.py'
 $LocalInstallerPath = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'frontier-installer.py' } else { '' }
+$MinimumPythonMinor = 12
+
+function Add-PathEntry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PathEntry
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PathEntry) -or -not (Test-Path $PathEntry)) {
+        return
+    }
+
+    $entries = @($env:PATH -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($entries -contains $PathEntry) {
+        return
+    }
+
+    $env:PATH = "$PathEntry;$env:PATH"
+}
+
+function Refresh-CommonPaths {
+    Add-PathEntry -PathEntry (Join-Path $env:ProgramFiles 'Docker\Docker\resources\bin')
+    Add-PathEntry -PathEntry (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps')
+    Add-PathEntry -PathEntry (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312')
+    Add-PathEntry -PathEntry (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\Scripts')
+    Add-PathEntry -PathEntry (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313')
+    Add-PathEntry -PathEntry (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313\Scripts')
+    Add-PathEntry -PathEntry (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python314')
+    Add-PathEntry -PathEntry (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python314\Scripts')
+}
 
 function Test-PythonCommand {
     param(
@@ -15,16 +45,133 @@ function Test-PythonCommand {
 
     try {
         if ($UseLauncher) {
-            & $Command.Source -3 -c "import sys" *> $null
+            & $Command.Source -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, $MinimumPythonMinor) else 1)" *> $null
         }
         else {
-            & $Command.Source -c "import sys" *> $null
+            & $Command.Source -c "import sys; raise SystemExit(0 if sys.version_info >= (3, $MinimumPythonMinor) else 1)" *> $null
         }
         $commandExitCode = $LASTEXITCODE
         return $commandExitCode -eq 0
     }
     catch {
         return $false
+    }
+}
+
+function Install-WithWinget {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackageId
+    )
+
+    $Winget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($null -eq $Winget) {
+        return $false
+    }
+
+    & $Winget.Source install --exact --id $PackageId --accept-package-agreements --accept-source-agreements
+    return $LASTEXITCODE -eq 0
+}
+
+function Install-WithChocolatey {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackageName
+    )
+
+    $Choco = Get-Command choco -ErrorAction SilentlyContinue
+    if ($null -eq $Choco) {
+        return $false
+    }
+
+    & $Choco.Source install $PackageName -y
+    return $LASTEXITCODE -eq 0
+}
+
+function Resolve-SupportedPython {
+    Refresh-CommonPaths
+
+    $Python = Get-Command py -ErrorAction SilentlyContinue
+    if ($null -ne $Python -and (Test-PythonCommand -Command $Python -UseLauncher)) {
+        return $Python
+    }
+
+    $Python = Get-Command python -ErrorAction SilentlyContinue
+    if ($null -ne $Python -and (Test-PythonCommand -Command $Python)) {
+        return $Python
+    }
+
+    $Python3 = Get-Command python3 -ErrorAction SilentlyContinue
+    if ($null -ne $Python3 -and (Test-PythonCommand -Command $Python3)) {
+        return $Python3
+    }
+
+    return $null
+}
+
+function Ensure-Python {
+    $Resolved = Resolve-SupportedPython
+    if ($null -ne $Resolved) {
+        return $Resolved
+    }
+
+    Write-Host '==> Installing Python 3.12+ for bootstrap'
+    if (-not (Install-WithWinget -PackageId 'Python.Python.3.12')) {
+        if (-not (Install-WithWinget -PackageId 'Python.Python.3.13')) {
+            if (-not (Install-WithChocolatey -PackageName 'python')) {
+                throw "Python 3.12+ is required but could not be installed automatically. Install Python 3.12 or newer, reopen PowerShell, and retry."
+            }
+        }
+    }
+
+    Refresh-CommonPaths
+    $Resolved = Resolve-SupportedPython
+    if ($null -eq $Resolved) {
+        throw "Python 3.12+ is required but a supported interpreter was not found after automatic installation. Reopen PowerShell and retry."
+    }
+    return $Resolved
+}
+
+function Wait-ForDocker {
+    for ($attempt = 0; $attempt -lt 60; $attempt++) {
+        $Docker = Get-Command docker -ErrorAction SilentlyContinue
+        if ($null -ne $Docker) {
+            & $Docker.Source info *> $null
+            if ($LASTEXITCODE -eq 0) {
+                return
+            }
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    throw 'Docker is installed but the daemon is not ready. Start Docker Desktop and rerun the bootstrap.'
+}
+
+function Ensure-Docker {
+    Refresh-CommonPaths
+    $Docker = Get-Command docker -ErrorAction SilentlyContinue
+    if ($null -eq $Docker) {
+        Write-Host '==> Installing Docker Desktop for bootstrap'
+        if (-not (Install-WithWinget -PackageId 'Docker.DockerDesktop')) {
+            if (-not (Install-WithChocolatey -PackageName 'docker-desktop')) {
+                throw 'Docker Desktop is required but could not be installed automatically. Install Docker Desktop, start it, and retry.'
+            }
+        }
+        Refresh-CommonPaths
+        $Docker = Get-Command docker -ErrorAction SilentlyContinue
+        if ($null -eq $Docker) {
+            throw 'Docker Desktop installation completed, but the docker CLI was not found on PATH. Reopen PowerShell and retry.'
+        }
+    }
+
+    & $Docker.Source info *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host '==> Starting Docker Desktop'
+        $DockerDesktopExe = Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
+        if (Test-Path $DockerDesktopExe) {
+            Start-Process -FilePath $DockerDesktopExe | Out-Null
+        }
+        Wait-ForDocker
     }
 }
 
@@ -44,19 +191,9 @@ Write-Host '==> Lattix xFrontier bootstrap'
 Write-Host '==> Preparing installer workspace'
 New-Item -ItemType Directory -Force -Path $BootstrapDir | Out-Null
 
-$Python = Get-Command py -ErrorAction SilentlyContinue
-if ($null -ne $Python -and -not (Test-PythonCommand -Command $Python -UseLauncher)) {
-    $Python = $null
-}
-if ($null -eq $Python) {
-    $Python = Get-Command python -ErrorAction SilentlyContinue
-    if ($null -ne $Python -and -not (Test-PythonCommand -Command $Python)) {
-        $Python = $null
-    }
-}
-if ($null -eq $Python) {
-    throw "Python 3 is required but was not found as a working 'py' or 'python' command. Install Python 3 from https://python.org/downloads/windows/ (or the Microsoft Store), reopen PowerShell, and retry. If Windows is only exposing the Store alias, disable the python.exe/python3.exe App execution aliases after installation."
-}
+Refresh-CommonPaths
+$Python = Ensure-Python
+Ensure-Docker
 
 $InstallerPath = Join-Path $BootstrapDir 'frontier-installer.py'
 if ($LocalInstallerPath -and (Test-Path $LocalInstallerPath)) {

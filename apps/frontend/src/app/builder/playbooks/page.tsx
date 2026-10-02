@@ -1,91 +1,63 @@
-"use client";
-
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import {
-  getPlaybooks,
-  instantiatePlaybook,
-} from "@/lib/api";
+import Link from "next/link";
+import { BuilderLibraryActions } from "@/components/builder-library-actions";
+import { BuilderLibraryStatusBadges } from "@/components/builder-library-status-badges";
 import { ImportExportControls } from "@/components/import-export-controls";
-import type { PlaybookDefinition } from "@/types/frontier";
+import { getPlaybooks } from "@/lib/api";
 
-export default function PlaybooksPage() {
-  const router = useRouter();
-  const [playbooks, setPlaybooks] = useState<PlaybookDefinition[]>([]);
-  const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+type BuilderPlaybooksPageProps = {
+  searchParams?: Promise<{ view?: string }>;
+};
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      try {
-        const playbookData = await getPlaybooks();
-        if (cancelled) {
-          return;
-        }
-        setPlaybooks(playbookData);
-      } catch {
-        if (!cancelled) {
-          setError("Unable to load playbooks.");
-        }
-      }
-    }
-
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function reloadPlaybooks() {
-    try {
-      setPlaybooks(await getPlaybooks());
-    } catch {
-      setError("Unable to load playbooks.");
-    }
-  }
-
-  async function handleCreateFromPlaybook(playbook: PlaybookDefinition) {
-    setBusyKey(`playbook:${playbook.id}`);
-    setError(null);
-    try {
-      const created = await instantiatePlaybook(playbook.id, {
-        name: `${playbook.name} Instance`,
-      });
-      router.push(`/builder/workflows/${created.id}`);
-    } catch {
-      setError(`Failed to instantiate playbook ${playbook.name}.`);
-    } finally {
-      setBusyKey(null);
-    }
-  }
+export default async function BuilderPlaybooksPage({ searchParams }: BuilderPlaybooksPageProps) {
+  const playbooks = await getPlaybooks();
+  const resolvedSearchParams = await searchParams;
+  const view = resolvedSearchParams?.view === "archived" ? "archived" : "library";
+  const playbookCounts = {
+    draft: playbooks.filter((playbook) => playbook.status === "draft").length,
+    published: playbooks.filter((playbook) => playbook.status === "published").length,
+    archived: playbooks.filter((playbook) => playbook.status === "archived").length,
+  };
+  const visiblePlaybooks = playbooks.filter((playbook) =>
+    view === "archived" ? playbook.status === "archived" : playbook.status !== "archived",
+  );
 
   return (
-    <section className="space-y-6">
-      <header className="flex flex-wrap items-start justify-between gap-3">
+    <section className="space-y-4">
+      <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">Playbooks</h1>
-          <p className="fx-muted">Playbooks are collaborations of workflows designed to achieve high-level outcomes.</p>
+          <p className="fx-muted">Playbooks orchestrate multiple workflows into larger operating motions.</p>
+          <BuilderLibraryStatusBadges
+            counts={[
+              { label: "Draft", count: playbookCounts.draft },
+              { label: "Published", count: playbookCounts.published },
+              { label: "Archived", count: playbookCounts.archived },
+            ]}
+          />
         </div>
         <div className="flex items-center gap-3">
-          <ImportExportControls kind="playbooks" onImported={() => void reloadPlaybooks()} />
-          <button
-            type="button"
-            className="fx-btn-primary px-3 py-2 text-sm font-medium"
-            onClick={() => router.push(`/builder/workflows/${crypto.randomUUID()}`)}
-          >
-            New Workflow
-          </button>
+          <ImportExportControls kind="playbooks" />
+          <Link className="fx-btn-secondary px-4 py-2 text-sm font-medium" href="/builder/playbooks/new">
+            New Playbook
+          </Link>
         </div>
       </header>
 
-      {error && (
-        <div className="border border-[#6b1f2a] bg-[#2f1a21] p-3 text-sm text-[#ffb8c4]">
-          {error}
-        </div>
-      )}
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <Link
+          href="/builder/playbooks"
+          className={view === "library" ? "fx-btn-secondary px-3 py-1.5 font-medium" : "fx-btn-ghost px-3 py-1.5 font-medium"}
+        >
+          Library
+        </Link>
+        <Link
+          href="/builder/playbooks?view=archived"
+          className={view === "archived" ? "fx-btn-secondary px-3 py-1.5 font-medium" : "fx-btn-ghost px-3 py-1.5 font-medium"}
+        >
+          Archived
+        </Link>
+        <p className="fx-muted ml-auto text-xs uppercase tracking-[0.12em]">{visiblePlaybooks.length} shown</p>
+      </div>
 
       <div className="fx-panel overflow-hidden">
         <table className="w-full text-sm">
@@ -99,35 +71,34 @@ export default function PlaybooksPage() {
             </tr>
           </thead>
           <tbody>
-            {playbooks.map((playbook) => (
-              <tr key={playbook.id} className="border-t border-[var(--fx-border)]">
-                <td className="px-3 py-2 align-top font-medium text-[var(--foreground)]">{playbook.name}</td>
-                <td className="px-3 py-2 align-top text-[var(--foreground)]">{playbook.category}</td>
-                <td className="px-3 py-2 align-top text-[var(--foreground)]">{playbook.status}</td>
-                <td className="fx-muted px-3 py-2 align-top">
-                  <p className="max-w-[34rem] leading-snug line-clamp-3" title={playbook.description}>
-                    {playbook.description}
-                  </p>
-                </td>
-                <td className="px-3 py-2 align-top text-right whitespace-nowrap">
-                  <div className="flex flex-nowrap items-center justify-end gap-2">
-                    <ImportExportControls kind="playbooks" id={playbook.id} compact onImported={() => void reloadPlaybooks()} />
-                    <button
-                      className="fx-btn-secondary px-2.5 py-1 text-xs font-medium"
-                      disabled={busyKey === `playbook:${playbook.id}` || playbook.status !== "active"}
-                      onClick={() => void handleCreateFromPlaybook(playbook)}
-                    >
-                      {busyKey === `playbook:${playbook.id}` ? "Creating…" : "Launch Playbook"}
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {playbooks.length === 0 ? (
+            {visiblePlaybooks.length === 0 ? (
               <tr className="border-t border-[var(--fx-border)]">
-                <td className="fx-muted px-3 py-3" colSpan={5}>No playbooks available.</td>
+                <td colSpan={5} className="fx-muted px-3 py-6 text-center">
+                  {view === "archived" ? "No archived playbooks." : "No playbooks available."}
+                </td>
               </tr>
-            ) : null}
+            ) : (
+              visiblePlaybooks.map((playbook) => (
+                <tr key={playbook.id} className="border-t border-[var(--fx-border)]">
+                  <td className="px-3 py-2 text-[var(--foreground)]">{playbook.name}</td>
+                  <td className="px-3 py-2 text-[var(--foreground)]">{playbook.category}</td>
+                  <td className="px-3 py-2 text-[var(--foreground)]">{playbook.status}</td>
+                  <td className="fx-muted px-3 py-2">{playbook.description}</td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    <div className="flex flex-nowrap items-center justify-end gap-2">
+                      <ImportExportControls kind="playbooks" id={playbook.id} compact />
+                      <BuilderLibraryActions
+                        entityType="playbook"
+                        entityId={playbook.id}
+                        entityName={playbook.name}
+                        openHref={`/builder/playbooks/${playbook.id}`}
+                        status={playbook.status}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>

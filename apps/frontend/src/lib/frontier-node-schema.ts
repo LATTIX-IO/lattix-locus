@@ -1,8 +1,8 @@
 export type WidgetSpec = {
   key: string;
   label: string;
-  kind: "text" | "number" | "combo" | "toggle";
-  defaultValue: string | number | boolean;
+  kind: "text" | "number" | "combo" | "toggle" | "list";
+  defaultValue: string | number | boolean | string[];
   options?: string[];
   multiline?: boolean;
   help?: string;
@@ -351,6 +351,7 @@ const SCHEMAS: Record<string, NodeSchema> = {
       execution_mode: "sync",
       harness_mode: "chat",
       system_prompt: "",
+      skills: [],
     },
     widgets: [
       { key: "agent_id", label: "agent_id", kind: "text", defaultValue: "", help: "Target agent identity to execute. Resolves to a seeded agent definition — uses that agent's real system prompt and model when run." },
@@ -362,6 +363,7 @@ const SCHEMAS: Record<string, NodeSchema> = {
       { key: "execution_mode", label: "execution_mode", kind: "combo", defaultValue: "sync", options: ["sync", "async"], help: "sync waits for completion in-line; async is intended for background/deferred execution semantics." },
       { key: "harness_mode", label: "harness_mode", kind: "combo", defaultValue: "chat", options: ["chat", "code", "team"], help: "chat = single-shot reasoning; code = run the harness coding loop (real file edits + tests in the bound workspace); team = run the full cross-functional CollaborativeTeam." },
       { key: "system_prompt", label: "system_prompt", kind: "text", defaultValue: "", multiline: true, help: "Inline prompt fallback. If a prompt node is connected, connected prompt typically takes precedence depending on runtime composition order." },
+      { key: "skills", label: "skills", kind: "list", defaultValue: [], options: [], help: "Optional slash skills to attach to this agent node. Enter one skill per line or use the scoped suggestions below." },
     ],
     outputAliases: { output: "out", tool_api: "tool_request", query: "retrieval_query", request: "tool_request" },
   },
@@ -451,6 +453,30 @@ const SCHEMAS: Record<string, NodeSchema> = {
     inputAliases: { proposal: "commitment" },
     outputAliases: { output: "result", published: "result" },
   },
+  workflow: {
+    inputs: [
+      { name: "in", type: "flow" },
+      { name: "payload", type: "data" },
+    ],
+    outputs: [
+      { name: "out", type: "flow" },
+      { name: "result", type: "data" },
+    ],
+    defaults: {
+      workflow_id: "",
+      handoff_mode: "blocking",
+      entry_message: "",
+      output_binding: "result",
+    },
+    widgets: [
+      { key: "workflow_id", label: "workflow_id", kind: "combo", defaultValue: "", options: [], help: "Published or draft workflow definition to invoke from this playbook step." },
+      { key: "handoff_mode", label: "handoff_mode", kind: "combo", defaultValue: "blocking", options: ["blocking", "fan_out", "fan_in"], help: "How this playbook step composes multiple workflow branches." },
+      { key: "entry_message", label: "entry_message", kind: "text", defaultValue: "", help: "Optional kickoff message or instruction passed into the child workflow." },
+      { key: "output_binding", label: "output_binding", kind: "combo", defaultValue: "result", options: ["result", "artifacts", "status"], help: "Which child workflow output should flow downstream in the playbook graph." },
+    ],
+    inputAliases: { data: "payload", request: "payload" },
+    outputAliases: { output: "result", data: "result" },
+  },
   "tool-call": {
     inputs: [
       { name: "in", type: "flow" },
@@ -472,6 +498,7 @@ const SCHEMAS: Record<string, NodeSchema> = {
       { key: "auth_type", label: "auth_type", kind: "combo", defaultValue: "none", options: ["none", "api_key", "bearer", "oauth2", "basic", "mcp_token"], help: "Authentication strategy to apply for outbound call auth context." },
       { key: "auth_secret_ref", label: "auth_secret_ref", kind: "text", defaultValue: "", help: "Secret reference (not raw secret) used to resolve credentials at runtime." },
       { key: "input_schema", label: "input_schema", kind: "text", defaultValue: "", multiline: true, help: "Optional JSON schema or contract notes for expected input payload shape." },
+      { key: "mcp_connection_id", label: "mcp_connection_id", kind: "combo", defaultValue: "", options: [], help: "Approved staged MCP connection to resolve at runtime instead of hand-entering a server URL." },
       { key: "mcp_server_url", label: "mcp_server_url", kind: "text", defaultValue: "", help: "MCP endpoint URL. Must be approved by platform allowed_mcp_server_urls." },
       { key: "mcp_tool_name", label: "mcp_tool_name", kind: "text", defaultValue: "", help: "Tool/function name exposed by the MCP server." },
       { key: "timeout_ms", label: "timeout_ms", kind: "number", defaultValue: 30000, help: "Max tool execution time in milliseconds." },
@@ -520,10 +547,11 @@ const SCHEMAS: Record<string, NodeSchema> = {
     defaults: { action: "append", scope: "session", session_id: "" },
     widgets: [
       { key: "action", label: "action", kind: "combo", defaultValue: "append", options: ["append", "read", "clear"], help: "append writes new memory, read fetches memory, clear deletes memory for target scope." },
-      { key: "scope", label: "scope", kind: "combo", defaultValue: "session", options: ["run", "session", "user", "tenant", "agent", "workflow", "global"], help: "Partition used to resolve memory bucket identity and isolation." },
+      { key: "scope", label: "scope", kind: "combo", defaultValue: "session", options: ["run", "session", "user", "playbook", "tenant", "agent", "workflow", "global"], help: "Partition used to resolve memory bucket identity and isolation." },
       { key: "session_id", label: "session_id", kind: "text", defaultValue: "", help: "Explicit session key for session-scoped memory. Supports variable expressions." },
       { key: "user_id", label: "user_id", kind: "text", defaultValue: "", help: "User identifier for user-scoped memory (e.g., var.currentUser)." },
-      { key: "tenant_id", label: "tenant_id", kind: "text", defaultValue: "", help: "Tenant identifier for tenant-scoped memory (e.g., var.currentTenant)." },
+      { key: "playbook_id", label: "playbook_id", kind: "text", defaultValue: "", help: "Playbook identifier for playbook-scoped memory when a larger operating motion owns the state." },
+      { key: "tenant_id", label: "tenant_id", kind: "text", defaultValue: "", help: "Tenant identifier for tenant-scoped memory when compatibility with tenant isolation is required." },
       { key: "agent_id", label: "agent_id", kind: "text", defaultValue: "", help: "Agent identifier for agent-scoped memory to help agent-specific learning/context retention." },
       { key: "workflow_id", label: "workflow_id", kind: "text", defaultValue: "", help: "Workflow identifier for workflow-scoped memory contexts." },
       { key: "dimension_key", label: "dimension_key", kind: "text", defaultValue: "", help: "Optional custom bucket identity override for advanced segmentation." },
@@ -598,6 +626,243 @@ const SCHEMAS: Record<string, NodeSchema> = {
       { key: "min_required", label: "min_required", kind: "number", defaultValue: 1, help: "Minimum number of active inbound sources required." },
     ],
     outputAliases: { output: "out" },
+  },
+  router: {
+    inputs: [
+      { name: "in", type: "flow" },
+      { name: "candidate", type: "data" },
+      { name: "context", type: "data" },
+    ],
+    outputs: [
+      { name: "out", type: "flow" },
+      { name: "match_a", type: "flow" },
+      { name: "match_b", type: "flow" },
+      { name: "default", type: "flow" },
+      { name: "decision", type: "data" },
+      { name: "matched_payload", type: "data" },
+    ],
+    defaults: {
+      router_mode: "rules",
+      decision_key: "priority",
+      route_match_a: "priority",
+      route_match_b: "standard",
+      default_route: "default",
+      allow_multi_match: false,
+      rules_json: JSON.stringify(
+        [
+          { route: "priority", key: "priority", operator: "eq", value: "high" },
+          { route: "standard", key: "priority", operator: "eq", value: "normal" },
+        ],
+        null,
+        2,
+      ),
+      keyword_map_json: JSON.stringify(
+        [
+          { route: "incident", keywords: ["sev1", "incident", "critical"] },
+          { route: "review", keywords: ["approval", "review"] },
+        ],
+        null,
+        2,
+      ),
+      threshold_value: 0,
+      threshold_operator: "gte",
+    },
+    widgets: [
+      { key: "router_mode", label: "router_mode", kind: "combo", defaultValue: "rules", options: ["rules", "classifier", "threshold", "expression"], help: "Decision strategy used to select a route key from the input payload." },
+      { key: "decision_key", label: "decision_key", kind: "text", defaultValue: "priority", help: "Payload field path inspected by rule, threshold, or expression modes." },
+      { key: "route_match_a", label: "route_match_a", kind: "text", defaultValue: "priority", help: "Route key that activates the match_a flow output." },
+      { key: "route_match_b", label: "route_match_b", kind: "text", defaultValue: "standard", help: "Route key that activates the match_b flow output." },
+      { key: "default_route", label: "default_route", kind: "text", defaultValue: "default", help: "Fallback route key emitted when no rule or classifier match is found." },
+      { key: "allow_multi_match", label: "allow_multi_match", kind: "toggle", defaultValue: false, help: "When enabled, retains every matching route rather than only the first match." },
+      { key: "rules_json", label: "rules_json", kind: "text", defaultValue: JSON.stringify([{ route: "priority", key: "priority", operator: "eq", value: "high" }], null, 2), multiline: true, help: "JSON array of deterministic rule objects: route, key, operator, and value/contains/exists." },
+      { key: "keyword_map_json", label: "keyword_map_json", kind: "text", defaultValue: JSON.stringify([{ route: "incident", keywords: ["sev1", "incident"] }], null, 2), multiline: true, help: "JSON array used by classifier mode to map keywords to route names." },
+      { key: "threshold_value", label: "threshold_value", kind: "number", defaultValue: 0, help: "Numeric threshold used by threshold router mode." },
+      { key: "threshold_operator", label: "threshold_operator", kind: "combo", defaultValue: "gte", options: ["gt", "gte", "lt", "lte", "eq"], help: "Comparison applied against decision_key for threshold mode." },
+    ],
+    inputAliases: { data: "candidate", payload: "candidate" },
+    outputAliases: { output: "out", route: "decision", data: "decision" },
+  },
+  iterator: {
+    inputs: [
+      { name: "in", type: "flow" },
+      { name: "items", type: "data" },
+      { name: "context", type: "data" },
+    ],
+    outputs: [
+      { name: "out", type: "flow" },
+      { name: "loop", type: "flow" },
+      { name: "done", type: "flow" },
+      { name: "item", type: "data" },
+      { name: "aggregate", type: "data" },
+    ],
+    defaults: {
+      iteration_mode: "foreach",
+      item_path: "items",
+      batch_size: 25,
+      max_items: 100,
+      aggregate_mode: "list",
+    },
+    widgets: [
+      { key: "iteration_mode", label: "iteration_mode", kind: "combo", defaultValue: "foreach", options: ["foreach", "batch", "chunk", "paginate"], help: "Determines how the inbound list is chunked and which branch is activated." },
+      { key: "item_path", label: "item_path", kind: "text", defaultValue: "items", help: "Dot-path used to locate the iterable list when the inbound payload is an object." },
+      { key: "batch_size", label: "batch_size", kind: "number", defaultValue: 25, help: "Batch or chunk size used by batch and chunk iteration modes." },
+      { key: "max_items", label: "max_items", kind: "number", defaultValue: 100, help: "Maximum number of items consumed from the iterable payload for a single node execution." },
+      { key: "aggregate_mode", label: "aggregate_mode", kind: "combo", defaultValue: "list", options: ["list", "count", "first", "last"], help: "How the aggregate output is shaped for downstream nodes." },
+    ],
+    inputAliases: { data: "items", payload: "items" },
+    outputAliases: { output: "out", data: "aggregate", result: "aggregate" },
+  },
+  transform: {
+    inputs: [
+      { name: "in", type: "flow" },
+      { name: "source", type: "data" },
+      { name: "context", type: "data" },
+    ],
+    outputs: [
+      { name: "out", type: "flow" },
+      { name: "result", type: "data" },
+    ],
+    defaults: {
+      transform_mode: "map",
+      strict_validation: false,
+      mapping_json: JSON.stringify(
+        {
+          priority: "{{var.source.priority}}",
+          summary: "{{var.source.summary}}",
+        },
+        null,
+        2,
+      ),
+      template_text: "Ticket {{var.source.id}} for {{var.source.owner}}",
+      extract_path: "payload",
+      redact_fields: "token,password,secret",
+      output_schema: "",
+    },
+    widgets: [
+      { key: "transform_mode", label: "transform_mode", kind: "combo", defaultValue: "map", options: ["map", "template", "extract", "redact", "merge"], help: "Deterministic data shaping mode executed locally in the runtime." },
+      { key: "mapping_json", label: "mapping_json", kind: "text", defaultValue: JSON.stringify({ priority: "{{var.source.priority}}" }, null, 2), multiline: true, help: "JSON object used by map mode. Values may reference var.source and var.context." },
+      { key: "template_text", label: "template_text", kind: "text", defaultValue: "Ticket {{var.source.id}}", multiline: true, help: "Text template for template mode. Template variables resolve against var.source and var.context." },
+      { key: "extract_path", label: "extract_path", kind: "text", defaultValue: "payload", help: "Dot-path used by extract mode to pick a nested field from the source payload." },
+      { key: "redact_fields", label: "redact_fields", kind: "text", defaultValue: "token,password,secret", help: "Comma-separated field names removed or masked during redact mode." },
+      { key: "output_schema", label: "output_schema", kind: "text", defaultValue: "", multiline: true, help: "Optional JSON schema note or downstream contract documentation for the transform result." },
+      { key: "strict_validation", label: "strict_validation", kind: "toggle", defaultValue: false, help: "When enabled, missing extract paths or malformed mapping JSON are surfaced as transform errors." },
+    ],
+    inputAliases: { data: "source", payload: "source" },
+    outputAliases: { output: "out", data: "result" },
+  },
+  event: {
+    inputs: [
+      { name: "in", type: "flow" },
+      { name: "payload", type: "data" },
+      { name: "context", type: "data" },
+    ],
+    outputs: [
+      { name: "out", type: "flow" },
+      { name: "resume", type: "flow" },
+      { name: "idle", type: "flow" },
+      { name: "event", type: "data" },
+      { name: "receipt", type: "data" },
+    ],
+    defaults: {
+      event_mode: "publish",
+      topic: "frontier.events.default",
+      event_name: "event.workflow.step",
+      correlation_key: "runId",
+      durable: false,
+    },
+    widgets: [
+      { key: "event_mode", label: "event_mode", kind: "combo", defaultValue: "publish", options: ["publish", "consume", "resume"], help: "publish emits a new event envelope, consume reads the last matching event, resume emits a resume receipt." },
+      { key: "topic", label: "topic", kind: "text", defaultValue: "frontier.events.default", help: "Logical event topic or queue name used by this node." },
+      { key: "event_name", label: "event_name", kind: "text", defaultValue: "event.workflow.step", help: "Event name included in emitted or matched event envelopes." },
+      { key: "correlation_key", label: "correlation_key", kind: "text", defaultValue: "runId", help: "Runtime variable or payload key used to correlate event envelopes." },
+      { key: "durable", label: "durable", kind: "toggle", defaultValue: false, help: "Marks the emitted event as durable for external consumers." },
+    ],
+    inputAliases: { data: "payload", result: "payload" },
+    outputAliases: { output: "out", data: "event" },
+  },
+  "data-store": {
+    inputs: [
+      { name: "in", type: "flow" },
+      { name: "record", type: "data" },
+      { name: "context", type: "data" },
+    ],
+    outputs: [
+      { name: "out", type: "flow" },
+      { name: "result", type: "data" },
+      { name: "status", type: "data" },
+    ],
+    defaults: {
+      operation: "upsert",
+      store_scope: "session",
+      collection: "default",
+      record_key: "id",
+      merge_strategy: "replace",
+    },
+    widgets: [
+      { key: "operation", label: "operation", kind: "combo", defaultValue: "upsert", options: ["create", "read", "upsert", "append", "delete"], help: "Business record action performed inside the scoped data store." },
+      { key: "store_scope", label: "store_scope", kind: "combo", defaultValue: "session", options: ["run", "session", "workflow", "playbook", "tenant"], help: "Namespace boundary for persisted records inside the graph runtime." },
+      { key: "collection", label: "collection", kind: "text", defaultValue: "default", help: "Logical table or collection name used to group stored records." },
+      { key: "record_key", label: "record_key", kind: "text", defaultValue: "id", help: "Primary key path read from the inbound record payload." },
+      { key: "merge_strategy", label: "merge_strategy", kind: "combo", defaultValue: "replace", options: ["replace", "merge"], help: "How upsert merges with an existing record when one already exists." },
+    ],
+    inputAliases: { data: "record", payload: "record", result: "record" },
+    outputAliases: { output: "out", data: "result" },
+  },
+  "error-handler": {
+    inputs: [
+      { name: "in", type: "flow" },
+      { name: "error", type: "data" },
+      { name: "context", type: "data" },
+    ],
+    outputs: [
+      { name: "out", type: "flow" },
+      { name: "handled", type: "data" },
+      { name: "status", type: "data" },
+    ],
+    defaults: {
+      handler_mode: "fallback",
+      fallback_value: "{}",
+      fallback_message: "Recovered from upstream failure.",
+      retryable: false,
+      error_key: "message",
+      emit_status: true,
+    },
+    widgets: [
+      { key: "handler_mode", label: "handler_mode", kind: "combo", defaultValue: "fallback", options: ["fallback", "normalize", "escalate"], help: "fallback substitutes payloads, normalize standardizes error shape, escalate marks the failure for downstream handling." },
+      { key: "fallback_value", label: "fallback_value", kind: "text", defaultValue: "{}", multiline: true, help: "JSON payload or plain text returned when fallback mode handles an upstream failure." },
+      { key: "fallback_message", label: "fallback_message", kind: "text", defaultValue: "Recovered from upstream failure.", help: "Human-readable recovery note included in handled output and status metadata." },
+      { key: "retryable", label: "retryable", kind: "toggle", defaultValue: false, help: "Marks the normalized error as retryable for downstream decision logic." },
+      { key: "error_key", label: "error_key", kind: "text", defaultValue: "message", help: "Primary key used when extracting a message from inbound error payloads." },
+      { key: "emit_status", label: "emit_status", kind: "toggle", defaultValue: true, help: "Emit structured recovery status metadata on the status output." },
+    ],
+    inputAliases: { data: "error", result: "error", payload: "error" },
+    outputAliases: { output: "out", data: "handled" },
+  },
+  wait: {
+    inputs: [
+      { name: "in", type: "flow" },
+      { name: "resume_payload", type: "data" },
+    ],
+    outputs: [
+      { name: "out", type: "flow" },
+      { name: "resume", type: "flow" },
+      { name: "timeout", type: "flow" },
+      { name: "result", type: "data" },
+    ],
+    defaults: {
+      wait_mode: "delay",
+      delay_ms: 1000,
+      timeout_ms: 0,
+      simulate_wait: true,
+    },
+    widgets: [
+      { key: "wait_mode", label: "wait_mode", kind: "combo", defaultValue: "delay", options: ["delay", "timeout_gate", "resume_window"], help: "delay pauses briefly, timeout_gate marks timeout branches, resume_window emits resume metadata for later continuation." },
+      { key: "delay_ms", label: "delay_ms", kind: "number", defaultValue: 1000, help: "Requested delay in milliseconds before the node emits a resume or timeout branch." },
+      { key: "timeout_ms", label: "timeout_ms", kind: "number", defaultValue: 0, help: "If non-zero and below delay_ms, the timeout branch becomes active instead of resume." },
+      { key: "simulate_wait", label: "simulate_wait", kind: "toggle", defaultValue: true, help: "When enabled, the node reports wait metadata without sleeping for the full delay." },
+    ],
+    inputAliases: { data: "resume_payload", payload: "resume_payload" },
+    outputAliases: { output: "out", data: "result" },
   },
   output: {
     inputs: [

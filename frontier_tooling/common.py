@@ -390,6 +390,10 @@ def ensure_compose_env_file(*, local_profile: bool = False, root: Path | None = 
 
     if not str(env_map.get("A2A_JWT_SECRET") or "").strip():
         env_map["A2A_JWT_SECRET"] = _random_secret()
+    if not str(env_map.get("FRONTIER_SECRETS_ENCRYPTION_KEY") or "").strip():
+        env_map["FRONTIER_SECRETS_ENCRYPTION_KEY"] = (
+            str(env_map.get("A2A_JWT_SECRET") or "").strip() or _random_secret()
+        )
     env_map.setdefault("A2A_JWT_ALG", "HS256")
     env_map.setdefault("A2A_JWT_ISS", "lattix-frontier")
     env_map["A2A_JWT_AUD"] = _normalize_a2a_audience(env_map.get("A2A_JWT_AUD"))

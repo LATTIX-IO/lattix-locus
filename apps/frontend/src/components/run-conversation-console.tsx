@@ -826,9 +826,9 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
 
                   if (!isChatTurn) {
                     return (
-                      <article key={event.id} className="group mx-auto w-full max-w-[880px] rounded-lg border border-[var(--ui-border)] bg-[hsl(var(--card)/0.72)] px-3 py-2">
+                      <article key={event.id} className="group mx-auto w-full max-w-[880px] rounded-[1.05rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.8)] px-3.5 py-3 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">
                         <div className="mb-1 flex items-center justify-between gap-2">
-                          <p className="text-[11px] font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))]">
+                          <p className="text-[11px] font-medium tracking-[0.02em] text-[hsl(var(--muted-foreground))]">
                             {event.type.replace(/_/g, " ")}
                           </p>
                           <span className="fx-muted text-[11px] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">{event.createdAt}</span>
@@ -951,13 +951,13 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
 
                             <div className="mt-2 space-y-2">
                               <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.8)] p-2">
-                                <p className="fx-muted text-[10px] uppercase tracking-wide">Summary</p>
+                                <p className="fx-muted text-[10px] font-medium tracking-[0.02em]">Summary</p>
                                 <MarkdownBlock content={trace.reasoningSummary} className="mt-1" />
                               </div>
 
                               {reasoningSummaries.length > 0 ? (
                                 <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.8)] p-2">
-                                  <p className="fx-muted text-[10px] uppercase tracking-wide">Model reasoning highlights (auto)</p>
+                                  <p className="fx-muted text-[10px] font-medium tracking-[0.02em]">Model reasoning highlights (auto)</p>
                                   <ul className="mt-1 list-disc space-y-1 pl-4 text-xs leading-relaxed text-[var(--foreground)]">
                                     {reasoningSummaries.map((item, index) => (
                                       <li key={`${event.id}-reasoning-${index}`}>{item}</li>
@@ -968,7 +968,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
 
                               {trace.actions.length > 0 ? (
                                 <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.8)] p-2">
-                                  <p className="fx-muted text-[10px] uppercase tracking-wide">Actions</p>
+                                  <p className="fx-muted text-[10px] font-medium tracking-[0.02em]">Actions</p>
                                   <ul className="mt-1 list-disc space-y-1 pl-4 text-xs leading-relaxed text-[var(--foreground)]">
                                     {trace.actions.map((action, index) => (
                                       <li key={`${trace.agent}-${index}`}>{action}</li>
@@ -993,10 +993,10 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                       <p className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Assistant</p>
                       <span className="fx-muted text-[11px]">streaming</span>
                     </div>
-                    <div className="inline-flex items-center gap-1.5 rounded-full border border-[var(--ui-border)] bg-[hsl(var(--muted)/0.45)] px-2 py-1">
-                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[hsl(var(--muted-foreground))] [animation-delay:0ms]" />
-                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[hsl(var(--muted-foreground))] [animation-delay:120ms]" />
-                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[hsl(var(--muted-foreground))] [animation-delay:240ms]" />
+                    <div className="inline-flex items-center gap-1.5 border border-[var(--ui-border)] bg-[hsl(var(--muted)/0.45)] px-2 py-1">
+                      <span className="h-1.5 w-1.5 animate-pulse bg-[hsl(var(--muted-foreground))] [animation-delay:0ms]" />
+                      <span className="h-1.5 w-1.5 animate-pulse bg-[hsl(var(--muted-foreground))] [animation-delay:120ms]" />
+                      <span className="h-1.5 w-1.5 animate-pulse bg-[hsl(var(--muted-foreground))] [animation-delay:240ms]" />
                       <span className="ml-1 text-xs text-[hsl(var(--muted-foreground))]">Thinking…</span>
                     </div>
                   </div>
@@ -1006,7 +1006,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
 
             <div className="px-4 pb-4 pt-1">
               <div className="mx-auto w-full max-w-[880px]">
-                <RunFollowupComposer runId={runId} />
+                <RunFollowupComposer runId={runId} delivery="same-run" />
               </div>
             </div>
           </section>
@@ -1112,7 +1112,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                     key={tabKey}
                     type="button"
                     onClick={() => setRightPanelTab(tabKey)}
-                    className={`rounded px-2 py-1 ${rightPanelTab === tabKey ? "bg-[hsl(var(--primary)/0.18)] text-[var(--foreground)]" : "text-[hsl(var(--muted-foreground))]"}`}
+                    className={`rounded-full px-2.5 py-1 ${rightPanelTab === tabKey ? "bg-[hsl(var(--primary)/0.18)] text-[var(--foreground)]" : "text-[hsl(var(--muted-foreground))]"}`}
                   >
                     {label}
                   </button>
@@ -1121,7 +1121,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
 
               {rightPanelTab === "graph" ? (
                 <div>
-                  <div className="mb-2 flex items-center justify-between px-2 text-xs">
+                  <div className="mb-3 flex items-center justify-between px-2 text-xs">
                     <h2 className="font-semibold">Execution Graph</h2>
                     <span className="fx-muted">
                       {usedAgentStudioAgent ? "Read-only snapshot" : "Default chat agent fallback shown"}
@@ -1245,7 +1245,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                   ) : (
                     <ul className="space-y-1.5 text-xs text-[var(--foreground)]">
                       {run.artifacts.map((artifact) => (
-                        <li key={artifact.id} className="flex items-center justify-between gap-2 border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] px-2 py-1.5">
+                        <li key={artifact.id} className="flex items-center justify-between gap-2 rounded-[1rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] px-3 py-2">
                           <div className="min-w-0">
                             <p className="truncate font-medium text-[var(--foreground)]">{artifact.name}</p>
                             <p className="fx-muted truncate">{artifact.status} • v{artifact.version}</p>
@@ -1263,7 +1263,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
               {rightPanelTab === "approvals" ? (
                 <div className="p-2">
                   <h3 className="mb-2 text-sm font-semibold">Approvals</h3>
-                  <div className="mb-2 border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2 text-xs">
+                  <div className="mb-2 rounded-[1rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-3 text-xs">
                     <p className="font-semibold text-[var(--foreground)]">Pending approval target</p>
                     {approvals.required ? (
                       <p className="fx-muted mt-1">
@@ -1302,7 +1302,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                         }}
                         className="space-y-1.5"
                       >
-                        <label htmlFor="approval-feedback" className="fx-muted block text-[11px] uppercase tracking-wide">
+                        <label htmlFor="approval-feedback" className="fx-muted block text-[11px] font-medium">
                           Feedback / requested edits
                         </label>
                         <textarea
@@ -1327,7 +1327,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                   ) : (
                     <ul className="space-y-2">
                       {guardrailEvents.map((event) => (
-                        <li key={event.id} className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                        <li key={event.id} className="rounded-[1rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-3">
                           <p className="text-xs font-semibold text-[var(--foreground)]">{event.title}</p>
                           <p className="fx-muted mt-0.5 text-[11px]">{event.createdAt}</p>
                           <MarkdownBlock content={event.summary} className="mt-1" />

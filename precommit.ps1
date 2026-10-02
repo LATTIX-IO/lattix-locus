@@ -209,7 +209,14 @@ $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 
 Invoke-Step -Name "Install Python dependencies" -Action { Invoke-Python -Arguments @("-m", "pip", "install", "-e", ".[dev]") }
-Invoke-Step -Name "Install frontend dependencies" -Action { npm ci } -WorkingDirectory $FrontendRoot
+if (Get-Command npm -ErrorAction SilentlyContinue) {
+  Invoke-Step -Name "Install frontend dependencies" -Action { npm ci } -WorkingDirectory $FrontendRoot
+}
+else {
+  $npmDetail = "missing npm"
+  Write-Host ("SKIP: Install frontend dependencies ({0})" -f $npmDetail)
+  Add-StepResult -Name "Install frontend dependencies" -Status "SKIP" -Detail $npmDetail
+}
 Invoke-Step -Name "Python lint" -Action { Invoke-Python -Arguments @("-m", "ruff", "check", ".") }
 Invoke-Step -Name "Python format check" -Action { Invoke-Python -Arguments @("-m", "ruff", "format", ".", "--check") }
 Invoke-Step -Name "Python typecheck" -Action { Invoke-Python -Arguments @("-m", "mypy", "frontier_tooling/", "frontier_runtime/") }
@@ -224,9 +231,20 @@ else {
   Add-StepResult -Name "Policy tests" -Status "SKIP" -Detail $policyDetail
 }
 
-Invoke-Step -Name "Frontend lint" -Action { npm run lint } -WorkingDirectory $FrontendRoot
-Invoke-Step -Name "Frontend tests" -Action { npm test } -WorkingDirectory $FrontendRoot
-Invoke-Step -Name "Frontend build" -Action { npm run build } -WorkingDirectory $FrontendRoot
+if (Get-Command npm -ErrorAction SilentlyContinue) {
+  Invoke-Step -Name "Frontend lint" -Action { npm run lint } -WorkingDirectory $FrontendRoot
+  Invoke-Step -Name "Frontend tests" -Action { npm test } -WorkingDirectory $FrontendRoot
+  Invoke-Step -Name "Frontend build" -Action { npm run build } -WorkingDirectory $FrontendRoot
+}
+else {
+  $npmDetail = "missing npm"
+  Write-Host ("SKIP: Frontend lint ({0})" -f $npmDetail)
+  Add-StepResult -Name "Frontend lint" -Status "SKIP" -Detail $npmDetail
+  Write-Host ("SKIP: Frontend tests ({0})" -f $npmDetail)
+  Add-StepResult -Name "Frontend tests" -Status "SKIP" -Detail $npmDetail
+  Write-Host ("SKIP: Frontend build ({0})" -f $npmDetail)
+  Add-StepResult -Name "Frontend build" -Status "SKIP" -Detail $npmDetail
+}
 
 Invoke-IfAvailable -CommandName "docker" -Description "Compose config validation" -Action {
   docker compose config --quiet
@@ -237,7 +255,7 @@ Invoke-IfAvailable -CommandName "docker" -Description "Compose config validation
 } -WorkingDirectory $RepoRoot
 
 Invoke-IfAvailable -CommandName "semgrep" -Description "SAST via Semgrep" -Action { semgrep --config=auto --exclude .venv --exclude .next --exclude node_modules --exclude dist . }
-Invoke-IfAvailable -CommandName "gitleaks" -Description "Secret scanning via Gitleaks" -Action { gitleaks detect --source . --no-git --redact }
+Invoke-IfAvailable -CommandName "gitleaks" -Description "Secret scanning via Gitleaks" -Action { gitleaks detect --source . --no-git --redact --config .gitleaks.toml }
 Invoke-IfAvailable -CommandName "trivy" -Description "SCA/config via Trivy" -Action { trivy fs --scanners vuln,misconfig --severity HIGH,CRITICAL --exit-code 1 --skip-dirs .venv,.next,node_modules,dist . }
 if ($Syft) {
   Invoke-Step -Name "SBOM generation via Syft" -Action {

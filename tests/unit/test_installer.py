@@ -875,31 +875,45 @@ def test_render_install_summary_never_echoes_bootstrap_password(
     assert "  [1] http://xfrontier.localhost:8080" in body_lines
 
 
-def test_packaged_installer_targets_active_scripts_dir_for_editable_install(
-    monkeypatch, tmp_path: Path
-) -> None:
-    editable_scripts = tmp_path / ".venv" / "Scripts"
-    user_scripts = tmp_path / "AppData" / "Roaming" / "Python" / "Scripts"
-    monkeypatch.setattr(packaged_installer, "python_scripts_dir", lambda: editable_scripts)
-    monkeypatch.setattr(packaged_installer, "user_scripts_dir", lambda: user_scripts)
+def test_packaged_installer_managed_runtime_paths(tmp_path: Path) -> None:
+    managed_venv = tmp_path / ".venv"
+    scripts_dir = managed_venv / ("Scripts" if os.name == "nt" else "bin")
 
-    assert packaged_installer._scripts_dir_for_install_mode("editable") == editable_scripts
-    assert packaged_installer._scripts_dir_for_install_mode("wheel") == user_scripts
-
-
-def test_packaged_installer_runtime_env_prepends_editable_scripts_dir(
-    monkeypatch, tmp_path: Path
-) -> None:
-    editable_scripts = tmp_path / ".venv" / "Scripts"
-    monkeypatch.setattr(
-        packaged_installer, "_scripts_dir_for_install_mode", lambda mode: editable_scripts
+    assert packaged_installer._managed_venv_dir(tmp_path) == managed_venv
+    assert packaged_installer._managed_scripts_dir(tmp_path) == scripts_dir
+    assert packaged_installer._managed_python_executable(tmp_path) == scripts_dir / (
+        "python.exe" if os.name == "nt" else "python"
     )
-    monkeypatch.setenv("PATH", str(tmp_path / "Windows" / "System32"))
 
-    env = packaged_installer._runtime_env(tmp_path, "editable")
 
-    assert env["PATH"].split(";", 1)[0] == str(editable_scripts)
+def test_packaged_installer_runtime_env_prepends_managed_scripts_dir(
+    monkeypatch, tmp_path: Path
+) -> None:
+    editable_scripts = tmp_path / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+    python_bin = editable_scripts / ("python.exe" if os.name == "nt" else "python")
+    path_separator = ";" if os.name == "nt" else ":"
+    monkeypatch.setenv(
+        "PATH",
+        path_separator.join(
+            [str(tmp_path / "system" / "bin"), str(editable_scripts), str(tmp_path / "other" / "bin")]
+        ),
+    )
+
+    env = packaged_installer._runtime_env(
+        tmp_path,
+        python_bin=python_bin,
+        scripts_dir=editable_scripts,
+        venv_dir=tmp_path / ".venv",
+    )
+
+    assert env["PATH"].split(path_separator) == [
+        str(editable_scripts),
+        str(tmp_path / "system" / "bin"),
+        str(tmp_path / "other" / "bin"),
+    ]
     assert env[packaged_installer.FRONTIER_APP_HOME_ENV] == str(tmp_path)
+    assert env["FRONTIER_PYTHON_BIN"] == str(python_bin)
+    assert env["VIRTUAL_ENV"] == str(tmp_path / ".venv")
 
 
 def test_packaged_installer_update_preserves_installer_state(tmp_path: Path) -> None:
@@ -1094,6 +1108,9 @@ def test_packaged_installer_retries_secure_gateway_on_fallback_port(
 
     monkeypatch.setattr(packaged_installer, "_compose_up_with_output", _fake_compose_run)
     monkeypatch.setattr(
+        packaged_installer, "_prebuild_secure_stack_images", lambda install_root, env: None
+    )
+    monkeypatch.setattr(
         packaged_installer, "_select_fallback_gateway_port", lambda bind_host, occupied_port: 8080
     )
     monkeypatch.setattr(
@@ -1110,6 +1127,45 @@ def test_packaged_installer_retries_secure_gateway_on_fallback_port(
     assert "LOCAL_GATEWAY_HTTP_PORT=8080" in updated_env
     assert "FRONTEND_ORIGIN=http://xfrontier.local:8080" in updated_env
     assert "FRONTIER_LOCAL_API_BASE_URL=http://127.0.0.1:8080/api" in updated_env
+
+
+def test_auto_start_stack_prebuilds_secure_images_once(monkeypatch, tmp_path: Path) -> None:
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(
+        packaged_installer,
+        "run_command",
+        lambda command, *, cwd=None, check=True, env=None: (
+            commands.append(command)
+            or subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        ),
+    )
+    monkeypatch.setattr(
+        packaged_installer,
+        "_compose_up_with_output",
+        lambda command, *, cwd, env: subprocess.CompletedProcess(
+            command, 0, stdout="started\n", stderr=""
+        ),
+    )
+    monkeypatch.setattr(
+        packaged_installer, "portal_urls", lambda root=None: ["http://xfrontier.local"]
+    )
+
+    urls = packaged_installer._auto_start_stack(tmp_path, {})
+
+    assert urls == ["http://xfrontier.local"]
+    assert commands == [
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            str(tmp_path / ".installer" / "local-secure.env"),
+            "build",
+            "frontend",
+            "backend",
+            "agent-research",
+        ]
+    ]
 
 
 def test_casdoor_bootstrap_endpoint_uses_effective_secure_gateway_port(

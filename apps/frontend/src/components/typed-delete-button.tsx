@@ -24,6 +24,7 @@ export function TypedDeleteButton({ itemType, itemId, itemName, onDeleted, butto
   const [open, setOpen] = useState(false);
   const [typedName, setTypedName] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const canDelete = typedName.trim() === itemName;
 
@@ -31,6 +32,7 @@ export function TypedDeleteButton({ itemType, itemId, itemName, onDeleted, butto
     if (!canDelete) return;
 
     setDeleting(true);
+    setErrorMessage(null);
     try {
       if (itemType === "workflow") {
         await deleteWorkflowDefinition(itemId);
@@ -50,6 +52,8 @@ export function TypedDeleteButton({ itemType, itemId, itemName, onDeleted, butto
       } else {
         router.refresh();
       }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : `Unable to delete this ${itemType}.`);
     } finally {
       setDeleting(false);
     }
@@ -79,12 +83,14 @@ export function TypedDeleteButton({ itemType, itemId, itemName, onDeleted, butto
               className="fx-field mt-3 w-full px-3 py-2 text-sm"
               placeholder="Type exact name to confirm"
             />
+            {errorMessage ? <p className="mt-2 text-xs text-[var(--fx-danger)]">{errorMessage}</p> : null}
 
             <div className="mt-3 flex justify-end gap-2">
               <button
                 onClick={() => {
                   setOpen(false);
                   setTypedName("");
+                  setErrorMessage(null);
                 }}
                 className="fx-btn-secondary px-3 py-2 text-sm"
               >

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import time
 from dataclasses import asdict, dataclass, field
@@ -9,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from frontier_runtime.cognition import ColumnMessage, MessageType
 from frontier_runtime.persistence import load_state, mutate_state
 from frontier_runtime.security import sign_event
 
@@ -24,6 +26,101 @@ class AgentEvent:
     event_hash: str | None = None
     signature: str | None = None
     signer: str | None = None
+
+
+def is_cognitive_event(event: AgentEvent) -> bool:
+    try:
+        MessageType(str(event.event_type or "").strip())
+    except ValueError:
+        return False
+    return str(event.payload.get("transport_kind") or "").strip() == "cognitive"
+
+
+def event_from_column_message(
+    message: ColumnMessage,
+    *,
+    source: str = "cognitive-runtime",
+) -> AgentEvent:
+    return AgentEvent(
+        event_type=message.message_type.value,
+        source=source,
+        payload={
+            "transport_kind": "cognitive",
+            "assembly_id": message.assembly_id,
+            "source_column": message.source_column,
+            "target_column": message.target_column,
+            "payload_ref": message.payload_ref,
+            "confidence": message.confidence,
+            "created_at": message.created_at,
+            **message.metadata,
+        },
+    )
+
+
+def event_to_column_message(event: AgentEvent) -> ColumnMessage:
+    if not is_cognitive_event(event):
+        raise ValueError("Event does not carry a cognitive message")
+
+    payload_ref = str(event.payload.get("payload_ref") or "").strip()
+    assembly_id = str(event.payload.get("assembly_id") or "").strip()
+    source_column = str(event.payload.get("source_column") or "").strip()
+    target_column = str(event.payload.get("target_column") or "").strip() or None
+    confidence = float(event.payload.get("confidence") or 0.0)
+    created_at = float(event.payload.get("created_at") or 0.0)
+
+    if not payload_ref:
+        raise ValueError("Cognitive event payload_ref is required")
+    if not assembly_id:
+        raise ValueError("Cognitive event assembly_id is required")
+    if not source_column:
+        raise ValueError("Cognitive event source_column is required")
+
+    cognitive_metadata = {
+        key: value
+        for key, value in event.payload.items()
+        if key
+        not in {
+            "transport_kind",
+            "assembly_id",
+            "source_column",
+            "target_column",
+            "payload_ref",
+            "confidence",
+            "created_at",
+        }
+    }
+
+    return ColumnMessage(
+        message_type=MessageType(event.event_type),
+        assembly_id=assembly_id,
+        source_column=source_column,
+        target_column=target_column,
+        payload_ref=payload_ref,
+        confidence=confidence,
+        metadata=cognitive_metadata,
+        created_at=created_at,
+    )
+
+
+def cognitive_event_replay_identity(event: AgentEvent) -> dict[str, str]:
+    message = event_to_column_message(event)
+    tenant_id = str(
+        event.payload.get("tenant_id") or message.metadata.get("tenant_id") or ""
+    ).strip()
+    return {
+        "assembly_id": message.assembly_id,
+        "tenant_id": tenant_id,
+        "source_column": message.source_column,
+        "target_column": str(message.target_column or ""),
+        "message_type": message.message_type.value,
+        "payload_ref": message.payload_ref,
+    }
+
+
+def cognitive_event_replay_key(event: AgentEvent) -> str:
+    identity = cognitive_event_replay_identity(event)
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return f"message:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
 class HashChain:

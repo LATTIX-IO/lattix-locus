@@ -4,13 +4,15 @@ tracker:
   provider:
     endpoint: https://api.linear.app/graphql
     api_key: $LINEAR_API_KEY
-    project_slug: "<SET_FRONT_PROJECT_SLUG>"
+    project_slug: "3b160e533200"
   active_states:
     - Todo
     - In Progress
     - Rework
   exclude_labels:
     - epic
+    - agent:ineligible
+    - agent:human-review-required
   terminal_states:
     - Closed
     - Cancelled
@@ -20,7 +22,7 @@ tracker:
 polling:
   interval_ms: 30000
 workspace:
-  root: "$SYMPHONY_WORKSPACE_ROOT/lattix-xfrontier"
+  root: "E:/lattix/.symphony/workspaces/lattix-xfrontier"
 hooks:
   timeout_ms: 120000
   after_create: |
@@ -52,7 +54,7 @@ codex:
   approval_policy: never
 symphony:
   repo: "lattix-xfrontier"
-  path: "lattix-xfrontier"
+  path: "."
   remote: "https://github.com/LATTIX-IO/lattix-xfrontier.git"
   default_branch: "main"
   linear_team_key: "FRONT"
@@ -69,8 +71,6 @@ symphony:
 # Symphony Workflow — lattix-xfrontier
 
 You are the coding agent for **Lattix xFrontier** (`lattix-xfrontier`) running under Symphony. Symphony has selected this Linear issue and created an isolated per-issue workspace. Treat the workspace as the only place where commands and file edits may run.
-
-> `project_slug` above is a placeholder. Set it to this repo's Linear project id before enabling unattended runs; tracker transitions will not work until it is correct.
 
 ## Issue context
 
@@ -103,7 +103,7 @@ Use the issue description, labels, blockers, linked assets, and repository conte
 ### Linear state map
 
 - `Backlog`: out of scope for autonomous execution; do not start implementation unless moved to an active state.
-- `Todo`: queued and eligible. Before editing code, move or request movement to `In Progress` when tracker tooling is available.
+- `Todo`: queued and eligible only with `agent:eligible`. Before editing code, move or request movement to `In Progress` when tracker tooling is available.
 - `In Progress`: active implementation. Keep work scoped, validated, and ready for PR handoff.
 - `Human Review`: handoff state. Move here only after branch/PR, validation evidence, and final notes are complete.
 - `Rework`: reviewer feedback requires another pass; re-read feedback, update the plan, revalidate, then return to `Human Review`.
@@ -125,7 +125,7 @@ Use the local `git` command and the authenticated `gh` CLI for branch, pull-requ
 ## Required execution flow
 
 1. Re-read the issue and inspect current repository state before editing.
-2. Confirm the issue is in an executable state. If `Todo`, transition to `In Progress` when tracker tooling is available; if terminal, stop without changing files.
+2. Confirm the issue is in an executable state, has `agent:eligible`, and has no exclusion label. If `Todo`, transition to `In Progress` when tracker tooling is available; if terminal or ineligible, stop without changing files.
 3. Create or reuse a branch named from the issue identifier and short title. Never commit directly to `main`.
 4. Keep changes scoped to the issue.
 5. Prefer tests first for behavior changes. Preserve existing public APIs, node-type semantics, graph schemas, and CLI contracts unless the issue asks for an intentional change.

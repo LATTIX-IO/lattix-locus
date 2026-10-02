@@ -39,12 +39,10 @@ from .common import (
     installer_vault_state_path,
     portal_urls,
     print_json,
-    python_scripts_dir,
     python_executable,
     read_installer_state_manifest,
     run_command,
     source_repo_root,
-    user_scripts_dir,
 )
 
 
@@ -52,6 +50,8 @@ CASDOOR_BOOTSTRAP_MAX_ATTEMPTS = 90
 CASDOOR_BOOTSTRAP_RETRY_DELAY_SECONDS = 2
 _LOCAL_GATEWAY_PORT_FALLBACKS = (8080, 8081, 8088, 8888)
 _INSTALLER_VAULT_BOOTSTRAP_SCHEMA_VERSION = 1
+_MANAGED_VENV_DIRNAME = ".venv"
+_SECURE_STACK_BUILD_SERVICES = ("frontend", "backend", "agent-research")
 _INSTALLER_VAULT_SECRET_KEY_FRAGMENTS = (
     "SECRET",
     "PASSWORD",
@@ -117,7 +117,6 @@ def _render_install_summary(payload: dict[str, Any]) -> str:
     path_locations: list[str] = (
         [str(item) for item in raw_path_locations] if isinstance(raw_path_locations, list) else []
     )
-
     password_status = "Password not recorded in installer output"
     if bootstrap_login:
         if bootstrap_login.get("password_generated"):
@@ -132,6 +131,7 @@ def _render_install_summary(payload: dict[str, Any]) -> str:
         f"Auth mode   : {payload.get('auth_mode')}",
         f"App home    : {payload.get('repo_root')}",
         f"Env file    : {payload.get('compose_env')}",
+        f"Runtime     : {payload.get('managed_runtime')}",
         f"CLI path    : {path_info.get('cli_path')}",
         f"Scripts dir : {path_info.get('scripts_dir')}",
         f"PATH update : {'Applied' if path_info.get('updated') else 'Already present'}",
@@ -185,18 +185,52 @@ def _install_mode(root: Path) -> str:
     return "editable" if (root / ".git").exists() else "wheel"
 
 
-def _pip_install_args(root: Path) -> list[str]:
-    args = [python_executable(), "-m", "pip", "install"]
+def _managed_venv_dir(root: Path) -> Path:
+    return root / _MANAGED_VENV_DIRNAME
+
+
+def _managed_scripts_dir(root: Path) -> Path:
+    venv_root = _managed_venv_dir(root)
+    return venv_root / ("Scripts" if os.name == "nt" else "bin")
+
+
+def _managed_python_executable(root: Path) -> Path:
+    scripts_dir = _managed_scripts_dir(root)
+    executable_name = "python.exe" if os.name == "nt" else "python"
+    return scripts_dir / executable_name
+
+
+def _pip_install_args(root: Path, python_bin: Path) -> list[str]:
+    args = [str(python_bin), "-m", "pip", "install"]
     if _install_mode(root) == "editable":
         args.append("-e")
-    else:
-        args.append("--user")
     args.append(".[dev]")
     return args
 
 
-def _scripts_dir_for_install_mode(mode: str) -> Path:
-    return python_scripts_dir() if mode == "editable" else user_scripts_dir()
+def _bootstrap_managed_venv(install_root: Path, env: dict[str, str]) -> dict[str, str]:
+    venv_dir = _managed_venv_dir(install_root)
+    python_bin = _managed_python_executable(install_root)
+    scripts_dir = _managed_scripts_dir(install_root)
+    if not python_bin.exists():
+        run_command([python_executable(), "-m", "venv", str(venv_dir)], cwd=install_root, env=env)
+    runtime_env = env.copy()
+    runtime_env.update(
+        {
+            "VIRTUAL_ENV": str(venv_dir),
+            "PATH": _append_path_once(str(env.get("PATH") or ""), str(scripts_dir)),
+        }
+    )
+    run_command(
+        [str(python_bin), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"],
+        cwd=install_root,
+        env=runtime_env,
+    )
+    return {
+        "python_bin": str(python_bin),
+        "scripts_dir": str(scripts_dir),
+        "venv_dir": str(venv_dir),
+    }
 
 
 def _path_separator_for_scripts_dir(scripts_dir: Path, current_path: str) -> str:
@@ -207,16 +241,20 @@ def _path_separator_for_scripts_dir(scripts_dir: Path, current_path: str) -> str
     return os.pathsep
 
 
-def _runtime_env(install_root: Path, mode: str) -> dict[str, str]:
-    scripts_dir = _scripts_dir_for_install_mode(mode)
+def _runtime_env(
+    install_root: Path, *, python_bin: Path, scripts_dir: Path, venv_dir: Path | None = None
+) -> dict[str, str]:
     current_path = str(os.getenv("PATH") or "")
     path_separator = _path_separator_for_scripts_dir(scripts_dir, current_path)
+    scripts_dir_str = str(scripts_dir)
     path_entries = [entry for entry in current_path.split(path_separator) if entry]
-    if str(scripts_dir) not in path_entries:
-        path_entries.insert(0, str(scripts_dir))
+    path_entries = [entry for entry in path_entries if entry.casefold() != scripts_dir_str.casefold()]
+    path_entries.insert(0, scripts_dir_str)
     env = os.environ.copy()
     env["PATH"] = path_separator.join(path_entries)
     env[FRONTIER_APP_HOME_ENV] = str(install_root)
+    env["VIRTUAL_ENV"] = str(venv_dir or _managed_venv_dir(install_root))
+    env["FRONTIER_PYTHON_BIN"] = str(python_bin)
     return env
 
 
@@ -734,8 +772,7 @@ def _update_posix_user_path(scripts_dir: Path) -> tuple[bool, list[str]]:
     return bool(modified_files), modified_files
 
 
-def _ensure_scripts_path(mode: str) -> dict[str, object]:
-    scripts_dir = _scripts_dir_for_install_mode(mode)
+def _ensure_scripts_path(scripts_dir: Path) -> dict[str, object]:
     os.environ.update({"PATH": _append_path_once(str(os.getenv("PATH") or ""), str(scripts_dir))})
     if os.name == "nt":
         updated, locations = _update_windows_user_path(scripts_dir)
@@ -758,9 +795,9 @@ def _refresh_existing_local_stacks(
     lightweight_env_path = install_root / ".installer" / "local-lightweight.env"
 
     if secure_env_path.exists() or not lightweight_env_path.exists():
+        _prebuild_secure_stack_images(install_root, env)
         run_command(
-            compose_prefix(local=False, root=install_root)
-            + ["up", "-d", "--build", "--remove-orphans"],
+            compose_prefix(local=False, root=install_root) + ["up", "-d", "--remove-orphans"],
             cwd=install_root,
             env=env,
         )
@@ -769,8 +806,7 @@ def _refresh_existing_local_stacks(
 
     if lightweight_env_path.exists():
         run_command(
-            compose_prefix(local=True, root=install_root)
-            + ["up", "-d", "--build", "--remove-orphans"],
+            compose_prefix(local=True, root=install_root) + ["up", "-d", "--remove-orphans"],
             cwd=install_root,
             env=env,
         )
@@ -897,6 +933,7 @@ def _print_update_result(payload: dict[str, Any]) -> None:
         f"Mode        : {_friendly_install_mode(str(payload.get('install_mode') or 'unknown'))}",
         f"App home    : {payload.get('repo_root')}",
         f"Env file    : {payload.get('compose_env')}",
+        f"Runtime     : {payload.get('managed_runtime')}",
         f"CLI path    : {payload.get('path', {}).get('cli_path')}",
         f"Refresh     : {payload.get('refresh_status')}",
     ]
@@ -937,8 +974,17 @@ def update() -> None:
     if mode == "wheel":
         refresh_status = _update_published_install(install_root)
 
-    path_update = _ensure_scripts_path(mode)
-    install_env = _runtime_env(install_root, mode)
+    bootstrap_env = os.environ.copy()
+    bootstrap_env[FRONTIER_APP_HOME_ENV] = str(install_root)
+    managed_runtime = _bootstrap_managed_venv(install_root, bootstrap_env)
+    scripts_dir = Path(managed_runtime["scripts_dir"])
+    python_bin = Path(managed_runtime["python_bin"])
+    venv_dir = Path(managed_runtime["venv_dir"])
+
+    path_update = _ensure_scripts_path(scripts_dir)
+    install_env = _runtime_env(
+        install_root, python_bin=python_bin, scripts_dir=scripts_dir, venv_dir=venv_dir
+    )
 
     if mode == "editable":
         branch, refresh_status = _update_editable_checkout(install_root, install_env)
@@ -954,7 +1000,7 @@ def update() -> None:
         compose_env = ensure_compose_env_file(local_profile=True, root=install_root)
     ensure_installer_state_manifest(root=install_root, install_mode=mode)
     _best_effort_owner_only_permissions(compose_env)
-    run_command(_pip_install_args(install_root), cwd=install_root, env=install_env)
+    run_command(_pip_install_args(install_root, python_bin), cwd=install_root, env=install_env)
     _require_docker_stack_prerequisites(install_env)
     refreshed_profiles, urls = _refresh_existing_local_stacks(install_root, install_env)
     vault_sync = _sync_installer_state_to_vault(install_root, install_mode=mode)
@@ -964,6 +1010,7 @@ def update() -> None:
             "install_mode": mode,
             "repo_root": str(install_root),
             "compose_env": str(compose_env.resolve()),
+            "managed_runtime": str(venv_dir),
             "path": path_update,
             "refresh_status": refresh_status,
             "refreshed_profiles": refreshed_profiles,
@@ -1315,6 +1362,14 @@ def _compose_up_with_output(
     )
 
 
+def _prebuild_secure_stack_images(install_root: Path, env: dict[str, str]) -> None:
+    command = compose_prefix(local=False, root=install_root) + [
+        "build",
+        *_SECURE_STACK_BUILD_SERVICES,
+    ]
+    run_command(command, cwd=install_root, env=env)
+
+
 def _port_conflict_from_compose_output(output: str) -> tuple[str, int] | None:
     match = re.search(
         r"Bind for (?P<host>[^:]+):(?P<port>\d+) failed: port is already allocated", output
@@ -1364,6 +1419,7 @@ def _raise_compose_failure(command: list[str], completed: subprocess.CompletedPr
 
 
 def _auto_start_stack(install_root: Path, env: dict[str, str]) -> list[str]:
+    _prebuild_secure_stack_images(install_root, env)
     command = compose_prefix(local=False, root=install_root) + ["up", "-d", "--remove-orphans"]
     completed = _compose_up_with_output(command, cwd=install_root, env=env)
     if completed.returncode == 0:
@@ -1392,13 +1448,21 @@ def main() -> None:
     answers = _collect_installer_answers(install_root)
     if _interactive_install() and not str(os.getenv("FRONTIER_INSTALLER_OUTPUT") or "").strip():
         os.environ["FRONTIER_INSTALLER_OUTPUT"] = "tui"
-    path_update = _ensure_scripts_path(mode)
+    bootstrap_env = os.environ.copy()
+    bootstrap_env[FRONTIER_APP_HOME_ENV] = str(install_root)
+    managed_runtime = _bootstrap_managed_venv(install_root, bootstrap_env)
+    scripts_dir = Path(managed_runtime["scripts_dir"])
+    python_bin = Path(managed_runtime["python_bin"])
+    venv_dir = Path(managed_runtime["venv_dir"])
+    path_update = _ensure_scripts_path(scripts_dir)
     _write_secure_installer_env(install_root, answers)
     compose_env = ensure_compose_env_file(local_profile=False, root=install_root)
     ensure_installer_state_manifest(root=install_root, install_mode=mode)
     _best_effort_owner_only_permissions(compose_env)
-    install_env = _runtime_env(install_root, mode)
-    run_command(_pip_install_args(install_root), cwd=install_root, env=install_env)
+    install_env = _runtime_env(
+        install_root, python_bin=python_bin, scripts_dir=scripts_dir, venv_dir=venv_dir
+    )
+    run_command(_pip_install_args(install_root, python_bin), cwd=install_root, env=install_env)
     _require_docker_stack_prerequisites(install_env)
     urls = _auto_start_stack(install_root, install_env)
     vault_sync = _sync_installer_state_to_vault(install_root, install_mode=mode)
@@ -1423,6 +1487,7 @@ def main() -> None:
             "compose_env": str(compose_env.resolve()),
             "auto_started": True,
             "urls": urls,
+            "managed_runtime": str(venv_dir),
             "path": path_update,
             "auth_mode": answers.local_auth_provider,
             "security_posture": "Secure local profile (single-host compose, authenticated A2A)",

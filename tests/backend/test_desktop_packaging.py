@@ -149,9 +149,10 @@ def test_tauri_conf_is_valid_and_complete():
     conf = json.loads((_TAURI_DIR / "tauri.conf.json").read_text(encoding="utf-8"))
     assert conf["identifier"] == "com.lattix.xfrontier"
     assert conf["bundle"]["externalBin"] == ["bin/frontier-backend"]
-    # Auto-update is deferred (no signing key needed for test builds); the
-    # updater plugin is intentionally absent until release.
-    assert "updater" not in conf.get("plugins", {})
+    # The one-click updater pulls signed release manifests from GitHub releases.
+    updater = conf.get("plugins", {}).get("updater", {})
+    assert updater.get("pubkey")
+    assert all(url.startswith("https://github.com/") for url in updater.get("endpoints", []))
     # macOS hardened runtime + Windows timestamp server are configured for signing.
     assert conf["bundle"]["macOS"]["hardenedRuntime"] is True
     assert conf["bundle"]["windows"]["timestampUrl"]

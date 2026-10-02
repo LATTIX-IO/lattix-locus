@@ -27,6 +27,12 @@ class RouteAccessRule:
 _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     RouteAccessRule(("GET",), "/health", RouteAccessCategory.PUBLIC_MINIMAL),
     RouteAccessRule(("GET",), "/healthz", RouteAccessCategory.PUBLIC_MINIMAL),
+    RouteAccessRule(
+        ("GET",), "/auth/oidc/start", RouteAccessCategory.PUBLIC_MINIMAL, "auth.oidc.start"
+    ),
+    RouteAccessRule(
+        ("GET",), "/auth/oidc/callback", RouteAccessCategory.PUBLIC_MINIMAL, "auth.oidc.callback"
+    ),
     RouteAccessRule(("POST",), "/auth/login", RouteAccessCategory.PUBLIC_MINIMAL, "auth.login"),
     RouteAccessRule(
         ("POST",), "/auth/register", RouteAccessCategory.PUBLIC_MINIMAL, "auth.register"
@@ -94,7 +100,7 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         "bundle.import",
     ),
     RouteAccessRule(
-        ("GET",), "/auth/session", RouteAccessCategory.AUTHENTICATED_READ, "auth.session.read"
+        ("GET",), "/auth/session", RouteAccessCategory.PUBLIC_MINIMAL, "auth.session.read"
     ),
     RouteAccessRule(("GET",), "/platform/version", RouteAccessCategory.PUBLIC_MINIMAL),
     RouteAccessRule(
@@ -111,6 +117,36 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         "/runtime/providers",
         RouteAccessCategory.AUTHENTICATED_READ,
         "runtime.providers.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/runtime/user-providers",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "runtime.providers.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/skills/user",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "skills.user.read",
+    ),
+    RouteAccessRule(
+        ("PUT",),
+        "/skills/user",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "skills.user.write",
+    ),
+    RouteAccessRule(
+        ("PUT",),
+        "/runtime/user-providers/{provider}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "runtime.providers.write",
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/runtime/user-providers/{provider}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "runtime.providers.write",
     ),
     RouteAccessRule(
         ("GET",),
@@ -190,6 +226,18 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         "/internal/memory/world-graph/project",
         RouteAccessCategory.INTERNAL_ONLY,
         "memory.world_graph.project",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/internal/cognition/assemblies/run",
+        RouteAccessCategory.INTERNAL_ONLY,
+        "cognition.assembly.run",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/internal/cognition/messages/admit",
+        RouteAccessCategory.INTERNAL_ONLY,
+        "cognition.message.admit",
     ),
     RouteAccessRule(
         ("GET",),
@@ -414,10 +462,22 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         "models.local.delete",
     ),
     RouteAccessRule(
+        ("GET",),
+        "/workflow-runs/{run_id}/stream",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.run.events.read",
+    ),
+    RouteAccessRule(
         ("POST",),
         "/workflow-runs/{run_id}/archive",
         RouteAccessCategory.AUTHENTICATED_MUTATE,
         "workflow.run.archive",
+    ),
+    RouteAccessRule(
+        ("PATCH",),
+        "/workflow-runs/{run_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.run.update",
     ),
     RouteAccessRule(
         ("POST",),
@@ -451,7 +511,73 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         ("GET",), "/integrations", RouteAccessCategory.AUTHENTICATED_READ, "integration.list"
     ),
     RouteAccessRule(
+        ("GET",),
+        "/integrations/starters",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "integration.starter_catalog.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/integrations/mcp",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "integration.mcp.list",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/integrations/mcp/starters",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "integration.mcp.starter_catalog.read",
+    ),
+    RouteAccessRule(
         ("POST",), "/integrations", RouteAccessCategory.AUTHENTICATED_MUTATE, "integration.save"
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/integrations/mcp",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "integration.mcp.save",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/integrations/mcp/{connection_id}/validate",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "integration.mcp.validate",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/integrations/mcp/{connection_id}/approve",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "integration.mcp.approve",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/integrations/{integration_id}/oauth/status",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "integration.oauth.status.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/integrations/{integration_id}/oauth/connect",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "integration.oauth.connect",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/integrations/{integration_id}/oauth/callback",
+        RouteAccessCategory.PUBLIC_MINIMAL,
+        "integration.oauth.callback",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/integrations/{integration_id}/oauth/refresh",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "integration.oauth.refresh",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/integrations/{integration_id}/oauth/disconnect",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "integration.oauth.disconnect",
     ),
     RouteAccessRule(
         ("POST",),
@@ -496,10 +622,31 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         ("GET",), "/playbooks", RouteAccessCategory.AUTHENTICATED_READ, "playbook.list"
     ),
     RouteAccessRule(
+        ("POST",), "/playbooks", RouteAccessCategory.AUTHENTICATED_MUTATE, "playbook.save"
+    ),
+    RouteAccessRule(
         ("GET",),
         "/playbooks/{playbook_id}",
         RouteAccessCategory.AUTHENTICATED_READ,
         "playbook.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/playbooks/{playbook_id}/publish",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "playbook.publish",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/playbooks/{playbook_id}/unpublish",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "playbook.unpublish",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/playbooks/{playbook_id}/archive",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "playbook.archive",
     ),
     RouteAccessRule(
         ("POST",),
@@ -611,6 +758,12 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     ),
     RouteAccessRule(
         ("POST",),
+        "/workflow-definitions/{item_id}/unpublish",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.definition.unpublish",
+    ),
+    RouteAccessRule(
+        ("POST",),
         "/workflow-definitions/{item_id}/archive",
         RouteAccessCategory.AUTHENTICATED_MUTATE,
         "workflow.definition.archive",
@@ -680,6 +833,18 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         "/agent-definitions/{item_id}/publish",
         RouteAccessCategory.AUTHENTICATED_MUTATE,
         "agent.definition.publish",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/agent-definitions/{item_id}/unpublish",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "agent.definition.unpublish",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/agent-definitions/{item_id}/archive",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "agent.definition.archive",
     ),
     RouteAccessRule(
         ("DELETE",),
@@ -761,7 +926,7 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     ),
     RouteAccessRule(
         ("DELETE",),
-        "/node-definitions/{_item_id}",
+        "/node-definitions/{_item_id:path}",
         RouteAccessCategory.AUTHENTICATED_MUTATE,
         "node.definition.delete",
     ),
@@ -784,6 +949,7 @@ _FRAMEWORK_MANAGED_PATHS = {
 @lru_cache(maxsize=None)
 def _compiled_rule_pattern(path_template: str) -> re.Pattern[str]:
     escaped = re.escape(path_template)
+    escaped = re.sub(r"\\\{[^{}]+:path\\\}", r".+", escaped)
     escaped = re.sub(r"\\\{[^{}]+\\\}", r"[^/]+", escaped)
     return re.compile(f"^{escaped}$")
 

@@ -12,6 +12,16 @@ spec:
       labels:
         app: lattix-vault
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: vault
           image: {{ include "lattix-frontier.imageRef" .Values.vault.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

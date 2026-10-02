@@ -46,6 +46,8 @@ Legacy graphs continue to validate and run, and `frontier/agent` semantics are u
 
 ---
 
+The cortical column runtime follows the same zero-trust control-plane model. Column messages, assembly definitions, runtime steps, commitments, and causal graph projections are treated as untrusted until the backend admits them through signed-message verification, tenant ownership checks, column capability policy, assembly/runtime policy gates, replay/idempotency controls, redaction, and deployment-profile validation. The detailed architecture and runbook are in `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, and `THREAT-MODEL.md`.
+
 ## Quick start
 
 Pick the path that matches how you want to run xFrontier. All three converge on the same control plane and secure defaults.
@@ -96,7 +98,11 @@ lattix up        # auto-starts the secure full stack
 lattix health    # API health check
 ```
 
-Open `http://xfrontier.local` (or your configured `LOCAL_STACK_HOST`); the installer also prints clickable `http://127.0.0.1` and LAN URLs after `lattix up`. The bootstrap requires a working Python 3 runtime (`py -3` or `python`) on `PATH` — on Windows the Microsoft Store placeholder alias is not sufficient by itself.
+On clean machines the bootstrap detects your OS and installs Python 3.12+ and Docker prerequisites automatically when it can, refreshes the current shell `PATH`, and then continues into the interactive installer. The installer itself uses a managed virtual environment under the install root, so local installs do not depend on mutable system or Homebrew Python package state. In other words, the default bootstrap path can install Python 3.12+ and Docker before proceeding with the rest of the setup.
+
+For source-checkout testing, you can still run `pwsh -File .\install\bootstrap.ps1` on Windows or `sh ./install/bootstrap.sh` on POSIX shells. When launched from a checkout, those bootstrap scripts use the checkout's bundled installer instead of downloading `main` again.
+
+Open `http://xfrontier.local` (or your configured `LOCAL_STACK_HOST`); the installer also prints clickable `http://127.0.0.1` and LAN URLs after `lattix up`. If prerequisites cannot be installed automatically, the bootstrap requires a working Python 3 runtime (`py -3` or `python`) on `PATH` — on Windows the Microsoft Store placeholder alias is not sufficient by itself.
 
 Common follow-ups:
 
@@ -148,6 +154,16 @@ For the full narrative — control plane, memory tiers, isolation strategies, th
 ---
 
 ## Implementation
+
+### Secure-local installs and runtime profiles
+
+Supported runtime profiles are explicit: `local-secure` (fail-closed secure local/full-stack profile used by `docker-compose.yml`) and `hosted` (non-local; requires authenticated operator access and signed A2A runtime headers). Set `FRONTIER_RUNTIME_PROFILE` to pin the posture. Legacy flags like `FRONTIER_SECURE_LOCAL_MODE` and `FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS` still exist for compatibility, but the named profile is the canonical contract.
+
+Hosted deployments also require signed runtime messages, replay protection, egress allowlists, and MCP local-server policy unless remote MCP servers are explicitly confirmed with `FRONTIER_CONFIRM_REMOTE_MCP_SERVERS=true`. Operators can verify the active posture through authenticated `/healthz/details` and `/platform/settings`; both expose the `secure_profile` report used by startup/profile validation.
+
+Secure local installs default to OIDC-backed operator authentication and disable unsigned header-only actor trust. The installer ships with a Casdoor preset by default, but can also emit generic OIDC settings for another IAM provider when you want to connect Frontier to an external identity plane. The frontend includes a generic `/auth` portal that points users to the configured provider-hosted sign-in and sign-up URLs, so the same console entry flow works with Casdoor or another OIDC-compliant IAM. The secure local stack exposes Casdoor directly on loopback (`http://127.0.0.1:8081` by default) and also keeps the optional `http://casdoor.localhost` gateway route for environments where that hostname resolves. The installer seeds a default bootstrap admin identity (`frontier-admin` / `admin@<hostname>.localhost`) into both the admin and builder actor allowlists so the first authenticated operator lands with the right keys.
+
+Secure-local installs also mirror installer-managed secrets and configuration snapshots into the local Vault instance. The Docker Compose stack backs Vault with the durable `vault-data` volume, while PostgreSQL and Neo4j continue using their own persistent named volumes for long-term platform data. Older installs that do not already have this manifest are upgraded into it automatically during install/update.
 
 ### Memory system
 
@@ -235,6 +251,30 @@ Focused validation for the cognitive MVP:
 cd apps/frontend
 npm test -- --run src/lib/frontier-node-schema.spec.ts src/components/run-conversation-console.spec.tsx
 ```
+
+For the cortical column zero-trust MVP slice, use the focused verification suite below before merging or promoting behavior changes:
+
+```text
+python -m pytest tests/unit/test_cognition.py tests/unit/test_assembly_runner.py tests/unit/test_causal_state_persistence.py tests/unit/test_cognitive_transport.py
+python -m pytest apps/backend/tests/test_cortical_assembly_endpoint.py
+python -m pytest apps/backend/tests/test_generated_artifacts.py -k "secure_profile or runtime_profile or projection or tenant_allowed_runtime or tenant_denied_runtime"
+python -m py_compile apps/backend/app/main.py apps/backend/app/request_security.py frontier_runtime/cognition.py frontier_runtime/assembly_runner.py frontier_runtime/events.py frontier_runtime/envelope.py frontier_runtime/persistence.py
+```
+
+Expected coverage includes signed cognitive message admission, replay/idempotency hardening, column capability policy, assembly admission, shared runtime policy gates, commitment validation, sensitive-data redaction, audit event emission, projection safety, secure profile deployment checks, and local-development usability. No separate runtime test is required for documentation-only updates, but behavior-changing slices should update these docs with the applicable commands and expected suites.
+
+### Stack management and rollback
+
+`make stack-up` is kept as an explicit alias for the secure full stack (`make up`); use it when you need the heavier full platform for gateway/sandbox/policy-infra work. `make local-up` runs the lighter `docker-compose.local.yml` stack, which uses `FRONTIER_LOCAL_API_BASE_URL` rather than the gateway-based `/api` path.
+
+To tear down the installed local app and delete installer-managed env files so you can test a clean reinstall, use `lattix remove`. Equivalent repo-local helpers remain available:
+
+```text
+make remove
+.\scripts\frontier.ps1 remove
+```
+
+For rollback, preserve persistent causal state, replay markers, audit/event-chain artifacts, database volumes, and the A2A signing configuration unless the incident is a signing-key compromise. Roll back application image/configuration first, then rerun the focused zero-trust suite and confirm `/healthz/details` plus `/platform/settings` report an acceptable `secure_profile.status` before reopening write traffic.
 
 ### License
 

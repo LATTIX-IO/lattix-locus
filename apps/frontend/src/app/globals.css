@@ -1,102 +1,88 @@
 @import "tailwindcss";
 
 :root {
-  --background: 210 20% 99%;
-  --foreground: 220 14% 14%;
+  --background: 220 23% 97%;
+  --foreground: 224 24% 14%;
   --card: 0 0% 100%;
-  --muted: 210 16% 95%;
-  --muted-foreground: 220 9% 45%;
-  --primary: 35 95% 52%;
-  --accent: 38 98% 55%;
-  --border: 220 14% 89%;
-  --ui-border: hsl(220 14% 89%);
-  --radius: 0.5rem;
+  --muted: 220 20% 95%;
+  --muted-foreground: 220 10% 42%;
+  --primary: 224 78% 57%;
+  --accent: 224 78% 57%;
+  --border: 220 19% 88%;
+  --ui-border: hsl(220 19% 88%);
+  --radius: 14px;
 
-  --state-critical: 2 84% 60%;
-  --state-warning: 35 95% 52%;
-  --state-success: 142 55% 45%;
-  --state-info: 205 90% 56%;
-  --state-neutral: 220 9% 56%;
+  --state-critical: 3 86% 64%;
+  --state-warning: 38 92% 52%;
+  --state-success: 150 58% 42%;
+  --state-info: 201 92% 52%;
+  --state-neutral: 220 9% 52%;
 
-  --fx-header: hsl(var(--background) / 0.94);
-  --fx-header-elevated: hsl(var(--background) / 0.98);
-  --fx-sidebar: hsl(var(--card));
+  --fx-header: hsl(var(--background) / 0.84);
+  --fx-header-elevated: hsl(var(--card) / 0.98);
+  --fx-sidebar: color-mix(in srgb, hsl(var(--card)) 94%, hsl(var(--muted)) 6%);
   --fx-surface: hsl(var(--card));
-  --fx-surface-elevated: hsl(var(--muted) / 0.45);
+  --fx-surface-elevated: color-mix(in srgb, hsl(var(--card)) 76%, hsl(var(--muted)) 24%);
   --fx-border: var(--ui-border);
   --fx-muted: hsl(var(--muted-foreground));
   --fx-primary: hsl(var(--primary));
+  --fx-primary-text: #f7f9ff;
   --fx-warning: hsl(var(--state-warning));
   --fx-success: hsl(var(--state-success));
   --fx-danger: hsl(var(--state-critical));
-  --fx-input: hsl(var(--card));
+  --fx-input: color-mix(in srgb, hsl(var(--card)) 86%, hsl(var(--muted)) 14%);
   --fx-input-text: hsl(var(--foreground));
-  --fx-nav-hover: hsl(var(--muted) / 0.78);
-  --fx-nav-active: hsl(var(--accent) / 0.14);
-  --fx-nav-active-border: color-mix(in srgb, var(--fx-primary) 24%, var(--ui-border) 76%);
+  --fx-nav-hover: color-mix(in srgb, hsl(var(--muted)) 82%, white 18%);
+  --fx-nav-active: color-mix(in srgb, var(--fx-primary) 10%, white 90%);
+  --fx-nav-active-border: color-mix(in srgb, var(--fx-primary) 20%, var(--ui-border) 80%);
   --fx-nav-active-text: hsl(var(--foreground));
-  --fx-primary-strong: color-mix(in srgb, var(--fx-primary) 92%, hsl(var(--foreground)) 8%);
-  --fx-sidebar-divider: color-mix(in srgb, var(--ui-border) 82%, transparent);
-  --fx-sidebar-kicker: color-mix(in srgb, hsl(var(--muted-foreground)) 88%, transparent);
-  --fx-sidebar-footer: color-mix(in srgb, hsl(var(--muted)) 70%, transparent);
-  --fx-top-strip: hsl(var(--muted));
+  --fx-primary-strong: color-mix(in srgb, var(--fx-primary) 84%, black 16%);
+  --fx-sidebar-divider: color-mix(in srgb, var(--ui-border) 76%, white 24%);
+  --fx-sidebar-kicker: color-mix(in srgb, hsl(var(--muted-foreground)) 96%, transparent);
+  --fx-sidebar-footer: color-mix(in srgb, hsl(var(--muted)) 72%, white 28%);
+  --fx-top-strip: color-mix(in srgb, hsl(var(--muted)) 78%, white 22%);
   --fx-top-strip-text: hsl(var(--foreground));
   --fx-focus-ring: hsl(var(--accent));
+  --fx-shadow-soft: 0 1px 2px rgba(16, 24, 40, 0.05), 0 10px 24px rgba(16, 24, 40, 0.05);
+  --fx-shadow-panel: 0 1px 2px rgba(16, 24, 40, 0.04), 0 14px 34px rgba(16, 24, 40, 0.06);
 }
 
 .theme-light {
-  --background: 210 20% 99%;
-  --foreground: 220 14% 14%;
+  --background: 220 23% 97%;
+  --foreground: 224 24% 14%;
   --card: 0 0% 100%;
-  --muted: 210 16% 95%;
-  --muted-foreground: 220 9% 45%;
-  --primary: 35 95% 52%;
-  --accent: 38 98% 55%;
-  --border: 220 14% 89%;
-  --ui-border: hsl(220 14% 89%);
+  --muted: 220 20% 95%;
+  --muted-foreground: 220 10% 42%;
+  --primary: 224 78% 57%;
+  --accent: 224 78% 57%;
+  --border: 220 19% 88%;
+  --ui-border: hsl(220 19% 88%);
 }
 
 .theme-dark {
-  --background: 240 2% 11%;
-  --foreground: 210 20% 96%;
-  --card: 240 2% 13%;
-  --muted: 240 2% 16%;
-  --muted-foreground: 210 10% 74%;
-  --primary: 35 95% 56%;
-  --accent: 38 98% 55%;
-  --border: 240 2% 28%;
-  --ui-border: hsl(240 2% 28%);
-
-  --state-critical: 3 86% 64%;
-  --state-warning: 38 96% 60%;
-  --state-success: 144 50% 54%;
-  --state-info: 202 88% 62%;
-  --state-neutral: 215 10% 72%;
-
-  --fx-header: hsl(var(--background) / 0.94);
-  --fx-header-elevated: hsl(var(--background) / 0.98);
-  --fx-sidebar: hsl(var(--card));
+  --background: 228 20% 10%;
+  --foreground: 220 18% 92%;
+  --card: 228 20% 13%;
+  --muted: 228 15% 18%;
+  --muted-foreground: 220 10% 64%;
+  --primary: 224 88% 66%;
+  --accent: 224 88% 66%;
+  --border: 228 15% 24%;
+  --ui-border: hsl(228 15% 24%);
+  --fx-header: hsl(var(--background) / 0.84);
+  --fx-header-elevated: hsl(var(--card) / 0.96);
+  --fx-sidebar: color-mix(in srgb, hsl(var(--card)) 92%, black 8%);
   --fx-surface: hsl(var(--card));
-  --fx-surface-elevated: hsl(var(--muted) / 0.65);
-  --fx-border: var(--ui-border);
-  --fx-muted: hsl(var(--muted-foreground));
-  --fx-primary: hsl(var(--primary));
-  --fx-warning: hsl(var(--state-warning));
-  --fx-success: hsl(var(--state-success));
-  --fx-danger: hsl(var(--state-critical));
-  --fx-input: hsl(var(--card));
-  --fx-input-text: hsl(var(--foreground));
-  --fx-nav-hover: hsl(var(--muted) / 0.85);
-  --fx-nav-active: hsl(var(--accent) / 0.2);
-  --fx-nav-active-border: color-mix(in srgb, var(--fx-primary) 28%, var(--ui-border) 72%);
-  --fx-nav-active-text: hsl(var(--foreground));
-  --fx-primary-strong: color-mix(in srgb, var(--fx-primary) 94%, hsl(var(--foreground)) 6%);
-  --fx-sidebar-divider: color-mix(in srgb, var(--ui-border) 78%, transparent);
-  --fx-sidebar-kicker: color-mix(in srgb, hsl(var(--muted-foreground)) 92%, transparent);
+  --fx-surface-elevated: color-mix(in srgb, hsl(var(--card)) 82%, hsl(var(--muted)) 18%);
+  --fx-input: color-mix(in srgb, hsl(var(--card)) 84%, hsl(var(--muted)) 16%);
+  --fx-nav-hover: color-mix(in srgb, hsl(var(--muted)) 82%, white 8%);
+  --fx-nav-active: color-mix(in srgb, var(--fx-primary) 15%, hsl(var(--card)) 85%);
+  --fx-nav-active-border: color-mix(in srgb, var(--fx-primary) 26%, var(--ui-border) 74%);
+  --fx-primary-strong: color-mix(in srgb, var(--fx-primary) 90%, white 10%);
+  --fx-sidebar-divider: color-mix(in srgb, var(--ui-border) 84%, transparent);
   --fx-sidebar-footer: color-mix(in srgb, hsl(var(--muted)) 80%, transparent);
-  --fx-top-strip: hsl(var(--muted));
-  --fx-top-strip-text: hsl(var(--foreground));
-  --fx-focus-ring: hsl(var(--accent));
+  --fx-shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.32), 0 12px 28px rgba(0, 0, 0, 0.26);
+  --fx-shadow-panel: 0 2px 6px rgba(0, 0, 0, 0.28), 0 18px 40px rgba(0, 0, 0, 0.3);
 }
 
 @theme inline {
@@ -107,16 +93,24 @@
   --color-border: hsl(var(--border));
   --color-primary: hsl(var(--primary));
   --color-accent: hsl(var(--accent));
-  --font-sans: var(--font-inter);
-  --font-mono: var(--font-space-mono);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-ibm-plex-mono);
+}
+
+html {
+  background: hsl(var(--background));
 }
 
 body {
-  background: hsl(var(--background));
+  background:
+    radial-gradient(circle at top, color-mix(in srgb, var(--fx-primary) 7%, transparent), transparent 28%),
+    linear-gradient(180deg, color-mix(in srgb, hsl(var(--background)) 96%, white 4%), hsl(var(--background)));
   color: hsl(var(--foreground));
-  font-family: var(--font-inter), Inter, Arial, Helvetica, sans-serif;
-  font-size: 10pt;
-  line-height: 1.35;
+  font-family: var(--font-geist-sans), "Geist", "SF Pro Display", "Inter", sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+  text-rendering: optimizeLegibility;
 }
 
 *,
@@ -126,7 +120,8 @@ body {
 }
 
 .fx-app {
-  background: hsl(var(--background));
+  min-height: 100vh;
+  background: transparent;
 }
 
 .fx-top-strip {
@@ -137,16 +132,15 @@ body {
 
 .fx-header {
   background: var(--fx-header);
-  backdrop-filter: saturate(120%) blur(8px);
-  -webkit-backdrop-filter: saturate(120%) blur(8px);
   border-bottom: 1px solid var(--ui-border);
+  backdrop-filter: blur(14px);
 }
 
 .fx-panel {
-  background: hsl(var(--card) / 0.95);
+  background: hsl(var(--card));
   border: 1px solid var(--ui-border);
   border-radius: var(--radius);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  box-shadow: var(--fx-shadow-panel);
 }
 
 .fx-section-header {
@@ -190,7 +184,8 @@ body {
   background: var(--fx-input);
   border: 1px solid var(--ui-border);
   color: var(--fx-input-text);
-  border-radius: calc(var(--radius) - 2px);
+  border-radius: 10px;
+  min-height: 2.4rem;
 }
 
 .fx-input::placeholder {
@@ -205,6 +200,7 @@ body {
   background: var(--fx-nav-active);
   color: hsl(var(--foreground));
   border: 1px solid color-mix(in srgb, var(--ui-border) 70%, var(--fx-primary) 30%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 
 .fx-workspace-switcher {
@@ -226,11 +222,137 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
+  font-size: 0.67rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--fx-sidebar-kicker);
+}
+
+.fx-workspace-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  border-radius: 0.55rem;
+  background: hsl(var(--muted));
+  border: 1px solid var(--ui-border);
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+  text-align: left;
+}
+
+.fx-workspace-chip:hover {
+  background: color-mix(in srgb, hsl(var(--muted)) 80%, hsl(var(--card)) 20%);
+  border-color: var(--fx-sidebar-divider);
+}
+
+.fx-workspace-chip-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.45rem;
+  height: 1.45rem;
+  border-radius: 0.25rem;
+  background: hsl(var(--foreground));
+  color: hsl(var(--card));
+  font-family: var(--font-space-mono), "Space Mono", monospace;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.fx-workspace-chip-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+  line-height: 1.2;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fx-workspace-chip-role {
+  font-family: var(--font-space-mono), "Space Mono", monospace;
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fx-muted);
+  line-height: 1.2;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fx-avatar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+  border: 2px solid var(--fx-primary);
+  background: color-mix(in srgb, var(--fx-primary) 12%, transparent);
+  color: color-mix(in srgb, var(--fx-primary) 92%, hsl(var(--foreground)) 8%);
+  cursor: pointer;
+  font-family: var(--font-space-mono), "Space Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  transition: filter 120ms ease;
+}
+
+.fx-avatar-btn:hover {
+  filter: brightness(0.95);
+}
+
+.fx-platform-footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.625rem 0.125rem;
+}
+
+.fx-platform-footer-label {
+  font-size: 0.5625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--fx-muted);
+  font-family: var(--font-space-mono), "Space Mono", monospace;
+}
+
+.fx-platform-footer-version {
+  font-size: 0.5625rem;
+  font-family: var(--font-space-mono), "Space Mono", monospace;
+  color: var(--fx-muted);
+  background: hsl(var(--muted));
+  border: 1px solid var(--ui-border);
+  border-radius: 0.25rem;
+  padding: 0.125rem 0.375rem;
+}
+
+.fx-platform-footer-status {
+  display: flex;
+  align-items: center;
+  gap: 0.3125rem;
+  padding: 0.125rem 0.625rem 0.25rem;
+}
+
+.fx-platform-footer-status-dot {
+  width: 0.3125rem;
+  height: 0.3125rem;
+  border-radius: 9999px;
+  background: hsl(var(--state-success));
+}
+
+.fx-platform-footer-status-text {
+  font-size: 0.5625rem;
+  color: var(--fx-muted);
+  font-family: var(--font-space-mono), "Space Mono", monospace;
 }
 
 .fx-nav-section {
@@ -259,7 +381,7 @@ body {
   font-size: 0.78rem;
   font-weight: 500;
   text-decoration: none;
-  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
 .fx-nav-item:hover {
@@ -276,45 +398,60 @@ body {
   background: var(--fx-nav-active);
   border-color: var(--fx-nav-active-border);
   color: var(--fx-nav-active-text);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, white 24%, transparent);
+  box-shadow: none;
 }
 
 .fx-nav-item-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.15rem;
-  height: 1.15rem;
+  width: 1.05rem;
+  height: 1.05rem;
   flex: 0 0 auto;
 }
 
 .fx-btn-primary {
   background: var(--fx-primary);
-  color: #1e1302;
-  border: 1px solid color-mix(in srgb, var(--fx-primary) 74%, #000 0%);
-  border-radius: calc(var(--radius) - 2px);
+  color: var(--fx-primary-text);
+  border: 1px solid color-mix(in srgb, var(--fx-primary) 82%, black 18%);
+  border-radius: 10px;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
 }
 
 .fx-btn-primary:hover {
-  filter: brightness(0.93);
+  background: color-mix(in srgb, var(--fx-primary) 92%, black 8%);
 }
 
 .fx-btn-secondary {
-  background: hsl(var(--card));
+  background: color-mix(in srgb, hsl(var(--card)) 92%, hsl(var(--muted)) 8%);
   color: hsl(var(--foreground));
   border: 1px solid var(--ui-border);
-  border-radius: calc(var(--radius) - 2px);
+  border-radius: 10px;
+  box-shadow: 0 1px 1px rgba(16, 24, 40, 0.02);
 }
 
 .fx-btn-secondary:hover {
-  filter: brightness(0.93);
+  background: var(--fx-nav-hover);
+}
+
+.fx-btn-ghost {
+  background: transparent;
+  color: hsl(var(--foreground));
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+
+.fx-btn-ghost:hover {
+  background: var(--fx-nav-hover);
+  border-color: var(--ui-border);
 }
 
 .fx-btn-success {
   background: var(--fx-success);
-  color: #0c1a12;
+  color: #f6fffa;
   border: 1px solid color-mix(in srgb, var(--fx-success) 68%, #000 0%);
-  border-radius: calc(var(--radius) - 2px);
+  border-radius: 10px;
 }
 
 .fx-btn-success:hover {
@@ -323,9 +460,9 @@ body {
 
 .fx-btn-warning {
   background: var(--fx-warning);
-  color: #202020;
+  color: #251700;
   border: 1px solid color-mix(in srgb, var(--fx-warning) 66%, #000 0%);
-  border-radius: calc(var(--radius) - 2px);
+  border-radius: 10px;
 }
 
 .fx-btn-warning:hover {
@@ -334,6 +471,7 @@ body {
 
 .fx-btn-primary:focus-visible,
 .fx-btn-secondary:focus-visible,
+.fx-btn-ghost:focus-visible,
 .fx-btn-success:focus-visible,
 .fx-btn-warning:focus-visible,
 .fx-field:focus-visible,
@@ -356,6 +494,7 @@ input[data-no-focus-ring]:focus-visible {
 
 .fx-btn-primary:disabled,
 .fx-btn-secondary:disabled,
+.fx-btn-ghost:disabled,
 .fx-btn-success:disabled,
 .fx-btn-warning:disabled {
   opacity: 0.58;
@@ -365,14 +504,15 @@ input[data-no-focus-ring]:focus-visible {
 
 .fx-btn-primary[aria-busy="true"],
 .fx-btn-secondary[aria-busy="true"],
+.fx-btn-ghost[aria-busy="true"],
 .fx-btn-success[aria-busy="true"],
 .fx-btn-warning[aria-busy="true"] {
   cursor: progress;
 }
 
 .fx-badge-local {
-  border: 1px solid color-mix(in srgb, hsl(var(--state-info)) 50%, var(--ui-border) 50%);
-  background: color-mix(in srgb, hsl(var(--state-info)) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--fx-primary) 42%, var(--ui-border) 58%);
+  background: color-mix(in srgb, var(--fx-primary) 12%, transparent);
   color: hsl(var(--foreground));
   border-radius: 999px;
 }
@@ -389,37 +529,37 @@ input[data-no-focus-ring]:focus-visible {
   background: var(--fx-input);
   border: 1px solid var(--ui-border);
   color: var(--fx-input-text);
-  border-radius: calc(var(--radius) - 2px);
-  min-height: 32px;
+  border-radius: 10px;
+  min-height: 36px;
 }
 
 .fx-chip {
   border: 1px solid var(--ui-border);
-  background: hsl(var(--card));
-  border-radius: calc(var(--radius) - 2px);
+  background: color-mix(in srgb, hsl(var(--card)) 92%, hsl(var(--muted)) 8%);
+  border-radius: 999px;
   font-size: 11px;
 }
 
 .fx-pill {
   border-radius: 999px;
   border: 1px solid var(--ui-border);
-  background: hsl(var(--muted) / 0.7);
+  background: color-mix(in srgb, hsl(var(--muted)) 72%, white 28%);
   font-size: 11px;
 }
 
 .fx-data-grid {
   border: 1px solid var(--ui-border);
-  border-radius: 0.75rem;
+  border-radius: 14px;
   background: hsl(var(--card));
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  box-shadow: var(--fx-shadow-soft);
 }
 
 .fx-data-grid table thead tr {
-  height: 36px;
+  height: 40px;
 }
 
 .fx-data-grid table tbody tr {
-  height: 36px;
+  height: 42px;
 }
 
 .fx-data-grid table tbody tr:hover {
@@ -442,7 +582,7 @@ input[data-no-focus-ring]:focus-visible {
 }
 
 .fx-panel table thead tr {
-  height: 36px;
+  height: 40px;
   background: hsl(var(--muted));
 }
 
@@ -454,7 +594,7 @@ input[data-no-focus-ring]:focus-visible {
 }
 
 .fx-panel table tbody tr {
-  height: 36px;
+  height: 42px;
 }
 
 .fx-panel table tbody tr:hover {

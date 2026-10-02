@@ -12,6 +12,16 @@ spec:
       labels:
         app: lattix-nats
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: nats
           image: {{ include "lattix-frontier.imageRef" .Values.nats.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

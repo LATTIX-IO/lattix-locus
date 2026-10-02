@@ -3,13 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 
 import SettingsPage from "@/app/settings/page";
 
-const { getPlatformSettingsMock, savePlatformSettingsMock, getAtfAlignmentReportMock } = vi.hoisted(() => ({
+const { getPlatformSettingsMock, savePlatformSettingsMock, getAtfAlignmentReportMock, getUserSkillsMock, saveUserSkillsMock } = vi.hoisted(() => ({
   getPlatformSettingsMock: vi.fn(async () => ({
+    console_classification_banner_enabled: true,
+    console_classification_banner_text: "Internal • Operational Console",
+    console_classification_banner_background_color: "#2e2a28",
+    console_classification_banner_text_color: "#e7dcc0",
     local_only_mode: true,
     mask_secrets_in_events: true,
     require_human_approval: false,
     default_guardrail_ruleset_id: null,
     global_blocked_keywords: [],
+    tenant_scoped_skills: [],
     collaboration_max_agents: 8,
     default_runtime_engine: "native",
     default_runtime_strategy: "single",
@@ -46,13 +51,29 @@ const { getPlatformSettingsMock, savePlatformSettingsMock, getAtfAlignmentReport
       run_count_total: 6,
     },
   })),
+  getUserSkillsMock: vi.fn(async () => ({
+    principal_id: "user-1",
+    skills: [],
+    updated_at: new Date().toISOString(),
+  })),
+  saveUserSkillsMock: vi.fn(async (payload: { skills: string[] }) => ({
+    principal_id: "user-1",
+    skills: payload.skills,
+    updated_at: new Date().toISOString(),
+  })),
   savePlatformSettingsMock: vi.fn<(payload: Record<string, unknown>) => Promise<{ ok: boolean }>>(async () => ({ ok: true })),
+}));
+
+vi.mock("@/components/composer-defaults-settings", () => ({
+  ComposerDefaultsSettings: () => null,
 }));
 
 vi.mock("@/lib/api", () => ({
   getPlatformSettings: getPlatformSettingsMock,
   getAtfAlignmentReport: getAtfAlignmentReportMock,
+  getUserSkills: getUserSkillsMock,
   savePlatformSettings: savePlatformSettingsMock,
+  saveUserSkills: saveUserSkillsMock,
 }));
 
 describe("SettingsPage", () => {
@@ -113,5 +134,63 @@ describe("SettingsPage", () => {
     expect(payload.default_hybrid_runtime_routing?.retrieval).toBe("langchain");
     expect(payload.default_hybrid_runtime_routing?.tooling).toBe("semantic-kernel");
     expect(payload.default_hybrid_runtime_routing?.collaboration).toBe("autogen");
+  });
+
+  it("saves classification banner changes from shared settings", async () => {
+    savePlatformSettingsMock.mockClear();
+
+    render(<SettingsPage />);
+
+    await screen.findByLabelText(/console banner text/i);
+
+    fireEvent.click(screen.getByLabelText(/show console classification banner/i));
+    fireEvent.change(screen.getByLabelText(/console banner text/i), { target: { value: "Restricted • Incident Console" } });
+    fireEvent.change(screen.getByLabelText(/banner background color/i), { target: { value: "#1d4ed8" } });
+    fireEvent.change(screen.getByLabelText(/banner text color/i), { target: { value: "#eff6ff" } });
+    fireEvent.click(screen.getByRole("button", { name: /save preferences/i }));
+
+    await waitFor(() => expect(savePlatformSettingsMock).toHaveBeenCalledTimes(1));
+    const payload = savePlatformSettingsMock.mock.calls.at(0)?.[0] as {
+      console_classification_banner_enabled?: boolean;
+      console_classification_banner_text?: string;
+      console_classification_banner_background_color?: string;
+      console_classification_banner_text_color?: string;
+    };
+
+    expect(payload.console_classification_banner_enabled).toBe(false);
+    expect(payload.console_classification_banner_text).toBe("Restricted • Incident Console");
+    expect(payload.console_classification_banner_background_color).toBe("#1d4ed8");
+    expect(payload.console_classification_banner_text_color).toBe("#eff6ff");
+  });
+
+  it("surfaces backend save failures in the shared settings shell", async () => {
+    savePlatformSettingsMock.mockClear();
+    savePlatformSettingsMock.mockRejectedValueOnce(new Error("503 backend unavailable"));
+
+    render(<SettingsPage />);
+
+    await screen.findByRole("button", { name: /save preferences/i });
+
+    fireEvent.click(screen.getByRole("button", { name: /save preferences/i }));
+
+    expect(await screen.findByText("503 backend unavailable")).toBeInTheDocument();
+  });
+
+  it("saves personal slash skills independently from platform settings", async () => {
+    saveUserSkillsMock.mockClear();
+
+    render(<SettingsPage />);
+
+    await screen.findByRole("button", { name: /save \/skills/i });
+
+    fireEvent.change(screen.getByLabelText(/personal \/skills/i), {
+      target: { value: "/incident-triage\nresearch-brief" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /save \/skills/i }));
+
+    await waitFor(() => expect(saveUserSkillsMock).toHaveBeenCalledTimes(1));
+    expect(saveUserSkillsMock.mock.calls.at(0)?.[0]).toEqual({
+      skills: ["/incident-triage", "research-brief"],
+    });
   });
 });

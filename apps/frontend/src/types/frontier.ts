@@ -24,6 +24,8 @@ export type OperatorSession = {
     audience: string;
     provider: string;
     validation_error?: string;
+    browser_flow_configured?: boolean;
+    browser_flow_error?: string;
   };
 };
 
@@ -40,22 +42,40 @@ export type PlatformVersionStatus = {
   summary: string;
 };
 
+export type PlatformHealthDetails = {
+  status: string;
+  timestamp: string;
+  postgres: string;
+  postgres_reason?: string;
+  redis: string;
+  long_term_memory: string;
+  long_term_memory_reason?: string;
+  memory_consolidation: string;
+  memory_hybrid_retrieval: string;
+  memory_world_graph: string;
+  neo4j: string;
+};
+
 export type RunStatus =
   | "Running"
   | "Blocked"
   | "Needs Review"
   | "Done"
-  | "Failed";
+  | "Failed"
+  | "Archived";
+
+export type WorkflowRunKind = "workflow" | "chat" | "playbook" | "task";
 
 export type RunKind = "individual" | "agent" | "workflow" | "playbook";
 
 export type WorkflowRunSummary = {
   id: string;
   title: string;
+  title_source?: "system" | "generated" | "user";
   status: RunStatus;
   updatedAt: string;
   progressLabel: string;
-  kind?: RunKind;
+  kind?: RunKind | WorkflowRunKind;
 };
 
 export type WorkflowRunEvent = {
@@ -73,6 +93,7 @@ export type WorkflowRunEvent = {
     | "error";
   title: string;
   summary: string;
+  content?: string;
   createdAt: string;
   metadata?: Record<string, unknown>;
 };
@@ -117,12 +138,17 @@ export type WorkflowDefinition = {
   description: string;
   version: number;
   status: "draft" | "published" | "archived";
+  published_revision_id?: string | null;
+  published_at?: string | null;
+  active_revision_id?: string | null;
+  active_at?: string | null;
   security_config?: SecurityScopeConfig;
   graph_json?: {
     schema_version?: string;
     nodes?: Array<{ id: string; title: string; type: string; x: number; y: number; config?: Record<string, unknown> }>;
     links?: Array<{ from: string; to: string; from_port?: string; to_port?: string }>;
   };
+  generated_artifacts?: GeneratedCodeArtifact[];
 };
 
 export type SecurityClassification = "public" | "internal" | "confidential" | "restricted";
@@ -176,6 +202,10 @@ export type AgentDefinition = {
   name: string;
   version: number;
   status: "draft" | "published" | "archived";
+  published_revision_id?: string | null;
+  published_at?: string | null;
+  active_revision_id?: string | null;
+  active_at?: string | null;
   type: "form" | "graph";
   config_json?: {
     schema_version?: string;
@@ -226,7 +256,29 @@ export type GuardrailRuleSet = {
   name: string;
   version: number;
   status: "draft" | "published" | "archived";
+  published_revision_id?: string | null;
+  published_at?: string | null;
+  active_revision_id?: string | null;
+  active_at?: string | null;
   config_json?: Record<string, unknown>;
+};
+
+export type DefinitionRevisionSummary = {
+  id: string;
+  entity_type: "workflow_definition" | "agent_definition" | "guardrail_ruleset";
+  entity_id: string;
+  revision: number;
+  action: string;
+  version: number;
+  status: string;
+  created_at: string;
+  actor: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type DefinitionRevisionHistory = {
+  count: number;
+  versions: DefinitionRevisionSummary[];
 };
 
 export type PlatformSettings = {
@@ -234,6 +286,10 @@ export type PlatformSettings = {
   org_slug?: string;
   support_email?: string;
   website?: string;
+  console_classification_banner_enabled?: boolean;
+  console_classification_banner_text?: string;
+  console_classification_banner_background_color?: string;
+  console_classification_banner_text_color?: string;
   default_kickoff_workflow?: string;
   preferred_review_depth?: string;
   idle_timeout?: string;
@@ -252,6 +308,7 @@ export type PlatformSettings = {
   a2a_replay_protection?: boolean;
   default_guardrail_ruleset_id: string | null;
   global_blocked_keywords: string[];
+  tenant_scoped_skills?: string[];
   collaboration_max_agents: number;
   max_tool_calls_per_run?: number;
   max_retrieval_items?: number;
@@ -270,7 +327,7 @@ export type PlatformSettings = {
   enforce_egress_allowlist?: boolean;
   allowed_egress_hosts?: string[];
   enforce_local_network_only?: boolean;
-  allow_local_network_hostnames?: string[];
+  allow_local_network_hostnames?: string[] | boolean;
   allowed_retrieval_sources?: string[];
   retrieval_require_local_source_url?: boolean;
   allowed_mcp_server_urls?: string[];
@@ -320,6 +377,106 @@ export type IntegrationDefinition = {
   execution_mode?: "local" | "sandboxed";
   signature_verified?: boolean;
   approved_for_marketplace?: boolean;
+  oauth_status?: IntegrationOAuthStatus;
+};
+
+export type IntegrationStarterTemplate = {
+  id: string;
+  wave: 1 | 2 | 3;
+  name: string;
+  summary: string;
+  type: "http" | "database" | "queue" | "vector" | "custom";
+  base_url: string;
+  auth_type: "none" | "api_key" | "bearer" | "oauth2" | "basic";
+  secret_ref: string;
+  metadata_json?: Record<string, unknown>;
+  capabilities?: string[];
+  permission_scopes?: string[];
+  data_access?: string[];
+  egress_allowlist?: string[];
+  publisher?: "first_party" | "third_party" | "custom";
+  execution_mode?: "local" | "sandboxed";
+  signature_verified?: boolean;
+  approved_for_marketplace?: boolean;
+};
+
+export type MCPStarterTemplate = {
+  id: string;
+  wave: 1 | 2 | 3;
+  name: string;
+  summary: string;
+  transport: "streamable_http" | "sse" | "custom";
+  auth_type: "none" | "api_key" | "bearer" | "oauth2" | "basic" | "mcp_token";
+  secret_ref: string;
+  capabilities?: string[];
+  permission_scopes?: string[];
+  data_access?: string[];
+  egress_allowlist?: string[];
+  publisher?: "first_party" | "third_party" | "custom";
+  execution_mode?: "local" | "sandboxed";
+};
+
+export type MCPConnectionDefinition = {
+  id: string;
+  starter_id: string;
+  wave: 1 | 2 | 3;
+  name: string;
+  status: "draft" | "validated" | "validation_failed" | "approved" | "rejected" | "disabled";
+  server_url: string;
+  transport: "streamable_http" | "sse" | "custom";
+  auth_type: "none" | "api_key" | "bearer" | "oauth2" | "basic" | "mcp_token";
+  secret_ref: string;
+  secret_configured?: boolean;
+  metadata_json?: Record<string, unknown>;
+  capabilities?: string[];
+  permission_scopes?: string[];
+  data_access?: string[];
+  egress_allowlist?: string[];
+  publisher?: "first_party" | "third_party" | "custom";
+  execution_mode?: "local" | "sandboxed";
+  approved_by?: string;
+  approved_at?: string;
+  last_validated_at?: string;
+  last_validation_error?: string;
+};
+
+export type MCPConnectionValidationResponse = {
+  ok: boolean;
+  id: string;
+  status: MCPConnectionDefinition["status"];
+  validation: {
+    ok: boolean;
+    errors: string[];
+    warnings: string[];
+    checked_server_url: string;
+  };
+};
+
+export type IntegrationOAuthStatus = {
+  id: string;
+  provider: string;
+  grant_type: string;
+  connected: boolean;
+  pending: boolean;
+  scopes: string[];
+  authorize_url: string;
+  token_url: string;
+  client_id: string;
+  redirect_uri: string;
+  account_label: string;
+  expires_at?: string | null;
+  has_client_secret: boolean;
+  has_refresh_token: boolean;
+  has_access_token: boolean;
+  last_error: string;
+};
+
+export type IntegrationOAuthConnectResponse = {
+  ok: boolean;
+  mode: "authorization_code" | "client_credentials";
+  connect_url?: string;
+  redirect_uri?: string;
+  status: IntegrationOAuthStatus;
 };
 
 export type AgentTemplate = {
@@ -336,7 +493,7 @@ export type PlaybookDefinition = {
   name: string;
   description: string;
   category: "go_to_market" | "security" | "support" | "operations" | "other";
-  status: "active" | "deprecated";
+  status: "draft" | "published" | "archived";
   metadata_json?: Record<string, unknown>;
   graph_json?: {
     nodes?: Array<{ id: string; title: string; type: string; x: number; y: number; config?: Record<string, unknown> }>;
@@ -413,7 +570,7 @@ export type CollaborationParticipant = {
 
 export type CollaborationSession = {
   id: string;
-  entity_type: "agent" | "workflow";
+  entity_type: "agent" | "workflow" | "playbook";
   entity_id: string;
   graph_json: {
     nodes?: Array<{ id: string; title: string; type: string; x: number; y: number; config?: Record<string, unknown> }>;

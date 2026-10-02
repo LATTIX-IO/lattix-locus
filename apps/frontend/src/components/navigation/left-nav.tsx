@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSyncExternalStore } from "react";
 import { InboxChatTree } from "@/components/navigation/inbox-chat-tree";
 import { getPreferenceNavItem, getPrimaryNavGroups, type NavGroup, type NavIconName, type NavItem, type NavMode } from "@/components/navigation/nav-config";
 import { PlatformUpdatePanel } from "@/components/navigation/platform-update-panel";
@@ -134,7 +135,7 @@ function NavSection({ group, pathname }: { group: NavGroup; pathname: string }) 
   return (
     <section className="fx-nav-section">
       <h3 className="fx-nav-section-title">{group.title}</h3>
-      <nav className="space-y-1.5" aria-label={group.title}>
+      <nav className="space-y-1" aria-label={group.title}>
         {group.items.map((item) => {
           const active = isActive(pathname, item);
 
@@ -152,11 +153,39 @@ function NavSection({ group, pathname }: { group: NavGroup; pathname: string }) 
   );
 }
 
+// User-console screens that are not part of the shared nav-config groups.
+const userConsoleNavGroup: NavGroup = {
+  title: "Console",
+  items: [
+    { href: "/home", label: "Command Center", icon: "observability" },
+    { href: "/workflows/start", label: "Workflows", icon: "workflow" },
+    { href: "/playbooks", label: "Playbooks", icon: "playbooks" },
+    { href: "/memory", label: "Memory", icon: "artifact" },
+  ],
+};
+
+// The desktop (Tauri) shell owns updates via PlatformUpdatePanel, so the
+// backend-manifest CLI guidance is only shown in the hosted/browser context.
+const noopSubscribe = () => () => {};
+
+function useIsDesktopShell(): boolean {
+  return useSyncExternalStore(
+    noopSubscribe,
+    () => Boolean((window as unknown as { __TAURI__?: unknown }).__TAURI__),
+    () => false,
+  );
+}
+
 export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: LeftNavProps) {
+  const isDesktopShell = useIsDesktopShell();
   const navGroups = getPrimaryNavGroups(mode, inAdmin);
   const preferenceItem = getPreferenceNavItem(mode);
   const modeLabel = mode === "builder" ? "Builder Console" : "Operational Console";
   const workspaceLabel = mode === "builder" ? "Builder workspace" : "Workspace";
+  const versionLabel = platformVersion?.current_version ? `v${platformVersion.current_version}` : "Version unavailable";
+  const latestVersionLabel = platformVersion?.latest_version ? `v${platformVersion.latest_version}` : "";
+  const versionStatus = platformVersion?.status ?? "unknown";
+  const updateVersionDetails = versionStatus === "update_available" && platformVersion ? platformVersion : null;
 
   if (!expanded) {
     return null;
@@ -202,10 +231,11 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-2 py-3">
+      <div className="flex-1 overflow-y-auto px-2.5 py-3">
         {navGroups.map((group) => (
           <NavSection key={group.title} group={group} pathname={pathname} />
         ))}
+        {mode !== "builder" ? <NavSection group={userConsoleNavGroup} pathname={pathname} /> : null}
         {mode !== "builder" ? (
           <div className="mt-1 border-t border-[var(--ui-border)] pt-3">
             <InboxChatTree />
@@ -215,6 +245,33 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
 
       <div className="space-y-1 border-t border-[var(--ui-border)] px-2 py-2.5">
         <PlatformUpdatePanel platformVersion={platformVersion} />
+        {updateVersionDetails && !isDesktopShell ? (
+          <div className="mx-0.5 rounded-[10px] border border-[color-mix(in_srgb,var(--fx-primary-strong)_18%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-primary)_6%,var(--fx-sidebar))] p-2.5">
+            <p className="text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--fx-primary-strong)]">Update available</p>
+            <p className="mt-1 text-[12px] font-semibold text-[hsl(var(--foreground))]">
+              {versionLabel} → {latestVersionLabel}
+            </p>
+            <details className="mt-2 text-[11px] text-[var(--foreground)]">
+              <summary className="cursor-pointer list-none font-medium marker:hidden">How to update</summary>
+              <p className="mt-1.5 leading-5 text-[var(--fx-muted)]">
+                Open a terminal on this machine and run the updater command below. Workflows, agents, settings, and installer state stay intact.
+              </p>
+              <div className="mt-1.5 rounded-[6px] border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1.5 font-mono text-[10.5px] text-[hsl(var(--foreground))]">
+                {updateVersionDetails.update_command}
+              </div>
+              {updateVersionDetails.release_notes_url ? (
+                <a
+                  href={updateVersionDetails.release_notes_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-1.5 inline-flex text-[10.5px] font-medium text-[var(--fx-primary-strong)] no-underline hover:underline"
+                >
+                  View release source ↗
+                </a>
+              ) : null}
+            </details>
+          </div>
+        ) : null}
         <Link
           href={preferenceItem.href}
           aria-label="Settings"

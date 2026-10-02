@@ -19,7 +19,7 @@ It must not contain:
 
 ## Reporting a vulnerability
 
-Please report security issues privately to the project maintainers through your established Lattix security contact (secops@lattix.io) or private disclosure channel.
+Please report security issues privately to the project maintainers through your established Lattix security contact (<secops@lattix.io>) or private disclosure channel.
 
 Do not include exploit details in public issues or pull requests.
 
@@ -29,6 +29,12 @@ The local-first stack is designed to remain functional and secure by default:
 
 - demo agents are sourced from `examples/agents/`
 - local compose should not require public users to access private repositories
+
+## Runtime security expectations
+
+The canonical zero-trust runtime and deployment runbook lives in `docs/SECURITY.md`, with threat assumptions in `THREAT-MODEL.md` and architecture notes in `docs/ARCHITECTURE.md`.
+
+Hosted and secure-profile deployments must require authenticated operator access, signed A2A runtime messages, replay protection, egress allowlists, and MCP local-server policy unless remote MCP usage is explicitly confirmed. Check authenticated `/healthz/details` and `/platform/settings` for the `secure_profile` report before promoting or reopening write traffic after rollback.
 
 ---
 

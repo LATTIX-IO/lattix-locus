@@ -131,6 +131,9 @@ Two-plane contract for all nodes:
 
 ### Canonical matrix
 
+- `frontier/workflow`
+  - inputs: `in`, `payload`
+  - outputs: `out`, `result`
 - `frontier/trigger`
   - outputs: `out`, `payload`
 - `frontier/prompt`
@@ -154,9 +157,26 @@ Two-plane contract for all nodes:
 - `frontier/human-review`
   - inputs: `in`, `candidate`
   - outputs: `out`, `approved`, `feedback`
+- `frontier/manifold`
+  - inputs: `in_a`, `in_b`, `in_c`, `in_d`
+  - outputs: `out`, `data`
 - `frontier/output`
   - inputs: `in`, `result`
   - outputs: `out`
+
+### Target enterprise expansion
+
+The current implemented matrix is a strong baseline, but the target enterprise-ready node language should also add these generic families:
+
+- `frontier/router`
+- `frontier/transform`
+- `frontier/iterator`
+- `frontier/error-handler`
+- `frontier/event`
+- `frontier/data-store`
+- `frontier/wait`
+
+These are intentionally generic families, not vendor-specific node types. See [enterprise-node-taxonomy.md](enterprise-node-taxonomy.md) for the proposed target taxonomy, builder placement, and phased rollout.
 
 ### Alias compatibility
 
@@ -207,6 +227,18 @@ For each node type, this section defines UI contract, handle contract, required 
   - `agent_id`, `model`.
 - **Runtime**
   - loads prompt/context/retrieval/memory/tool outputs, executes model, emits typed outputs.
+
+## 3b) `frontier/workflow`
+
+- **React Flow node UI**
+  - widgets: `workflow_id`, `handoff_mode`, `entry_message`, `output_binding`.
+  - intended mainly for playbook-level orchestration and subflow composition.
+- **Handles**
+  - input `in`, `payload`; output `out`, `result`.
+- **Required config**
+  - `workflow_id`.
+- **Runtime**
+  - invokes a saved workflow definition as a child execution unit and returns the bound output downstream.
 
 ## 4) `frontier/tool-call`
 
@@ -285,6 +317,27 @@ For each node type, this section defines UI contract, handle contract, required 
   - `destination`, `format`.
 - **Runtime**
   - persists/emits final output artifact/event payload.
+
+## Planned enterprise node families
+
+The following families are part of the target node language but are not yet implemented as first-class builder/runtime nodes:
+
+- `frontier/router`
+  - deterministic branching and path selection.
+- `frontier/transform`
+  - deterministic payload shaping, mapping, and templating.
+- `frontier/iterator`
+  - for-each, batching, chunking, and paginated traversal.
+- `frontier/error-handler`
+  - retry, fallback, compensation, and escalation behavior.
+- `frontier/event`
+  - async publish/subscribe, callback wait, queue/topic coordination.
+- `frontier/data-store`
+  - explicit CRUD and state mutation against business systems.
+- `frontier/wait`
+  - delay, timeout, and resume-at-time orchestration.
+
+These should be introduced as generic families first, then specialized into narrower execution profiles later.
 
 ---
 
@@ -430,17 +483,23 @@ Per-user local UI (never authoritative shared state):
 
 ## Phase 1 (current MVP baseline)
 
-- Trigger, Prompt, Agent, Retrieval, Tool, Memory, Guardrail, Human Review, Output
+- Trigger, Prompt, Agent, Workflow, Retrieval, Tool, Memory, Guardrail, Human Review, Manifold, Output
 - Draft/save/publish flow
 - Validate and execute with run logs
 
 ## Phase 2
 
-- Router, Parallel, Loop, Transform
+- Router, Transform, Error Handler
 - Graph schema migrations
 - Undo/redo and richer whiteboard tools
 
 ## Phase 3
+
+- Iterator, Wait, Event, Data Store
+- Graph schema migrations for enterprise orchestration primitives
+- Enterprise-safe deterministic payload contracts
+
+## Phase 4
 
 - Multiplayer collaboration hardening
 - Advanced profiling and very-large-graph optimizations

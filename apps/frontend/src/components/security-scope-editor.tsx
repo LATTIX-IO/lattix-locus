@@ -62,7 +62,7 @@ function ToggleRow({
   onChange: (next: boolean) => void;
 }) {
   return (
-    <label className="flex items-start justify-between gap-3 rounded border border-[var(--fx-border)] px-3 py-2 text-xs">
+    <label className="flex items-start justify-between gap-3 rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.82)] px-3.5 py-3 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.34)]">
       <div className="min-w-0">
         <div className="font-medium text-[var(--foreground)] break-words">{label}</div>
         <p className="mt-0.5 fx-muted leading-5 break-words">{description}</p>
@@ -190,11 +190,11 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
   }
 
   return (
-    <div className="fx-panel p-3 text-[var(--foreground)] shadow-[0_8px_20px_rgba(0,0,0,0.35)]">
+    <div className="fx-panel rounded-[1.45rem] p-4 text-[var(--foreground)] shadow-[0_22px_52px_rgba(15,23,42,0.08)]">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[10px] uppercase tracking-[0.08em] fx-muted">Scoped security</p>
-          <h3 className="text-sm font-semibold break-words">{entityName}</h3>
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] fx-muted">Scoped security</p>
+          <h3 className="mt-2 text-[1.02rem] font-semibold tracking-[-0.02em] break-words">{entityName}</h3>
           <p className="mt-1 text-xs fx-muted leading-5 break-words">
             Tighten policy for this {entityType} without widening the platform envelope.
           </p>
@@ -209,7 +209,7 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
       ) : (
         <div className="mt-3 max-h-[42vh] space-y-3 overflow-auto pr-1">
           <div className="grid gap-3 md:grid-cols-2">
-            <label className="block min-w-0 text-xs">
+            <label className="block min-w-0 text-xs text-[var(--foreground)]">
               <span className="font-medium text-[var(--foreground)]">Classification</span>
               <select
                 className="fx-field mt-2 w-full px-3 py-2 text-sm"
@@ -221,7 +221,7 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
                 ))}
               </select>
             </label>
-            <label className="block min-w-0 text-xs">
+            <label className="block min-w-0 text-xs text-[var(--foreground)]">
               <span className="font-medium text-[var(--foreground)]">Guardrail ruleset</span>
               <select
                 className="fx-field mt-2 w-full px-3 py-2 text-sm"
@@ -300,7 +300,7 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
           </div>
 
           <div className="grid gap-3 md:grid-cols-3">
-            <label className="block text-xs">
+            <label className="block text-xs text-[var(--foreground)]">
               <span className="font-medium text-[var(--foreground)]">Max tool calls</span>
               <input
                 className="fx-field mt-2 w-full px-3 py-2 text-sm"
@@ -313,7 +313,7 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
                 placeholder="leave blank for platform"
               />
             </label>
-            <label className="block text-xs">
+            <label className="block text-xs text-[var(--foreground)]">
               <span className="font-medium text-[var(--foreground)]">Max retrieval items</span>
               <input
                 className="fx-field mt-2 w-full px-3 py-2 text-sm"
@@ -326,7 +326,7 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
                 placeholder="leave blank for platform"
               />
             </label>
-            <label className="block text-xs">
+            <label className="block text-xs text-[var(--foreground)]">
               <span className="font-medium text-[var(--foreground)]">Max collaborators</span>
               <input
                 className="fx-field mt-2 w-full px-3 py-2 text-sm"
@@ -368,7 +368,7 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
             />
           </div>
 
-          <label className="block min-w-0 text-xs">
+          <label className="block min-w-0 text-xs text-[var(--foreground)]">
             <span className="font-medium text-[var(--foreground)]">Platform signal enforcement</span>
             <select
               className="fx-field mt-2 w-full px-3 py-2 text-sm"
@@ -381,7 +381,7 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
             </select>
           </label>
 
-          <div className="rounded border border-[var(--fx-border)] px-3 py-2 text-xs">
+          <div className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.82)] px-3.5 py-3 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.34)]">
             <p className="font-medium text-[var(--foreground)]">Effective policy snapshot</p>
             <ul className="mt-2 space-y-1.5 text-[var(--foreground)]">
               {effectiveHighlights.map((item) => (

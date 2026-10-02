@@ -64,7 +64,11 @@ def cli() -> None:
 
 @cli.command()
 def bootstrap() -> None:
-    run_command([python_executable(), "-m", "pip", "install", "-e", ".[dev]"], cwd=ROOT)
+    bootstrap_env = os.environ.copy()
+    bootstrap_env["FRONTIER_APP_HOME"] = str(ROOT)
+    managed_runtime = installer._bootstrap_managed_venv(ROOT, bootstrap_env)
+    python_bin = managed_runtime["python_bin"]
+    run_command([python_bin, "-m", "pip", "install", "-e", ".[dev]"], cwd=ROOT)
     run_command(_full_compose("pull"), cwd=ROOT)
     click.echo("Run 'lattix up' to start the secure platform stack.")
 

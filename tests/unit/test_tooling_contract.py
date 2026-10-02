@@ -90,6 +90,7 @@ def test_compose_env_generation_uses_mode_specific_files_and_profiles(tmp_path: 
     assert "FRONTIER_RUNTIME_PROFILE=local-secure" in secure_text
     assert "NEXT_PUBLIC_API_BASE_URL=/api" in secure_text
     assert "A2A_JWT_AUD=frontier-runtime" in secure_text
+    assert "FRONTIER_SECRETS_ENCRYPTION_KEY=" in secure_text
     assert "LOCAL_STACK_HOST=xfrontier.local" in secure_text
     assert "FRONTEND_ORIGIN=http://xfrontier.local" in secure_text
     assert "FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR=true" in secure_text
@@ -123,6 +124,22 @@ def test_compose_env_generation_repairs_blank_a2a_secret(tmp_path: Path, monkeyp
 
     assert "A2A_JWT_SECRET=" in secure_text
     assert "A2A_JWT_SECRET=\n" not in secure_text
+
+
+def test_compose_env_generation_persists_provider_encryption_key_for_existing_secure_env(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".installer").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".installer" / "local-secure.env").write_text(
+        "A2A_JWT_SECRET=stable-a2a-secret\nFRONTIER_SECRETS_ENCRYPTION_KEY=\n",
+        encoding="utf-8",
+    )
+
+    secure_env = ensure_compose_env_file(local_profile=False, root=tmp_path)
+    secure_text = secure_env.read_text(encoding="utf-8")
+
+    assert "A2A_JWT_SECRET=stable-a2a-secret" in secure_text
+    assert "FRONTIER_SECRETS_ENCRYPTION_KEY=stable-a2a-secret" in secure_text
 
 
 def test_tooling_and_docs_remove_dev_alias_but_keep_local_stack() -> None:
@@ -241,6 +258,8 @@ def test_bootstrap_powershell_script_validates_python_runtime() -> None:
     readme = _read("README.md")
 
     assert "function Test-PythonCommand" in bootstrap_ps1
+    assert "function Ensure-Python" in bootstrap_ps1
+    assert "function Ensure-Docker" in bootstrap_ps1
     assert "function Stop-Bootstrap" in bootstrap_ps1
     assert "$commandExitCode = $LASTEXITCODE" in bootstrap_ps1
     assert "$installerExitCode = $LASTEXITCODE" in bootstrap_ps1
@@ -249,16 +268,17 @@ def test_bootstrap_powershell_script_validates_python_runtime() -> None:
         in bootstrap_ps1
     )
     assert "exit $installerExitCode" not in bootstrap_ps1
-    assert "working 'py' or 'python' command" in bootstrap_ps1
-    assert "App execution aliases" in bootstrap_ps1
+    assert "Python 3.12+" in bootstrap_ps1
+    assert "Docker.DockerDesktop" in bootstrap_ps1
+    assert "Python.Python.3.12" in bootstrap_ps1
     assert "$LocalInstallerPath = if ($PSScriptRoot)" in bootstrap_ps1
     assert "Using local checkout installer" in bootstrap_ps1
     assert "$InstallerPath = $LocalInstallerPath" in bootstrap_ps1
     assert "FRONTIER_INSTALLER_OUTPUT" in bootstrap_ps1
     assert "[Console]::IsInputRedirected" in bootstrap_ps1
     assert "$env:FRONTIER_INSTALLER_OUTPUT = 'tui'" in bootstrap_ps1
-    assert "working Python 3 runtime" in installer_docs
-    assert "working Python 3 runtime" in readme
+    assert "install Python 3.12+ and Docker" in installer_docs
+    assert "install Python 3.12+ and Docker" in readme
 
 
 def test_bootstrap_shell_script_does_not_replace_caller_shell() -> None:
@@ -269,6 +289,11 @@ def test_bootstrap_shell_script_does_not_replace_caller_shell() -> None:
         "Installer failed with exit code $installer_exit_code. The current shell was left intact"
         in bootstrap_sh
     )
+    assert "detect_and_install_prerequisites" in bootstrap_sh
+    assert "ensure_macos_python" in bootstrap_sh
+    assert "ensure_macos_docker" in bootstrap_sh
+    assert "python_is_supported" in bootstrap_sh
+    assert "MIN_PYTHON_MINOR=12" in bootstrap_sh
     assert (
         'LOCAL_INSTALLER="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/frontier-installer.py"'
         in bootstrap_sh
@@ -279,6 +304,10 @@ def test_bootstrap_shell_script_does_not_replace_caller_shell() -> None:
     assert "FRONTIER_INSTALLER_OUTPUT" in bootstrap_sh
     assert "[ -t 0 ] && [ -t 1 ]" in bootstrap_sh
     assert "export FRONTIER_INSTALLER_OUTPUT=tui" in bootstrap_sh
+    assert 'docker_output="$(docker info 2>&1)"' in bootstrap_sh
+    assert "*permission\\ denied*)" in bootstrap_sh
+    assert "cannot access the daemon" in bootstrap_sh
+    assert "docker group" in bootstrap_sh
 
 
 def test_public_frontier_installer_imports_packaged_module() -> None:
@@ -315,9 +344,15 @@ def test_public_frontier_installer_imports_packaged_module() -> None:
     assert "_validated_http_url" in tooling_common
     assert 'return "editable" if (root / ".git").exists() else "wheel"' in packaged_installer
     assert 'if _install_mode(root) == "editable":' in packaged_installer
-    assert 'args.append("--user")' in packaged_installer
     assert 'args.append("-e")' in packaged_installer
     assert 'args.append(".[dev]")' in packaged_installer
+    assert "def _managed_venv_dir(root: Path) -> Path:" in packaged_installer
+    assert (
+        "def _bootstrap_managed_venv(install_root: Path, env: dict[str, str]) -> dict[str, str]:"
+        in packaged_installer
+    )
+    assert '"-m", "venv"' in packaged_installer
+    assert '"managed_runtime": str(venv_dir)' in packaged_installer
     assert '"install_mode": mode' in packaged_installer
     assert '"auto_started": True' in packaged_installer
     assert '"urls": urls' in packaged_installer
@@ -524,3 +559,38 @@ def test_precommit_script_runs_repo_native_checks() -> None:
     assert 'Invoke-Step -Name "Helm chart validation"' in precommit
     assert "missing helm.exe" in precommit
     assert "Write-StepSummary -Final" in precommit
+
+
+def test_precommit_shell_script_runs_repo_native_checks() -> None:
+    precommit = _read("precommit.sh")
+
+    assert 'echo "Lattix xFrontier pre-commit checks"' in precommit
+    assert "invoke_python()" in precommit
+    assert "write_step_summary()" in precommit
+    assert 'invoke_step "Install Python dependencies"' in precommit
+    assert 'invoke_step "Install frontend dependencies"' in precommit
+    assert 'invoke_step "Python lint"' in precommit
+    assert 'invoke_step "Python typecheck"' in precommit
+    assert 'invoke_step "Python tests"' in precommit
+    assert 'invoke_step "Policy tests"' in precommit
+    assert 'invoke_step "Frontend lint"' in precommit
+    assert 'invoke_step "Frontend tests"' in precommit
+    assert 'invoke_step "Frontend build"' in precommit
+    assert 'invoke_if_available semgrep "SAST via Semgrep"' in precommit
+    assert 'invoke_if_available gitleaks "Secret scanning via Gitleaks"' in precommit
+    assert "gitleaks detect --source . --no-git --redact --config .gitleaks.toml" in precommit
+    assert 'invoke_if_available trivy "SCA/config via Trivy"' in precommit
+    assert "get_helm_command()" in precommit
+    assert ".tools/helm/darwin-arm64/helm" in precommit
+    assert 'invoke_step "Helm chart validation"' in precommit
+    assert "missing helm" in precommit
+    assert "write_step_summary 1" in precommit
+
+
+def test_repo_gitleaks_config_ignores_generated_paths() -> None:
+    config = _read(".gitleaks.toml")
+
+    assert "useDefault = true" in config
+    assert "^\\.artifacts/" in config
+    assert "^\\.installer/" in config
+    assert "^apps/frontend/\\.next/" in config

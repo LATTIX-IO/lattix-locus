@@ -15,6 +15,7 @@ export const mockRuns: WorkflowRunSummary[] = [
     status: "Running",
     updatedAt: "2m ago",
     progressLabel: "Step 3/6",
+    kind: "workflow",
   },
   {
     id: "22222222-2222-4222-8222-222222222222",
@@ -22,6 +23,7 @@ export const mockRuns: WorkflowRunSummary[] = [
     status: "Needs Review",
     updatedAt: "12m ago",
     progressLabel: "Step 5/6",
+    kind: "workflow",
   },
   {
     id: "33333333-3333-4333-8333-333333333333",
@@ -29,6 +31,7 @@ export const mockRuns: WorkflowRunSummary[] = [
     status: "Done",
     updatedAt: "1h ago",
     progressLabel: "Step 6/6",
+    kind: "task",
   },
 ];
 

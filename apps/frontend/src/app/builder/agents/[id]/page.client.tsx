@@ -16,9 +16,10 @@ type Props = {
     nodes?: GraphNode[];
     links?: GraphLink[];
   };
+  returnHref?: string;
 };
 
-export function AgentStudioClient({ agentId, agentName, initialGraph }: Props) {
+export function AgentStudioClient({ agentId, agentName, initialGraph, returnHref }: Props) {
   const defaultNodes: GraphNode[] = [
     { id: "trigger", title: "Trigger", type: "trigger", x: 70, y: 90 },
     { id: "agent", title: "Agent", type: "agent", x: 330, y: 90 },
@@ -40,9 +41,10 @@ export function AgentStudioClient({ agentId, agentName, initialGraph }: Props) {
       entityId={agentId}
       entityName={agentName}
       builderMode="standard"
-      description="Model the full execution logic in this canvas; FastAPI consumes serialized node/edge definitions as the source of truth."
+      description="Model the smallest reusable specialist unit here. Agents hold their own prompt, tools, memory, and handoff behavior, then plug into workflows and playbooks."
       initialNodes={initialNodes}
       initialLinks={initialLinks}
+      returnAction={returnHref ? { label: "Save & Return", href: returnHref } : undefined}
       onSave={async (graph) => {
         await saveAgentDefinition({
           id: agentId,

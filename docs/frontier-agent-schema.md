@@ -133,9 +133,12 @@ The backend can infer defaults, but these domains define the complete agent cont
 
 ### Executable node taxonomy
 
+### Current implemented node families
+
 - `frontier/trigger`
 - `frontier/prompt`
 - `frontier/agent`
+- `frontier/workflow`
 - `frontier/tool-call`
 - `frontier/retrieval`
 - `frontier/memory`
@@ -143,6 +146,23 @@ The backend can infer defaults, but these domains define the complete agent cont
 - `frontier/human-review`
 - `frontier/manifold`
 - `frontier/output`
+
+### Target enterprise-ready expansion
+
+To support enterprise-grade orchestration without proliferating vendor-specific node types, the canonical node language should expand to include these generic families:
+
+- `frontier/router`
+- `frontier/transform`
+- `frontier/iterator`
+- `frontier/error-handler`
+- `frontier/event`
+- `frontier/data-store`
+- `frontier/wait`
+
+These are general-purpose node families that can later be specialized into concrete variants such as rules routing, MCP-backed tools, SQL-backed state updates, or queue-backed event coordination.
+
+
+See [enterprise-node-taxonomy.md](enterprise-node-taxonomy.md) for the detailed proposal.
 
 ---
 
@@ -315,6 +335,7 @@ Selected required per-node fields:
 - `frontier/prompt`: `system_prompt_text`
 - `frontier/agent`: `agent_id`, `model`
 - `frontier/tool-call`: `tool_id`
+  For staged MCP usage, `mcp_connection_id` is an optional companion field that resolves an approved MCP connection record at runtime. When this is present, the runtime fills `mcp_server_url` from the approved staged record instead of depending on a hand-entered endpoint alone.
 - `frontier/retrieval`: `source_type`
 - `frontier/memory`: `action`, `scope`
 - `frontier/guardrail`: `tripwire_action`

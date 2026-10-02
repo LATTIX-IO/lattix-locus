@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { TaskKickoffComposer } from "@/components/task-kickoff-composer";
 import { getOperatorSession, getWorkflowRuns } from "@/lib/api";
 import type { RunKind, WorkflowRunSummary } from "@/types/frontier";
+import { normalizeRunKind } from "@/lib/run-kind";
 
 const KIND_LABEL: Record<RunKind, string> = {
   individual: "Chat",
@@ -61,7 +62,7 @@ export function InboxWorkspace() {
   }, []);
 
   useEffect(() => {
-    void refreshRuns();
+    void Promise.resolve().then(refreshRuns);
     getOperatorSession()
       .then((session) => {
         const name = (session.display_name || session.preferred_username || "").trim();
@@ -131,7 +132,7 @@ export function InboxWorkspace() {
                       <span className="fx-muted mt-0.5 block truncate text-xs">{run.progressLabel || dot.label}</span>
                     </span>
                     <span className="fx-muted hidden shrink-0 text-[11px] sm:block">
-                      {KIND_LABEL[run.kind ?? "individual"]}
+                      {KIND_LABEL[normalizeRunKind(run.kind)]}
                     </span>
                     <span className="fx-muted shrink-0 text-[11px]">{run.updatedAt}</span>
                     <svg

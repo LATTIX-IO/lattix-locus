@@ -78,7 +78,7 @@ def test_runs_expose_kind_field() -> None:
     response = client.get("/workflow-runs", headers={"x-frontier-actor": "frontier-admin"})
     assert response.status_code == 200
     for run in response.json():
-        assert run.get("kind") in {"individual", "agent", "workflow", "playbook"}
+        assert run.get("kind") in {"individual", "agent", "workflow", "chat", "playbook", "task"}
 
 
 def test_rename_run_updates_title() -> None:

@@ -1,6 +1,9 @@
 "use client";
 
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { BuilderSettingsWorkspace } from "@/components/builder-settings-workspace";
 import {
   getModelsOverview,
   getPlatformSecurityPolicy,
@@ -109,7 +112,7 @@ function ListField({
   );
 }
 
-export default function BuilderSettingsPage() {
+function BuilderSecurityConfiguration() {
   const { addToast } = useToast();
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -189,7 +192,7 @@ export default function BuilderSettingsPage() {
         setMaxRetrievalItems(String(settingsResponse.max_retrieval_items ?? 8));
         setMaxCollaborationAgents(String(settingsResponse.collaboration_max_agents ?? 8));
         setOpenaiFallbackModel(settingsResponse.openai_fallback_model ?? "");
-        setAllowLocalHostnames(toListString(settingsResponse.allow_local_network_hostnames));
+        setAllowLocalHostnames(toListString(Array.isArray(settingsResponse.allow_local_network_hostnames) ? settingsResponse.allow_local_network_hostnames : []));
         const drafts: Record<string, ProviderDraft> = {};
         for (const provider of providerList) {
           const stored = settingsResponse.ai_providers?.[provider.id] ?? {};
@@ -285,7 +288,9 @@ export default function BuilderSettingsPage() {
     <section className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--ui-border)] pb-3">
         <div>
-          <p className="text-[11px] uppercase tracking-wide fx-muted">Builder / Security</p>
+          <p className="text-[11px] uppercase tracking-wide fx-muted">
+            <Link href="/builder/settings" className="no-underline hover:underline">Builder settings</Link> / Security
+          </p>
           <h1 className="text-xl font-semibold">Security Configuration</h1>
           <p className="fx-muted max-w-3xl text-sm leading-6">
             Configure the bounded inputs builders are allowed to tune. The enforcement rails stay server-side — because letting the UI reorder policy gates would be a very exciting outage.
@@ -660,5 +665,37 @@ export default function BuilderSettingsPage() {
           </article>
         </div>
     </section>
+  );
+}
+
+/**
+ * `/builder/settings` renders the settings overview workspace; the tabbed
+ * security configuration (unified AI provider map, guardrails, network, runtime
+ * limits) is reached via `?tab=providers|guardrails|network|runtime`.
+ */
+export default function BuilderSettingsOverviewPage() {
+  const searchParams = useSearchParams();
+  const requestedTab = searchParams?.get("tab") ?? null;
+  const showSecurityConfiguration = Boolean(requestedTab && settingsTabs.some((tab) => tab.id === requestedTab));
+
+  if (showSecurityConfiguration) {
+    return <BuilderSecurityConfiguration />;
+  }
+
+  return (
+    <div className="space-y-4">
+      <BuilderSettingsWorkspace view="overview" />
+      <article className="fx-panel flex flex-wrap items-center justify-between gap-3 p-3">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold">Security configuration</h2>
+          <p className="fx-muted text-xs leading-5">
+            Unified AI provider keys and default models, plus guardrail, network, and runtime limits in one tabbed editor.
+          </p>
+        </div>
+        <Link href="/builder/settings?tab=providers" className="fx-btn-secondary px-3 py-1.5 text-xs font-medium no-underline">
+          Open AI providers &amp; security
+        </Link>
+      </article>
+    </div>
   );
 }

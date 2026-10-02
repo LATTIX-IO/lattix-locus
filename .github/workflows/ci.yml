@@ -2,19 +2,25 @@ name: ci
 
 on:
   push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+  PENTEST_REF: e5634fa96e81bbdc129d762a45a2acf7f814932b
 
 jobs:
-  frontend:
+  frontend-unit:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
       - name: Install dependencies
@@ -23,23 +29,64 @@ jobs:
       - name: Lint
         working-directory: apps/frontend
         run: npm run lint
-      - name: Build
-        working-directory: apps/frontend
-        run: npm run build
-      - name: Test
+      - name: Unit tests
         working-directory: apps/frontend
         run: npm test
+      - name: Production build
+        working-directory: apps/frontend
+        run: npm run build
 
-  test:
+  backend-unit:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Unit and harness tests
+        run: make unit-test PYTEST="pytest --cov=app --cov=frontier_runtime --cov-report=xml"
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage.xml
+          if-no-files-found: error
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Integration and end-to-end tests
+        run: make integration-test
+      - name: Compose configuration validation
+        run: |
+          docker compose config --quiet
+          docker compose -f docker-compose.local.yml config --quiet
+
+  quality-policy-helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - uses: azure/setup-helm@v4.3.0
+        with:
+          version: v3.17.3
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -52,51 +99,230 @@ jobs:
       - name: Lint
         run: ruff check .
       - name: Type check
-        run: mypy frontier_tooling/ frontier_runtime/
+        run: make typecheck
       - name: Policy tests
         run: python scripts/run_opa.py test policies/ -v
-      - name: Backend tests
-        run: pytest apps/backend/tests tests -v --cov=app --cov=frontier_runtime --cov-report=xml
-      - name: Compose config validation
+      - name: Helm validation
         run: |
-          docker compose config --quiet
-          docker compose -f docker-compose.local.yml config --quiet
-      - name: Upload coverage
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: coverage.xml
+          helm lint ./helm/lattix-frontier
+          helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml > /dev/null
 
-  windows-sandbox:
-    # Validate the Windows AppContainer/Job-Object isolation launch paths on a
-    # real Windows runner. The win32-gated smoke tests in test_windows_sandbox.py
-    # never execute on the ubuntu `test` job (sys.platform != win32), so without
-    # this job the Windows confinement paths go untested. Dependency-light: the
-    # sandbox modules are stdlib-only and the test file is self-contained, so
-    # --noconftest skips the heavy backend/FastAPI conftest import.
-    runs-on: windows-latest
+  sast-codeql:
+    name: SAST (CodeQL ${{ matrix.language }})
+    runs-on: ubuntu-latest
     permissions:
       contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}
+
+  lattix-cicd-pentest:
+    name: Lattix AppSec and pentest gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      RUN_DIR: ${{ github.workspace }}/.security-results/appsec
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage the product source for scanning
+        run: |
+          mkdir -p "$RUNNER_TEMP/xfrontier-source"
+          git archive --format=tar HEAD | tar -xf - -C "$RUNNER_TEMP/xfrontier-source"
+      - name: Checkout pinned Lattix pentest kit
+        uses: actions/checkout@v4
+        with:
+          repository: LATTIX-IO/lattix-cicd-pentest
+          ref: ${{ env.PENTEST_REF }}
+          path: .ci/lattix-cicd-pentest
+          token: ${{ secrets.LATTIX_CICD_PENTEST_READ_TOKEN || github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install pentest-kit dependencies
+        run: pip install -r .ci/lattix-cicd-pentest/requirements.txt
+      - name: Validate pinned pentest kit
+        working-directory: .ci/lattix-cicd-pentest
+        run: make ci
+      - name: Run shift-left scanners against xFrontier
+        run: >-
+          python .ci/lattix-cicd-pentest/scripts/run_security_suite.py
+          --phase shift-left
+          --source "$RUNNER_TEMP/xfrontier-source"
+          --run-dir "$RUN_DIR"
+      - name: Normalize findings and build SARIF
+        if: always()
+        run: |
+          python .ci/lattix-cicd-pentest/scripts/normalize_findings.py "$RUN_DIR"
+          python .ci/lattix-cicd-pentest/scripts/to_sarif.py "$RUN_DIR/findings.normalized.json"
+      - name: Upload SARIF
+        if: always() && hashFiles('.security-results/appsec/findings.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: .security-results/appsec/findings.sarif
+          category: lattix-cicd-pentest
+      - name: Upload AppSec evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lattix-appsec-${{ github.sha }}
+          path: .security-results/appsec
+          retention-days: 90
+          if-no-files-found: error
+      - name: Enforce AppSec severity gate
+        run: >-
+          python .ci/lattix-cicd-pentest/scripts/gate.py
+          "$RUN_DIR/findings.normalized.json" --profile appsec
+
+  sbom-sca:
+    name: SBOM and software composition analysis
+    runs-on: ubuntu-latest
+    env:
+      RUN_DIR: ${{ github.workspace }}/.security-results/sbom
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage the product source for scanning
+        run: |
+          mkdir -p "$RUNNER_TEMP/xfrontier-source"
+          git archive --format=tar HEAD | tar -xf - -C "$RUNNER_TEMP/xfrontier-source"
+      - name: Checkout pinned Lattix pentest kit
+        uses: actions/checkout@v4
+        with:
+          repository: LATTIX-IO/lattix-cicd-pentest
+          ref: ${{ env.PENTEST_REF }}
+          path: .ci/lattix-cicd-pentest
+          token: ${{ secrets.LATTIX_CICD_PENTEST_READ_TOKEN || github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Generate SPDX SBOM and run Grype
+        run: >-
+          python .ci/lattix-cicd-pentest/scripts/run_security_suite.py
+          --phase sbom
+          --source "$RUNNER_TEMP/xfrontier-source"
+          --run-dir "$RUN_DIR"
+      - name: Normalize SCA findings
+        if: always()
+        run: python .ci/lattix-cicd-pentest/scripts/normalize_findings.py "$RUN_DIR"
+      - name: Upload SBOM and SCA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-sca-${{ github.sha }}
+          path: .security-results/sbom
+          retention-days: 90
+          if-no-files-found: error
+      - name: Enforce SCA severity gate
+        run: >-
+          python .ci/lattix-cicd-pentest/scripts/gate.py
+          "$RUN_DIR/findings.normalized.json" --profile appsec
+
+  dast:
+    name: DAST (ephemeral local deployment)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-      - name: Install test deps
-        run: python -m pip install --upgrade pip pytest
-      - name: Windows sandbox tests (AppContainer + Job Object)
-        run: pytest tests/backend/test_windows_sandbox.py --noconftest -v
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install runtime
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: Start ephemeral backend
+        run: |
+          export A2A_JWT_SECRET="$(openssl rand -hex 32)"
+          export FRONTIER_API_BEARER_TOKEN="$(openssl rand -hex 32)"
+          export FRONTIER_RUNTIME_PROFILE=local
+          export FRONTIER_STATE_STORE="$RUNNER_TEMP/frontier-state.json"
+          PYTHONPATH=apps/backend nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > "$RUNNER_TEMP/uvicorn.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/uvicorn.pid"
+          curl --fail --retry 30 --retry-delay 2 --retry-connrefused http://127.0.0.1:8000/health
+      - name: OWASP ZAP baseline scan
+        run: |
+          mkdir -p dast
+          chmod 777 dast
+          docker run --rm --network host \
+            -v "$PWD/dast:/zap/wrk/:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://127.0.0.1:8000/docs -m 3 -T 10 \
+            -J zap-report.json -r zap-report.html -w zap-report.md
+      - name: Upload DAST evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-${{ github.sha }}
+          path: |
+            dast/
+            ${{ runner.temp }}/uvicorn.log
+          retention-days: 90
+          if-no-files-found: error
 
-  helm-validate:
+  performance:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4.3.0
+      - uses: actions/setup-python@v5
         with:
-          version: v3.17.3
-      - name: Helm lint
-        run: helm lint ./helm/lattix-frontier
-      - name: Helm template validation
-        run: helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml > /dev/null
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Performance regression gate
+        run: make performance-test
+
+  windows-sandbox:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest
+      - name: AppContainer and Job Object tests
+        run: pytest tests/backend/test_windows_sandbox.py --noconftest -v
+
+  required-gates:
+    if: always()
+    needs:
+      - frontend-unit
+      - backend-unit
+      - integration
+      - quality-policy-helm
+      - sast-codeql
+      - lattix-cicd-pentest
+      - sbom-sca
+      - dast
+      - performance
+      - windows-sandbox
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every gate
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          results = json.loads(os.environ["RESULTS"])
+          failed = {name: job["result"] for name, job in results.items() if job["result"] != "success"}
+          if failed:
+              print("Required CI gates did not pass:", failed)
+              sys.exit(1)
+          print("All required CI gates passed.")
+          PY

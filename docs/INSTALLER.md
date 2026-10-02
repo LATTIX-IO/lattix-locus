@@ -28,7 +28,7 @@ When run interactively, the installer now presents a terminal UI (TUI) style set
 
 The PowerShell variant includes `-UseBasicParsing` so it works cleanly in Windows PowerShell 5.1 without the legacy web-parsing prompt.
 
-Both bootstrap variants require a working Python 3 runtime. On Windows, the bootstrap validates that `py -3` or `python` can actually execute Python code and will fail fast with guidance if only the Microsoft Store placeholder alias is present.
+Both bootstrap variants now try to prepare a clean machine automatically: they detect the host OS, install Python 3.12+ and Docker when those prerequisites are missing, refresh the current-process `PATH`, and only then launch the interactive installer. On Windows, that also avoids the common Microsoft Store placeholder-alias failure mode by rechecking for a real supported interpreter after any bootstrap install attempt.
 
 The public bootstrap is intentionally pinned to the vetted `main` branch installer and archive so published installs only deploy tested content.
 
@@ -45,10 +45,11 @@ A future vanity URL such as `https://install.lattix.io/xfrontier.sh` can safely 
 5. Prompts for secure local authentication mode, a platform bootstrap admin identity, and — when using the bundled Casdoor preset — a separate bootstrap login user that is created automatically for first sign-in. The Casdoor login username, email, display name, and password must be entered explicitly by the operator; they are not auto-generated.
 6. Writes the installer-managed env file for the secure local stack at `.installer/local-secure.env`, generated Helm values, and a versioned installer state manifest at `.installer/state-manifest.json`.
 7. Bootstraps the local Vault instance when needed, stores installer-generated passwords/secrets there, and writes a durable installer-state snapshot so env/file-backed setup data is recoverable from Vault-backed storage.
-8. Applies best-effort owner-only file permissions to the local env file before launching Docker Compose.
-9. Ensures the user script directory is on `PATH` for the host OS.
-10. Automatically runs `lattix up` for the secure local stack.
-11. Prints portal URLs including `http://xfrontier.local`, `http://127.0.0.1`, and the detected LAN IP.
+8. Creates or refreshes a managed virtual environment under the install root and installs the CLI/runtime into that environment instead of mutating the system Python environment.
+9. Applies best-effort owner-only file permissions to the local env file before launching Docker Compose.
+10. Ensures the managed script directory is on `PATH` for the host OS.
+11. Automatically runs `lattix up` for the secure local stack.
+12. Prints portal URLs including `http://xfrontier.local`, `http://127.0.0.1`, and the detected LAN IP.
 
 When the published installer is rerun over an existing installed app home, it preserves the installer-managed state before replacing the package contents. That keeps the existing `.installer/` env files, top-level `.env`, Docker volumes, and previously configured secure-local credentials/settings compatible with the refreshed build instead of rotating them underneath persisted data.
 

@@ -162,6 +162,7 @@ The following assets require explicit protection:
 - OPA policy inputs and authorization decisions
 - deployment secrets (`.env`, installer env overlays, Vault-backed config)
 - audit/event streams and observability data
+- cortical assembly definitions, column state, belief/evidence records, commitment outcomes, replay markers, and causal graph projections
 
 ## Actor classes
 
@@ -181,6 +182,8 @@ The following assets require explicit protection:
 5. Runtime → sandbox/tool jail
 6. Service → service across local/full stack network boundaries
 7. Deployment/configuration layer → running services
+8. Column runtime → causal state persistence and graph projection
+9. Cognitive message transport → backend admission handler
 
 
 ## Threats
@@ -276,13 +279,83 @@ The following must remain true as the system evolves:
 7. Memory scope labels are not treated as sufficient protection without actual access control enforcement.
 8. Backend/runtime error responses do not reveal guardrail rule internals to untrusted callers.
 9. Deployment docs and runtime defaults describe the same security posture.
+10. Cognitive messages cannot mutate causal state unless they are signed, fresh, tenant-consistent, assembly-consistent, and non-replayed.
+11. Column capabilities are enforced by column kind and assembly policy before model, tool, retrieval, memory, or commitment actions.
+12. Causal graph projection is a tenant-authorized derived view and must never be the only copy of causal state.
+
+## Cortical column zero-trust threat model
+
+The cortical assembly runtime extends the service-level zero-trust model into intra-runtime execution. A column, runtime helper, or message sender is not trusted because it runs in the same backend process, worker process, Docker network, or Kubernetes namespace. The security model assumes columns and runtime messages may be malformed, stale, replayed, tenant-confused, over-permissioned, or carrying sensitive payloads until backend admission proves otherwise.
+
+### Zero-trust column assumptions
+
+- Column kind is an authorization boundary. A goal column can read input and emit goal beliefs, evidence can retrieve, evaluation can score or veto, synthesis can propose commitments, and unknown kinds deny by default.
+- Assembly definitions are untrusted input. They must be admitted before runtime execution and bounded by max columns, max iterations, max messages, required goal/evidence/evaluation/synthesis participation, and tenant/provider/model/tool policy.
+- Runtime execution steps require a shared policy gate. Capability checks alone are not sufficient without authenticated context, tenant ownership, runtime allowlists, network/tool/retrieval allowlists, budget counters, and audit events.
+- Commitments are high-impact decisions. Evidence/evaluation participation, veto/blocker state, confidence thresholds, high-risk human approval, and an audited decision trail must be checked before a ready commitment is accepted.
+- Projection is not authorization. Neo4j/world-graph causal projection is a bounded derived view of persisted causal state and must fail without corrupting the source state.
+
+### Tenant isolation model
+
+Tenant identity can enter through authenticated backend request context, signed shared-runtime bearer claims, and cognitive message metadata. The expected behavior is fail-closed when those sources conflict. Cross-tenant assembly replay, tenant-mismatched cognitive messages, wrong-tenant graph projection, and scope-label-only memory access are security failures.
+
+The minimum tenant isolation contract is:
+
+1. every admitted cognitive message includes tenant and assembly identity;
+2. the authenticated or signed runtime tenant must match persisted assembly ownership;
+3. replay markers are scoped by assembly, tenant, source column, target column, message type, and payload ref;
+4. causal graph projection requires the caller tenant to match the persisted assembly tenant; and
+5. memory and causal state access use authenticated actor, tenant claim, collaboration membership, or internal-service identity instead of trusting caller-supplied bucket labels alone.
+
+### Signed message flow
+
+The trusted flow for column messages is:
+
+1. runtime code converts a `ColumnMessage` into a cognitive `AgentEvent` or `Envelope`;
+2. the sender signs the request with `X-Frontier-Subject`, `X-Frontier-Nonce`, `X-Frontier-Timestamp`, `X-Correlation-ID`, and `X-Frontier-Signature`;
+3. backend request security verifies profile-required authentication, signature freshness, and nonce replay status;
+4. cognitive admission validates message type, tenant ownership, assembly existence, known source and target columns, and semantic replay marker; and
+5. accepted messages can record replay evidence and audit events before any state mutation proceeds.
+
+Unsigned, stale, replayed, wrong-tenant, unknown-column, or conflicting messages must be rejected before belief history, confidence history, commitment outcomes, or projection state changes.
+
+### Policy gate flow
+
+The shared column runtime gate is the central authorization checkpoint for cortical execution. It must run before model calls, retrieval, tool calls, memory writes, and commitment publication. The gate evaluates authenticated context, tenant ownership, column capability, explicit assembly grants, runtime provider/model allowlists, tool/retrieval/network allowlists, budget counters, and audit emission.
+
+The policy-gate threat assumption is that any future direct path around `admit_column_runtime_step(...)`, `require_column_capability(...)`, assembly admission, or commitment validation can become a privilege-escalation path and should be treated as a security regression.
+
+### Deployment profile requirements
+
+Runtime profiles define which local exceptions are allowed:
+
+| Profile | Intended use | Security expectation |
+| --- | --- | --- |
+| `local-lightweight` | quick local iteration | local dev remains usable; public health/settings behavior may be lightweight where explicitly classified |
+| `local-secure` | secure local/full stack | authenticated operator access, signed/internal service identity for protected paths, replay protection, egress mediation, and degraded status for unsafe secure controls |
+| `hosted` | non-local service deployment | authenticated access, required A2A runtime headers, signed messages, replay protection, egress allowlist, MCP local policy unless explicitly confirmed, and blocked/unhealthy status for unsafe controls |
+
+Hosted deployments must not rely on legacy local-only flags, unsigned actor headers, direct internal health detail exposure, or raw MCP endpoint entry as a substitute for staged/admin-approved connection policy.
+
+### Rollback and monitoring expectations
+
+Rollback should preserve causal state and audit evidence. Operators should roll back application code/configuration to the previous known-good release, not delete replay markers, causal state, or audit/event-chain artifacts as a first response. If signing material is compromised, A2A secret rotation is a separate security action and should be coordinated across all runtime senders.
+
+Monitoring should include:
+
+- authenticated `/healthz/details` and `/platform/settings` `secure_profile` status;
+- audit events for cognition admission/rejection, policy decisions, column lifecycle, message acceptance/rejection, commitment finalization/escalation, and projection success/failure;
+- runtime security counters and traces with correlation IDs;
+- projection statuses such as `skipped`, `unavailable`, or `write_failed`;
+- tenant-isolation block events; and
+- redaction markers plus absence of raw secrets in audit, persistence, projection, and error-response payloads.
 
 ## Sandbox hardening status (three-tier hybrid)
 
 The sandbox subsystem has been hardened with the following controls:
 
 | Control | Status | Implementation |
-|---------|--------|---------------|
+| --------- | -------- | --------------- |
 | Custom seccomp BPF profile | **Implemented** | `docker/sandbox/seccomp-strict.json` blocks ptrace, io_uring, mount, bpf, setuid, and 30+ other syscalls |
 | Read-only root filesystem | **Implemented** | `--read-only` flag in hardened Docker; `--ro-bind / /` in bubblewrap |
 | Network isolation (namespace) | **Implemented** | `--network=none` (Docker) / `--unshare-net` (bubblewrap) when `allow_network=False` |
@@ -299,7 +372,7 @@ The sandbox subsystem has been hardened with the following controls:
 ## Known failure modes and current mitigation status
 
 | Area | Current issue | Impact | Current mitigation / compensating control | Planned remediation |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Backend auth | `apps/backend` now centralizes route classification and request enforcement, but deployment profiles still decide when authenticated-read/mutate routes are mandatory outside secure/local full-stack mode | anonymous or weakly gated access if weaker profiles are misconfigured | central route inventory, middleware enforcement, startup validation, and secure local fail-closed defaults | make secure/hosted profile behavior immutable and consistently selected |
 | Security policy disclosure | `/platform/security-policy` should not be public in secure/full mode | attacker reconnaissance | central route classification now marks it authenticated-read and secure local mode requires auth | classify endpoint visibility consistently across hosted/internal profiles |
 | Introspection leakage | `/healthz` and runtime readiness/provider endpoints can expose too much detail | service and trust boundary reconnaissance | central route classification plus secure local mode now serves minimal public `/healthz` and authenticated diagnostics endpoints | extend the same contract to all hosted/internal profiles |
@@ -318,6 +391,10 @@ The sandbox subsystem has been hardened with the following controls:
 | Helm network policies | template was previously malformed; repo now has real Helm lint/render validation in CI, though this local machine still lacks a Helm binary for an interactive run | sharply reduced false-confidence risk because PRs/pushes now render the chart | repaired control-plane policy template, selector audit against current chart workloads, and CI Helm lint/template validation | optionally run the same check locally in Helm-capable operator environments before release |
 | Release/promotion drift | release docs previously promised staged promotion and rollback behavior that CI did not implement | unsafe or unverifiable production promotion path | release automation now builds versioned bundles, publishes release assets, gates `dev -> stage -> prod` promotion with environment smoke checks, and exposes a manual rollback workflow driven by rollback metadata | extend the same promotion evidence into deployment apply/reconcile jobs as those surfaces mature |
 | Deployment drift | docs/defaults around secure vs lightweight modes have been inconsistent | wrong operator assumptions | recent cleanup improved this | codify in docs + threat model + tests |
+| Cognitive message replay | signed transport nonce checks alone do not catch semantic duplicate messages with new nonces | duplicate belief or commitment mutation | persisted replay markers now bind assembly, tenant, columns, message type, and payload ref; completed assemblies replay idempotently | keep replay marker coverage for new message/outcome mutation paths |
+| Column privilege escalation | a future runtime path could call model/tool/retrieval/memory/commitment logic without the column runtime gate | unauthorized tool use, tenant data access, or premature commitment | shared `admit_column_runtime_step` and column capability checks cover current cortical execution paths | treat any direct bypass as a security regression and add tests before new runtime paths merge |
+| Causal projection abuse | graph projection could reveal cross-tenant state or corrupt persisted causal history if treated as source of truth | tenant leakage or data loss | projection is tenant-checked, bounded, idempotent, and failure-isolated from persisted state | keep projection authorization and failure-mode tests with future graph adapters |
+| Secure profile misconfiguration | hosted settings can disable controls that the deployment profile requires | hosted service starts or stays healthy without auth/signature/replay/egress/MCP controls | secure profile report, startup validation, settings rejection, and health blocking/degradation | keep profile requirements immutable and extend parity across worker/service surfaces |
 | Legacy backend drift | the deleted `lattix_frontier/` package is still referenced by some docs and historical migration notes | dual-surface confusion and documentation/operator drift | package removed from the working tree; migration intent documented in this file | complete Phase 3 legacy-surface retirement across docs/tooling/tests |
 
 ## Historical migration record for removed `lattix_frontier/`
@@ -325,7 +402,7 @@ The sandbox subsystem has been hardened with the following controls:
 The following is the Phase 0 migration matrix preserved as a historical record of how legacy surfaces were intended to be migrated, extracted, or deleted.
 
 | Surface | Current role | Phase 0 disposition | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `lattix_frontier/api/middleware/auth.py` | stronger auth pattern | migrate to `apps/backend` or extract shared primitive | do not keep as legacy-only behavior |
 | `lattix_frontier/api/middleware/security_headers.py` | stronger response-header hardening | migrate to `apps/backend` or extract shared primitive | should become canonical backend behavior |
 | `lattix_frontier/security/jwt_auth.py` | stronger replay/revocation/token validation | extract shared primitive or port into backend auth layer | avoid parallel auth implementations |

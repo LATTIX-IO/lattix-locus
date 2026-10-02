@@ -266,11 +266,13 @@ def test_settings_save_invalidates_provider_client_cache() -> None:
 
 
 def test_settings_save_rejects_invalid_types_with_400_not_500() -> None:
-    # Regression: the settings page sent a Boolean for the hostname list and
-    # the API crashed with a 500, silently losing the rest of the save.
+    # Regression: the settings page sent a non-list value for the hostname list
+    # and the API crashed with a 500, silently losing the rest of the save.
+    # (A Boolean is now an accepted on/off toggle; see
+    # test_save_platform_settings_accepts_boolean_local_hostname_toggle.)
     response = client.post(
         "/platform/settings",
-        json={"allow_local_network_hostnames": True},
+        json={"allow_local_network_hostnames": 12345},
         headers=ADMIN_HEADERS,
     )
     assert response.status_code == 400

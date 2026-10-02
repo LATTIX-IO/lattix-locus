@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import type { PlatformVersionStatus } from "@/types/frontier";
 
 /**
@@ -22,6 +22,10 @@ type TauriApi = {
   app?: { getVersion?: () => Promise<string> };
 };
 
+function noopSubscribe(): () => void {
+  return () => {};
+}
+
 function getTauri(): TauriApi | null {
   if (typeof window === "undefined") return null;
   return (window as unknown as { __TAURI__?: TauriApi }).__TAURI__ ?? null;
@@ -32,7 +36,12 @@ export function PlatformUpdatePanel({
 }: {
   platformVersion?: PlatformVersionStatus | null;
 }) {
-  const [isDesktop, setIsDesktop] = useState(false);
+  // Server render and first client render agree on "not desktop"; the Tauri bridge is client-only.
+  const isDesktop = useSyncExternalStore(
+    noopSubscribe,
+    () => Boolean(getTauri()?.core?.invoke),
+    () => false,
+  );
   const [appVersion, setAppVersion] = useState<string | null>(null);
   // undefined = not yet checked, null = up to date, string = update available.
   const [tauriUpdate, setTauriUpdate] = useState<string | null | undefined>(undefined);
@@ -41,7 +50,6 @@ export function PlatformUpdatePanel({
   useEffect(() => {
     const tauri = getTauri();
     if (!tauri?.core?.invoke) return;
-    setIsDesktop(true);
     let cancelled = false;
     tauri.app
       ?.getVersion?.()

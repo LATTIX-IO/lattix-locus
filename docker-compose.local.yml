@@ -7,11 +7,13 @@ services:
         max-file: "3"
     image: node:22-alpine
     mem_limit: 2g
+    user: "0:0"
     working_dir: /workspace/apps/frontend
     command: sh -lc "LOCK_HASH_FILE=node_modules/.lockhash; CURRENT_HASH=$(sha256sum package-lock.json | awk '{print $1}'); SAVED_HASH=$(cat $$LOCK_HASH_FILE 2>/dev/null || true); if [ ! -x node_modules/.bin/next ] || [ \"$$CURRENT_HASH\" != \"$$SAVED_HASH\" ]; then npm ci --include=dev && mkdir -p node_modules && echo $$CURRENT_HASH > $$LOCK_HASH_FILE; fi; npm run dev -- --hostname 0.0.0.0 --port 3000"
     stdin_open: true
     tty: true
     environment:
+      NODE_ENV: development
       NEXT_TELEMETRY_DISABLED: 1
       NEXT_PUBLIC_API_BASE_URL: ${FRONTIER_LOCAL_API_BASE_URL:-http://localhost:8000}
       API_BASE_URL_INTERNAL: ${API_BASE_URL_INTERNAL:-http://backend:8000}
@@ -32,13 +34,15 @@ services:
         max-file: "3"
     image: python:3.12.10-slim-bookworm
     mem_limit: 1536m
+    user: "0:0"
+    entrypoint: []
     working_dir: /workspace/apps/backend
     # Dependencies install into a venv on a named volume, keyed by a hash of
     # requirements.txt — restarts reuse it instead of re-downloading every boot.
     command: sh -lc "VENV=/opt/frontier-venv; HASH_FILE=$$VENV/.reqhash; CURRENT_HASH=$$(sha256sum requirements.txt | awk '{print $$1}'); SAVED_HASH=$$(cat $$HASH_FILE 2>/dev/null || true); if [ ! -x $$VENV/bin/python ] || [ \"$$CURRENT_HASH\" != \"$$SAVED_HASH\" ]; then python -m venv $$VENV && $$VENV/bin/pip install --no-cache-dir -r requirements.txt && if [ \"${FRONTIER_INSTALL_RUNTIME_ENGINES:-0}\" = \"1\" ]; then $$VENV/bin/pip install --no-cache-dir -r requirements-runtime-engines.txt; fi && echo $$CURRENT_HASH > $$HASH_FILE; fi; exec $$VENV/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
     environment:
-      # Repo root on the path so `frontier_runtime` imports resolve.
-      PYTHONPATH: /workspace
+      # Backend + repo root on the path so `app` and `frontier_runtime` imports resolve.
+      PYTHONPATH: /workspace/apps/backend:/workspace
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
       FRONTIER_RUNTIME_PROFILE: ${FRONTIER_RUNTIME_PROFILE:-local-lightweight}
       FRONTIER_API_BEARER_TOKEN: ${FRONTIER_API_BEARER_TOKEN:-}
@@ -62,6 +66,7 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
       FRONTIER_AGENT_ASSETS_ROOT: ${FRONTIER_AGENT_ASSETS_ROOT:-/workspace/examples/agents}
       FRONTIER_INSTALL_RUNTIME_ENGINES: ${FRONTIER_INSTALL_RUNTIME_ENGINES:-0}
+      FRONTIER_SECRETS_ENCRYPTION_KEY: ${FRONTIER_SECRETS_ENCRYPTION_KEY:-}
       POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://frontier:frontier@postgres:5432/frontier}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       FRONTIER_MEMORY_ENABLE_LONG_TERM: ${FRONTIER_MEMORY_ENABLE_LONG_TERM:-1}

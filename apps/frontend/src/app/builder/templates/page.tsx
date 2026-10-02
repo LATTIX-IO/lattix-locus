@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { BuilderLibraryStatusBadges } from "@/components/builder-library-status-badges";
 import {
   getTemplateCatalog,
   instantiateAgentTemplate,
@@ -11,14 +12,14 @@ import {
 import type { TemplateCatalogItem } from "@/types/frontier";
 
 type TemplateTypeFilter = "all" | "agent" | "workflow" | "playbook";
-type TemplateStatusFilter = "all" | "active" | "deprecated";
+type TemplateCatalogView = "library" | "archived";
 
 export default function TemplatesPage() {
   const router = useRouter();
   const [items, setItems] = useState<TemplateCatalogItem[]>([]);
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<TemplateTypeFilter>("all");
-  const [statusFilter, setStatusFilter] = useState<TemplateStatusFilter>("all");
+  const [view, setView] = useState<TemplateCatalogView>("library");
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,7 +53,7 @@ export default function TemplatesPage() {
       if (typeFilter !== "all" && item.template_type !== typeFilter) {
         return false;
       }
-      if (statusFilter !== "all" && item.status !== statusFilter) {
+      if (view === "archived" ? item.status !== "deprecated" : item.status === "deprecated") {
         return false;
       }
       if (!needle) {
@@ -64,7 +65,12 @@ export default function TemplatesPage() {
         || item.category.toLowerCase().includes(needle)
       );
     });
-  }, [items, search, typeFilter, statusFilter]);
+  }, [items, search, typeFilter, view]);
+
+  const templateCounts = useMemo(() => ({
+    active: items.filter((item) => item.status === "active").length,
+    deprecated: items.filter((item) => item.status === "deprecated").length,
+  }), [items]);
 
   async function handleInstantiate(item: TemplateCatalogItem) {
     setBusyKey(item.id);
@@ -83,7 +89,7 @@ export default function TemplatesPage() {
       }
 
       const created = await instantiatePlaybook(item.source_id, { name: `${item.name} Instance` });
-      router.push(`/builder/workflows/${created.id}`);
+      router.push(`/builder/playbooks/${created.id}`);
     } catch {
       setError(`Failed to instantiate ${item.name}.`);
     } finally {
@@ -96,7 +102,13 @@ export default function TemplatesPage() {
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Templates</h1>
-          <p className="fx-muted">Single catalog of agent, workflow, and playbook templates with filters.</p>
+          <p className="fx-muted">Single catalog of agent, workflow, and playbook templates with active library and archived views.</p>
+          <BuilderLibraryStatusBadges
+            counts={[
+              { label: "Active", count: templateCounts.active },
+              { label: "Archived", count: templateCounts.deprecated },
+            ]}
+          />
         </div>
         <div className="flex gap-2">
           <button
@@ -116,6 +128,24 @@ export default function TemplatesPage() {
         </div>
       </header>
 
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <button
+          type="button"
+          className={view === "library" ? "fx-btn-secondary px-3 py-1.5 font-medium" : "fx-btn-ghost px-3 py-1.5 font-medium"}
+          onClick={() => setView("library")}
+        >
+          Library
+        </button>
+        <button
+          type="button"
+          className={view === "archived" ? "fx-btn-secondary px-3 py-1.5 font-medium" : "fx-btn-ghost px-3 py-1.5 font-medium"}
+          onClick={() => setView("archived")}
+        >
+          Archived
+        </button>
+        <p className="fx-muted ml-auto text-xs uppercase tracking-[0.12em]">{filtered.length} shown</p>
+      </div>
+
       {error && (
         <div className="border border-[#6b1f2a] bg-[#2f1a21] p-3 text-sm text-[#ffb8c4]">
           {error}
@@ -123,7 +153,7 @@ export default function TemplatesPage() {
       )}
 
       <div className="fx-panel p-3">
-        <div className="grid gap-2 md:grid-cols-3">
+        <div className="grid gap-2 md:grid-cols-2">
           <label className="flex flex-col gap-1 text-xs uppercase tracking-wide fx-muted">
             Search
             <input
@@ -145,19 +175,6 @@ export default function TemplatesPage() {
               <option value="agent">Agent templates</option>
               <option value="workflow">Workflow templates</option>
               <option value="playbook">Playbook templates</option>
-            </select>
-          </label>
-
-          <label className="flex flex-col gap-1 text-xs uppercase tracking-wide fx-muted">
-            Status
-            <select
-              className="fx-input px-3 py-2 text-sm normal-case"
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value as TemplateStatusFilter)}
-            >
-              <option value="all">All</option>
-              <option value="active">Active</option>
-              <option value="deprecated">Deprecated</option>
             </select>
           </label>
         </div>
@@ -198,7 +215,9 @@ export default function TemplatesPage() {
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td className="fx-muted px-3 py-4" colSpan={7}>No templates match the selected filters.</td>
+                <td className="fx-muted px-3 py-4" colSpan={7}>
+                  {view === "archived" ? "No archived templates match the selected filters." : "No templates match the selected filters."}
+                </td>
               </tr>
             )}
           </tbody>

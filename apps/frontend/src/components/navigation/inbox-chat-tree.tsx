@@ -13,6 +13,7 @@ import {
   type InboxGroup,
 } from "@/lib/api";
 import type { RunKind, WorkflowRunSummary } from "@/types/frontier";
+import { normalizeRunKind } from "@/lib/run-kind";
 
 type GroupBy = "none" | "type" | "status" | "recency";
 
@@ -26,7 +27,7 @@ const KIND_LABEL: Record<RunKind, string> = {
 const KIND_ORDER: RunKind[] = ["individual", "agent", "workflow", "playbook"];
 
 function runKind(run: WorkflowRunSummary): RunKind {
-  return run.kind ?? "individual";
+  return normalizeRunKind(run.kind);
 }
 
 function statusDotColor(status: string): string {

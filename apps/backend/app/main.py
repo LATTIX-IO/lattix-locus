@@ -6,6 +6,8 @@ import os
 import re
 import sys
 import asyncio
+import logging
+import base64
 import hashlib
 import secrets as secrets_module
 import hmac
@@ -37,9 +39,10 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from concurrent.futures import ThreadPoolExecutor
 
+import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 try:  # optional — YAML export/import; JSON always works without it
     import yaml as _yaml
@@ -50,6 +53,8 @@ from app import cron as app_cron
 from app import knowledge as app_knowledge
 from app import local_models, mcp_client, skills_catalog
 from app.generated_artifacts import GeneratedArtifactService
+from app.integration_starters import INTEGRATION_STARTER_TEMPLATE_SEEDS
+from app.mcp_starters import MCP_STARTER_TEMPLATE_SEEDS
 from app.platform_services import (
     Neo4jRunGraph,
     PostgresLongTermMemoryStore,
@@ -64,11 +69,41 @@ from frontier_runtime.cognitive import (
     GoalColumn,
     SynthesisColumn,
 )
+
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+except Exception:  # pragma: no cover - optional dependency in some local test paths
+    Fernet = None
+    InvalidToken = Exception
 from app.request_security import (
     RouteAccessCategory,
     RouteAccessRule,
     classify_route_access,
     validate_route_inventory,
+)
+from frontier_runtime.assembly_runner import (
+    AssemblyRunner,
+    AssemblyRunRequest,
+    ColumnRuntimeGateError,
+)
+from frontier_runtime.cognition import (
+    AssemblyAdmissionPolicy,
+    AssemblyBudget,
+    AssemblyDefinition,
+    AssemblyDefinitionAdmissionError,
+    ColumnCapability,
+    ColumnCapabilityError,
+    CommitmentValidationError,
+    MessageType,
+    require_column_capability,
+)
+from frontier_runtime.events import AgentEvent, event_to_column_message, is_cognitive_event
+from frontier_runtime.persistence import (
+    load_assembly_causal_state,
+    load_causal_state,
+    record_cognitive_message_replay_marker,
+    redact_sensitive_payload,
+    redact_sensitive_ref,
 )
 from app.security_headers import apply_security_headers
 from frontier_runtime.security import decode_token as decode_runtime_token
@@ -93,14 +128,20 @@ except Exception:  # pragma: no cover - optional dependency during local setup
 # scanning. The deterministic keyword/regex guardrail tier never needs it.
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 class WorkflowRunSummary(BaseModel):
     id: str
     title: str
-    status: Literal["Running", "Blocked", "Needs Review", "Done", "Failed"]
+    title_source: Literal["system", "generated", "user"] = "system"
+    status: Literal["Running", "Blocked", "Needs Review", "Done", "Failed", "Archived"]
     updatedAt: str
     progressLabel: str
     # The surface that started the run, used for inbox/console categorization.
-    kind: Literal["individual", "agent", "workflow", "playbook"] = "individual"
+    # "individual"/"agent" come from mainline run creation; "chat"/"task" come
+    # from the user-console chat workspace session kinds.
+    kind: Literal["individual", "agent", "workflow", "chat", "playbook", "task"] = "individual"
     # Archived runs are hidden from the default run list / inbox nav.
     archived: bool = False
 
@@ -121,8 +162,110 @@ class WorkflowRunEvent(BaseModel):
     ]
     title: str
     summary: str
+    content: str | None = None
     createdAt: str
     metadata: dict[str, Any] | None = None
+
+
+WorkflowRunKind = Literal["individual", "agent", "workflow", "chat", "playbook", "task"]
+
+
+def _normalize_workflow_run_kind(
+    value: Any,
+) -> WorkflowRunKind | None:
+    candidate = str(value or "").strip().lower()
+    if candidate in {"individual", "agent", "workflow", "chat", "playbook", "task"}:
+        return candidate  # type: ignore[return-value]
+    return None
+
+
+def _resolve_workflow_run_kind(
+    payload: dict[str, Any],
+) -> WorkflowRunKind:
+    explicit_kind = _normalize_workflow_run_kind(
+        payload.get("session_kind") or payload.get("sessionKind") or payload.get("kind")
+    )
+    if explicit_kind is not None:
+        return explicit_kind
+
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    context_mode = str(context.get("mode") or payload.get("mode") or "").strip().lower()
+    if context_mode in {"follow_up", "chat", "conversation"}:
+        return "chat"
+    if payload.get("follow_up_to_run_id") or payload.get("source_run_id"):
+        return "chat"
+    if payload.get("playbook_id") or context_mode == "playbook":
+        return "playbook"
+    if (
+        payload.get("workflow_definition_id")
+        or payload.get("workflow_id")
+        or payload.get("workflowName")
+    ):
+        return "workflow"
+
+    tokens = payload.get("tokens") if isinstance(payload.get("tokens"), list) else []
+    for token in tokens:
+        if isinstance(token, dict) and str(token.get("kind") or "").strip().lower() == "workflow":
+            return "workflow"
+
+    return "task"
+
+
+def _normalize_follow_up_context_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, list):
+        return ""
+
+    lines: list[str] = []
+    for item in value[:8]:
+        if isinstance(item, dict):
+            content = str(
+                item.get("content") or item.get("summary") or item.get("text") or ""
+            ).strip()
+            if not content:
+                continue
+            role = str(item.get("role") or item.get("type") or "").strip().lower()
+            label = "System"
+            if role in {"user", "human", "user_message"}:
+                label = "User"
+            elif role in {"assistant", "agent", "agent_message"}:
+                label = "Agent"
+            lines.append(f"{label}: {content}")
+            continue
+
+        candidate = str(item or "").strip()
+        if candidate:
+            lines.append(candidate)
+
+    return "\n".join(lines)
+
+
+def _build_follow_up_request_prompt(prompt_text: str, payload: dict[str, Any]) -> str:
+    cleaned_prompt = _clean_inbox_prompt(prompt_text)
+    context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+    context_mode = str(context.get("mode") or payload.get("mode") or "").strip().lower()
+    is_follow_up = bool(
+        payload.get("follow_up_to_run_id") or payload.get("source_run_id")
+    ) or context_mode in {
+        "follow_up",
+        "chat",
+        "conversation",
+    }
+    if not is_follow_up:
+        return cleaned_prompt
+
+    recent_context = _normalize_follow_up_context_text(
+        context.get("recent_context") or context.get("recent_messages")
+    )
+    if not recent_context:
+        return cleaned_prompt
+    if not cleaned_prompt:
+        return f"Conversation context from the previous run:\n{recent_context}"
+    return (
+        f"Conversation context from the previous run:\n{recent_context}\n\n"
+        f"Follow-up request:\n{cleaned_prompt}"
+    )
 
 
 class ArtifactSummary(BaseModel):
@@ -323,11 +466,23 @@ class AgentSecurityConfig(SecurityScopeConfig):
 
 
 class PlatformSettings(BaseModel):
+    org_name: str = "Lattix xFrontier"
+    org_slug: str = "lattix-frontier"
+    support_email: str = "support@lattix.io"
+    website: str = "https://lattix.io"
+    console_classification_banner_enabled: bool = True
+    console_classification_banner_text: str = "Internal • Operational Console"
+    console_classification_banner_background_color: str = "#2e2a28"
+    console_classification_banner_text_color: str = "#e7dcc0"
+    default_kickoff_workflow: str = "Auto-select from intent"
+    preferred_review_depth: str = "Standard"
+    idle_timeout: str = "30 minutes"
     local_only_mode: bool = True
     mask_secrets_in_events: bool = True
     require_human_approval: bool = False
     default_guardrail_ruleset_id: str | None = None
     global_blocked_keywords: list[str] = Field(default_factory=list)
+    tenant_scoped_skills: list[str] = Field(default_factory=list)
     collaboration_max_agents: int = 8
     enforce_egress_allowlist: bool = True
     allowed_egress_hosts: list[str] = Field(
@@ -458,6 +613,90 @@ class IntegrationDefinition(BaseModel):
     approved_for_marketplace: bool = False
 
 
+class IntegrationStarterTemplate(BaseModel):
+    id: str
+    wave: Literal[1, 2, 3]
+    name: str
+    summary: str
+    type: Literal["http", "database", "queue", "vector", "custom"]
+    base_url: str = ""
+    auth_type: Literal["none", "api_key", "bearer", "oauth2", "basic"] = "none"
+    secret_ref: str = ""
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+    capabilities: list[str] = Field(default_factory=list)
+    permission_scopes: list[str] = Field(default_factory=list)
+    data_access: list[str] = Field(default_factory=list)
+    egress_allowlist: list[str] = Field(default_factory=list)
+    publisher: Literal["first_party", "third_party", "custom"] = "custom"
+    execution_mode: Literal["local", "sandboxed"] = "local"
+    signature_verified: bool = False
+    approved_for_marketplace: bool = False
+
+
+class MCPStarterTemplate(BaseModel):
+    id: str
+    wave: Literal[1, 2, 3]
+    name: str
+    summary: str
+    transport: Literal["streamable_http", "sse", "custom"] = "streamable_http"
+    auth_type: Literal["none", "api_key", "bearer", "oauth2", "basic", "mcp_token"] = "none"
+    secret_ref: str = ""
+    capabilities: list[str] = Field(default_factory=list)
+    permission_scopes: list[str] = Field(default_factory=list)
+    data_access: list[str] = Field(default_factory=list)
+    egress_allowlist: list[str] = Field(default_factory=list)
+    publisher: Literal["first_party", "third_party", "custom"] = "custom"
+    execution_mode: Literal["local", "sandboxed"] = "local"
+
+
+class MCPConnectionDefinition(BaseModel):
+    id: str
+    starter_id: str
+    wave: Literal[1, 2, 3]
+    name: str
+    status: Literal[
+        "draft", "validated", "validation_failed", "approved", "rejected", "disabled"
+    ] = "draft"
+    server_url: str = ""
+    transport: Literal["streamable_http", "sse", "custom"] = "streamable_http"
+    auth_type: Literal["none", "api_key", "bearer", "oauth2", "basic", "mcp_token"] = "none"
+    secret_ref: str = ""
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+    capabilities: list[str] = Field(default_factory=list)
+    permission_scopes: list[str] = Field(default_factory=list)
+    data_access: list[str] = Field(default_factory=list)
+    egress_allowlist: list[str] = Field(default_factory=list)
+    publisher: Literal["first_party", "third_party", "custom"] = "custom"
+    execution_mode: Literal["local", "sandboxed"] = "local"
+    approved_by: str = ""
+    approved_at: str = ""
+    last_validated_at: str = ""
+    last_validation_error: str = ""
+
+
+class IntegrationOAuthConnectPayload(BaseModel):
+    return_to: str = "/builder/integrations"
+
+
+class IntegrationOAuthStatus(BaseModel):
+    id: str
+    provider: str = ""
+    grant_type: str = ""
+    connected: bool = False
+    pending: bool = False
+    scopes: list[str] = Field(default_factory=list)
+    authorize_url: str = ""
+    token_url: str = ""
+    client_id: str = ""
+    redirect_uri: str = ""
+    account_label: str = ""
+    expires_at: str | None = None
+    has_client_secret: bool = False
+    has_refresh_token: bool = False
+    has_access_token: bool = False
+    last_error: str = ""
+
+
 class AgentTemplate(BaseModel):
     id: str
     name: str
@@ -472,7 +711,7 @@ class PlaybookDefinition(BaseModel):
     name: str
     description: str
     category: Literal["go_to_market", "security", "support", "operations", "other"] = "other"
-    status: Literal["active", "deprecated"] = "active"
+    status: Literal["draft", "published", "archived", "active", "deprecated"] = "published"
     graph_json: dict[str, Any] = Field(default_factory=dict)
     metadata_json: dict[str, Any] = Field(default_factory=dict)
 
@@ -501,7 +740,7 @@ class CollaborationParticipant(BaseModel):
 
 class CollaborationSession(BaseModel):
     id: str
-    entity_type: Literal["agent", "workflow"]
+    entity_type: Literal["agent", "workflow", "playbook"]
     entity_id: str
     graph_json: dict[str, Any] = Field(default_factory=dict)
     version: int = 1
@@ -606,6 +845,35 @@ class RuntimeProviderStatus(BaseModel):
     mode: Literal["live", "simulated"]
 
 
+class UserRuntimeProviderConfigPayload(BaseModel):
+    model: str = Field(min_length=1, max_length=160)
+    api_key: str = Field(default="", max_length=4096)
+    base_url: str = Field(default="", max_length=512)
+    available_models: list[str] = Field(default_factory=list, max_length=24)
+    preferred: bool = False
+
+
+class StoredUserRuntimeProviderConfig(BaseModel):
+    provider: Literal["openai", "anthropic", "gemini", "openai-compatible"]
+    model: str
+    available_models: list[str] = Field(default_factory=list)
+    base_url: str = ""
+    api_key_encrypted: str
+    preferred: bool = False
+    created_at: str
+    updated_at: str
+
+
+class UserSkillsPayload(BaseModel):
+    skills: Any = Field(default_factory=list)
+
+
+class StoredUserSkills(BaseModel):
+    skills: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
 class PasswordLoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=512)
@@ -616,6 +884,11 @@ class PasswordRegisterRequest(BaseModel):
     email: str = Field(min_length=3, max_length=320)
     display_name: str = Field(min_length=1, max_length=160)
     password: str = Field(min_length=8, max_length=512)
+
+
+class OidcBrowserIntent(str):
+    SIGNIN = "signin"
+    SIGNUP = "signup"
 
 
 def _normalize_version(raw_version: Any) -> int:
@@ -773,6 +1046,69 @@ def _effective_require_a2a_runtime_headers() -> bool:
     return store.platform_settings.require_a2a_runtime_headers
 
 
+def _mcp_remote_server_policy_explicitly_confirmed() -> bool:
+    return _env_flag("FRONTIER_CONFIRM_REMOTE_MCP_SERVERS", False)
+
+
+def _secure_profile_deployment_report(
+    platform: "PlatformSettings" | None = None,
+) -> dict[str, Any]:
+    settings = platform or store.platform_settings
+    runtime_profile = _active_runtime_profile()
+    hosted_profile = runtime_profile.name == "hosted"
+    secure_local_profile = runtime_profile.name == "local-secure"
+    secure_profile = hosted_profile or secure_local_profile
+    mcp_remote_confirmed = _mcp_remote_server_policy_explicitly_confirmed()
+    effective_auth_required = _effective_require_authenticated_requests()
+    effective_a2a_headers_required = _effective_require_a2a_runtime_headers()
+    controls = {
+        "require_authenticated_requests": bool(effective_auth_required),
+        "require_a2a_runtime_headers": bool(effective_a2a_headers_required),
+        "a2a_require_signed_messages": bool(settings.a2a_require_signed_messages),
+        "a2a_replay_protection": bool(settings.a2a_replay_protection),
+        "enforce_egress_allowlist": bool(settings.enforce_egress_allowlist),
+        "mcp_require_local_server": bool(settings.mcp_require_local_server),
+        "mcp_remote_server_policy_confirmed": bool(mcp_remote_confirmed),
+    }
+    requirements = {
+        "require_authenticated_requests": bool(secure_profile),
+        "require_a2a_runtime_headers": bool(hosted_profile),
+        "a2a_require_signed_messages": bool(secure_profile),
+        "a2a_replay_protection": bool(secure_profile),
+        "enforce_egress_allowlist": bool(secure_profile),
+        "mcp_require_local_server": bool(secure_profile and not mcp_remote_confirmed),
+    }
+    failures = [
+        control
+        for control, required in requirements.items()
+        if required and not bool(controls.get(control))
+    ]
+    status = "ok"
+    if failures and hosted_profile:
+        status = "blocked"
+    elif failures:
+        status = "degraded"
+    return {
+        "status": status,
+        "profile": runtime_profile.name,
+        "source": _runtime_profile_source(),
+        "secure_profile": secure_profile,
+        "controls": controls,
+        "requirements": requirements,
+        "failures": failures,
+    }
+
+
+def _validate_secure_profile_deployment() -> dict[str, Any]:
+    report = _secure_profile_deployment_report()
+    if report["status"] == "blocked":
+        failures = ", ".join(report["failures"])
+        raise RuntimeError(
+            f"Secure runtime profile '{report['profile']}' is blocked by unsafe config: {failures}"
+        )
+    return report
+
+
 def _slug_to_name(slug: str) -> str:
     return slug.replace("-", " ").strip().title()
 
@@ -828,6 +1164,7 @@ _L3_DELEGATED_NODE_TYPES = {
     "frontier/retrieval",
     "frontier/tool-call",
     "frontier/memory",
+    "frontier/data-store",
     "frontier/guardrail",
     "frontier/manifold",
     "frontier/human-review",
@@ -835,6 +1172,12 @@ _L3_DELEGATED_NODE_TYPES = {
 _L3_NATIVE_CONTROL_PLANE_NODE_TYPES = {
     "frontier/trigger",
     "frontier/prompt",
+    "frontier/router",
+    "frontier/iterator",
+    "frontier/transform",
+    "frontier/event",
+    "frontier/error-handler",
+    "frontier/wait",
     "frontier/output",
 }
 
@@ -938,6 +1281,108 @@ def _graph_schema_validation_issue(
     )
 
 
+def _validate_graph_skill_paths(
+    raw: Any, *, path: str
+) -> tuple[list[str], list[GraphValidationIssue]]:
+    if raw is None:
+        return [], []
+    if not isinstance(raw, list):
+        return [], [
+            GraphValidationIssue(
+                code="AGENT_SKILLS_INVALID",
+                message="Agent node config.skills must be a list of skill paths.",
+                path=path,
+            )
+        ]
+    if len(raw) > 128:
+        return [], [
+            GraphValidationIssue(
+                code="AGENT_SKILLS_TOO_MANY",
+                message="Agent node config.skills may contain at most 128 entries.",
+                path=path,
+            )
+        ]
+
+    normalized: list[str] = []
+    issues: list[GraphValidationIssue] = []
+    for index, item in enumerate(raw):
+        item_path = f"{path}[{index}]"
+        if not isinstance(item, str):
+            issues.append(
+                GraphValidationIssue(
+                    code="AGENT_SKILL_TYPE_INVALID",
+                    message="Agent node skill entries must be strings.",
+                    path=item_path,
+                )
+            )
+            continue
+        skill = item.strip()
+        if not skill:
+            continue
+        skill_name = skill.lstrip("/")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,126}", skill_name):
+            issues.append(
+                GraphValidationIssue(
+                    code="AGENT_SKILL_PATH_INVALID",
+                    message="Agent node skill entries must be slash skill paths using letters, numbers, dots, underscores, or hyphens.",
+                    path=item_path,
+                )
+            )
+            continue
+        normalized_skill = f"/{skill_name}"
+        if normalized_skill not in normalized:
+            normalized.append(normalized_skill)
+    return normalized, issues
+
+
+def _graph_skill_validation_issues(graph_json: dict[str, Any]) -> list[GraphValidationIssue]:
+    issues: list[GraphValidationIssue] = []
+    nodes = graph_json.get("nodes") if isinstance(graph_json.get("nodes"), list) else []
+    for index, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            continue
+        if not _normalize_node_type(str(node.get("type") or "")).startswith("frontier/agent"):
+            continue
+        config = node.get("config") if isinstance(node.get("config"), dict) else {}
+        if "skills" not in config:
+            continue
+        _normalized, skill_issues = _validate_graph_skill_paths(
+            config.get("skills"), path=f"nodes[{index}].config.skills"
+        )
+        issues.extend(skill_issues)
+    return issues
+
+
+def _normalize_graph_agent_skills(
+    graph_json: dict[str, Any], *, context_label: str
+) -> dict[str, Any]:
+    issues = _graph_skill_validation_issues(graph_json)
+    if issues:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": f"{context_label} contains invalid agent skill paths",
+                "issues": [issue.model_dump() for issue in issues],
+            },
+        )
+
+    nodes = graph_json.get("nodes") if isinstance(graph_json.get("nodes"), list) else []
+    for index, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            continue
+        if not _normalize_node_type(str(node.get("type") or "")).startswith("frontier/agent"):
+            continue
+        config = node.get("config") if isinstance(node.get("config"), dict) else {}
+        if "skills" not in config:
+            continue
+        normalized_skills, _skill_issues = _validate_graph_skill_paths(
+            config.get("skills"), path=f"nodes[{index}].config.skills"
+        )
+        config["skills"] = normalized_skills
+        node["config"] = config
+    return graph_json
+
+
 def _graph_payload_from_json(graph_json: dict[str, Any]) -> GraphPayload:
     normalized = _normalize_graph_json_payload(graph_json)
     return GraphPayload(
@@ -958,7 +1403,7 @@ def _ensure_supported_graph_json(graph_json: Any, *, context_label: str) -> dict
                 "issues": [_graph_schema_validation_issue(schema_version).model_dump()],
             },
         )
-    return normalized
+    return _normalize_graph_agent_skills(normalized, context_label=context_label)
 
 
 def _normalize_text_list(value: Any) -> list[str]:
@@ -1157,6 +1602,286 @@ def _request_operator_session_token(request: Request | None) -> str:
         return str(request.cookies.get(_operator_session_cookie_name()) or "").strip()
     except Exception:  # noqa: BLE001
         return ""
+
+
+def _oidc_browser_flow_cookie_name() -> str:
+    value = str(os.getenv("FRONTIER_OIDC_BROWSER_FLOW_COOKIE") or "frontier_oidc_browser").strip()
+    return value or "frontier_oidc_browser"
+
+
+def _oidc_browser_flow_ttl_seconds() -> int:
+    return _env_int(
+        "FRONTIER_OIDC_BROWSER_FLOW_TTL_SECONDS",
+        600,
+        minimum=60,
+        maximum=60 * 30,
+    )
+
+
+def _oidc_browser_flow_signing_secret() -> bytes:
+    for env_name in (
+        "FRONTIER_SECRETS_ENCRYPTION_KEY",
+        "A2A_JWT_SECRET",
+        "FRONTIER_API_BEARER_TOKEN",
+    ):
+        candidate = str(os.getenv(env_name) or "").strip()
+        if candidate:
+            return candidate.encode("utf-8")
+    raise HTTPException(status_code=500, detail="OIDC browser sign-in is unavailable.")
+
+
+def _encode_oidc_browser_flow_cookie(payload: dict[str, Any]) -> str:
+    serialized = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(serialized).decode("utf-8").rstrip("=")
+    signature = hmac.new(
+        _oidc_browser_flow_signing_secret(),
+        encoded.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def _decode_oidc_browser_flow_cookie(value: str) -> dict[str, Any]:
+    token = str(value or "").strip()
+    encoded, separator, signature = token.partition(".")
+    if not encoded or not separator or not signature:
+        raise ValueError("Malformed OIDC browser flow cookie")
+    expected_signature = hmac.new(
+        _oidc_browser_flow_signing_secret(),
+        encoded.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected_signature, signature):
+        raise ValueError("Invalid OIDC browser flow cookie signature")
+    padding = "=" * (-len(encoded) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(f"{encoded}{padding}")
+        payload = json.loads(decoded.decode("utf-8"))
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid OIDC browser flow cookie payload") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("OIDC browser flow cookie payload was not an object")
+    return payload
+
+
+def _set_oidc_browser_flow_cookie(response: RedirectResponse, request: Request, value: str) -> None:
+    response.set_cookie(
+        key=_oidc_browser_flow_cookie_name(),
+        value=value,
+        httponly=True,
+        secure=_operator_session_cookie_secure(request),
+        samesite="lax",
+        max_age=_oidc_browser_flow_ttl_seconds(),
+        path="/",
+    )
+
+
+def _clear_oidc_browser_flow_cookie(response: RedirectResponse, request: Request) -> None:
+    response.delete_cookie(
+        key=_oidc_browser_flow_cookie_name(),
+        httponly=True,
+        secure=_operator_session_cookie_secure(request),
+        samesite="lax",
+        path="/",
+    )
+
+
+def _external_request_origin(request: Request) -> str:
+    forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").strip().lower()
+    scheme = forwarded_proto or str(request.url.scheme or "http").strip().lower() or "http"
+    forwarded_host = str(request.headers.get("x-forwarded-host") or "").strip()
+    host = forwarded_host or str(request.headers.get("host") or request.url.netloc or "").strip()
+    if not host:
+        raise HTTPException(status_code=500, detail="OIDC browser sign-in is unavailable.")
+    try:
+        return _normalize_origin_url(
+            urlunsplit((scheme, host, "", "", "")),
+            setting_name="request origin",
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="OIDC browser sign-in is unavailable.",
+        ) from exc
+
+
+def _oidc_browser_callback_url(request: Request) -> str:
+    return f"{_external_request_origin(request)}/auth/callback"
+
+
+def _safe_post_auth_redirect_path(candidate: str) -> str:
+    value = str(candidate or "").strip()
+    if not value.startswith("/") or value.startswith("//"):
+        return "/inbox"
+    return value
+
+
+def _generate_oidc_pkce_verifier() -> str:
+    return base64.urlsafe_b64encode(os.urandom(48)).decode("utf-8").rstrip("=")
+
+
+def _oidc_pkce_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
+
+
+def _configured_operator_oidc_browser_flow() -> dict[str, Any]:
+    oidc = _configured_operator_oidc()
+    if not oidc:
+        return {}
+
+    client_id = str(os.getenv("FRONTIER_AUTH_OIDC_CLIENT_ID") or "").strip()
+    authorization_source = (
+        str(os.getenv("FRONTIER_AUTH_OIDC_AUTHORIZATION_URL") or "").strip()
+        or str(os.getenv("FRONTIER_AUTH_OIDC_SIGNIN_URL") or "").strip()
+    )
+    token_source = str(os.getenv("FRONTIER_AUTH_OIDC_TOKEN_URL") or "").strip()
+    signin_source = (
+        str(os.getenv("FRONTIER_AUTH_OIDC_SIGNIN_URL") or "").strip() or authorization_source
+    )
+    signup_source = (
+        str(os.getenv("FRONTIER_AUTH_OIDC_SIGNUP_URL") or "").strip() or authorization_source
+    )
+    scopes = [
+        scope.strip()
+        for scope in str(os.getenv("FRONTIER_AUTH_OIDC_SCOPES") or "openid profile email").split()
+        if scope.strip()
+    ]
+    if not client_id or not authorization_source or not token_source:
+        return {}
+
+    authorization_url = _normalize_absolute_http_url_allow_query(
+        authorization_source, setting_name="FRONTIER_AUTH_OIDC_AUTHORIZATION_URL"
+    )
+    token_url = _normalize_absolute_http_url_allow_query(
+        token_source, setting_name="FRONTIER_AUTH_OIDC_TOKEN_URL"
+    )
+    signin_url = _normalize_absolute_http_url_allow_query(
+        signin_source, setting_name="FRONTIER_AUTH_OIDC_SIGNIN_URL"
+    )
+    signup_url = _normalize_absolute_http_url_allow_query(
+        signup_source, setting_name="FRONTIER_AUTH_OIDC_SIGNUP_URL"
+    )
+
+    issuer_host = str(urlsplit(oidc["issuer"]).hostname or "").strip().lower()
+    for setting_name, value in (
+        ("FRONTIER_AUTH_OIDC_AUTHORIZATION_URL", authorization_url),
+        ("FRONTIER_AUTH_OIDC_TOKEN_URL", token_url),
+        ("FRONTIER_AUTH_OIDC_SIGNIN_URL", signin_url),
+        ("FRONTIER_AUTH_OIDC_SIGNUP_URL", signup_url),
+    ):
+        parsed = urlsplit(value)
+        candidate_host = str(parsed.hostname or "").strip().lower()
+        if parsed.scheme != "https" and not _hostname_is_local(candidate_host):
+            raise ValueError(f"{setting_name} must use https outside localhost development")
+        if issuer_host and candidate_host and issuer_host != candidate_host:
+            raise ValueError(
+                f"{setting_name} must resolve to the same host as FRONTIER_AUTH_OIDC_ISSUER"
+            )
+
+    return {
+        **oidc,
+        "client_id": client_id,
+        "authorization_url": authorization_url,
+        "token_url": token_url,
+        "signin_url": signin_url,
+        "signup_url": signup_url,
+        "scopes": scopes or ["openid", "profile", "email"],
+    }
+
+
+def _build_oidc_provider_redirect_url(
+    request: Request,
+    *,
+    intent: str,
+    state: str,
+    code_verifier: str,
+    nonce: str,
+) -> str:
+    config = _configured_operator_oidc_browser_flow()
+    if not config:
+        raise ValueError("OIDC browser sign-in is unavailable.")
+    entry_url = config["signup_url"] if intent == OidcBrowserIntent.SIGNUP else config["signin_url"]
+    parsed = urlsplit(entry_url)
+    existing = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key
+        not in {
+            "response_type",
+            "client_id",
+            "redirect_uri",
+            "scope",
+            "state",
+            "code_challenge",
+            "code_challenge_method",
+            "nonce",
+        }
+    ]
+    existing.extend(
+        [
+            ("response_type", "code"),
+            ("client_id", str(config["client_id"])),
+            ("redirect_uri", _oidc_browser_callback_url(request)),
+            ("scope", " ".join(config["scopes"])),
+            ("state", state),
+            ("code_challenge", _oidc_pkce_challenge(code_verifier)),
+            ("code_challenge_method", "S256"),
+            ("nonce", nonce),
+        ]
+    )
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, urlencode(existing, doseq=True), "")
+    )
+
+
+def _exchange_oidc_authorization_code(
+    request: Request,
+    *,
+    code: str,
+    code_verifier: str,
+) -> dict[str, Any]:
+    config = _configured_operator_oidc_browser_flow()
+    if not config:
+        raise HTTPException(status_code=503, detail="OIDC browser sign-in is unavailable.")
+    try:
+        response = httpx.post(
+            str(config["token_url"]),
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": _oidc_browser_callback_url(request),
+                "client_id": str(config["client_id"]),
+                "code_verifier": code_verifier,
+            },
+            headers={"Accept": "application/json"},
+            timeout=httpx.Timeout(10.0, connect=5.0),
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (ValueError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=401, detail="Unable to complete browser sign-in.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=401, detail="Unable to complete browser sign-in.")
+    return payload
+
+
+def _verified_oidc_session_token_from_exchange(payload: dict[str, Any]) -> str:
+    for field_name in ("id_token", "access_token"):
+        candidate = str(payload.get(field_name) or "").strip()
+        if not candidate:
+            continue
+        try:
+            _decode_operator_bearer_token(candidate)
+        except Exception:
+            continue
+        return candidate
+    raise HTTPException(status_code=401, detail="Unable to complete browser sign-in.")
+
+
+def _oidc_error_redirect(message: str) -> str:
+    return f"/auth?error={urlencode({'message': _public_configuration_error(message)})[8:]}"
 
 
 def _configured_casdoor_oidc() -> dict[str, str]:
@@ -1370,7 +2095,8 @@ def _authenticate_local_casdoor_user(username: str, password: str) -> dict[str, 
     if not password_value:
         raise HTTPException(status_code=400, detail="Password is required")
 
-    last_error = ""
+    auth_error = ""
+    transport_error = ""
     owner, _, raw_name = normalized_username.partition("/")
     for base_url, headers in _casdoor_http_base_candidates():
         for login_name in _casdoor_login_name_candidates(raw_name):
@@ -1387,15 +2113,18 @@ def _authenticate_local_casdoor_user(username: str, password: str) -> dict[str, 
                 account_data = _casdoor_get_account(opener, base_url, headers)
                 if account_data is not None:
                     return account_data
-                last_error = str(login_response.get("msg") or "Invalid username or password")
+                auth_error = str(login_response.get("msg") or "Invalid username or password")
             except urllib_error.HTTPError as exc:
-                last_error = f"HTTP {exc.code}"
+                transport_error = f"HTTP {exc.code}"
             except (urllib_error.URLError, TimeoutError, OSError, RuntimeError) as exc:
                 # Connection-level noise from fallback candidates must not mask a
                 # meaningful error already captured from a reachable candidate.
-                if not last_error:
-                    last_error = str(exc)
-    raise HTTPException(status_code=401, detail=last_error or "Invalid username or password")
+                if not transport_error:
+                    transport_error = str(exc)
+    raise HTTPException(
+        status_code=401,
+        detail=auth_error or transport_error or "Invalid username or password",
+    )
 
 
 def _provision_local_casdoor_user(
@@ -1422,7 +2151,8 @@ def _provision_local_casdoor_user(
     safe_name = _casdoor_safe_username(raw_name)
     suffixed_name = f"{safe_name}-{_casdoor_email_suffix(normalized_email)}"
 
-    last_error = ""
+    provisioning_error = ""
+    transport_error = ""
     for base_url, headers in _casdoor_http_base_candidates():
         cookie_jar = http.cookiejar.CookieJar()
         opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar))
@@ -1505,20 +2235,23 @@ def _provision_local_casdoor_user(
                 },
             )
             if response.get("status") != "ok":
-                last_error = str(response.get("msg") or "Unable to create account")
+                provisioning_error = str(response.get("msg") or "Unable to create account")
                 continue
             return _authenticate_local_casdoor_user(username, password_value)
         except HTTPException:
             raise
         except urllib_error.HTTPError as exc:
-            last_error = f"HTTP {exc.code}"
+            transport_error = f"HTTP {exc.code}"
         except (urllib_error.URLError, TimeoutError, OSError, RuntimeError) as exc:
             # Connection-level noise from fallback candidates must not mask a
             # meaningful error already captured from a reachable candidate.
-            if not last_error:
-                last_error = str(exc)
+            if not transport_error:
+                transport_error = str(exc)
     raise HTTPException(
-        status_code=502, detail=last_error or "Unable to reach the local Casdoor identity service"
+        status_code=502,
+        detail=provisioning_error
+        or transport_error
+        or "Unable to reach the local Casdoor identity service",
     )
 
 
@@ -1991,9 +2724,27 @@ def _canonicalize_agent_config(
                     (
                         (current.get("memory") or {}).get("allow_scopes")
                         if isinstance(current.get("memory"), dict)
-                        else ["run", "session", "user", "tenant", "agent", "workflow", "global"]
+                        else [
+                            "run",
+                            "session",
+                            "user",
+                            "playbook",
+                            "tenant",
+                            "agent",
+                            "workflow",
+                            "global",
+                        ]
                     )
-                    or ["run", "session", "user", "tenant", "agent", "workflow", "global"]
+                    or [
+                        "run",
+                        "session",
+                        "user",
+                        "playbook",
+                        "tenant",
+                        "agent",
+                        "workflow",
+                        "global",
+                    ]
                 ),
             },
             "guardrails": {
@@ -2199,6 +2950,16 @@ def _normalize_security_scope_config(raw: Any) -> dict[str, Any]:
         )
         if allowed_runtime_engines:
             normalized["allowed_runtime_engines"] = allowed_runtime_engines
+    if "allowed_providers" in source:
+        normalized["allowed_providers"] = _normalize_text_list(source.get("allowed_providers"))
+    if "allowed_runtime_providers" in source:
+        normalized["allowed_providers"] = _normalize_text_list(
+            source.get("allowed_runtime_providers")
+        )
+    if "allowed_models" in source:
+        normalized["allowed_models"] = _normalize_text_list(source.get("allowed_models"))
+    if "allowed_runtime_models" in source:
+        normalized["allowed_models"] = _normalize_text_list(source.get("allowed_runtime_models"))
     if "allowed_memory_scopes" in source:
         normalized["allowed_memory_scopes"] = _normalize_text_list(
             source.get("allowed_memory_scopes")
@@ -2246,6 +3007,7 @@ def _platform_security_defaults(platform: "PlatformSettings") -> dict[str, Any]:
             "run",
             "session",
             "user",
+            "playbook",
             "tenant",
             "agent",
             "workflow",
@@ -2396,7 +3158,16 @@ def _allowed_memory_scopes_from_policy(policy_payload: dict[str, Any] | None) ->
     policy = policy_payload if isinstance(policy_payload, dict) else {}
     effective = policy.get("effective") if isinstance(policy.get("effective"), dict) else {}
     allowed = _normalize_text_list(effective.get("allowed_memory_scopes"))
-    return allowed or ["run", "session", "user", "tenant", "agent", "workflow", "global"]
+    return allowed or [
+        "run",
+        "session",
+        "user",
+        "playbook",
+        "tenant",
+        "agent",
+        "workflow",
+        "global",
+    ]
 
 
 def _enforce_memory_scope_policy(
@@ -2520,9 +3291,16 @@ def _framework_adapter_mapping(engine: str) -> dict[str, str]:
             "frontier/tool-call": "native.tool_call",
             "frontier/retrieval": "native.retrieval",
             "frontier/memory": "native.memory",
+            "frontier/data-store": "native.data_store",
             "frontier/guardrail": "native.guardrail",
             "frontier/human-review": "native.human_review",
             "frontier/manifold": "native.manifold",
+            "frontier/router": "native.router",
+            "frontier/iterator": "native.iterator",
+            "frontier/transform": "native.transform",
+            "frontier/event": "native.event",
+            "frontier/error-handler": "native.error_handler",
+            "frontier/wait": "native.wait",
             "frontier/output": "native.output",
         }
 
@@ -2534,9 +3312,16 @@ def _framework_adapter_mapping(engine: str) -> dict[str, str]:
             "frontier/tool-call": "framework.tool_node",
             "frontier/retrieval": "framework.retriever_node",
             "frontier/memory": "framework.checkpoint_or_memory",
+            "frontier/data-store": "framework.state_store",
             "frontier/guardrail": "framework.policy_node",
             "frontier/human-review": "framework.human_gate",
             "frontier/manifold": "framework.router_or_join",
+            "frontier/router": "framework.router_or_selector",
+            "frontier/iterator": "framework.iterator_or_batch",
+            "frontier/transform": "framework.map_or_assign",
+            "frontier/event": "framework.event_bridge",
+            "frontier/error-handler": "framework.retry_or_fallback",
+            "frontier/wait": "framework.delay_or_timeout",
             "frontier/output": "framework.sink",
         }
 
@@ -2548,9 +3333,16 @@ def _framework_adapter_mapping(engine: str) -> dict[str, str]:
             "frontier/tool-call": "sk.plugin_function",
             "frontier/retrieval": "sk.memory_search",
             "frontier/memory": "sk.memory_store",
+            "frontier/data-store": "sk.state_store",
             "frontier/guardrail": "sk.filter_or_policy",
             "frontier/human-review": "sk.approval_step",
             "frontier/manifold": "sk.branch_join",
+            "frontier/router": "sk.router",
+            "frontier/iterator": "sk.iterator",
+            "frontier/transform": "sk.transformer",
+            "frontier/event": "sk.event_bridge",
+            "frontier/error-handler": "sk.error_policy",
+            "frontier/wait": "sk.wait_step",
             "frontier/output": "sk.output_formatter",
         }
 
@@ -2561,9 +3353,16 @@ def _framework_adapter_mapping(engine: str) -> dict[str, str]:
         "frontier/tool-call": "autogen.tool_executor",
         "frontier/retrieval": "autogen.retrieval_agent",
         "frontier/memory": "autogen.state_store",
+        "frontier/data-store": "autogen.state_store",
         "frontier/guardrail": "autogen.policy_gate",
         "frontier/human-review": "autogen.user_proxy_gate",
         "frontier/manifold": "autogen.selector",
+        "frontier/router": "autogen.selector",
+        "frontier/iterator": "autogen.loop_agent",
+        "frontier/transform": "autogen.transformer",
+        "frontier/event": "autogen.event_bridge",
+        "frontier/error-handler": "autogen.fallback_gate",
+        "frontier/wait": "autogen.wait_gate",
         "frontier/output": "autogen.result_sink",
     }
 
@@ -2771,15 +3570,21 @@ def _infer_graph_node_runtime_role(
         return "retrieval"
     if node_type == "frontier/tool-call":
         return "tooling"
-    if node_type == "frontier/memory":
+    if node_type in {"frontier/memory", "frontier/data-store"}:
         return "collaboration"
 
     if node_type in {
         "frontier/trigger",
         "frontier/prompt",
         "frontier/manifold",
+        "frontier/router",
+        "frontier/iterator",
+        "frontier/transform",
+        "frontier/event",
+        "frontier/error-handler",
         "frontier/guardrail",
         "frontier/human-review",
+        "frontier/wait",
         "frontier/output",
     }:
         return "orchestration"
@@ -3089,6 +3894,88 @@ def _clean_inbox_prompt(text: str) -> str:
     return _strip_leading_agent_mentions(text)
 
 
+def _heuristic_workflow_run_title(prompt_text: str, run_kind: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(prompt_text or "")).strip()
+    if not cleaned:
+        labels = {
+            "chat": "New conversation",
+            "playbook": "New playbook run",
+            "task": "New task",
+            "workflow": "New workflow run",
+        }
+        return labels.get(run_kind, "New workflow run")
+
+    cleaned = cleaned.strip(" -:;,.\"'`")
+    lower = cleaned.lower()
+    prefixes = (
+        "please ",
+        "can you ",
+        "could you ",
+        "help me ",
+        "i need ",
+        "i want ",
+        "let's ",
+        "lets ",
+    )
+    for prefix in prefixes:
+        if lower.startswith(prefix):
+            cleaned = cleaned[len(prefix) :].strip()
+            break
+
+    title = cleaned[:72].strip()
+    if len(cleaned) > 72:
+        title = f"{title.rstrip(' ,.;:')}..."
+
+    return title or "New workflow run"
+
+
+def _generate_workflow_run_title(
+    *,
+    prompt_text: str,
+    run_kind: str,
+    actor: str,
+    request: Request,
+    payload: dict[str, Any],
+    agent_definition: "AgentDefinition",
+) -> tuple[str, Literal["generated", "system"]]:
+    cleaned_prompt = _clean_inbox_prompt(prompt_text)
+    if not cleaned_prompt:
+        return _heuristic_workflow_run_title(prompt_text, run_kind), "system"
+
+    fallback = _heuristic_workflow_run_title(cleaned_prompt, run_kind)
+
+    try:
+        system_prompt, _ = _resolve_agent_system_prompt(agent_definition)
+        runtime = _resolve_request_chat_runtime(
+            request=request,
+            actor=actor,
+            payload=payload,
+            agent_definition=agent_definition,
+            fallback_model=_resolve_agent_chat_model(agent_definition),
+        )
+        response_text, meta = _run_openai_chat(
+            system_prompt=system_prompt,
+            user_prompt=(
+                "Generate a concise session title for this request. "
+                "Return only the title text with no quotes and no more than 6 words.\n\n"
+                f"Run type: {run_kind}\n"
+                f"User request: {cleaned_prompt}"
+            ),
+            model=str(runtime.get("model") or _resolve_agent_chat_model(agent_definition)),
+            temperature=0.2,
+            runtime=runtime,
+        )
+        if str(meta.get("mode") or "").lower() == "live":
+            candidate = re.sub(r"\s+", " ", response_text).strip().strip("\"'` ")
+            candidate = re.sub(r"^[Tt]itle\s*:\s*", "", candidate)
+            if candidate:
+                return candidate[:80].rstrip(" ,.;:"), "generated"
+    except Exception:
+        pass
+
+    return fallback, "system"
+
+
 def _public_configuration_error(message: str) -> str:
     return str(message or "Configuration is invalid.").strip() or "Configuration is invalid."
 
@@ -3096,6 +3983,124 @@ def _public_configuration_error(message: str) -> str:
 def _truncate_event_summary(text: str, max_chars: int = 700) -> str:
     summary, _metadata = _truncate_text_with_metadata(text, max_chars=max_chars)
     return summary
+
+
+def _persist_legacy_chat_history_if_missing(run_id: str) -> list[WorkflowRunEvent]:
+    events = list(store.run_events.get(run_id, []))
+    has_user_message = any(
+        event.type == "user_message" and str(event.content or event.summary or "").strip()
+        for event in events
+    )
+    has_agent_message = any(
+        event.type == "agent_message" and str(event.content or event.summary or "").strip()
+        for event in events
+    )
+    if has_user_message and has_agent_message:
+        return events
+
+    payload: dict[str, Any] = {}
+    for event in events:
+        if isinstance(event.metadata, dict) and isinstance(event.metadata.get("payload"), dict):
+            payload = event.metadata.get("payload", {})
+            break
+
+    prompt_text = str(payload.get("prompt") or "").strip()
+    run_detail = store.run_details.get(run_id)
+    response_text = ""
+    agent_name = "Assistant"
+    if isinstance(run_detail, dict):
+        response_text = str(run_detail.get("response_text") or "").strip()
+        traces = (
+            run_detail.get("agent_traces")
+            if isinstance(run_detail.get("agent_traces"), list)
+            else []
+        )
+        for trace in traces:
+            if not isinstance(trace, dict):
+                continue
+            if not response_text:
+                candidate_output = str(trace.get("output") or "").strip()
+                if candidate_output:
+                    response_text = candidate_output
+            candidate_agent = str(trace.get("agent") or "").strip()
+            if candidate_agent:
+                agent_name = candidate_agent
+                break
+
+    if not prompt_text and not response_text:
+        return events
+
+    created_at = events[0].createdAt if events else _now_iso()
+    agent_created_at = events[-1].createdAt if events else created_at
+    reconstructed: list[WorkflowRunEvent] = []
+    if prompt_text and not has_user_message:
+        reconstructed.append(
+            WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="user_message",
+                title="You",
+                summary=_truncate_event_summary(prompt_text, max_chars=500),
+                content=prompt_text,
+                createdAt=created_at,
+                metadata={"legacy_reconstructed": True},
+            )
+        )
+    if response_text and not has_agent_message:
+        reconstructed.append(
+            WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="agent_message",
+                title=agent_name,
+                summary=_truncate_event_summary(response_text),
+                content=response_text,
+                createdAt=agent_created_at,
+                metadata={
+                    "legacy_reconstructed": True,
+                    "selected_agent_name": agent_name,
+                },
+            )
+        )
+
+    if not reconstructed:
+        return events
+
+    next_events = [*reconstructed, *events]
+    store.run_events[run_id] = next_events
+    _persist_store_state()
+    return next_events
+
+
+def _serialize_workflow_run_events(run_id: str) -> list[dict[str, Any]]:
+    events = _persist_legacy_chat_history_if_missing(run_id)
+    run_detail = store.run_details.get(run_id)
+    run_response_text = ""
+    if isinstance(run_detail, dict):
+        run_response_text = str(run_detail.get("response_text") or "").strip()
+
+    last_agent_index = -1
+    for index, event in enumerate(events):
+        if event.type == "agent_message":
+            last_agent_index = index
+
+    serialized: list[dict[str, Any]] = []
+    for index, event in enumerate(events):
+        payload = event.model_dump()
+        if event.type in {"user_message", "agent_message"}:
+            metadata = event.metadata if isinstance(event.metadata, dict) else {}
+            content = str(
+                event.content or metadata.get("content") or metadata.get("full_text") or ""
+            ).strip()
+            if (
+                not content
+                and event.type == "agent_message"
+                and index == last_agent_index
+                and run_response_text
+            ):
+                content = run_response_text
+            payload["content"] = content or event.summary
+        serialized.append(payload)
+
+    return serialized
 
 
 def _truncate_text_with_metadata(
@@ -3272,6 +4277,8 @@ def _openai_status() -> RuntimeProviderStatus:
 _OPENAI_CLIENT: Any | None = None
 _PRESIDIO_ANALYZER: Any | None = None
 _PRESIDIO_UNAVAILABLE = False
+# Lazily resolved presidio_analyzer.AnalyzerEngine class (tests may inject a stub).
+AnalyzerEngine: Any | None = None
 
 
 def _build_state_backends() -> tuple[Any, Any | None]:
@@ -3465,8 +4472,9 @@ def _run_langchain_chat(
     user_prompt: str,
     model: str,
     temperature: float,
+    runtime: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    key = os.getenv("OPENAI_API_KEY", "").strip()
+    key = str((runtime or {}).get("api_key") or os.getenv("OPENAI_API_KEY", "")).strip()
     if not key:
         return (
             f"[simulated:{model}] {user_prompt[:280]}",
@@ -3525,6 +4533,7 @@ def _run_langgraph_chat(
     user_prompt: str,
     model: str,
     temperature: float,
+    runtime: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     try:
         langgraph_graph = _import_module("langgraph.graph")
@@ -3537,6 +4546,7 @@ def _run_langgraph_chat(
                 user_prompt=str(state.get("user_prompt") or ""),
                 model=model,
                 temperature=temperature,
+                runtime=runtime,
             )
             return {
                 "response": text,
@@ -3584,8 +4594,9 @@ def _run_semantic_kernel_chat(
     user_prompt: str,
     model: str,
     temperature: float,
+    runtime: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    key = os.getenv("OPENAI_API_KEY", "").strip()
+    key = str((runtime or {}).get("api_key") or os.getenv("OPENAI_API_KEY", "")).strip()
     if not key:
         return (
             f"[simulated:{model}] {user_prompt[:280]}",
@@ -3664,8 +4675,9 @@ def _run_autogen_chat(
     user_prompt: str,
     model: str,
     temperature: float,
+    runtime: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    key = os.getenv("OPENAI_API_KEY", "").strip()
+    key = str((runtime or {}).get("api_key") or os.getenv("OPENAI_API_KEY", "")).strip()
     if not key:
         return (
             f"[simulated:{model}] {user_prompt[:280]}",
@@ -3766,6 +4778,7 @@ def _run_framework_chat(
     user_prompt: str,
     model: str,
     temperature: float,
+    runtime: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     resolved_engine = _normalize_runtime_engine(engine)
     if resolved_engine == "langchain":
@@ -3774,6 +4787,7 @@ def _run_framework_chat(
             user_prompt=user_prompt,
             model=model,
             temperature=temperature,
+            runtime=runtime,
         )
     if resolved_engine == "langgraph":
         return _run_langgraph_chat(
@@ -3781,6 +4795,7 @@ def _run_framework_chat(
             user_prompt=user_prompt,
             model=model,
             temperature=temperature,
+            runtime=runtime,
         )
     if resolved_engine == "semantic-kernel":
         return _run_semantic_kernel_chat(
@@ -3788,6 +4803,7 @@ def _run_framework_chat(
             user_prompt=user_prompt,
             model=model,
             temperature=temperature,
+            runtime=runtime,
         )
     if resolved_engine == "autogen":
         return _run_autogen_chat(
@@ -3795,12 +4811,14 @@ def _run_framework_chat(
             user_prompt=user_prompt,
             model=model,
             temperature=temperature,
+            runtime=runtime,
         )
     return _run_openai_chat(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         model=model,
         temperature=temperature,
+        runtime=runtime,
     )
 
 
@@ -3823,6 +4841,515 @@ def _simulate_tool_execution_payload(
         "endpoint_url": endpoint_url,
         "method": method,
     }
+
+
+def _normalize_skill_match_tokens(values: list[str]) -> set[str]:
+    tokens: set[str] = set()
+    for value in values:
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            continue
+        for candidate in (normalized, normalized.lstrip("/")):
+            if not candidate:
+                continue
+            tokens.add(candidate)
+            tokens.update(part for part in re.split(r"[^a-z0-9]+", candidate) if len(part) >= 2)
+    return tokens
+
+
+def _extract_tool_request_skills(request_payload: Any, context_payload: Any) -> list[str]:
+    collected: list[str] = []
+
+    def _append(raw: Any) -> None:
+        for skill in _normalize_skill_paths(raw):
+            if skill not in collected:
+                collected.append(skill)
+
+    if isinstance(request_payload, dict):
+        _append(request_payload.get("skills"))
+        nested_request = request_payload.get("request")
+        if isinstance(nested_request, dict):
+            _append(nested_request.get("skills"))
+
+    if isinstance(context_payload, dict):
+        _append(context_payload.get("skills"))
+        nested_request = context_payload.get("request")
+        if isinstance(nested_request, dict):
+            _append(nested_request.get("skills"))
+        model_payload = context_payload.get("model")
+        if isinstance(model_payload, dict):
+            model_request = model_payload.get("request")
+            if isinstance(model_request, dict):
+                _append(model_request.get("skills"))
+
+    return collected
+
+
+def _merge_request_payload_skills(request_payload: Any, skill_hints: list[str]) -> Any:
+    if not skill_hints or not isinstance(request_payload, dict):
+        return request_payload
+
+    merged = dict(request_payload)
+    current = _normalize_skill_paths(merged.get("skills"))
+    combined = list(current)
+    for skill in skill_hints:
+        if skill not in combined:
+            combined.append(skill)
+    merged["skills"] = combined
+    return merged
+
+
+def _normalized_policy_values(value: Any) -> set[str]:
+    if isinstance(value, str):
+        raw_values = [value]
+    elif isinstance(value, (list, tuple, set)):
+        raw_values = list(value)
+    else:
+        raw_values = []
+    return {str(item or "").strip() for item in raw_values if str(item or "").strip()}
+
+
+def _graph_runtime_policy(execution_state: dict[str, Any]) -> dict[str, Any]:
+    policy = execution_state.get("assembly_policy")
+    if not isinstance(policy, dict):
+        policy = execution_state.get("tool_retrieval_policy")
+    if not isinstance(policy, dict):
+        runtime = execution_state.get("runtime")
+        if isinstance(runtime, dict):
+            policy = runtime.get("assembly_policy")
+    return dict(policy) if isinstance(policy, dict) else {}
+
+
+def _graph_column_kind(node: GraphNode, execution_state: dict[str, Any], *, default: str) -> str:
+    configured = str(node.config.get("column_kind") or "").strip().lower()
+    if configured:
+        return configured
+    column_kinds = execution_state.get("column_kinds")
+    if isinstance(column_kinds, dict):
+        mapped = str(column_kinds.get(node.id) or "").strip().lower()
+        if mapped:
+            return mapped
+    return default
+
+
+def _policy_rejection_payload(
+    *,
+    result_key: str,
+    message: str,
+    control: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    body = {"ok": False, "rejected": True, "message": message}
+    result: dict[str, Any] = {
+        result_key: [] if result_key == "documents" else body,
+        "status": {"state": "policy_rejected"},
+        "policy": {"control": control, **dict(metadata or {})},
+    }
+    if result_key == "documents":
+        result["grounding_context"] = message
+    return result
+
+
+def _admit_graph_retrieval_policy(
+    *,
+    node: GraphNode,
+    execution_state: dict[str, Any],
+    source_id: str,
+    source_url: str,
+) -> dict[str, Any] | None:
+    policy = _graph_runtime_policy(execution_state)
+    column_kind = _graph_column_kind(node, execution_state, default="evidence")
+    allowed_column_kinds = _normalized_policy_values(
+        policy.get("allowed_retrieval_column_kinds") or ("evidence",)
+    )
+    if column_kind not in allowed_column_kinds:
+        return _policy_rejection_payload(
+            result_key="documents",
+            message="Retrieval blocked: column kind is not permitted to retrieve.",
+            control="column_kind_retrieval_permission",
+            metadata={
+                "column_kind": column_kind,
+                "allowed_column_kinds": sorted(allowed_column_kinds),
+            },
+        )
+    allowed_sources = _normalized_policy_values(policy.get("allowed_retrieval_sources"))
+    if not allowed_sources:
+        return _policy_rejection_payload(
+            result_key="documents",
+            message="Retrieval blocked: explicit assembly retrieval source permission required.",
+            control="assembly_retrieval_policy_required",
+        )
+    if source_url:
+        if source_url not in allowed_sources:
+            return _policy_rejection_payload(
+                result_key="documents",
+                message="Retrieval blocked: source URL is not explicitly allowed by assembly policy.",
+                control="assembly_allowed_retrieval_source_urls",
+                metadata={
+                    "requested_source": source_id,
+                    "requested_source_url": source_url,
+                    "allowed_sources": sorted(allowed_sources),
+                },
+            )
+        return None
+    if str(source_id or "").strip() not in allowed_sources:
+        return _policy_rejection_payload(
+            result_key="documents",
+            message="Retrieval blocked: source is not explicitly allowed by assembly policy.",
+            control="assembly_allowed_retrieval_sources",
+            metadata={
+                "requested_source": source_id,
+                "requested_source_url": source_url,
+                "allowed_sources": sorted(allowed_sources),
+            },
+        )
+    return None
+
+
+def _admit_graph_tool_policy(
+    *,
+    node: GraphNode,
+    execution_state: dict[str, Any],
+    tool_id: str,
+    endpoint_url: str,
+    mcp_server_url: str,
+    integration: IntegrationDefinition | None,
+    skill_routed: bool,
+) -> dict[str, Any] | None:
+    policy = _graph_runtime_policy(execution_state)
+    column_kind = _graph_column_kind(node, execution_state, default="tool")
+    allowed_column_kinds = _normalized_policy_values(
+        policy.get("allowed_tool_column_kinds") or ("tool",)
+    )
+    if column_kind not in allowed_column_kinds:
+        return _policy_rejection_payload(
+            result_key="tool_output",
+            message="Tool call rejected: column kind is not permitted to call tools.",
+            control="column_kind_tool_permission",
+            metadata={
+                "column_kind": column_kind,
+                "allowed_column_kinds": sorted(allowed_column_kinds),
+            },
+        )
+
+    allowed_tools = _normalized_policy_values(policy.get("allowed_tools"))
+    allowed_integrations = _normalized_policy_values(
+        policy.get("allowed_integrations") or policy.get("allowed_skill_integrations")
+    )
+    allowed_mcp_servers = _normalized_policy_values(policy.get("allowed_mcp_server_urls"))
+    allowed_hosts = _normalized_policy_values(policy.get("allowed_network_hosts"))
+
+    if not any((allowed_tools, allowed_integrations, allowed_mcp_servers, allowed_hosts)):
+        return _policy_rejection_payload(
+            result_key="tool_output",
+            message="Tool call rejected: explicit assembly tool permission required.",
+            control="assembly_tool_policy_required",
+        )
+
+    integration_id = str(integration.id if integration is not None else "").strip()
+    if integration_id:
+        if integration_id not in allowed_integrations and integration_id not in allowed_tools:
+            return _policy_rejection_payload(
+                result_key="tool_output",
+                message="Tool call rejected: integration is not explicitly allowed by assembly policy.",
+                control="assembly_allowed_integrations",
+                metadata={
+                    "integration_id": integration_id,
+                    "allowed_integrations": sorted(allowed_integrations),
+                },
+            )
+        if skill_routed and integration_id not in allowed_integrations:
+            return _policy_rejection_payload(
+                result_key="tool_output",
+                message="Tool call rejected: skill-routed integration requires explicit assembly permission.",
+                control="assembly_allowed_skill_integrations",
+                metadata={
+                    "integration_id": integration_id,
+                    "allowed_skill_integrations": sorted(allowed_integrations),
+                },
+            )
+    elif not mcp_server_url and str(tool_id or "").strip() not in allowed_tools:
+        return _policy_rejection_payload(
+            result_key="tool_output",
+            message="Tool call rejected: tool is not explicitly allowed by assembly policy.",
+            control="assembly_allowed_tools",
+            metadata={"tool_id": tool_id, "allowed_tools": sorted(allowed_tools)},
+        )
+
+    if mcp_server_url and mcp_server_url not in allowed_mcp_servers:
+        return _policy_rejection_payload(
+            result_key="tool_output",
+            message="Tool call rejected: MCP server is not explicitly allowed by assembly policy.",
+            control="assembly_allowed_mcp_server_urls",
+            metadata={"requested": mcp_server_url, "allowed": sorted(allowed_mcp_servers)},
+        )
+
+    host = _extract_host(endpoint_url) if endpoint_url else ""
+    if endpoint_url and host and host not in allowed_hosts:
+        return _policy_rejection_payload(
+            result_key="tool_output",
+            message="Tool call rejected: endpoint host is not explicitly allowed by assembly policy.",
+            control="assembly_allowed_network_hosts",
+            metadata={"requested_host": host, "allowed_hosts": sorted(allowed_hosts)},
+        )
+    return None
+
+
+def _tool_family_preferences(tool_id: str) -> set[str]:
+    normalized = str(tool_id or "").strip().lower()
+    if not normalized.startswith("tool/"):
+        return set()
+    family = normalized.split("/", 1)[1]
+    return {
+        "http": {"http", "custom"},
+        "search": {"http", "vector", "custom"},
+        "retrieval": {"vector", "http", "custom"},
+        "code": {"custom"},
+        "sql": {"database"},
+        "file": {"custom"},
+        "email": {"http", "queue", "custom"},
+        "slack": {"http", "queue", "custom"},
+        "mcp": {"http", "custom"},
+    }.get(family, set())
+
+
+def _resolve_skill_routed_integration(
+    tool_id: str, skill_hints: list[str]
+) -> tuple[IntegrationDefinition | None, dict[str, Any]]:
+    if not skill_hints:
+        return None, {}
+
+    match_tokens = _normalize_skill_match_tokens(skill_hints)
+    preferred_types = _tool_family_preferences(tool_id)
+    best_match: IntegrationDefinition | None = None
+    best_score = 0
+
+    for integration in store.integrations.values():
+        if integration.status in {"error", "archived"}:
+            continue
+        if not str(integration.base_url or "").strip():
+            continue
+
+        metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+        candidate_values = [
+            *integration.capabilities,
+            *(metadata.get("skills") if isinstance(metadata.get("skills"), list) else []),
+            *(metadata.get("tags") if isinstance(metadata.get("tags"), list) else []),
+            integration.id,
+            integration.name,
+        ]
+        candidate_tokens = _normalize_skill_match_tokens(candidate_values)
+        overlap = match_tokens & candidate_tokens
+        if not overlap:
+            continue
+
+        score = len(overlap) * 10
+        if preferred_types and integration.type in preferred_types:
+            score += 3
+        if integration.status == "configured":
+            score += 2
+
+        if score > best_score:
+            best_score = score
+            best_match = integration
+
+    if best_match is None:
+        return None, {"skills": list(skill_hints)}
+
+    return best_match, {
+        "skills": list(skill_hints),
+        "selected_integration_id": best_match.id,
+        "selected_integration_name": best_match.name,
+        "selection_reason": "matched_skill_capability",
+    }
+
+
+def _integration_auth_headers(integration: IntegrationDefinition) -> dict[str, str]:
+    auth = (
+        integration.metadata_json.get("auth") if isinstance(integration.metadata_json, dict) else {}
+    )
+    auth = auth if isinstance(auth, dict) else {}
+    secret_value = _resolve_secret_ref_value(integration.secret_ref)
+    if integration.auth_type == "api_key" and secret_value:
+        key_name = str(auth.get("key_name") or "x-api-key")
+        location = str(auth.get("location") or "header")
+        if location == "header":
+            return {key_name: secret_value}
+    if integration.auth_type == "bearer" and secret_value:
+        prefix = str(auth.get("prefix") or "Bearer").strip() or "Bearer"
+        return {"Authorization": f"{prefix} {secret_value}"}
+    if integration.auth_type == "basic" and secret_value:
+        username = str(auth.get("username") or "").strip()
+        token = base64.b64encode(f"{username}:{secret_value}".encode("utf-8")).decode("utf-8")
+        return {"Authorization": f"Basic {token}"}
+    if integration.auth_type == "oauth2":
+        session = _integration_oauth_session(integration)
+        encrypted_access_token = str(session.get("access_token_encrypted") or "").strip()
+        if encrypted_access_token:
+            token_type = str(session.get("token_type") or "Bearer").strip() or "Bearer"
+            access_token = _decrypt_provider_secret(encrypted_access_token)
+            return {"Authorization": f"{token_type} {access_token}"}
+    return {}
+
+
+def _mcp_connection_auth_headers(connection: MCPConnectionDefinition) -> dict[str, str]:
+    secret_value = _resolve_secret_ref_value(connection.secret_ref)
+    metadata = connection.metadata_json if isinstance(connection.metadata_json, dict) else {}
+    auth = metadata.get("auth") if isinstance(metadata.get("auth"), dict) else {}
+    if connection.auth_type == "api_key" and secret_value:
+        key_name = str(auth.get("key_name") or "x-api-key")
+        return {key_name: secret_value}
+    if connection.auth_type in {"bearer", "mcp_token"} and secret_value:
+        prefix = str(auth.get("prefix") or "Bearer").strip() or "Bearer"
+        return {"Authorization": f"{prefix} {secret_value}"}
+    if connection.auth_type == "basic" and secret_value:
+        username = str(auth.get("username") or "").strip()
+        token = base64.b64encode(f"{username}:{secret_value}".encode("utf-8")).decode("utf-8")
+        return {"Authorization": f"Basic {token}"}
+    if connection.auth_type == "oauth2":
+        session = (
+            metadata.get("oauth_session") if isinstance(metadata.get("oauth_session"), dict) else {}
+        )
+        encrypted_access_token = str(session.get("access_token_encrypted") or "").strip()
+        if encrypted_access_token:
+            token_type = str(session.get("token_type") or "Bearer").strip() or "Bearer"
+            access_token = _decrypt_provider_secret(encrypted_access_token)
+            return {"Authorization": f"{token_type} {access_token}"}
+    return {}
+
+
+def _execute_native_tool_call(
+    *,
+    tool_id: str,
+    tool_config: dict[str, Any],
+    request_payload: Any,
+    context_payload: Any,
+    skill_hints: list[str],
+    call_index: int,
+    endpoint_url: str,
+    method: str,
+) -> dict[str, Any]:
+    integration_id = str(
+        tool_config.get("integration_id") or tool_config.get("tool_id") or ""
+    ).strip()
+    mcp_connection_id = str(tool_config.get("mcp_connection_id") or "").strip()
+    integration = store.integrations.get(integration_id)
+    mcp_connection = store.mcp_connections.get(mcp_connection_id)
+    resolved_url = endpoint_url or (integration.base_url if integration is not None else "")
+    if not resolved_url and mcp_connection is not None:
+        resolved_url = mcp_connection.server_url
+    if not resolved_url:
+        return {
+            "ok": False,
+            "tool_id": tool_id,
+            "call_index": call_index,
+            "rejected": True,
+            "message": "Tool call requires endpoint_url or integration_id with base_url.",
+        }
+
+    headers = {"Content-Type": "application/json"}
+    params: dict[str, Any] = {}
+    if integration is not None:
+        headers.update(_integration_auth_headers(integration))
+        auth = (
+            integration.metadata_json.get("auth")
+            if isinstance(integration.metadata_json, dict)
+            else {}
+        )
+        auth = auth if isinstance(auth, dict) else {}
+        if integration.auth_type == "api_key":
+            location = str(auth.get("location") or "header")
+            key_name = str(auth.get("key_name") or "x-api-key")
+            secret_value = _resolve_secret_ref_value(integration.secret_ref)
+            if location == "query" and secret_value:
+                params[key_name] = secret_value
+    elif mcp_connection is not None:
+        headers.update(_mcp_connection_auth_headers(mcp_connection))
+
+    json_payload = (
+        request_payload if isinstance(request_payload, (dict, list)) else {"input": request_payload}
+    )
+    with httpx.Client(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
+        response = client.request(
+            method.upper(),
+            resolved_url,
+            headers=headers,
+            params=params,
+            json=json_payload,
+        )
+        response.raise_for_status()
+        content_type = str(response.headers.get("content-type") or "").lower()
+        if "application/json" in content_type:
+            response_payload: Any = response.json()
+        else:
+            response_payload = response.text
+
+    return {
+        "ok": True,
+        "tool_id": tool_id,
+        "call_index": call_index,
+        "request": json_payload,
+        "context": context_payload,
+        "skill_hints": list(skill_hints),
+        "endpoint_url": _sanitize_base_url(resolved_url),
+        "method": method.upper(),
+        "response": response_payload,
+        "integration_id": integration.id if integration is not None else "",
+        "mcp_connection_id": mcp_connection.id if mcp_connection is not None else "",
+    }
+
+
+def _native_retrieval_documents(
+    *,
+    query_payload: Any,
+    source_id: str,
+    source_url: str,
+    top_k: int,
+    execution_state: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str]:
+    query_text = _safe_json(query_payload)[:1000]
+    docs: list[dict[str, Any]] = []
+
+    session_bucket = str(execution_state.get("session_id") or execution_state.get("run_id") or "")
+    if source_id.startswith("kb://") or source_id.startswith("session:"):
+        short_term = _memory_get_short_term_entries(session_bucket, limit=top_k)
+        long_term = _memory_load_long_term_entries(
+            session_bucket,
+            memory_scope="session",
+            query_text=query_text,
+            limit=top_k,
+        )
+        merged = _merge_memory_entries(short_term, long_term, limit=top_k)
+        for index, entry in enumerate(merged, start=1):
+            docs.append(
+                {
+                    "id": str(entry.get("id") or f"mem-{index}"),
+                    "score": round(1 - ((index - 1) * 0.05), 2),
+                    "source": source_id,
+                    "text": str(entry.get("content") or entry.get("summary") or entry)[:1200],
+                }
+            )
+    elif source_url:
+        with httpx.Client(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+            response = client.get(source_url)
+            response.raise_for_status()
+            body = response.text
+        snippet = body[:4000]
+        docs.append(
+            {
+                "id": "doc-1",
+                "score": 0.99,
+                "source": _sanitize_base_url(source_url),
+                "text": snippet,
+            }
+        )
+
+    grounding_context = (
+        f"Retrieved {len(docs)} live context document(s)."
+        if docs
+        else "No live context documents matched the query."
+    )
+    return docs[:top_k], grounding_context
 
 
 def _run_framework_retrieval(
@@ -4016,6 +5543,7 @@ def _run_framework_tool_call(
     tool_id: str,
     request_payload: Any,
     context_payload: Any,
+    skill_hints: list[str],
     call_index: int,
     endpoint_url: str,
     method: str,
@@ -4039,16 +5567,32 @@ def _run_framework_tool_call(
             tool = StructuredTool.from_function(
                 func=lambda payload=None, context=None: _simulate(),
                 name="frontier_tool_call",
-                description="Frontier framework delegated tool call",
+                description=(
+                    "Frontier framework delegated tool call"
+                    + (f" with active skills: {', '.join(skill_hints)}" if skill_hints else "")
+                ),
             )
-            output = tool.invoke({"payload": request_payload, "context": context_payload})
+            output = tool.invoke(
+                {
+                    "payload": request_payload,
+                    "context": {
+                        **(context_payload if isinstance(context_payload, dict) else {}),
+                        "skills": list(skill_hints),
+                    },
+                }
+            )
             if not isinstance(output, dict):
                 output = _simulate()
-            return output, {"framework": "langchain", "mode": "live"}
+            return output, {
+                "framework": "langchain",
+                "mode": "live",
+                "skill_hints": list(skill_hints),
+            }
         except Exception as exc:  # noqa: BLE001
             return _simulate(), {
                 "framework": "langchain",
                 "mode": "simulated",
+                "skill_hints": list(skill_hints),
                 "reason": f"LangChain tool call failed: {str(exc)[:180]}",
             }
 
@@ -4068,16 +5612,27 @@ def _run_framework_tool_call(
             graph.add_edge("tool", END)
             app_graph = graph.compile()
             result_state = app_graph.invoke(
-                {"payload": request_payload, "context": context_payload}
+                {
+                    "payload": request_payload,
+                    "context": {
+                        **(context_payload if isinstance(context_payload, dict) else {}),
+                        "skills": list(skill_hints),
+                    },
+                }
             )
             output = result_state.get("tool_output") if isinstance(result_state, dict) else None
             if not isinstance(output, dict):
                 output = _simulate()
-            return output, {"framework": "langgraph", "mode": "live"}
+            return output, {
+                "framework": "langgraph",
+                "mode": "live",
+                "skill_hints": list(skill_hints),
+            }
         except Exception as exc:  # noqa: BLE001
             return _simulate(), {
                 "framework": "langgraph",
                 "mode": "simulated",
+                "skill_hints": list(skill_hints),
                 "reason": f"LangGraph tool call failed: {str(exc)[:180]}",
             }
 
@@ -4087,11 +5642,16 @@ def _run_framework_tool_call(
             Kernel = getattr(semantic_kernel, "Kernel")
             kernel = Kernel()
             _ = kernel
-            return _simulate(), {"framework": "semantic-kernel", "mode": "live"}
+            return _simulate(), {
+                "framework": "semantic-kernel",
+                "mode": "live",
+                "skill_hints": list(skill_hints),
+            }
         except Exception as exc:  # noqa: BLE001
             return _simulate(), {
                 "framework": "semantic-kernel",
                 "mode": "simulated",
+                "skill_hints": list(skill_hints),
                 "reason": f"Semantic Kernel tool call failed: {str(exc)[:180]}",
             }
 
@@ -4101,15 +5661,24 @@ def _run_framework_tool_call(
                 _ = _import_module("autogen_agentchat")
             elif _module_available("autogen"):
                 _ = _import_module("autogen")
-            return _simulate(), {"framework": "autogen", "mode": "live"}
+            return _simulate(), {
+                "framework": "autogen",
+                "mode": "live",
+                "skill_hints": list(skill_hints),
+            }
         except Exception as exc:  # noqa: BLE001
             return _simulate(), {
                 "framework": "autogen",
                 "mode": "simulated",
+                "skill_hints": list(skill_hints),
                 "reason": f"AutoGen tool call failed: {str(exc)[:180]}",
             }
 
-    return _simulate(), {"framework": "native", "mode": "live"}
+    return _simulate(), {
+        "framework": "native",
+        "mode": "live",
+        "skill_hints": list(skill_hints),
+    }
 
 
 def _run_framework_memory(
@@ -4523,17 +6092,630 @@ def _run_framework_human_review(
 
 
 def _get_presidio_analyzer() -> Any | None:
-    global _PRESIDIO_ANALYZER, _PRESIDIO_UNAVAILABLE  # noqa: PLW0603
+    global _PRESIDIO_ANALYZER, _PRESIDIO_UNAVAILABLE, AnalyzerEngine  # noqa: PLW0603
+    # NER-grade PII scanning is opt-in: the deterministic keyword/regex tier
+    # always applies, and the analyzer costs hundreds of MB of RSS.
+    if not _env_flag("FRONTIER_ENABLE_PRESIDIO_PII_ANALYZER", False):
+        return None
     if _PRESIDIO_ANALYZER is not None or _PRESIDIO_UNAVAILABLE:
         return _PRESIDIO_ANALYZER
     try:
-        from presidio_analyzer import AnalyzerEngine
+        engine_cls = AnalyzerEngine
+        if engine_cls is None:
+            from presidio_analyzer import AnalyzerEngine as engine_cls
 
-        _PRESIDIO_ANALYZER = AnalyzerEngine()
+            AnalyzerEngine = engine_cls
+        _PRESIDIO_ANALYZER = engine_cls()
     except Exception:  # noqa: BLE001 - optional dependency; deterministic tier still applies
         _PRESIDIO_UNAVAILABLE = True
         _PRESIDIO_ANALYZER = None
     return _PRESIDIO_ANALYZER
+
+
+def _default_anthropic_model() -> str:
+    return os.getenv("ANTHROPIC_MODEL", "claude-3-7-sonnet-latest")
+
+
+def _default_gemini_model() -> str:
+    return os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
+
+def _default_provider_model(provider: str) -> str:
+    if provider == "anthropic":
+        return _default_anthropic_model()
+    if provider == "gemini":
+        return _default_gemini_model()
+    return _default_openai_model()
+
+
+def _env_provider_runtime(provider: str) -> dict[str, Any] | None:
+    if provider in {"openai", "openai-compatible"}:
+        api_key = str(os.getenv("OPENAI_API_KEY", "") or "").strip()
+        if not api_key:
+            if _active_runtime_profile().name == "local-lightweight":
+                model = _default_openai_model()
+                return {
+                    "provider": provider,
+                    "model": model,
+                    "available_models": [model],
+                    "base_url": _normalize_provider_base_url(
+                        provider, os.getenv("OPENAI_BASE_URL", "")
+                    ),
+                    "api_key": "",
+                    "preferred": provider == "openai",
+                    "source": "simulated",
+                }
+            return None
+        model = _default_openai_model()
+        return {
+            "provider": provider,
+            "model": model,
+            "available_models": [model],
+            "base_url": _normalize_provider_base_url(provider, os.getenv("OPENAI_BASE_URL", "")),
+            "api_key": api_key,
+            "preferred": provider == "openai",
+            "source": "environment",
+        }
+    if provider == "anthropic":
+        api_key = str(os.getenv("ANTHROPIC_API_KEY", "") or "").strip()
+        if not api_key:
+            return None
+        model = _default_anthropic_model()
+        return {
+            "provider": provider,
+            "model": model,
+            "available_models": [model],
+            "base_url": _normalize_provider_base_url(provider, os.getenv("ANTHROPIC_BASE_URL", "")),
+            "api_key": api_key,
+            "preferred": False,
+            "source": "environment",
+        }
+    if provider == "gemini":
+        api_key = str(
+            os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "") or ""
+        ).strip()
+        if not api_key:
+            return None
+        model = _default_gemini_model()
+        return {
+            "provider": provider,
+            "model": model,
+            "available_models": [model],
+            "base_url": _normalize_provider_base_url(provider, os.getenv("GEMINI_BASE_URL", "")),
+            "api_key": api_key,
+            "preferred": False,
+            "source": "environment",
+        }
+    return None
+
+
+def _chat_runtime_policy_source_values(source: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
+    values: list[str] = []
+    for key in keys:
+        if key in source:
+            values.extend(_normalize_text_list(source.get(key)))
+    return values
+
+
+def _intersect_policy_values(groups: list[list[str]]) -> list[str]:
+    ordered: list[str] = []
+    allowed: set[str] | None = None
+    for group in groups:
+        normalized = [item for item in group if item]
+        if not normalized:
+            continue
+        group_set = set(normalized)
+        allowed = group_set if allowed is None else allowed.intersection(group_set)
+        for item in normalized:
+            if item not in ordered:
+                ordered.append(item)
+    if allowed is None:
+        return []
+    return [item for item in ordered if item in allowed]
+
+
+def _effective_chat_runtime_policy(
+    payload: dict[str, Any] | None,
+    *,
+    request: Request | None = None,
+    security_policy: dict[str, Any] | None = None,
+) -> dict[str, list[str]]:
+    source_payload = payload if isinstance(payload, dict) else {}
+    runtime_payload = (
+        source_payload.get("runtime") if isinstance(source_payload.get("runtime"), dict) else {}
+    )
+    sources: list[dict[str, Any]] = []
+
+    for candidate in [
+        security_policy,
+        source_payload.get("tenant_runtime_policy"),
+        source_payload.get("tenant_model_policy"),
+        source_payload.get("runtime_policy"),
+        source_payload.get("assembly_policy"),
+        runtime_payload.get("tenant_runtime_policy"),
+        runtime_payload.get("runtime_policy"),
+    ]:
+        if isinstance(candidate, dict):
+            sources.append(candidate)
+
+    authenticated_tenant = _authenticated_tenant(request)
+    provider_groups: list[list[str]] = []
+    model_groups: list[list[str]] = []
+    for source in sources:
+        policy_tenant = str(source.get("tenant_id") or source.get("tenant") or "").strip()
+        if authenticated_tenant and policy_tenant and policy_tenant != authenticated_tenant:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "message": "Model runtime policy tenant does not match authenticated tenant",
+                    "tenant": authenticated_tenant,
+                },
+            )
+        providers = []
+        for item in _chat_runtime_policy_source_values(
+            source,
+            ("allowed_providers", "allowed_runtime_providers", "allowed_chat_providers"),
+        ):
+            providers.append(_normalize_chat_provider(item))
+        models = _chat_runtime_policy_source_values(
+            source,
+            ("allowed_models", "allowed_runtime_models", "allowed_chat_models"),
+        )
+        if providers:
+            provider_groups.append(providers)
+        if models:
+            model_groups.append(models)
+
+    return {
+        "allowed_providers": _intersect_policy_values(provider_groups),
+        "allowed_models": _intersect_policy_values(model_groups),
+    }
+
+
+def _enforce_chat_provider_policy(
+    provider: str,
+    policy: dict[str, list[str]],
+    *,
+    context_label: str,
+) -> None:
+    allowed_providers = policy.get("allowed_providers") or []
+    if allowed_providers and provider not in allowed_providers:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "message": f"{context_label} provider is denied by tenant runtime policy",
+                "provider": provider,
+                "allowed_providers": allowed_providers,
+            },
+        )
+
+
+def _select_chat_runtime_policy_model(
+    *,
+    provider: str,
+    requested_model: str,
+    default_model: str,
+    available_models: list[str],
+    fallback_model: str,
+    policy: dict[str, list[str]],
+    context_label: str,
+) -> tuple[str, list[str]]:
+    policy_models = policy.get("allowed_models") or []
+    if not policy_models:
+        resolved = (
+            requested_model or default_model or fallback_model or _default_provider_model(provider)
+        )
+        if available_models and resolved not in available_models:
+            resolved = default_model or available_models[0]
+        return resolved or _default_provider_model(provider), available_models
+
+    candidate_models = [
+        requested_model,
+        default_model,
+        fallback_model,
+        *available_models,
+        *policy_models,
+    ]
+    effective_available = [item for item in available_models if item in policy_models]
+    for candidate in candidate_models:
+        normalized = str(candidate or "").strip()
+        if not normalized or normalized not in policy_models:
+            continue
+        if available_models and normalized not in effective_available:
+            continue
+        return normalized, effective_available or [normalized]
+
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "message": f"{context_label} model is denied by tenant runtime policy",
+            "provider": provider,
+            "requested_model": requested_model,
+            "allowed_models": policy_models,
+        },
+    )
+
+
+def _resolve_request_chat_runtime(
+    *,
+    request: Request | None,
+    actor: str,
+    payload: dict[str, Any] | None,
+    agent_definition: AgentDefinition | None,
+    fallback_model: str,
+) -> dict[str, Any]:
+    principal = _resolve_auth_context_principal(request, actor)
+    runtime_payload = (
+        payload.get("runtime")
+        if isinstance(payload, dict) and isinstance(payload.get("runtime"), dict)
+        else {}
+    )
+    agent_model_defaults = (
+        agent_definition.config_json.get("model_defaults")
+        if agent_definition is not None
+        and isinstance(agent_definition.config_json, dict)
+        and isinstance(agent_definition.config_json.get("model_defaults"), dict)
+        else {}
+    )
+    requested_provider = (
+        runtime_payload.get("provider")
+        or (payload.get("provider") if isinstance(payload, dict) else "")
+        or agent_model_defaults.get("provider")
+        or ""
+    )
+    preferred = _preferred_user_provider(principal["principal_id"])
+    resolved_provider = _normalize_chat_provider(
+        str(requested_provider or (preferred.provider if preferred else "openai"))
+    )
+    runtime_policy = _effective_chat_runtime_policy(payload, request=request)
+    _enforce_chat_provider_policy(
+        resolved_provider,
+        runtime_policy,
+        context_label="Chat runtime",
+    )
+
+    provider_configs = _user_provider_configs(principal["principal_id"])
+    stored_provider = provider_configs.get(resolved_provider)
+    if stored_provider is not None:
+        allowed_models = [
+            str(item).strip() for item in stored_provider.available_models if str(item).strip()
+        ]
+        if stored_provider.model not in allowed_models:
+            allowed_models.insert(0, stored_provider.model)
+        payload_model = payload.get("model") if isinstance(payload, dict) else ""
+        requested_model = str(
+            runtime_payload.get("model")
+            or payload_model
+            or agent_model_defaults.get("model")
+            or stored_provider.model
+            or fallback_model
+        ).strip()
+        resolved_model, effective_available_models = _select_chat_runtime_policy_model(
+            provider=resolved_provider,
+            requested_model=requested_model,
+            default_model=stored_provider.model,
+            available_models=allowed_models,
+            fallback_model=fallback_model,
+            policy=runtime_policy,
+            context_label="Chat runtime",
+        )
+        return {
+            "provider": resolved_provider,
+            "model": resolved_model or _default_provider_model(resolved_provider),
+            "available_models": effective_available_models,
+            "base_url": _normalize_provider_base_url(
+                resolved_provider,
+                str(
+                    runtime_payload.get("base_url")
+                    or agent_model_defaults.get("base_url")
+                    or stored_provider.base_url
+                ),
+            ),
+            "api_key": _decrypt_provider_secret(stored_provider.api_key_encrypted),
+            "preferred": stored_provider.preferred,
+            "source": "user_config",
+            "principal_id": principal["principal_id"],
+        }
+
+    env_provider = _env_provider_runtime(resolved_provider)
+    if env_provider is not None:
+        available_models = [
+            str(item).strip()
+            for item in env_provider.get("available_models", [])
+            if str(item).strip()
+        ]
+        requested_model = str(
+            runtime_payload.get("model")
+            or (payload.get("model") if isinstance(payload, dict) else "")
+            or agent_model_defaults.get("model")
+            or env_provider.get("model")
+            or fallback_model
+        ).strip() or _default_provider_model(resolved_provider)
+        resolved_model, effective_available_models = _select_chat_runtime_policy_model(
+            provider=resolved_provider,
+            requested_model=requested_model,
+            default_model=str(env_provider.get("model") or ""),
+            available_models=available_models,
+            fallback_model=fallback_model,
+            policy=runtime_policy,
+            context_label="Chat runtime",
+        )
+        env_provider["model"] = resolved_model
+        env_provider["available_models"] = effective_available_models
+        env_provider["principal_id"] = principal["principal_id"]
+        return env_provider
+
+    raise HTTPException(
+        status_code=412,
+        detail=f"No configured runtime provider credentials found for '{resolved_provider}'. Configure user runtime providers or environment credentials.",
+    )
+
+
+def _openai_messages_payload(
+    *, system_prompt: str, user_prompt: str, messages: list[dict[str, str]] | None = None
+) -> list[dict[str, str]]:
+    if messages is not None:
+        return messages
+    composed: list[dict[str, str]] = []
+    if system_prompt.strip():
+        composed.append({"role": "system", "content": system_prompt})
+    composed.append({"role": "user", "content": user_prompt})
+    return composed
+
+
+def _stream_openai_compatible_chat(
+    *,
+    runtime: dict[str, Any],
+    messages: list[dict[str, str]],
+    temperature: float,
+    on_chunk: Callable[[str], None] | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    headers = {
+        "Authorization": f"Bearer {runtime['api_key']}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": runtime["model"],
+        "messages": messages,
+        "temperature": temperature,
+        "stream": True,
+    }
+    chunks: list[str] = []
+    with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+        with client.stream(
+            "POST",
+            f"{str(runtime['base_url']).rstrip('/')}/chat/completions",
+            headers=headers,
+            json=payload,
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    event = json.loads(data)
+                except Exception:  # noqa: BLE001
+                    continue
+                delta = ""
+                choices = event.get("choices") if isinstance(event, dict) else None
+                if isinstance(choices, list) and choices:
+                    choice0 = choices[0] if isinstance(choices[0], dict) else {}
+                    delta_payload = (
+                        choice0.get("delta") if isinstance(choice0.get("delta"), dict) else {}
+                    )
+                    delta = str(delta_payload.get("content") or "")
+                if delta:
+                    chunks.append(delta)
+                    if on_chunk is not None:
+                        on_chunk(delta)
+    return chunks, {
+        "provider": runtime["provider"],
+        "model": runtime["model"],
+        "mode": "live",
+        "source": runtime.get("source") or "environment",
+        "transport": "sse",
+    }
+
+
+def _stream_anthropic_chat(
+    *,
+    runtime: dict[str, Any],
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float,
+    on_chunk: Callable[[str], None] | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    headers = {
+        "x-api-key": runtime["api_key"],
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    payload = {
+        "model": runtime["model"],
+        "max_tokens": 2048,
+        "temperature": temperature,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": user_prompt}],
+        "stream": True,
+    }
+    chunks: list[str] = []
+    with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+        with client.stream(
+            "POST",
+            f"{str(runtime['base_url']).rstrip('/')}/messages",
+            headers=headers,
+            json=payload,
+        ) as response:
+            response.raise_for_status()
+            current_event = ""
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                if line.startswith("event:"):
+                    current_event = line.split(":", 1)[1].strip()
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    event = json.loads(data)
+                except Exception:  # noqa: BLE001
+                    continue
+                if current_event == "content_block_delta":
+                    delta = (
+                        event.get("delta")
+                        if isinstance(event, dict) and isinstance(event.get("delta"), dict)
+                        else {}
+                    )
+                    text = str(delta.get("text") or "")
+                    if text:
+                        chunks.append(text)
+                        if on_chunk is not None:
+                            on_chunk(text)
+    return chunks, {
+        "provider": "anthropic",
+        "model": runtime["model"],
+        "mode": "live",
+        "source": runtime.get("source") or "environment",
+        "transport": "sse",
+    }
+
+
+def _stream_gemini_chat(
+    *,
+    runtime: dict[str, Any],
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float,
+    on_chunk: Callable[[str], None] | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    endpoint = (
+        f"{str(runtime['base_url']).rstrip('/')}/models/{runtime['model']}:streamGenerateContent"
+    )
+    payload = {
+        "systemInstruction": {"parts": [{"text": system_prompt}]}
+        if system_prompt.strip()
+        else None,
+        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+        "generationConfig": {"temperature": temperature},
+    }
+    chunks: list[str] = []
+    with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+        with client.stream(
+            "POST",
+            endpoint,
+            params={"alt": "sse", "key": runtime["api_key"]},
+            json={key: value for key, value in payload.items() if value is not None},
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                try:
+                    event = json.loads(data)
+                except Exception:  # noqa: BLE001
+                    continue
+                candidates = event.get("candidates") if isinstance(event, dict) else None
+                if not isinstance(candidates, list) or not candidates:
+                    continue
+                candidate = candidates[0] if isinstance(candidates[0], dict) else {}
+                content = (
+                    candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
+                )
+                parts = content.get("parts") if isinstance(content.get("parts"), list) else []
+                text = "".join(
+                    str(part.get("text") or "") for part in parts if isinstance(part, dict)
+                )
+                if text:
+                    chunks.append(text)
+    collapsed: list[str] = []
+    previous = ""
+    for chunk in chunks:
+        if chunk.startswith(previous):
+            collapsed.append(chunk[len(previous) :])
+            previous = chunk
+        else:
+            collapsed.append(chunk)
+            previous += chunk
+    if on_chunk is not None:
+        for chunk in collapsed:
+            if chunk:
+                on_chunk(chunk)
+    return collapsed, {
+        "provider": "gemini",
+        "model": runtime["model"],
+        "mode": "live",
+        "source": runtime.get("source") or "environment",
+        "transport": "sse",
+    }
+
+
+def _collect_chat_response_chunks(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    temperature: float,
+    messages: list[dict[str, str]] | None = None,
+    runtime: dict[str, Any] | None = None,
+    on_chunk: Callable[[str], None] | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    resolved_runtime = runtime or _env_provider_runtime("openai")
+    if resolved_runtime is None:
+        return (
+            [],
+            {
+                "provider": "openai",
+                "model": str(model or "").strip() or _default_openai_model(),
+                "mode": "simulated",
+                "reason": "No live provider credentials available",
+            },
+        )
+
+    resolved_runtime = {
+        **resolved_runtime,
+        "model": str(
+            model
+            or resolved_runtime.get("model")
+            or _default_provider_model(str(resolved_runtime.get("provider") or "openai"))
+        ).strip(),
+    }
+    prepared_messages = _openai_messages_payload(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        messages=messages,
+    )
+    provider = _normalize_chat_provider(str(resolved_runtime.get("provider") or "openai"))
+    if provider in {"openai", "openai-compatible"}:
+        return _stream_openai_compatible_chat(
+            runtime=resolved_runtime,
+            messages=prepared_messages,
+            temperature=temperature,
+            on_chunk=on_chunk,
+        )
+    if provider == "anthropic":
+        return _stream_anthropic_chat(
+            runtime=resolved_runtime,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+            on_chunk=on_chunk,
+        )
+    return _stream_gemini_chat(
+        runtime=resolved_runtime,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        temperature=temperature,
+        on_chunk=on_chunk,
+    )
 
 
 def _run_openai_chat(
@@ -4548,7 +6730,35 @@ def _run_openai_chat(
     max_tool_calls: int = 8,
     on_tool_event: Callable[[str, dict[str, Any], str, bool], None] | None = None,
     reasoning_effort: str = "",
+    runtime: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    # An explicit provider runtime (e.g. a user-scoped provider credential from
+    # /runtime/user-providers) is served by the streaming provider adapters.
+    # Tool loops still require the chat.completions client path below.
+    if runtime is not None and not tools:
+        try:
+            chunks, meta = _collect_chat_response_chunks(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=model,
+                temperature=temperature,
+                messages=messages,
+                runtime=runtime,
+            )
+            return ("".join(chunks).strip(), meta)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            return (
+                "",
+                {
+                    "provider": str(runtime.get("provider") or "openai"),
+                    "model": str(runtime.get("model") or model or ""),
+                    "mode": "simulated",
+                    "reason": f"Provider call failed: {str(exc)[:180]}",
+                },
+            )
+
     provider, bare_model = _resolve_chat_provider(model)
     client, unavailable_reason = _get_chat_client(provider)
     if client is None:
@@ -5473,6 +7683,11 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                 )
 
         if normalized_type.startswith("frontier/agent"):
+            if "skills" in node.config:
+                _normalized_skills, skill_issues = _validate_graph_skill_paths(
+                    node.config.get("skills"), path=f"{node_path}.config.skills"
+                )
+                issues.extend(skill_issues)
             has_agent_id = bool(str(node.config.get("agent_id") or "").strip())
             if not has_agent_id:
                 issues.append(
@@ -5567,6 +7782,211 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                         code="RETRIEVAL_QUERY_INPUT_REQUIRED",
                         message="Retrieval nodes require a query input connection to port 'query'.",
                         path=f"{node_path}.inputs.query",
+                    )
+                )
+
+        if normalized_type == "frontier/router":
+            if not str(node.config.get("router_mode") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="ROUTER_MODE_REQUIRED",
+                        message="Router nodes require config.router_mode.",
+                        path=f"{node_path}.config.router_mode",
+                    )
+                )
+            if len(_incoming_to_port(node_id, "in")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="ROUTER_FLOW_INPUT_REQUIRED",
+                        message="Router nodes require a flow input connection to port 'in'.",
+                        path=f"{node_path}.inputs.in",
+                    )
+                )
+            has_candidate_input = (
+                len(_incoming_to_port(node_id, "candidate")) > 0
+                or len(_incoming_to_port(node_id, "data")) > 0
+                or len(_incoming_to_port(node_id, "payload")) > 0
+            )
+            if not has_candidate_input:
+                issues.append(
+                    GraphValidationIssue(
+                        code="ROUTER_CANDIDATE_INPUT_REQUIRED",
+                        message="Router nodes require a candidate input connection to port 'candidate'.",
+                        path=f"{node_path}.inputs.candidate",
+                    )
+                )
+
+        if normalized_type == "frontier/transform":
+            if not str(node.config.get("transform_mode") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="TRANSFORM_MODE_REQUIRED",
+                        message="Transform nodes require config.transform_mode.",
+                        path=f"{node_path}.config.transform_mode",
+                    )
+                )
+            if len(_incoming_to_port(node_id, "in")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="TRANSFORM_FLOW_INPUT_REQUIRED",
+                        message="Transform nodes require a flow input connection to port 'in'.",
+                        path=f"{node_path}.inputs.in",
+                    )
+                )
+            has_source_input = (
+                len(_incoming_to_port(node_id, "source")) > 0
+                or len(_incoming_to_port(node_id, "data")) > 0
+                or len(_incoming_to_port(node_id, "payload")) > 0
+            )
+            if not has_source_input:
+                issues.append(
+                    GraphValidationIssue(
+                        code="TRANSFORM_SOURCE_INPUT_REQUIRED",
+                        message="Transform nodes require a source input connection to port 'source'.",
+                        path=f"{node_path}.inputs.source",
+                    )
+                )
+
+        if normalized_type == "frontier/iterator":
+            if not str(node.config.get("iteration_mode") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="ITERATOR_MODE_REQUIRED",
+                        message="Iterator nodes require config.iteration_mode.",
+                        path=f"{node_path}.config.iteration_mode",
+                    )
+                )
+            if len(_incoming_to_port(node_id, "in")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="ITERATOR_FLOW_INPUT_REQUIRED",
+                        message="Iterator nodes require a flow input connection to port 'in'.",
+                        path=f"{node_path}.inputs.in",
+                    )
+                )
+            has_items_input = (
+                len(_incoming_to_port(node_id, "items")) > 0
+                or len(_incoming_to_port(node_id, "data")) > 0
+                or len(_incoming_to_port(node_id, "payload")) > 0
+            )
+            if not has_items_input:
+                issues.append(
+                    GraphValidationIssue(
+                        code="ITERATOR_ITEMS_INPUT_REQUIRED",
+                        message="Iterator nodes require an items input connection to port 'items'.",
+                        path=f"{node_path}.inputs.items",
+                    )
+                )
+
+        if normalized_type == "frontier/error-handler":
+            if not str(node.config.get("handler_mode") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="ERROR_HANDLER_MODE_REQUIRED",
+                        message="Error Handler nodes require config.handler_mode.",
+                        path=f"{node_path}.config.handler_mode",
+                    )
+                )
+            if len(_incoming_to_port(node_id, "in")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="ERROR_HANDLER_FLOW_INPUT_REQUIRED",
+                        message="Error Handler nodes require a flow input connection to port 'in'.",
+                        path=f"{node_path}.inputs.in",
+                    )
+                )
+            has_error_input = (
+                len(_incoming_to_port(node_id, "error")) > 0
+                or len(_incoming_to_port(node_id, "data")) > 0
+                or len(_incoming_to_port(node_id, "result")) > 0
+            )
+            if not has_error_input:
+                issues.append(
+                    GraphValidationIssue(
+                        code="ERROR_HANDLER_INPUT_REQUIRED",
+                        message="Error Handler nodes require an error input connection to port 'error'.",
+                        path=f"{node_path}.inputs.error",
+                    )
+                )
+
+        if normalized_type == "frontier/event":
+            if not str(node.config.get("event_mode") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="EVENT_MODE_REQUIRED",
+                        message="Event nodes require config.event_mode.",
+                        path=f"{node_path}.config.event_mode",
+                    )
+                )
+            if len(_incoming_to_port(node_id, "in")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="EVENT_FLOW_INPUT_REQUIRED",
+                        message="Event nodes require a flow input connection to port 'in'.",
+                        path=f"{node_path}.inputs.in",
+                    )
+                )
+            has_payload_input = (
+                len(_incoming_to_port(node_id, "payload")) > 0
+                or len(_incoming_to_port(node_id, "data")) > 0
+                or len(_incoming_to_port(node_id, "result")) > 0
+            )
+            if not has_payload_input:
+                issues.append(
+                    GraphValidationIssue(
+                        code="EVENT_PAYLOAD_INPUT_REQUIRED",
+                        message="Event nodes require a payload input connection to port 'payload'.",
+                        path=f"{node_path}.inputs.payload",
+                    )
+                )
+
+        if normalized_type == "frontier/data-store":
+            if not str(node.config.get("operation") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="DATA_STORE_OPERATION_REQUIRED",
+                        message="Data Store nodes require config.operation.",
+                        path=f"{node_path}.config.operation",
+                    )
+                )
+            if len(_incoming_to_port(node_id, "in")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="DATA_STORE_FLOW_INPUT_REQUIRED",
+                        message="Data Store nodes require a flow input connection to port 'in'.",
+                        path=f"{node_path}.inputs.in",
+                    )
+                )
+            has_record_input = (
+                len(_incoming_to_port(node_id, "record")) > 0
+                or len(_incoming_to_port(node_id, "data")) > 0
+                or len(_incoming_to_port(node_id, "payload")) > 0
+                or len(_incoming_to_port(node_id, "result")) > 0
+            )
+            if not has_record_input:
+                issues.append(
+                    GraphValidationIssue(
+                        code="DATA_STORE_RECORD_INPUT_REQUIRED",
+                        message="Data Store nodes require a record input connection to port 'record'.",
+                        path=f"{node_path}.inputs.record",
+                    )
+                )
+
+        if normalized_type == "frontier/wait":
+            if not str(node.config.get("wait_mode") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="WAIT_MODE_REQUIRED",
+                        message="Wait nodes require config.wait_mode.",
+                        path=f"{node_path}.config.wait_mode",
+                    )
+                )
+            if len(_incoming_to_port(node_id, "in")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="WAIT_FLOW_INPUT_REQUIRED",
+                        message="Wait nodes require a flow input connection to port 'in'.",
+                        path=f"{node_path}.inputs.in",
                     )
                 )
 
@@ -5708,11 +8128,35 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
     return GraphValidationResult(valid=len(issues) == 0, issues=issues)
 
 
+# Cognitive column state carried alongside a port projection so that a
+# cognitive consumer (e.g. frontier/assembly) still receives the upstream
+# column state when the edge selects a specific output port such as "out".
+_COGNITIVE_STATE_RESULT_KEYS = ("goal_state", "evidence_state", "synthesis_state")
+
+
+def _project_port_value(source_result: dict[str, Any], from_port: str) -> dict[str, Any]:
+    projected = source_result.get(from_port)
+    value = dict(projected) if isinstance(projected, dict) else {from_port: projected}
+    for key in _COGNITIVE_STATE_RESULT_KEYS:
+        if key in source_result and key not in value:
+            value[key] = source_result[key]
+    return value
+
+
 def _incoming_values(
     node_id: str, links: list[GraphEdge], node_results: dict[str, dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    incoming = [edge.from_node for edge in links if edge.to_node == node_id]
-    return [node_results[source] for source in incoming if source in node_results]
+    incoming: list[dict[str, Any]] = []
+    for edge in links:
+        if edge.to_node != node_id or edge.from_node not in node_results:
+            continue
+        source_result = node_results[edge.from_node]
+        from_port = str(edge.from_port or "").strip()
+        if from_port and isinstance(source_result, dict) and from_port in source_result:
+            incoming.append(_project_port_value(source_result, from_port))
+            continue
+        incoming.append(source_result)
+    return incoming
 
 
 def _incoming_values_by_port(
@@ -5726,7 +8170,12 @@ def _incoming_values_by_port(
             continue
         if edge.from_node not in node_results:
             continue
-        grouped[str(edge.to_port or "in")].append(node_results[edge.from_node])
+        source_result = node_results[edge.from_node]
+        from_port = str(edge.from_port or "").strip()
+        if from_port and isinstance(source_result, dict) and from_port in source_result:
+            grouped[str(edge.to_port or "in")].append(_project_port_value(source_result, from_port))
+            continue
+        grouped[str(edge.to_port or "in")].append(source_result)
     return grouped
 
 
@@ -5858,6 +8307,713 @@ def _resolve_runtime_value(value: Any, var_context: dict[str, Any]) -> Any:
     return value
 
 
+def _parse_json_config_value(value: Any, *, fallback: Any) -> Any:
+    if isinstance(value, (dict, list)):
+        return value
+    if not isinstance(value, str):
+        return fallback
+
+    text = value.strip()
+    if not text:
+        return fallback
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return fallback
+
+
+def _router_candidate_value(candidate: Any, decision_key: str) -> Any:
+    if not decision_key.strip():
+        return candidate
+    return _deep_get(candidate, decision_key) if isinstance(candidate, (dict, list)) else None
+
+
+def _router_rule_matches(rule: dict[str, Any], candidate: Any) -> bool:
+    key = str(rule.get("key") or "").strip()
+    operator = str(rule.get("operator") or "eq").strip().lower()
+    candidate_value = _router_candidate_value(candidate, key) if key else candidate
+
+    if operator == "exists":
+        return candidate_value is not None
+
+    if operator == "contains":
+        expected = str(rule.get("contains") or rule.get("value") or "").strip().lower()
+        return expected in str(candidate_value or "").strip().lower()
+
+    if operator in {"gt", "gte", "lt", "lte"}:
+        try:
+            observed = float(candidate_value)
+            expected_num = float(rule.get("value"))
+        except (TypeError, ValueError):
+            return False
+        if operator == "gt":
+            return observed > expected_num
+        if operator == "gte":
+            return observed >= expected_num
+        if operator == "lt":
+            return observed < expected_num
+        return observed <= expected_num
+
+    expected = rule.get("value")
+    if operator == "neq":
+        return candidate_value != expected
+    return str(candidate_value) == str(expected)
+
+
+def _execute_router_node(
+    node: GraphNode,
+    candidate_payload: Any,
+    context_payload: Any,
+) -> dict[str, Any]:
+    config = node.config if isinstance(node.config, dict) else {}
+    router_mode = str(config.get("router_mode") or "rules").strip().lower()
+    decision_key = str(config.get("decision_key") or "").strip()
+    route_match_a = str(config.get("route_match_a") or "priority").strip() or "priority"
+    route_match_b = str(config.get("route_match_b") or "standard").strip() or "standard"
+    default_route = str(config.get("default_route") or "default").strip() or "default"
+    allow_multi_match = bool(config.get("allow_multi_match", False))
+
+    matched_routes: list[str] = []
+
+    if router_mode == "threshold":
+        candidate_value = _router_candidate_value(candidate_payload, decision_key)
+        rule = {
+            "key": decision_key,
+            "operator": str(config.get("threshold_operator") or "gte"),
+            "value": config.get("threshold_value", 0),
+        }
+        matched_routes = ["threshold"] if _router_rule_matches(rule, candidate_payload) else []
+        if not matched_routes and candidate_value is None:
+            matched_routes = []
+    elif router_mode == "classifier":
+        text = _safe_json(candidate_payload).lower()
+        keyword_map = _parse_json_config_value(config.get("keyword_map_json"), fallback=[])
+        if isinstance(keyword_map, list):
+            for item in keyword_map:
+                if not isinstance(item, dict):
+                    continue
+                route = str(item.get("route") or "").strip()
+                keywords = item.get("keywords") if isinstance(item.get("keywords"), list) else []
+                if route and any(str(keyword).strip().lower() in text for keyword in keywords):
+                    matched_routes.append(route)
+                    if not allow_multi_match:
+                        break
+    elif router_mode == "expression":
+        candidate_value = _router_candidate_value(candidate_payload, decision_key)
+        expected = config.get("expression_value", config.get("threshold_value"))
+        if expected is None:
+            expected = True
+        if str(candidate_value) == str(expected):
+            matched_routes.append(
+                str(config.get("expression_route") or "expression").strip() or "expression"
+            )
+    else:
+        rules = _parse_json_config_value(config.get("rules_json"), fallback=[])
+        if isinstance(rules, list):
+            for item in rules:
+                if not isinstance(item, dict):
+                    continue
+                route = str(item.get("route") or "").strip()
+                if route and _router_rule_matches(item, candidate_payload):
+                    matched_routes.append(route)
+                    if not allow_multi_match:
+                        break
+
+    selected_route = matched_routes[0] if matched_routes else default_route
+    return {
+        "decision": {
+            "selected_route": selected_route,
+            "matched_routes": matched_routes or [default_route],
+            "router_mode": router_mode,
+            "decision_key": decision_key,
+            "route_match_a": route_match_a,
+            "route_match_b": route_match_b,
+            "default_route": default_route,
+            "allow_multi_match": allow_multi_match,
+            "context": context_payload,
+        },
+        "matched_payload": candidate_payload,
+        "out": {"state": "completed", "route": selected_route},
+    }
+
+
+def _execute_transform_node(
+    node: GraphNode,
+    source_payload: Any,
+    context_payload: Any,
+) -> dict[str, Any]:
+    config = node.config if isinstance(node.config, dict) else {}
+    transform_mode = str(config.get("transform_mode") or "map").strip().lower()
+    strict_validation = bool(config.get("strict_validation", False))
+    var_context = {
+        "source": source_payload,
+        "context": context_payload,
+    }
+
+    result: Any
+    if transform_mode == "template":
+        template_text = str(config.get("template_text") or "").strip()
+        result = _resolve_runtime_value(template_text, var_context)
+    elif transform_mode == "extract":
+        extract_path = str(config.get("extract_path") or "").strip()
+        extracted = _deep_get(source_payload, extract_path) if extract_path else source_payload
+        if strict_validation and extract_path and extracted is None:
+            raise RuntimeError(
+                f"Transform extract_path '{extract_path}' did not resolve for node '{node.id}'"
+            )
+        result = extracted
+    elif transform_mode == "redact":
+        redact_fields_raw = config.get("redact_fields")
+        if isinstance(redact_fields_raw, list):
+            redact_fields = [str(item).strip() for item in redact_fields_raw if str(item).strip()]
+        else:
+            redact_fields = [
+                item.strip() for item in str(redact_fields_raw or "").split(",") if item.strip()
+            ]
+        if isinstance(source_payload, dict):
+            result = {
+                key: ("[REDACTED]" if key in redact_fields else value)
+                for key, value in source_payload.items()
+            }
+        else:
+            result = source_payload
+    elif transform_mode == "merge":
+        if isinstance(source_payload, dict) and isinstance(context_payload, dict):
+            result = {**source_payload, **context_payload}
+        else:
+            result = {"source": source_payload, "context": context_payload}
+    else:
+        mapping = _parse_json_config_value(config.get("mapping_json"), fallback={})
+        if strict_validation and not isinstance(mapping, dict):
+            raise RuntimeError(f"Transform mapping_json must be a JSON object for node '{node.id}'")
+        if isinstance(mapping, dict):
+            result = _resolve_runtime_value(mapping, var_context)
+        else:
+            result = source_payload
+
+    return {
+        "result": result,
+        "transform": {
+            "mode": transform_mode,
+            "strict_validation": strict_validation,
+        },
+        "out": {"state": "completed"},
+    }
+
+
+def _error_payload_details(payload: Any, error_key: str) -> tuple[bool, str]:
+    if isinstance(payload, dict):
+        message = str(
+            payload.get(error_key) or payload.get("message") or payload.get("detail") or ""
+        ).strip()
+        status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
+        state = str(status.get("state") or payload.get("state") or "").strip().lower()
+        if payload.get("rejected") is True:
+            return True, message or "Upstream payload was rejected."
+        if payload.get("ok") is False:
+            return True, message or "Upstream payload reported ok=false."
+        if state in {
+            "failed",
+            "policy_rejected",
+            "guardrail_rejected",
+            "approval_required",
+            "error",
+        }:
+            return True, message or f"Upstream state '{state}' requires handling."
+        nested_result = payload.get("result")
+        if isinstance(nested_result, dict):
+            return _error_payload_details(nested_result, error_key)
+    return False, ""
+
+
+def _parse_fallback_value(raw_value: Any) -> Any:
+    if isinstance(raw_value, (dict, list, int, float, bool)) or raw_value is None:
+        return raw_value
+    if not isinstance(raw_value, str):
+        return raw_value
+
+    text = raw_value.strip()
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def _extract_iterable_items(source_payload: Any, item_path: str, max_items: int) -> list[Any]:
+    candidate = source_payload
+    if item_path.strip() and isinstance(source_payload, (dict, list)):
+        resolved = _deep_get(source_payload, item_path)
+        if resolved is not None:
+            candidate = resolved
+
+    if isinstance(candidate, list):
+        return list(candidate)[: max(1, max_items)]
+    if isinstance(candidate, dict):
+        return [candidate]
+    if candidate is None:
+        return []
+    return [candidate]
+
+
+def _aggregate_iterator_items(items: list[Any], aggregate_mode: str) -> Any:
+    if aggregate_mode == "count":
+        return len(items)
+    if aggregate_mode == "first":
+        return items[0] if items else None
+    if aggregate_mode == "last":
+        return items[-1] if items else None
+    return items
+
+
+def _execute_iterator_node(
+    node: GraphNode,
+    items_payload: Any,
+    context_payload: Any,
+) -> dict[str, Any]:
+    config = node.config if isinstance(node.config, dict) else {}
+    iteration_mode = str(config.get("iteration_mode") or "foreach").strip().lower()
+    item_path = str(config.get("item_path") or "items").strip()
+    try:
+        batch_size = max(1, int(config.get("batch_size") or 25))
+    except (TypeError, ValueError):
+        batch_size = 25
+    try:
+        max_items = max(1, int(config.get("max_items") or 100))
+    except (TypeError, ValueError):
+        max_items = 100
+    aggregate_mode = str(config.get("aggregate_mode") or "list").strip().lower()
+
+    items = _extract_iterable_items(items_payload, item_path, max_items)
+    batches = [items[index : index + batch_size] for index in range(0, len(items), batch_size)]
+
+    if iteration_mode in {"batch", "chunk"}:
+        current_item = batches[0] if batches else []
+        aggregate = _aggregate_iterator_items(batches, aggregate_mode)
+    elif iteration_mode == "paginate":
+        current_item = {
+            "items": items,
+            "next_cursor": _deep_get(items_payload, "next_cursor")
+            if isinstance(items_payload, dict)
+            else None,
+            "context": context_payload,
+        }
+        aggregate = {
+            "count": len(items),
+            "next_cursor": current_item.get("next_cursor"),
+        }
+    else:
+        current_item = items[0] if items else None
+        aggregate = _aggregate_iterator_items(items, aggregate_mode)
+
+    emitted_branch = "loop" if items else "done"
+    return {
+        "item": current_item,
+        "aggregate": aggregate,
+        "iteration": {
+            "mode": iteration_mode,
+            "count": len(items),
+            "batch_size": batch_size,
+            "emitted_branch": emitted_branch,
+        },
+        "out": {"state": "completed", "branch": emitted_branch},
+    }
+
+
+def _execute_event_node(
+    node: GraphNode,
+    payload_value: Any,
+    context_payload: Any,
+    execution_state: dict[str, Any],
+    run_input: dict[str, Any],
+) -> dict[str, Any]:
+    config = node.config if isinstance(node.config, dict) else {}
+    event_mode = str(config.get("event_mode") or "publish").strip().lower()
+    topic = str(config.get("topic") or "frontier.events.default").strip()
+    event_name = str(config.get("event_name") or "event.workflow.step").strip()
+    correlation_key = str(config.get("correlation_key") or "runId").strip()
+    durable = bool(config.get("durable", False))
+    correlation_id = (
+        _deep_get(run_input, correlation_key)
+        if correlation_key.startswith("input.")
+        else execution_state.get("run_id")
+        if correlation_key == "runId"
+        else run_input.get(correlation_key)
+    )
+    event_log = execution_state.setdefault("events", [])
+
+    if event_mode == "consume":
+        matching = [
+            item for item in event_log if isinstance(item, dict) and item.get("topic") == topic
+        ]
+        event_payload = (
+            matching[-1]
+            if matching
+            else {
+                "topic": topic,
+                "event_name": event_name,
+                "payload": payload_value,
+                "correlation_id": correlation_id,
+            }
+        )
+        receipt = {
+            "mode": "consume",
+            "topic": topic,
+            "event_name": event_payload.get("event_name"),
+            "found": bool(matching),
+        }
+        branch = "resume" if matching else "idle"
+    else:
+        event_payload = {
+            "topic": topic,
+            "event_name": event_name,
+            "payload": payload_value,
+            "context": context_payload,
+            "correlation_id": correlation_id,
+            "durable": durable,
+        }
+        if isinstance(event_log, list):
+            event_log.append(event_payload)
+        receipt = {
+            "mode": event_mode,
+            "topic": topic,
+            "event_name": event_name,
+            "correlation_id": correlation_id,
+            "durable": durable,
+        }
+        branch = "resume"
+
+    return {
+        "event": event_payload,
+        "receipt": receipt,
+        "out": {"state": "completed", "branch": branch},
+    }
+
+
+def _resolve_data_store_bucket(
+    config: dict[str, Any], execution_state: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    store_state = execution_state.setdefault("data_store", {})
+    scope = str(config.get("store_scope") or "session").strip().lower()
+    collection = str(config.get("collection") or "default").strip() or "default"
+    bucket_key = f"{scope}:{collection}"
+    existing = store_state.get(bucket_key)
+    if isinstance(existing, dict):
+        return existing
+    bucket: dict[str, dict[str, Any]] = {}
+    store_state[bucket_key] = bucket
+    return bucket
+
+
+def _execute_data_store_node(
+    node: GraphNode,
+    record_payload: Any,
+    context_payload: Any,
+    execution_state: dict[str, Any],
+) -> dict[str, Any]:
+    config = node.config if isinstance(node.config, dict) else {}
+    operation = str(config.get("operation") or "upsert").strip().lower()
+    record_key = str(config.get("record_key") or "id").strip() or "id"
+    merge_strategy = str(config.get("merge_strategy") or "replace").strip().lower()
+    bucket = _resolve_data_store_bucket(config, execution_state)
+
+    resolved_key = None
+    if isinstance(record_payload, dict):
+        resolved_key = (
+            _deep_get(record_payload, record_key)
+            if "." in record_key
+            else record_payload.get(record_key)
+        )
+    if resolved_key in {None, ""}:
+        resolved_key = str(uuid4())
+    resolved_key = str(resolved_key)
+
+    existing = bucket.get(resolved_key)
+    result_payload: Any = None
+
+    if operation == "read":
+        result_payload = existing
+    elif operation == "delete":
+        result_payload = bucket.pop(resolved_key, None)
+    elif operation == "append":
+        current_items = (
+            existing.get("items")
+            if isinstance(existing, dict) and isinstance(existing.get("items"), list)
+            else []
+        )
+        current_items = list(current_items)
+        current_items.append(record_payload)
+        bucket[resolved_key] = {
+            "id": resolved_key,
+            "items": current_items,
+            "context": context_payload,
+        }
+        result_payload = bucket[resolved_key]
+    elif operation == "create" and existing is None:
+        bucket[resolved_key] = (
+            record_payload if isinstance(record_payload, dict) else {"value": record_payload}
+        )
+        result_payload = bucket[resolved_key]
+    else:
+        if (
+            isinstance(existing, dict)
+            and isinstance(record_payload, dict)
+            and merge_strategy == "merge"
+        ):
+            bucket[resolved_key] = {**existing, **record_payload}
+        else:
+            bucket[resolved_key] = (
+                record_payload if isinstance(record_payload, dict) else {"value": record_payload}
+            )
+        result_payload = bucket[resolved_key]
+
+    return {
+        "result": result_payload,
+        "status": {
+            "state": "completed",
+            "operation": operation,
+            "record_id": resolved_key,
+            "collection": str(config.get("collection") or "default"),
+        },
+        "out": {"state": "completed"},
+    }
+
+
+def _execute_wait_node(node: GraphNode, resume_payload: Any) -> dict[str, Any]:
+    config = node.config if isinstance(node.config, dict) else {}
+    wait_mode = str(config.get("wait_mode") or "delay").strip().lower()
+    try:
+        delay_ms = max(0, int(config.get("delay_ms") or 0))
+    except (TypeError, ValueError):
+        delay_ms = 0
+    try:
+        timeout_ms = max(0, int(config.get("timeout_ms") or 0))
+    except (TypeError, ValueError):
+        timeout_ms = 0
+    simulate_wait = bool(config.get("simulate_wait", True))
+
+    branch = (
+        "timeout"
+        if wait_mode == "timeout_gate" or (timeout_ms and delay_ms > timeout_ms)
+        else "resume"
+    )
+    if not simulate_wait and delay_ms > 0:
+        time.sleep(min(delay_ms, 25) / 1000)
+
+    return {
+        "result": {
+            "wait_mode": wait_mode,
+            "delay_ms": delay_ms,
+            "timeout_ms": timeout_ms,
+            "branch": branch,
+            "payload": resume_payload,
+        },
+        "wait": {
+            "branch": branch,
+            "simulate_wait": simulate_wait,
+        },
+        "out": {"state": "completed", "branch": branch},
+    }
+
+
+def _is_flow_port_name(port_name: str) -> bool:
+    normalized = str(port_name or "").strip().lower() or "in"
+    if normalized in {
+        "in",
+        "out",
+        "match_a",
+        "match_b",
+        "default",
+        "loop",
+        "done",
+        "resume",
+        "idle",
+        "timeout",
+    }:
+        return True
+    return normalized.startswith("in_") or normalized.startswith("match_")
+
+
+def _edge_from_skipped_source(edge: GraphEdge, node_results: dict[str, dict[str, Any]]) -> bool:
+    source_result = node_results.get(edge.from_node)
+    return bool(isinstance(source_result, dict) and source_result.get("skipped") is True)
+
+
+def _is_active_outgoing_edge(
+    edge: GraphEdge,
+    *,
+    node_by_id: dict[str, GraphNode],
+    node_results: dict[str, dict[str, Any]],
+) -> bool:
+    if _edge_from_skipped_source(edge, node_results):
+        return False
+
+    source_node = node_by_id.get(edge.from_node)
+    source_result = node_results.get(edge.from_node)
+    if not source_node or not isinstance(source_result, dict):
+        return False
+
+    source_type = _normalize_node_type(source_node.type)
+    from_port = str(edge.from_port or "out").strip() or "out"
+
+    if source_type == "frontier/router":
+        decision = (
+            source_result.get("decision") if isinstance(source_result.get("decision"), dict) else {}
+        )
+        selected_route = str(decision.get("selected_route") or "default")
+        matched_routes = (
+            decision.get("matched_routes")
+            if isinstance(decision.get("matched_routes"), list)
+            else []
+        )
+        match_a = str(decision.get("route_match_a") or "match_a")
+        match_b = str(decision.get("route_match_b") or "match_b")
+        default_route = str(decision.get("default_route") or "default")
+        if from_port in {"out", "decision", "matched_payload"}:
+            return True
+        if from_port == "match_a":
+            return selected_route == match_a or match_a in matched_routes
+        if from_port == "match_b":
+            return selected_route == match_b or match_b in matched_routes
+        if from_port == "default":
+            return selected_route == default_route
+        return selected_route == from_port or from_port in matched_routes
+
+    if source_type == "frontier/iterator":
+        emitted_branch = str(
+            (source_result.get("iteration") or {}).get("emitted_branch")
+            if isinstance(source_result.get("iteration"), dict)
+            else "done"
+        )
+        if from_port in {"out", "item", "aggregate"}:
+            return True
+        return from_port == emitted_branch
+
+    if source_type == "frontier/wait":
+        branch = str(
+            (source_result.get("wait") or {}).get("branch")
+            if isinstance(source_result.get("wait"), dict)
+            else "resume"
+        )
+        if from_port in {"out", "result"}:
+            return True
+        return from_port == branch
+
+    if source_type == "frontier/event":
+        branch = str((source_result.get("out") or {}).get("branch") or "resume")
+        if from_port in {"out", "event", "receipt"}:
+            return True
+        return from_port == branch
+
+    return True
+
+
+def _incoming_edges(node_id: str, links: list[GraphEdge]) -> list[GraphEdge]:
+    return [edge for edge in links if edge.to_node == node_id]
+
+
+def _active_incoming_edges(
+    node_id: str,
+    links: list[GraphEdge],
+    *,
+    node_by_id: dict[str, GraphNode],
+    node_results: dict[str, dict[str, Any]],
+) -> list[GraphEdge]:
+    incoming = _incoming_edges(node_id, links)
+    return [
+        edge
+        for edge in incoming
+        if _is_active_outgoing_edge(edge, node_by_id=node_by_id, node_results=node_results)
+    ]
+
+
+def _should_skip_node_execution(
+    node: GraphNode,
+    incoming_edges: list[GraphEdge],
+    active_edges: list[GraphEdge],
+) -> bool:
+    node_type = _normalize_node_type(node.type)
+    if node_type in {"frontier/trigger", "frontier/prompt"}:
+        return False
+
+    flow_edges = [edge for edge in incoming_edges if _is_flow_port_name(str(edge.to_port or "in"))]
+    if not flow_edges:
+        return False
+
+    active_flow_edges = [
+        edge for edge in active_edges if _is_flow_port_name(str(edge.to_port or "in"))
+    ]
+    return len(active_flow_edges) == 0
+
+
+def _build_skipped_node_result(node: GraphNode) -> dict[str, Any]:
+    return {
+        "skipped": True,
+        "status": {"state": "skipped"},
+        "result": {
+            "note": f"Skipped {node.id} because no active inbound flow reached this node.",
+        },
+    }
+
+
+def _execute_error_handler_node(
+    node: GraphNode,
+    error_payload: Any,
+    context_payload: Any,
+) -> dict[str, Any]:
+    config = node.config if isinstance(node.config, dict) else {}
+    handler_mode = str(config.get("handler_mode") or "fallback").strip().lower()
+    error_key = str(config.get("error_key") or "message").strip() or "message"
+    retryable = bool(config.get("retryable", False))
+    emit_status = bool(config.get("emit_status", True))
+    fallback_message = str(
+        config.get("fallback_message") or "Recovered from upstream failure."
+    ).strip()
+    fallback_value = _parse_fallback_value(config.get("fallback_value"))
+    has_error, error_message = _error_payload_details(error_payload, error_key)
+
+    if not has_error:
+        handled_payload = error_payload
+        state = "passed_through"
+    elif handler_mode == "escalate":
+        handled_payload = {
+            "message": error_message or fallback_message,
+            "original": error_payload,
+            "context": context_payload,
+        }
+        state = "escalated"
+    elif handler_mode == "normalize":
+        handled_payload = {
+            "message": error_message or fallback_message,
+            "retryable": retryable,
+            "original": error_payload,
+            "context": context_payload,
+        }
+        state = "normalized"
+    else:
+        handled_payload = {
+            "fallback": fallback_value,
+            "message": error_message or fallback_message,
+            "original": error_payload,
+        }
+        state = "recovered"
+
+    result: dict[str, Any] = {
+        "handled": handled_payload,
+        "out": {"state": state},
+    }
+    if emit_status:
+        result["status"] = {
+            "state": state,
+            "had_error": has_error,
+            "retryable": retryable,
+            "mode": handler_mode,
+        }
+    return result
+
+
 def _parse_hhmm(value: str) -> tuple[int, int]:
     text = str(value or "").strip()
     match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
@@ -5930,6 +9086,7 @@ def _resolve_memory_bucket_id(
     ).strip()
     agent_id = str(config.get("agent_id") or "").strip()
     workflow_id = str(config.get("workflow_id") or run_input.get("workflow_id") or "").strip()
+    playbook_id = str(config.get("playbook_id") or run_input.get("playbook_id") or "").strip()
     dimension_key = str(config.get("dimension_key") or "").strip()
 
     if dimension_key:
@@ -5950,6 +9107,8 @@ def _resolve_memory_bucket_id(
                 status_code=403, detail="Requested tenant does not match authenticated tenant"
             )
         return f"tenant:{current_tenant}"
+    if scope == "playbook" and playbook_id:
+        return f"playbook:{playbook_id}"
     if scope == "agent" and agent_id:
         return f"agent:{agent_id}"
     if scope == "workflow" and workflow_id:
@@ -5975,6 +9134,427 @@ def _mask_secret_ref(secret_ref: str) -> str:
     if len(clean) <= 6:
         return "***"
     return f"{clean[:3]}***{clean[-2:]}"
+
+
+def _mask_api_key(api_key: str) -> str:
+    clean = str(api_key or "").strip()
+    if not clean:
+        return ""
+    if len(clean) <= 8:
+        return "*" * len(clean)
+    return f"{clean[:4]}***{clean[-4:]}"
+
+
+def _secret_ref_to_env_var(secret_ref: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9]+", "_", str(secret_ref or "").strip()).strip("_")
+    return normalized.upper()
+
+
+def _resolve_secret_ref_value(secret_ref: str) -> str:
+    clean = str(secret_ref or "").strip()
+    if not clean:
+        return ""
+    env_var = _secret_ref_to_env_var(clean)
+    return str(os.getenv(env_var, "") or "").strip()
+
+
+def _provider_key_seed() -> bytes:
+    explicit = str(os.getenv("FRONTIER_SECRETS_ENCRYPTION_KEY") or "").strip()
+    if explicit:
+        return explicit.encode("utf-8")
+    fallback = str(os.getenv("A2A_JWT_SECRET") or os.getenv("FRONTIER_APP_SECRET") or "").strip()
+    if fallback:
+        return fallback.encode("utf-8")
+    raise HTTPException(
+        status_code=500,
+        detail="FRONTIER_SECRETS_ENCRYPTION_KEY or A2A_JWT_SECRET is required for encrypted provider credentials",
+    )
+
+
+def _provider_cipher() -> Fernet:
+    if Fernet is None:
+        raise HTTPException(
+            status_code=500, detail="cryptography dependency unavailable for secret encryption"
+        )
+    digest = hashlib.sha256(_provider_key_seed()).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def _encrypt_provider_secret(secret_value: str) -> str:
+    return _provider_cipher().encrypt(str(secret_value).strip().encode("utf-8")).decode("utf-8")
+
+
+def _decrypt_provider_secret(ciphertext: str) -> str:
+    try:
+        return _provider_cipher().decrypt(str(ciphertext).encode("utf-8")).decode("utf-8")
+    except InvalidToken as exc:  # pragma: no cover - crypto failure path
+        raise HTTPException(
+            status_code=500, detail="Stored provider credentials could not be decrypted"
+        ) from exc
+
+
+def _normalize_chat_provider(provider: str) -> str:
+    normalized = str(provider or "").strip().lower()
+    aliases = {
+        "openai-compatible": "openai-compatible",
+        "openai_compatible": "openai-compatible",
+        "openai": "openai",
+        "anthropic": "anthropic",
+        "claude": "anthropic",
+        "gemini": "gemini",
+        "google": "gemini",
+    }
+    resolved = aliases.get(normalized, normalized)
+    if resolved not in {"openai", "openai-compatible", "anthropic", "gemini"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported chat provider '{provider}'")
+    return resolved
+
+
+def _normalize_provider_base_url(provider: str, base_url: str) -> str:
+    clean = str(base_url or "").strip()
+    if not clean:
+        defaults = {
+            "openai": "https://api.openai.com/v1",
+            "openai-compatible": "https://api.openai.com/v1",
+            "anthropic": "https://api.anthropic.com/v1",
+            "gemini": "https://generativelanguage.googleapis.com/v1beta",
+        }
+        return defaults[provider]
+    return _normalize_absolute_http_url(clean, setting_name="provider_base_url")
+
+
+def _build_user_provider_config_payload(
+    principal_id: str, provider: str, config: StoredUserRuntimeProviderConfig
+) -> dict[str, Any]:
+    api_key = _decrypt_provider_secret(config.api_key_encrypted)
+    available_models = [str(item).strip() for item in config.available_models if str(item).strip()]
+    if config.model not in available_models:
+        available_models.insert(0, config.model)
+    return {
+        "principal_id": principal_id,
+        "provider": provider,
+        "configured": True,
+        "model": config.model,
+        "available_models": available_models,
+        "base_url": _sanitize_base_url(config.base_url),
+        "api_key_masked": _mask_api_key(api_key),
+        "preferred": config.preferred,
+        "created_at": config.created_at,
+        "updated_at": config.updated_at,
+    }
+
+
+def _user_provider_configs(principal_id: str) -> dict[str, StoredUserRuntimeProviderConfig]:
+    return store.user_runtime_provider_configs.get(str(principal_id), {})
+
+
+def _preferred_user_provider(principal_id: str) -> StoredUserRuntimeProviderConfig | None:
+    configs = _user_provider_configs(principal_id)
+    for config in configs.values():
+        if config.preferred:
+            return config
+    for config in configs.values():
+        return config
+    return None
+
+
+def _normalize_skill_paths(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+
+    normalized: list[str] = []
+    for item in raw:
+        skill = str(item or "").strip()
+        if not skill:
+            continue
+        skill = "/" + skill.lstrip("/")
+        if skill not in normalized:
+            normalized.append(skill)
+    return normalized
+
+
+def _validated_skill_paths(raw: Any, *, field_name: str) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a list")
+    if len(raw) > 128:
+        raise HTTPException(status_code=400, detail=f"{field_name} has too many entries")
+
+    normalized: list[str] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{field_name}[{index}] must be a string",
+            )
+        skill = item.strip()
+        if not skill:
+            continue
+        skill_name = skill.lstrip("/")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,126}", skill_name):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{field_name} contains an invalid skill path",
+            )
+        normalized_skill = f"/{skill_name}"
+        if normalized_skill not in normalized:
+            normalized.append(normalized_skill)
+    return normalized
+
+
+def _validated_runtime_model_id(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a string")
+    model = value.strip()
+    if not model:
+        raise HTTPException(status_code=400, detail=f"{field_name} is required")
+    if len(model) > 160 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,159}", model):
+        raise HTTPException(status_code=400, detail=f"{field_name} contains an invalid model id")
+    return model
+
+
+def _normalize_platform_hostname_entry(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a string")
+    text = value.strip().lower()
+    if not text:
+        return ""
+    if (
+        len(text) > 253
+        or re.search(r"\s", text)
+        or any(mark in text for mark in ("/", "?", "#", "@"))
+    ):
+        raise HTTPException(status_code=400, detail=f"{field_name} contains an invalid host")
+
+    if text.startswith("*."):
+        text = text[2:]
+
+    host = text
+    if text.startswith("["):
+        try:
+            parsed = urllib_parse.urlsplit(f"//{text}")
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail=f"{field_name} contains an invalid host"
+            ) from None
+        host = str(parsed.hostname or "").strip().lower()
+    elif text.count(":") == 1 and text.rsplit(":", 1)[1].isdigit():
+        host = text.rsplit(":", 1)[0]
+
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        pass
+
+    if host == "localhost":
+        return host
+    if "." not in host:
+        raise HTTPException(status_code=400, detail=f"{field_name} contains an invalid host")
+    labels = host.split(".")
+    if len(labels) < 2 or any(
+        not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels
+    ):
+        raise HTTPException(status_code=400, detail=f"{field_name} contains an invalid host")
+    return host
+
+
+def _validated_platform_egress_hosts(raw: Any, *, field_name: str) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a list")
+    if len(raw) > 128:
+        raise HTTPException(status_code=400, detail=f"{field_name} has too many entries")
+
+    normalized: list[str] = []
+    for index, item in enumerate(raw):
+        host = _normalize_platform_hostname_entry(item, field_name=f"{field_name}[{index}]")
+        if host and host not in normalized:
+            normalized.append(host)
+    return normalized
+
+
+def _validated_platform_mcp_server_urls(raw: Any, *, field_name: str) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a list")
+    if len(raw) > 128:
+        raise HTTPException(status_code=400, detail=f"{field_name} has too many entries")
+
+    normalized: list[str] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, str):
+            raise HTTPException(status_code=400, detail=f"{field_name}[{index}] must be a string")
+        try:
+            url = _normalize_absolute_http_url(item, setting_name=f"{field_name}[{index}]")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        if url not in normalized:
+            normalized.append(url)
+    return normalized
+
+
+def _user_skills(principal_id: str) -> StoredUserSkills | None:
+    return store.user_skills.get(str(principal_id))
+
+
+def _build_user_skills_payload(
+    principal_id: str, skill_set: StoredUserSkills | None
+) -> dict[str, Any]:
+    current = skill_set or StoredUserSkills(skills=[], created_at="", updated_at="")
+    return {
+        "principal_id": principal_id,
+        "skills": list(current.skills),
+        "updated_at": current.updated_at,
+    }
+
+
+def _builder_runtime_model_catalog(principal_id: str) -> dict[str, list[str]]:
+    catalog: dict[str, list[str]] = {}
+
+    def _register(provider_name: str, models: list[str], primary_model: str = "") -> None:
+        normalized_provider = _normalize_chat_provider(provider_name)
+        allowed_models = [str(item).strip() for item in models if str(item).strip()]
+        if primary_model and primary_model not in allowed_models:
+            allowed_models.insert(0, primary_model)
+        if allowed_models:
+            catalog[normalized_provider] = allowed_models
+
+    for provider_name, config in _user_provider_configs(principal_id).items():
+        _register(provider_name, config.available_models, config.model)
+
+    for provider_name in ("openai", "openai-compatible", "anthropic", "gemini"):
+        if provider_name in catalog:
+            continue
+        env_provider = _env_provider_runtime(provider_name)
+        if env_provider is None:
+            continue
+        if str(env_provider.get("source") or "").strip().lower() == "simulated":
+            continue
+        _register(
+            provider_name,
+            list(env_provider.get("available_models", []))
+            if isinstance(env_provider.get("available_models"), list)
+            else [],
+            str(env_provider.get("model") or "").strip(),
+        )
+
+    return catalog
+
+
+def _validate_builder_model_defaults(
+    *,
+    request: Request,
+    actor: str,
+    model_defaults: dict[str, Any] | None,
+    context_label: str,
+    runtime_policy: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(model_defaults, dict):
+        return None
+
+    principal = _resolve_auth_context_principal(request, actor)
+    preferred = _preferred_user_provider(principal["principal_id"])
+    validated = dict(model_defaults)
+    provider = _normalize_chat_provider(
+        str(validated.get("provider") or (preferred.provider if preferred else "openai"))
+    )
+    effective_policy = _effective_chat_runtime_policy(
+        {"tenant_runtime_policy": runtime_policy} if isinstance(runtime_policy, dict) else {},
+        request=request,
+    )
+    _enforce_chat_provider_policy(provider, effective_policy, context_label=context_label)
+    allowed_models = _builder_runtime_model_catalog(principal["principal_id"]).get(provider, [])
+    model = str(validated.get("model") or "").strip()
+
+    policy_models = effective_policy.get("allowed_models") or []
+    if policy_models:
+        allowed_models = [item for item in allowed_models if item in policy_models]
+        if model and model not in policy_models:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{context_label} uses model '{model}', "
+                    "but that model is denied by tenant runtime policy."
+                ),
+            )
+
+    if model and allowed_models and model not in allowed_models:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{context_label} uses model '{model}' for provider '{provider}', "
+                "but that model is not in the current allowed model set."
+            ),
+        )
+
+    validated["provider"] = provider
+    if not model and allowed_models:
+        validated["model"] = allowed_models[0]
+    return validated
+
+
+def _validate_builder_graph_models(
+    *,
+    request: Request,
+    actor: str,
+    graph_json: dict[str, Any],
+    context_label: str,
+    runtime_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    principal = _resolve_auth_context_principal(request, actor)
+    catalog = _builder_runtime_model_catalog(principal["principal_id"])
+    allowed_models = {model for provider_models in catalog.values() for model in provider_models}
+    effective_policy = _effective_chat_runtime_policy(
+        {"tenant_runtime_policy": runtime_policy} if isinstance(runtime_policy, dict) else {},
+        request=request,
+    )
+    policy_models = set(effective_policy.get("allowed_models") or [])
+    if policy_models:
+        allowed_models = (
+            allowed_models.intersection(policy_models) if allowed_models else policy_models
+        )
+    if not allowed_models:
+        return graph_json
+
+    nodes = graph_json.get("nodes") if isinstance(graph_json.get("nodes"), list) else []
+    for index, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            continue
+        if not _normalize_node_type(str(node.get("type") or "")).startswith("frontier/agent"):
+            continue
+        config = node.get("config") if isinstance(node.get("config"), dict) else {}
+        provider = str(config.get("provider") or "").strip()
+        if provider:
+            _enforce_chat_provider_policy(
+                _normalize_chat_provider(provider),
+                effective_policy,
+                context_label=f"{context_label} node '{node.get('id') or f'node-{index + 1}'}'",
+            )
+        model = str(config.get("model") or "").strip()
+        if model and policy_models and model not in policy_models:
+            node_id = str(node.get("id") or f"node-{index + 1}")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{context_label} node '{node_id}' uses model '{model}', "
+                    "but that model is denied by tenant runtime policy."
+                ),
+            )
+        if model and model not in allowed_models:
+            node_id = str(node.get("id") or f"node-{index + 1}")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{context_label} node '{node_id}' uses model '{model}', "
+                    "but that model is not in the current allowed model set."
+                ),
+            )
+
+    return graph_json
 
 
 def _sanitize_base_url(base_url: str) -> str:
@@ -6142,6 +9722,369 @@ def _normalize_secret_ref(secret_ref: str, auth_type: str) -> str:
     return clean
 
 
+def _validated_integration_oauth_scope_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail="oauth2 scopes must be a list")
+
+    scopes: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise HTTPException(status_code=400, detail=f"oauth2 scopes[{index}] must be a string")
+        normalized = item.strip()
+        if not normalized:
+            continue
+        if len(normalized) > 256:
+            raise HTTPException(status_code=400, detail="oauth2 scopes contains an invalid entry")
+        if normalized not in scopes:
+            scopes.append(normalized)
+    return scopes
+
+
+def _normalize_integration_auth_metadata(
+    auth_type: str,
+    metadata_json: dict[str, Any],
+    *,
+    fallback_secret_ref: str,
+) -> dict[str, Any]:
+    raw_auth = metadata_json.get("auth") if isinstance(metadata_json.get("auth"), dict) else {}
+    auth = dict(raw_auth) if isinstance(raw_auth, dict) else {}
+
+    if auth_type == "api_key":
+        return {
+            "method": "api_key",
+            "location": str(auth.get("location") or "header").strip() or "header",
+            "key_name": str(auth.get("key_name") or "x-api-key").strip() or "x-api-key",
+        }
+
+    if auth_type == "bearer":
+        return {
+            "method": "bearer",
+            "prefix": str(auth.get("prefix") or "Bearer").strip() or "Bearer",
+        }
+
+    if auth_type == "basic":
+        return {
+            "method": "basic",
+            "username": str(auth.get("username") or "").strip(),
+        }
+
+    if auth_type != "oauth2":
+        return {"method": "none"}
+
+    provider = str(auth.get("provider") or "custom").strip().lower() or "custom"
+    if provider not in {"microsoft", "google", "salesforce", "custom"}:
+        provider = "custom"
+
+    grant_type = str(auth.get("grant_type") or "authorization_code").strip().lower()
+    if grant_type not in {"authorization_code", "client_credentials"}:
+        raise HTTPException(
+            status_code=400,
+            detail="oauth2 grant_type must be authorization_code or client_credentials",
+        )
+    if provider == "google" and grant_type == "client_credentials":
+        raise HTTPException(
+            status_code=400,
+            detail="oauth2 provider google does not support generic client_credentials connectors; use authorization_code or a custom provider flow",
+        )
+
+    authorize_url = str(auth.get("authorize_url") or "").strip()
+    if grant_type == "authorization_code":
+        if not authorize_url:
+            raise HTTPException(
+                status_code=400,
+                detail="oauth2 authorize_url is required for authorization_code connectors",
+            )
+        authorize_url = _normalize_absolute_http_url_allow_query(
+            authorize_url, setting_name="integration oauth authorize_url"
+        )
+
+    token_url = str(auth.get("token_url") or "").strip()
+    if not token_url:
+        raise HTTPException(status_code=400, detail="oauth2 token_url is required")
+    token_url = _normalize_absolute_http_url_allow_query(
+        token_url, setting_name="integration oauth token_url"
+    )
+
+    client_id = str(auth.get("client_id") or "").strip()
+    if not client_id:
+        raise HTTPException(status_code=400, detail="oauth2 client_id is required")
+
+    return {
+        "method": "oauth2",
+        "provider": provider,
+        "grant_type": grant_type,
+        "authorize_url": authorize_url,
+        "token_url": token_url,
+        "client_id": client_id,
+        "scopes": _validated_integration_oauth_scope_list(auth.get("scopes")),
+        "audience": str(auth.get("audience") or "").strip(),
+        "resource": str(auth.get("resource") or "").strip(),
+        "tenant": str(auth.get("tenant") or "").strip(),
+        "redirect_path": _safe_post_auth_redirect_path(
+            str(auth.get("redirect_path") or "/builder/integrations")
+        ),
+        "client_secret_ref": _normalize_secret_ref(
+            str(auth.get("client_secret_ref") or fallback_secret_ref or ""), "oauth2"
+        ),
+        "token_secret_ref": _normalize_secret_ref(
+            str(auth.get("token_secret_ref") or ""), "oauth2"
+        ),
+        "refresh_token_secret_ref": _normalize_secret_ref(
+            str(auth.get("refresh_token_secret_ref") or ""), "oauth2"
+        ),
+        "account_label": str(auth.get("account_label") or "").strip(),
+    }
+
+
+def _integration_oauth_auth(integration: IntegrationDefinition) -> dict[str, Any]:
+    if integration.auth_type != "oauth2":
+        return {}
+    metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+    auth = metadata.get("auth") if isinstance(metadata.get("auth"), dict) else {}
+    return dict(auth) if isinstance(auth, dict) else {}
+
+
+def _integration_oauth_session(integration: IntegrationDefinition) -> dict[str, Any]:
+    metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+    session = (
+        metadata.get("oauth_session") if isinstance(metadata.get("oauth_session"), dict) else {}
+    )
+    return dict(session) if isinstance(session, dict) else {}
+
+
+def _masked_integration_auth_metadata(integration: IntegrationDefinition) -> dict[str, Any]:
+    metadata = (
+        dict(integration.metadata_json) if isinstance(integration.metadata_json, dict) else {}
+    )
+    auth = (
+        _integration_oauth_auth(integration)
+        if integration.auth_type == "oauth2"
+        else read_dict(metadata.get("auth"))
+    )
+    if integration.auth_type != "oauth2":
+        metadata["auth"] = auth
+        return metadata
+
+    masked_auth = dict(auth)
+    for field_name in ("client_secret_ref", "token_secret_ref", "refresh_token_secret_ref"):
+        if field_name in masked_auth:
+            masked_auth[field_name] = _mask_secret_ref(str(masked_auth.get(field_name) or ""))
+    metadata["auth"] = masked_auth
+
+    session = _integration_oauth_session(integration)
+    if session:
+        metadata["oauth_session"] = {
+            "connected_at": session.get("connected_at"),
+            "expires_at": session.get("expires_at"),
+            "token_type": session.get("token_type") or "Bearer",
+            "account_label": session.get("account_label") or masked_auth.get("account_label") or "",
+            "pending": bool(session.get("pending_state")),
+            "has_access_token": bool(str(session.get("access_token_encrypted") or "").strip()),
+            "has_refresh_token": bool(
+                str(session.get("refresh_token_encrypted") or "").strip()
+                or str(masked_auth.get("refresh_token_secret_ref") or "").strip()
+            ),
+            "last_error": str(session.get("last_error") or "").strip(),
+        }
+    return metadata
+
+
+def read_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _integration_oauth_callback_url(request: Request, integration_id: str) -> str:
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/integrations/{urllib_parse.quote(integration_id, safe='')}/oauth/callback"
+
+
+def _append_query_values(url: str, values: dict[str, str]) -> str:
+    parsed = urlsplit(url)
+    existing = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)]
+    existing.extend((key, value) for key, value in values.items())
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(existing, doseq=True),
+            parsed.fragment,
+        )
+    )
+
+
+def _integration_oauth_status_payload(
+    integration: IntegrationDefinition,
+    request: Request | None = None,
+) -> dict[str, Any]:
+    auth = _integration_oauth_auth(integration)
+    session = _integration_oauth_session(integration)
+    has_access_token = bool(str(session.get("access_token_encrypted") or "").strip())
+    has_refresh_token = bool(
+        str(session.get("refresh_token_encrypted") or "").strip()
+        or str(auth.get("refresh_token_secret_ref") or "").strip()
+    )
+    return IntegrationOAuthStatus(
+        id=integration.id,
+        provider=str(auth.get("provider") or ""),
+        grant_type=str(auth.get("grant_type") or ""),
+        connected=has_access_token,
+        pending=bool(session.get("pending_state")),
+        scopes=list(auth.get("scopes") or []),
+        authorize_url=str(auth.get("authorize_url") or ""),
+        token_url=str(auth.get("token_url") or ""),
+        client_id=str(auth.get("client_id") or ""),
+        redirect_uri=_integration_oauth_callback_url(request, integration.id) if request else "",
+        account_label=str(session.get("account_label") or auth.get("account_label") or ""),
+        expires_at=str(session.get("expires_at") or "").strip() or None,
+        has_client_secret=bool(
+            str(auth.get("client_secret_ref") or integration.secret_ref).strip()
+        ),
+        has_refresh_token=has_refresh_token,
+        has_access_token=has_access_token,
+        last_error=str(session.get("last_error") or "").strip(),
+    ).model_dump()
+
+
+def _build_integration_starter_catalog() -> list[IntegrationStarterTemplate]:
+    return [IntegrationStarterTemplate(**seed) for seed in INTEGRATION_STARTER_TEMPLATE_SEEDS]
+
+
+def _build_mcp_starter_catalog() -> list[MCPStarterTemplate]:
+    return [MCPStarterTemplate(**seed) for seed in MCP_STARTER_TEMPLATE_SEEDS]
+
+
+def _resolve_mcp_starter(starter_id: str) -> MCPStarterTemplate | None:
+    normalized = str(starter_id or "").strip().lower()
+    if not normalized:
+        return None
+    for starter in _build_mcp_starter_catalog():
+        if starter.id.lower() == normalized:
+            return starter
+    return None
+
+
+def _store_integration_oauth_session(
+    integration: IntegrationDefinition,
+    *,
+    session_update: dict[str, Any],
+) -> None:
+    metadata = (
+        dict(integration.metadata_json) if isinstance(integration.metadata_json, dict) else {}
+    )
+    session = _integration_oauth_session(integration)
+    session.update(session_update)
+    metadata["oauth_session"] = session
+    integration.metadata_json = metadata
+    store.integrations[integration.id] = integration
+
+
+def _exchange_integration_oauth_token(
+    integration: IntegrationDefinition,
+    *,
+    grant_type: Literal["authorization_code", "client_credentials", "refresh_token"],
+    code: str = "",
+    redirect_uri: str = "",
+) -> dict[str, Any]:
+    auth = _integration_oauth_auth(integration)
+    client_secret_ref = str(auth.get("client_secret_ref") or integration.secret_ref or "").strip()
+    client_secret = _resolve_secret_ref_value(client_secret_ref)
+    payload: dict[str, Any] = {
+        "grant_type": grant_type,
+        "client_id": str(auth.get("client_id") or "").strip(),
+    }
+    if client_secret:
+        payload["client_secret"] = client_secret
+    if auth.get("scopes"):
+        payload["scope"] = " ".join(
+            str(item).strip() for item in auth.get("scopes") or [] if str(item).strip()
+        )
+    if auth.get("audience"):
+        payload["audience"] = str(auth.get("audience") or "").strip()
+    if auth.get("resource"):
+        payload["resource"] = str(auth.get("resource") or "").strip()
+
+    if grant_type == "authorization_code":
+        payload["code"] = code
+        payload["redirect_uri"] = redirect_uri
+    elif grant_type == "refresh_token":
+        session = _integration_oauth_session(integration)
+        refresh_token = ""
+        if str(session.get("refresh_token_encrypted") or "").strip():
+            refresh_token = _decrypt_provider_secret(
+                str(session.get("refresh_token_encrypted") or "")
+            )
+        elif str(auth.get("refresh_token_secret_ref") or "").strip():
+            refresh_token = _resolve_secret_ref_value(
+                str(auth.get("refresh_token_secret_ref") or "")
+            )
+        if not refresh_token:
+            raise HTTPException(
+                status_code=409, detail="No refresh token is configured for this integration"
+            )
+        payload["refresh_token"] = refresh_token
+
+    token_url = str(auth.get("token_url") or "").strip()
+    try:
+        response = httpx.post(
+            token_url,
+            data=payload,
+            headers={"Accept": "application/json"},
+            timeout=httpx.Timeout(10.0, connect=5.0),
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502, detail=f"OAuth token exchange failed: {str(exc)[:180]}"
+        ) from exc
+
+    token_payload = response.json()
+    if (
+        not isinstance(token_payload, dict)
+        or not str(token_payload.get("access_token") or "").strip()
+    ):
+        raise HTTPException(status_code=502, detail="OAuth token exchange returned no access token")
+    return token_payload
+
+
+def _persist_integration_oauth_tokens(
+    integration: IntegrationDefinition,
+    token_payload: dict[str, Any],
+    *,
+    pending: bool = False,
+) -> None:
+    access_token = str(token_payload.get("access_token") or "").strip()
+    refresh_token = str(token_payload.get("refresh_token") or "").strip()
+    expires_in_raw = token_payload.get("expires_in")
+    expires_at = ""
+    if isinstance(expires_in_raw, (int, float)) and expires_in_raw > 0:
+        expires_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=float(expires_in_raw))
+        ).isoformat()
+
+    session = _integration_oauth_session(integration)
+    session.update(
+        {
+            "access_token_encrypted": _encrypt_provider_secret(access_token),
+            "token_type": str(token_payload.get("token_type") or "Bearer").strip() or "Bearer",
+            "connected_at": _now_iso(),
+            "expires_at": expires_at,
+            "account_label": str(
+                token_payload.get("account_label") or session.get("account_label") or ""
+            ).strip(),
+            "last_error": "",
+            "pending_state": "" if not pending else str(session.get("pending_state") or ""),
+            "pending_return_to": "" if not pending else str(session.get("pending_return_to") or ""),
+        }
+    )
+    if refresh_token:
+        session["refresh_token_encrypted"] = _encrypt_provider_secret(refresh_token)
+    _store_integration_oauth_session(integration, session_update=session)
+
+
 def _normalize_string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -6149,6 +10092,91 @@ def _normalize_string_list(value: Any) -> list[str]:
     for item in value:
         text = str(item).strip()
         if text and text not in normalized:
+            normalized.append(text)
+    return normalized
+
+
+def _validated_integration_label_list(value: Any, *, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a list")
+    if len(value) > 128:
+        raise HTTPException(status_code=400, detail=f"{field_name} has too many entries")
+
+    normalized: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{field_name}[{index}] must be a string",
+            )
+        text = item.strip()
+        if not text:
+            continue
+        if len(text) > 256 or not re.fullmatch(r"/?[A-Za-z0-9][A-Za-z0-9._:/@+-]*", text):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{field_name} contains an invalid entry",
+            )
+        if text not in normalized:
+            normalized.append(text)
+    return normalized
+
+
+def _validated_integration_egress_allowlist(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail="egress_allowlist must be a list")
+    if len(value) > 128:
+        raise HTTPException(status_code=400, detail="egress_allowlist has too many entries")
+
+    normalized: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"egress_allowlist[{index}] must be a string",
+            )
+        text = item.strip()
+        if not text:
+            continue
+        if len(text) > 512 or re.search(r"\s", text):
+            raise HTTPException(
+                status_code=400,
+                detail="egress_allowlist contains an invalid entry",
+            )
+
+        parsed = urllib_parse.urlsplit(text) if "://" in text else None
+        if parsed is not None:
+            if parsed.scheme not in {
+                "http",
+                "https",
+                "postgres",
+                "postgresql",
+                "redis",
+                "rediss",
+                "amqp",
+                "amqps",
+                "nats",
+            }:
+                raise HTTPException(
+                    status_code=400,
+                    detail="egress_allowlist contains an unsupported URL scheme",
+                )
+            if not parsed.netloc or parsed.username or parsed.password:
+                raise HTTPException(
+                    status_code=400,
+                    detail="egress_allowlist contains an invalid entry",
+                )
+        elif not re.fullmatch(r"\*?\.?[A-Za-z0-9][A-Za-z0-9.-]*(?::[0-9]{1,5})?", text):
+            raise HTTPException(
+                status_code=400,
+                detail="egress_allowlist contains an invalid entry",
+            )
+
+        if text not in normalized:
             normalized.append(text)
     return normalized
 
@@ -6215,9 +10243,21 @@ def _evaluate_integration_policy(
 
 def _build_integration_diagnostics(integration: IntegrationDefinition) -> dict[str, Any]:
     has_base_url = bool(integration.base_url.strip())
+    oauth_auth = _integration_oauth_auth(integration)
+    oauth_secret_refs = [
+        str(oauth_auth.get("client_secret_ref") or "").strip(),
+        str(oauth_auth.get("token_secret_ref") or "").strip(),
+        str(oauth_auth.get("refresh_token_secret_ref") or "").strip(),
+    ]
     secret_required = integration.auth_type != "none"
-    has_secret_ref = bool(integration.secret_ref.strip())
-    has_secret_path = integration.secret_ref.startswith("secret/") if has_secret_ref else False
+    has_secret_ref = bool(integration.secret_ref.strip()) or any(oauth_secret_refs)
+    has_secret_path = (
+        integration.secret_ref.startswith("secret/") if integration.secret_ref.strip() else False
+    )
+    if not has_secret_path:
+        has_secret_path = any(
+            secret_ref.startswith("secret/") for secret_ref in oauth_secret_refs if secret_ref
+        )
     has_embedded_credentials = bool(re.search(r"://[^/@\s:]+:[^@\s]+@", integration.base_url))
     uses_secure_transport = integration.base_url.startswith(
         "https://"
@@ -6265,7 +10305,69 @@ def _integration_response_payload(integration: IntegrationDefinition) -> dict[st
     payload["secret_ref"] = _mask_secret_ref(integration.secret_ref)
     payload["secret_configured"] = bool(integration.secret_ref.strip())
     payload["base_url"] = _sanitize_base_url(integration.base_url)
+    payload["metadata_json"] = _masked_integration_auth_metadata(integration)
+    payload["oauth_status"] = _integration_oauth_status_payload(integration)
     return payload
+
+
+def _mcp_connection_response_payload(connection: MCPConnectionDefinition) -> dict[str, Any]:
+    payload = connection.model_dump()
+    payload["secret_ref"] = _mask_secret_ref(connection.secret_ref)
+    payload["secret_configured"] = bool(connection.secret_ref.strip())
+    payload["server_url"] = _sanitize_base_url(connection.server_url)
+    return payload
+
+
+def _evaluate_mcp_connection_validation(
+    connection: MCPConnectionDefinition, platform: PlatformSettings
+) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    normalized_server_url = ""
+    raw_server_url = str(connection.server_url or "").strip()
+    if not raw_server_url:
+        errors.append("server_url is required")
+    else:
+        try:
+            normalized_server_url = _validated_platform_mcp_server_urls(
+                [raw_server_url], field_name="server_url"
+            )[0]
+        except HTTPException as exc:
+            errors.append(str(exc.detail))
+
+    if normalized_server_url:
+        if normalized_server_url not in platform.allowed_mcp_server_urls:
+            errors.append("server_url must be present in allowed_mcp_server_urls")
+        if platform.mcp_require_local_server and not _is_local_network_url(
+            normalized_server_url, platform.allow_local_network_hostnames
+        ):
+            errors.append(
+                "server_url must be local/private when mcp_require_local_server is enabled"
+            )
+
+    if connection.auth_type != "none" and not connection.secret_ref.strip():
+        errors.append("auth_type requires a secret_ref")
+
+    if not connection.capabilities:
+        warnings.append("capabilities is empty; declare least-privilege MCP tool scopes")
+    if not connection.permission_scopes:
+        warnings.append("permission_scopes is empty; declare least-privilege permission scopes")
+    if not connection.data_access:
+        warnings.append("data_access is empty; declare accessed MCP data categories")
+    if not connection.egress_allowlist:
+        warnings.append("egress_allowlist is empty; declare MCP egress hosts")
+    else:
+        server_host = _extract_host(normalized_server_url or raw_server_url)
+        if server_host and server_host not in connection.egress_allowlist:
+            warnings.append("egress_allowlist does not include the MCP server host")
+
+    return {
+        "ok": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "checked_server_url": normalized_server_url or raw_server_url,
+    }
 
 
 def _build_template_catalog() -> list[TemplateCatalogItem]:
@@ -6299,6 +10401,7 @@ def _build_template_catalog() -> list[TemplateCatalogItem]:
         )
 
     for playbook in store.playbooks.values():
+        normalized_status = _normalize_playbook_status(playbook.status, default="draft")
         items.append(
             TemplateCatalogItem(
                 id=f"template-playbook:{playbook.id}",
@@ -6307,7 +10410,7 @@ def _build_template_catalog() -> list[TemplateCatalogItem]:
                 name=playbook.name,
                 description=playbook.description,
                 category=str(playbook.category),
-                status=playbook.status,
+                status="deprecated" if normalized_status == "archived" else "active",
                 version=int(playbook.metadata_json.get("template_version", 1))
                 if isinstance(playbook.metadata_json, dict)
                 else 1,
@@ -6445,9 +10548,17 @@ def _evaluate_guardrail(candidate: Any, config: dict[str, Any], stage: str) -> d
                 r"bypass\s+(all\s+)?guardrails",
                 r"developer\s+mode",
                 r"do\s+anything\s+now",
-                r"jailbreak",
             ]
-            if any(re.search(pattern, lowered_text) for pattern in prompt_injection_patterns):
+            jailbreak_context_patterns = [
+                r"\b(?:how|ways?|help|show|teach|tell|explain|provide|give|write|craft|generate)\b.{0,32}\bjailbreak\b",
+                r"\bjailbreak\b.{0,32}\b(?:prompt|payload|method|technique|instructions?|steps?|guide|exploit|attack)\b",
+                r"\bjailbreak\s+(?:the\s+)?(?:model|assistant|system|guardrails?|filters?)\b",
+                r"\b(?:use|run|attempt|perform|execute)\b.{0,24}\bjailbreak\b",
+            ]
+            prompt_injection_detected = any(
+                re.search(pattern, lowered_text) for pattern in prompt_injection_patterns
+            ) or any(re.search(pattern, lowered_text) for pattern in jailbreak_context_patterns)
+            if prompt_injection_detected:
                 findings.append(
                     {
                         "code": "PROMPT_INJECTION_SIGNAL",
@@ -6867,6 +10978,52 @@ def _execute_node(
         manifold_result["framework_meta"] = manifold_meta
         return manifold_result
 
+    if node_type == "frontier/router":
+        by_port = incoming_by_port or {}
+        candidate_inputs = _port_values(by_port, "candidate", "data", "payload")
+        context_inputs = _port_values(by_port, "context")
+        candidate_payload = (
+            candidate_inputs[-1] if candidate_inputs else (incoming[-1] if incoming else run_input)
+        )
+        context_payload = context_inputs[-1] if context_inputs else {}
+        return _execute_router_node(node, candidate_payload, context_payload)
+
+    if node_type == "frontier/iterator":
+        by_port = incoming_by_port or {}
+        items_inputs = _port_values(by_port, "items", "data", "payload")
+        context_inputs = _port_values(by_port, "context")
+        items_payload = items_inputs[-1] if items_inputs else (incoming[-1] if incoming else [])
+        context_payload = context_inputs[-1] if context_inputs else {}
+        return _execute_iterator_node(node, items_payload, context_payload)
+
+    if node_type == "frontier/transform":
+        by_port = incoming_by_port or {}
+        source_inputs = _port_values(by_port, "source", "data", "payload")
+        context_inputs = _port_values(by_port, "context")
+        source_payload = (
+            source_inputs[-1] if source_inputs else (incoming[-1] if incoming else run_input)
+        )
+        context_payload = context_inputs[-1] if context_inputs else {}
+        return _execute_transform_node(node, source_payload, context_payload)
+
+    if node_type == "frontier/event":
+        by_port = incoming_by_port or {}
+        payload_inputs = _port_values(by_port, "payload", "data", "result")
+        context_inputs = _port_values(by_port, "context")
+        payload_value = (
+            payload_inputs[-1] if payload_inputs else (incoming[-1] if incoming else run_input)
+        )
+        context_payload = context_inputs[-1] if context_inputs else {}
+        return _execute_event_node(node, payload_value, context_payload, execution_state, run_input)
+
+    if node_type == "frontier/data-store":
+        by_port = incoming_by_port or {}
+        record_inputs = _port_values(by_port, "record", "data", "payload", "result")
+        context_inputs = _port_values(by_port, "context")
+        record_payload = record_inputs[-1] if record_inputs else (incoming[-1] if incoming else {})
+        context_payload = context_inputs[-1] if context_inputs else {}
+        return _execute_data_store_node(node, record_payload, context_payload, execution_state)
+
     if node_type.startswith("frontier/agent"):
         by_port = incoming_by_port or {}
         prompt_inputs = _port_values(by_port, "prompt")
@@ -6942,7 +11099,30 @@ def _execute_node(
             f"- {_safe_json(item)[:300]}" for item in retrieval_inputs[-6:]
         )
 
+        node_runtime_policy = _effective_chat_runtime_policy(
+            {
+                "assembly_policy": execution_state.get("assembly_policy")
+                if isinstance(execution_state.get("assembly_policy"), dict)
+                else {},
+                "tenant_runtime_policy": execution_state.get("tenant_runtime_policy")
+                if isinstance(execution_state.get("tenant_runtime_policy"), dict)
+                else {},
+            }
+        )
+        node_provider = str(node.config.get("provider") or runtime.get("provider") or "openai")
+        _enforce_chat_provider_policy(
+            _normalize_chat_provider(node_provider),
+            node_runtime_policy,
+            context_label=f"Graph agent node '{node.id}'",
+        )
+        allowed_models = [
+            str(item).strip() for item in runtime.get("available_models", []) if str(item).strip()
+        ]
+        agent_id = str(node.config.get("agent_id") or "").strip()
+        agent_skills = _normalize_skill_paths(node.config.get("skills"))
         model = str(node.config.get("model") or runtime.get("model") or _default_openai_model())
+        if allowed_models and model not in allowed_models:
+            model = str(runtime.get("model") or allowed_models[0] or model)
         temperature_raw = node.config.get("temperature", runtime.get("temperature", 0.2))
         try:
             temperature = max(0.0, min(1.5, float(temperature_raw)))
@@ -6990,10 +11170,23 @@ def _execute_node(
             f"Memory port context:\n{memory_port_context or '- none'}\n\n"
             f"Retrieval context:\n{retrieval_context or '- none'}"
         )
+        if agent_skills:
+            user_prompt += "\n\nActivated skills:\n" + "\n".join(
+                f"- {skill}" for skill in agent_skills
+            )
         node_runtime = _resolve_node_runtime_engine(runtime_info, role)
         selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
         executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
         node_runtime_mode = str(node_runtime.get("mode") or runtime_info.get("mode") or "native")
+        runtime_request_payload = {
+            "agent_id": agent_id,
+            "node_id": node.id,
+            "node_title": node.title,
+            "role": role,
+            "model": model,
+            "temperature": temperature,
+            "skills": list(agent_skills),
+        }
 
         # WS1: Conversation history support
         conversation_messages: list[dict[str, str]] | None = None
@@ -7034,6 +11227,7 @@ def _execute_node(
                 user_prompt=user_prompt,
                 model=model,
                 temperature=temperature,
+                runtime=runtime,
             )
         else:
             response_text, model_meta = _run_openai_chat(
@@ -7042,6 +11236,7 @@ def _execute_node(
                 model=model,
                 temperature=temperature,
                 messages=conversation_messages,
+                runtime=runtime,
             )
 
         # WS1: Persist conversation state after LLM call
@@ -7072,6 +11267,7 @@ def _execute_node(
         model_meta["runtime_mode"] = node_runtime_mode
         model_meta["runtime_strategy"] = str(runtime_info.get("strategy") or "single")
         model_meta["runtime_role"] = role
+        model_meta["request"] = runtime_request_payload
         prior_agent_outputs.append(f"{node.title}: {response_text[:240]}")
 
         # WS2: Session auto-notes
@@ -7143,8 +11339,9 @@ def _execute_node(
                 "recommended": "tool/unspecified",
                 "reason": "Agent may delegate follow-up tool/API calls.",
                 "request": {
-                    "agent_id": node.config.get("agent_id"),
+                    "agent_id": agent_id,
                     "message": response_text,
+                    "skills": list(agent_skills),
                 },
             },
             "tool_api": {
@@ -7156,8 +11353,9 @@ def _execute_node(
             },
             "guardrail": guardrail_inputs[-1] if guardrail_inputs else {"status": "none"},
             "state_delta": {
-                "agent_id": node.config.get("agent_id"),
+                "agent_id": agent_id,
                 "node_id": node.id,
+                "skills": list(agent_skills),
             },
             "model": model_meta,
             "session_id": session_id,
@@ -7224,6 +11422,55 @@ def _execute_node(
         mcp_server_url = str(
             tool_config.get("mcp_server_url") or tool_config.get("server_url") or ""
         ).strip()
+        mcp_connection_id = str(tool_config.get("mcp_connection_id") or "").strip()
+        mcp_connection = store.mcp_connections.get(mcp_connection_id) if mcp_connection_id else None
+        integration_id = str(
+            tool_config.get("integration_id") or tool_config.get("tool_id") or ""
+        ).strip()
+        integration = store.integrations.get(integration_id)
+        if mcp_connection_id:
+            if mcp_connection is None:
+                return {
+                    "tool_output": {
+                        "ok": False,
+                        "rejected": True,
+                        "message": "Tool call rejected: staged MCP connection was not found.",
+                    },
+                    "status": {"state": "policy_rejected"},
+                    "policy": {
+                        "control": "mcp_connection_required",
+                        "requested_connection_id": mcp_connection_id,
+                    },
+                }
+            if mcp_connection.status != "approved":
+                return {
+                    "tool_output": {
+                        "ok": False,
+                        "rejected": True,
+                        "message": "Tool call rejected: staged MCP connection is not approved.",
+                    },
+                    "status": {"state": "policy_rejected"},
+                    "policy": {
+                        "control": "mcp_connection_approval_required",
+                        "requested_connection_id": mcp_connection_id,
+                        "status": mcp_connection.status,
+                    },
+                }
+            if not mcp_server_url:
+                mcp_server_url = str(mcp_connection.server_url or "").strip()
+            if not endpoint_url:
+                endpoint_url = mcp_server_url
+            if tool_id in {"", "tool/unspecified"}:
+                tool_id = "tool/mcp"
+            tool_config = dict(tool_config)
+            tool_config["mcp_connection_id"] = mcp_connection_id
+            tool_config["mcp_server_url"] = mcp_server_url
+            if endpoint_url:
+                tool_config.setdefault("server_url", endpoint_url)
+        if integration is not None and tool_id in {"", "tool/unspecified"}:
+            tool_id = integration.id
+        if integration is not None and not endpoint_url:
+            endpoint_url = str(integration.base_url or "").strip()
 
         if (
             platform.enforce_egress_allowlist
@@ -7322,6 +11569,99 @@ def _execute_node(
             if _port_values(by_port, "context", "auth_context", "data")
             else {}
         )
+        skill_hints = _extract_tool_request_skills(request_payload, context_payload)
+        request_payload = _merge_request_payload_skills(request_payload, skill_hints)
+        routed_integration, tool_selection_meta = _resolve_skill_routed_integration(
+            tool_id, skill_hints
+        )
+        if (
+            routed_integration is not None
+            and not endpoint_url
+            and not mcp_server_url
+            and (
+                tool_id in {"", "tool/unspecified"}
+                or tool_id.startswith("tool/")
+                or tool_id == routed_integration.id
+            )
+        ):
+            tool_id = routed_integration.id
+            endpoint_url = str(routed_integration.base_url or "").strip()
+        active_integration = routed_integration or integration
+        if (
+            platform.enforce_egress_allowlist
+            and endpoint_url
+            and not _is_host_allowed(endpoint_url, platform.allowed_egress_hosts)
+        ):
+            return {
+                "tool_output": {
+                    "ok": False,
+                    "rejected": True,
+                    "message": f"Tool call rejected: host not in allowlist ({_extract_host(endpoint_url) or 'unknown'}).",
+                },
+                "status": {"state": "policy_rejected"},
+                "policy": {
+                    "control": "egress_allowlist",
+                    "allowed_hosts": platform.allowed_egress_hosts,
+                },
+            }
+        if (
+            platform.enforce_local_network_only
+            and endpoint_url
+            and not _is_local_network_url(endpoint_url, platform.allow_local_network_hostnames)
+        ):
+            return {
+                "tool_output": {
+                    "ok": False,
+                    "rejected": True,
+                    "message": "Tool call rejected: endpoint must be local/private in local-network-only mode.",
+                },
+                "status": {"state": "policy_rejected"},
+                "policy": {
+                    "control": "local_network_only",
+                    "requested_endpoint": endpoint_url,
+                },
+            }
+        if (
+            active_integration is not None
+            and active_integration.egress_allowlist
+            and endpoint_url
+            and not _is_host_allowed(endpoint_url, active_integration.egress_allowlist)
+        ):
+            return {
+                "tool_output": {
+                    "ok": False,
+                    "rejected": True,
+                    "message": "Tool call rejected: integration egress policy does not allow endpoint host.",
+                },
+                "status": {"state": "policy_rejected"},
+                "policy": {
+                    "control": "integration_egress_allowlist",
+                    "requested_host": _extract_host(endpoint_url),
+                    "allowed_hosts": active_integration.egress_allowlist,
+                    "integration_id": active_integration.id,
+                },
+            }
+        tool_policy_rejection = _admit_graph_tool_policy(
+            node=node,
+            execution_state=execution_state,
+            tool_id=tool_id,
+            endpoint_url=endpoint_url,
+            mcp_server_url=mcp_server_url,
+            integration=active_integration,
+            skill_routed=routed_integration is not None,
+        )
+        if tool_policy_rejection is not None:
+            if mcp_connection_id:
+                policy_payload = (
+                    tool_policy_rejection.get("policy")
+                    if isinstance(tool_policy_rejection.get("policy"), dict)
+                    else {}
+                )
+                tool_policy_rejection["policy"] = {
+                    **policy_payload,
+                    "mcp_connection_id": mcp_connection_id,
+                }
+            return tool_policy_rejection
         if isinstance(tool_input_guardrail, dict):
             input_payload = {
                 "request": request_payload,
@@ -7349,6 +11689,7 @@ def _execute_node(
                 tool_id=tool_id,
                 request_payload=request_payload,
                 context_payload=context_payload,
+                skill_hints=skill_hints,
                 call_index=tool_calls,
                 endpoint_url=endpoint_url,
                 method=str(tool_config.get("method") or "POST"),
@@ -7368,14 +11709,27 @@ def _execute_node(
             if isinstance(delegated_meta, dict):
                 tool_result_payload["framework_meta"] = delegated_meta
         else:
-            tool_result_payload = _simulate_tool_execution_payload(
-                tool_id=tool_id,
-                request_payload=request_payload,
-                context_payload=context_payload,
-                call_index=tool_calls,
-                endpoint_url=endpoint_url,
-                method=str(tool_config.get("method") or "POST"),
-            )
+            try:
+                tool_result_payload = _execute_native_tool_call(
+                    tool_id=tool_id,
+                    tool_config=tool_config,
+                    request_payload=request_payload,
+                    context_payload=context_payload,
+                    skill_hints=skill_hints,
+                    call_index=tool_calls,
+                    endpoint_url=endpoint_url,
+                    method=str(tool_config.get("method") or "POST"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                tool_result_payload = {
+                    "ok": False,
+                    "rejected": True,
+                    "message": f"Tool call failed: {exc}",
+                    "tool_id": tool_id,
+                    "call_index": tool_calls,
+                    "endpoint_url": _sanitize_base_url(endpoint_url),
+                    "method": str(tool_config.get("method") or "POST"),
+                }
             tool_result_payload["framework"] = "native"
             tool_result_payload["executed_engine"] = "native"
             tool_result_payload["runtime_mode"] = "native"
@@ -7405,6 +11759,18 @@ def _execute_node(
             result["guardrail"] = postcheck
 
         result["tool_output"] = result["result"]
+        if mcp_connection_id:
+            if isinstance(result["result"], dict):
+                result["result"].setdefault("mcp_connection_id", mcp_connection_id)
+            result["policy"] = {
+                **(result.get("policy") if isinstance(result.get("policy"), dict) else {}),
+                "mcp_connection_id": mcp_connection_id,
+            }
+        if tool_selection_meta:
+            result["policy"] = {
+                **(result.get("policy") if isinstance(result.get("policy"), dict) else {}),
+                "tool_selection": tool_selection_meta,
+            }
 
         return result
 
@@ -7443,6 +11809,14 @@ def _execute_node(
         )
         source_id = str(retrieval_config.get("source_id") or "kb://default")
         source_url = str(retrieval_config.get("source_url") or "").strip()
+        retrieval_policy_rejection = _admit_graph_retrieval_policy(
+            node=node,
+            execution_state=execution_state,
+            source_id=source_id,
+            source_url=source_url,
+        )
+        if retrieval_policy_rejection is not None:
+            return retrieval_policy_rejection
 
         retrieval_calls = int(execution_state.get("retrieval_call_count") or 0) + 1
         execution_state["retrieval_call_count"] = retrieval_calls
@@ -7515,11 +11889,13 @@ def _execute_node(
             if not isinstance(docs, list):
                 docs = []
         else:
-            docs = [
-                {"id": f"doc-{i}", "score": round(0.95 - (i * 0.04), 2), "source": source_id}
-                for i in range(1, doc_count + 1)
-            ]
-            grounding_context = f"Retrieved {len(docs)} context documents from trusted source."
+            docs, grounding_context = _native_retrieval_documents(
+                query_payload=query_payload,
+                source_id=source_id,
+                source_url=source_url,
+                top_k=doc_count,
+                execution_state=execution_state,
+            )
             retrieval_meta = {"framework": "native", "mode": "live"}
 
         return {
@@ -7739,6 +12115,22 @@ def _execute_node(
         review_result["framework_meta"] = review_meta
         return review_result
 
+    if node_type == "frontier/error-handler":
+        by_port = incoming_by_port or {}
+        error_inputs = _port_values(by_port, "error", "data", "result")
+        context_inputs = _port_values(by_port, "context")
+        error_payload = error_inputs[-1] if error_inputs else (incoming[-1] if incoming else {})
+        context_payload = context_inputs[-1] if context_inputs else {}
+        return _execute_error_handler_node(node, error_payload, context_payload)
+
+    if node_type == "frontier/wait":
+        by_port = incoming_by_port or {}
+        resume_inputs = _port_values(by_port, "resume_payload", "data", "payload")
+        resume_payload = (
+            resume_inputs[-1] if resume_inputs else (incoming[-1] if incoming else run_input)
+        )
+        return _execute_wait_node(node, resume_payload)
+
     if node_type == "frontier/output":
         by_port = incoming_by_port or {}
         result_inputs = _port_values(
@@ -7919,6 +12311,7 @@ class InMemoryStore:
                 status="Running",
                 updatedAt="2m ago",
                 progressLabel="Step 3/6",
+                kind="workflow",
             )
         }
 
@@ -7992,6 +12385,10 @@ class InMemoryStore:
                 },
             }
         }
+        self.run_streams: dict[str, list[dict[str, Any]]] = {
+            "11111111-1111-4111-8111-111111111111": []
+        }
+        self.run_stream_complete: dict[str, bool] = {"11111111-1111-4111-8111-111111111111": False}
 
         self.artifacts: list[ArtifactSummary] = [
             ArtifactSummary(
@@ -8019,6 +12416,10 @@ class InMemoryStore:
             )
         ]
         self.memory_by_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self.user_runtime_provider_configs: dict[
+            str, dict[str, StoredUserRuntimeProviderConfig]
+        ] = {}
+        self.user_skills: dict[str, StoredUserSkills] = {}
 
         self.integrations: dict[str, IntegrationDefinition] = {
             "int-http-001": IntegrationDefinition(
@@ -8042,6 +12443,7 @@ class InMemoryStore:
                 metadata_json={"schema": "public"},
             ),
         }
+        self.mcp_connections: dict[str, MCPConnectionDefinition] = {}
 
         self.agent_templates: dict[str, AgentTemplate] = {
             "tpl-agent-research": AgentTemplate(
@@ -8786,6 +13188,23 @@ def _normalize_origin_url(value: str, *, setting_name: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, "", "", ""))
 
 
+def _normalize_absolute_http_url_allow_query(value: str, *, setting_name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{setting_name} must be a non-empty absolute http(s) URL")
+    parts = urlsplit(text)
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        raise ValueError(f"{setting_name} must be an absolute http(s) URL")
+    if parts.username or parts.password:
+        raise ValueError(f"{setting_name} must not include userinfo")
+    if parts.fragment:
+        raise ValueError(f"{setting_name} must not include a fragment")
+    normalized_path = parts.path.rstrip("/")
+    return urlunsplit(
+        (parts.scheme.lower(), parts.netloc.lower(), normalized_path, parts.query, "")
+    )
+
+
 def _configured_trusted_oidc_issuers() -> set[str]:
     trusted: set[str] = set()
     raw = str(os.getenv("FRONTIER_AUTH_TRUSTED_ISSUERS") or "").strip()
@@ -8905,6 +13324,8 @@ def _request_uses_local_operator_oidc(request: Request | None) -> bool:
         return False
     auth_context = getattr(request.state, "frontier_auth_context", None)
     if not isinstance(auth_context, dict) or not auth_context.get("used_bearer_token"):
+        return False
+    if auth_context.get("bearer_auth_kind") == "static":
         return False
     if _active_runtime_profile().name != "local-secure":
         return False
@@ -9033,6 +13454,7 @@ def _startup_requires_a2a_secret() -> bool:
 def _validate_runtime_security_configuration() -> None:
     _cors_allowed_origins()
     _configured_operator_oidc()
+    _validate_secure_profile_deployment()
     if _startup_requires_a2a_secret():
         _a2a_signing_secret()
 
@@ -9609,7 +14031,7 @@ def _append_audit_event(
     outcome: Literal["allowed", "blocked", "error"],
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    audit_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    audit_metadata = redact_sensitive_payload(dict(metadata)) if isinstance(metadata, dict) else {}
     audit_event = AuditEvent(
         id=str(uuid4()),
         action=action,
@@ -9635,6 +14057,73 @@ def _append_audit_event(
         newest_metadata["audit_store_limit"] = 2000
         newest.metadata = newest_metadata
         store.audit_events = store.audit_events[:2000]
+
+
+_CORTICAL_REASON_CODES = {
+    "": "ok",
+    "allowed": "ok",
+    "committed": "commitment_finalized",
+    "escalated": "commitment_escalated",
+    "processed": "projection_success",
+    "disabled": "projection_disabled",
+    "skipped": "projection_skipped",
+    "unavailable": "projection_unavailable",
+    "write_failed": "projection_write_failed",
+    "partial_failure": "projection_partial_failure",
+    "projection_tenant_required": "projection_tenant_required",
+    "projection_size_exceeded": "projection_size_exceeded",
+    "column runtime budget exceeded": "column_runtime_budget_exceeded",
+    "tenant context required": "tenant_context_required",
+    "tenant ownership mismatch": "tenant_ownership_mismatch",
+    "authenticated runtime context required": "authenticated_runtime_context_required",
+    "assembly_id already exists for a different task": "assembly_id_task_conflict",
+    "assembly_id already exists for a different tenant": "assembly_id_tenant_conflict",
+    "duplicate_cognitive_message": "duplicate_cognitive_message",
+    "signed_cognitive_message_required": "signed_cognitive_message_required",
+    "tenant_mismatch": "tenant_mismatch",
+    "unknown_source_column": "unknown_source_column",
+    "unknown_target_column": "unknown_target_column",
+}
+
+
+def _cortical_reason_code(reason: Any) -> str:
+    normalized = str(reason or "").strip().lower()
+    if normalized in _CORTICAL_REASON_CODES:
+        return _CORTICAL_REASON_CODES[normalized]
+    slug = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
+    return slug or "ok"
+
+
+def _append_cortical_audit_event(
+    action: str,
+    actor: str,
+    outcome: Literal["allowed", "blocked", "error"],
+    *,
+    tenant_id: str = "",
+    assembly_id: str = "",
+    column_id: str = "",
+    decision: str = "",
+    reason: Any = "",
+    reason_code: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    normalized_reason = str(reason or "").strip()
+    normalized_reason_code = str(reason_code or "").strip() or _cortical_reason_code(
+        normalized_reason
+    )
+    payload: dict[str, Any] = {
+        "tenant_id": str(tenant_id or ""),
+        "assembly_id": str(assembly_id or ""),
+        "column_id": str(column_id or ""),
+        "actor": str(actor or "anonymous"),
+        "decision": str(decision or ""),
+        "reason_code": normalized_reason_code,
+    }
+    if normalized_reason:
+        payload["reason"] = normalized_reason
+    if isinstance(metadata, dict):
+        payload.update(metadata)
+    _append_audit_event(action, actor, outcome, payload)
 
 
 def _enforce_request_authn(
@@ -10143,6 +14632,7 @@ _MEMORY_SCOPE_PREFIXES = {
     "run": "run:",
     "session": "session:",
     "user": "user:",
+    "playbook": "playbook:",
     "tenant": "tenant:",
     "agent": "agent:",
     "workflow": "workflow:",
@@ -10215,7 +14705,7 @@ def _actor_participates_in_memory_entity(actor: str, bucket_id: str, memory_scop
     normalized_bucket, normalized_scope = _validate_memory_bucket_scope_pair(
         bucket_id, memory_scope
     )
-    if normalized_scope not in {"agent", "workflow"}:
+    if normalized_scope not in {"agent", "workflow", "playbook"}:
         return False
     session = store.collaboration_sessions.get(normalized_bucket)
     if not session:
@@ -10253,6 +14743,16 @@ def _authorize_memory_bucket_access(
         allowed = normalized_bucket in {normalized_actor, f"session:{normalized_actor}"}
     elif normalized_scope == "user":
         allowed = normalized_bucket == f"user:{normalized_actor}"
+    elif normalized_scope == "playbook":
+        allowed = _actor_participates_in_memory_entity(
+            normalized_actor, normalized_bucket, normalized_scope
+        )
+        if not allowed:
+            principal = _resolve_auth_context_principal(request, normalized_actor)
+            allowed = any(
+                _actor_participates_in_memory_entity(reference, normalized_bucket, normalized_scope)
+                for reference in principal.get("references", set())
+            )
     elif normalized_scope == "tenant":
         tenant_claim = _extract_memory_tenant_claim(request, payload=payload)
         allowed = bool(tenant_claim) and normalized_bucket == f"tenant:{tenant_claim}"
@@ -10325,9 +14825,17 @@ def _validate_platform_settings_update(
     immutable_violations: list[str] = []
     baseline = _default_immutable_security_baseline()
 
-    if baseline.enforce_signed_a2a_messages and not candidate.a2a_require_signed_messages:
+    if (
+        "a2a_require_signed_messages" in payload
+        and baseline.enforce_signed_a2a_messages
+        and not candidate.a2a_require_signed_messages
+    ):
         immutable_violations.append("a2a_require_signed_messages must remain enabled")
-    if baseline.enforce_a2a_replay_protection and not candidate.a2a_replay_protection:
+    if (
+        "a2a_replay_protection" in payload
+        and baseline.enforce_a2a_replay_protection
+        and not candidate.a2a_replay_protection
+    ):
         immutable_violations.append("a2a_replay_protection must remain enabled")
     if (
         _active_runtime_profile().require_authenticated_requests
@@ -10346,6 +14854,34 @@ def _validate_platform_settings_update(
             # the stored flag with the baseline instead of failing unrelated
             # settings updates.
             candidate.require_authenticated_requests = True
+    if (
+        "require_a2a_runtime_headers" in payload
+        and payload.get("require_a2a_runtime_headers") is False
+        and _active_runtime_profile().require_a2a_runtime_headers
+        and not candidate.require_a2a_runtime_headers
+    ):
+        immutable_violations.append(
+            "require_a2a_runtime_headers cannot be disabled in hosted runtime profiles"
+        )
+    if (
+        "enforce_egress_allowlist" in payload
+        and payload.get("enforce_egress_allowlist") is False
+        and _active_runtime_profile().name == "hosted"
+        and not candidate.enforce_egress_allowlist
+    ):
+        immutable_violations.append(
+            "enforce_egress_allowlist cannot be disabled in hosted runtime profiles"
+        )
+    if (
+        "mcp_require_local_server" in payload
+        and payload.get("mcp_require_local_server") is False
+        and _active_runtime_profile().name == "hosted"
+        and not candidate.mcp_require_local_server
+        and not _mcp_remote_server_policy_explicitly_confirmed()
+    ):
+        immutable_violations.append(
+            "mcp_require_local_server requires FRONTIER_CONFIRM_REMOTE_MCP_SERVERS=true before it can be disabled in hosted runtime profiles"
+        )
     if candidate.a2a_require_signed_messages and not candidate.a2a_trusted_subjects:
         immutable_violations.append(
             "a2a_trusted_subjects must contain at least one trusted subject when signed A2A is enabled"
@@ -10949,6 +15485,10 @@ def _resolve_entity_graph(entity_type: str, entity_id: str) -> dict[str, Any]:
         item = store.workflow_definitions.get(entity_id)
         if item and isinstance(item.graph_json, dict):
             return item.graph_json
+    if entity_type == "playbook":
+        item = store.playbooks.get(entity_id)
+        if item and isinstance(item.graph_json, dict):
+            return item.graph_json
     if entity_type == "agent":
         item = store.agent_definitions.get(entity_id)
         config = item.config_json if item and isinstance(item.config_json, dict) else {}
@@ -11191,8 +15731,19 @@ def _serialize_store_state() -> dict[str, Any]:
         "artifacts": [item.model_dump() for item in store.artifacts],
         "inbox": [item.model_dump() for item in store.inbox],
         "memory_by_session": dict(store.memory_by_session),
+        "user_runtime_provider_configs": {
+            principal_id: {
+                provider: config.model_dump() for provider, config in provider_configs.items()
+            }
+            for principal_id, provider_configs in store.user_runtime_provider_configs.items()
+        },
+        "user_skills": {
+            principal_id: skill_set.model_dump()
+            for principal_id, skill_set in store.user_skills.items()
+        },
         "platform_settings": store.platform_settings.model_dump(),
         "integrations": [item.model_dump() for item in store.integrations.values()],
+        "mcp_connections": [item.model_dump() for item in store.mcp_connections.values()],
         "agent_templates": [item.model_dump() for item in store.agent_templates.values()],
         "playbooks": [item.model_dump() for item in store.playbooks.values()],
         "collaboration_sessions": [
@@ -11388,6 +15939,32 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
             if isinstance(entries, list):
                 store.memory_by_session[str(session_id)] = entries
 
+    user_provider_payload = payload.get("user_runtime_provider_configs")
+    if isinstance(user_provider_payload, dict):
+        store.user_runtime_provider_configs = {}
+        for principal_id, provider_configs in user_provider_payload.items():
+            if not isinstance(provider_configs, dict):
+                continue
+            hydrated_configs: dict[str, StoredUserRuntimeProviderConfig] = {}
+            for provider, config_payload in provider_configs.items():
+                try:
+                    hydrated = StoredUserRuntimeProviderConfig.model_validate(config_payload)
+                except Exception:  # noqa: BLE001
+                    continue
+                hydrated_configs[str(provider)] = hydrated
+            if hydrated_configs:
+                store.user_runtime_provider_configs[str(principal_id)] = hydrated_configs
+
+    user_skills_payload = payload.get("user_skills")
+    if isinstance(user_skills_payload, dict):
+        store.user_skills = {}
+        for principal_id, skill_payload in user_skills_payload.items():
+            try:
+                hydrated_skills = StoredUserSkills.model_validate(skill_payload)
+            except Exception:  # noqa: BLE001
+                continue
+            store.user_skills[str(principal_id)] = hydrated_skills
+
     platform_settings_payload = payload.get("platform_settings")
     if isinstance(platform_settings_payload, dict):
         try:
@@ -11402,6 +15979,16 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
             try:
                 model = IntegrationDefinition.model_validate(item)
                 store.integrations[model.id] = model
+            except Exception:  # noqa: BLE001
+                continue
+
+    mcp_connections_payload = payload.get("mcp_connections")
+    if isinstance(mcp_connections_payload, list):
+        store.mcp_connections = {}
+        for item in mcp_connections_payload:
+            try:
+                model = MCPConnectionDefinition.model_validate(item)
+                store.mcp_connections[model.id] = model
             except Exception:  # noqa: BLE001
                 continue
 
@@ -11567,8 +16154,43 @@ def _persist_store_state() -> None:
             return
         save_sections(changed, replace_all=len(changed) == len(payload))
         _PERSIST_SECTION_CACHE.update(changed)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Failed to persist state store snapshot: %s", exc, exc_info=True)
         return
+
+
+def _service_status_with_reason(service: Any) -> tuple[str, str]:
+    status_method = getattr(service, "status", None)
+    if callable(status_method):
+        status, reason = status_method()
+        return str(status or "disabled"), str(reason or "")
+
+    enabled = bool(getattr(service, "enabled", False))
+    if not enabled:
+        return "disabled", ""
+
+    healthcheck = getattr(service, "healthcheck", None)
+    if callable(healthcheck):
+        return ("connected", "") if healthcheck() else ("degraded", "Service healthcheck failed")
+
+    return "connected", ""
+
+
+def _append_run_stream_event(run_id: str, event_type: str, payload: dict[str, Any]) -> None:
+    stream = store.run_streams.setdefault(run_id, [])
+    stream.append(
+        {
+            "id": f"stream-{uuid4()}",
+            "type": event_type,
+            "createdAt": _now_iso(),
+            "payload": payload,
+        }
+    )
+
+
+def _mark_run_stream_complete(run_id: str) -> None:
+    store.run_stream_complete[run_id] = True
+    _append_run_stream_event(run_id, "complete", {"run_id": run_id})
 
 
 def _merge_missing_bootstrap_content() -> None:
@@ -11662,11 +16284,43 @@ def _sync_repo_workflows_into_store(*, update_existing: bool = False) -> None:
 @app.on_event("startup")
 def _startup_initialize_state() -> None:
     _active_runtime_profile()
-    _POSTGRES_STATE.initialize()
-    _POSTGRES_MEMORY.initialize()
-    state = _POSTGRES_STATE.load_state()
+    pre_startup_integrations = dict(store.integrations)
+    postgres_status, postgres_reason = _service_status_with_reason(_POSTGRES_STATE)
+    if postgres_status != "connected":
+        LOGGER.warning(
+            "Postgres state store unavailable at startup: status=%s reason=%s",
+            postgres_status,
+            postgres_reason or "unspecified",
+        )
+
+    long_term_status, long_term_reason = _service_status_with_reason(_POSTGRES_MEMORY)
+    if long_term_status != "connected":
+        LOGGER.warning(
+            "Postgres long-term memory unavailable at startup: status=%s reason=%s",
+            long_term_status,
+            long_term_reason or "unspecified",
+        )
+
+    try:
+        _POSTGRES_STATE.initialize()
+    except Exception:
+        LOGGER.exception("Failed to initialize Postgres state store")
+
+    try:
+        _POSTGRES_MEMORY.initialize()
+    except Exception:
+        LOGGER.exception("Failed to initialize Postgres long-term memory store")
+
+    try:
+        state = _POSTGRES_STATE.load_state()
+    except Exception:
+        LOGGER.exception("Failed to load persisted state from Postgres state store")
+        state = None
+
     if state:
         _apply_store_state(state)
+        for integration_id, integration in pre_startup_integrations.items():
+            store.integrations.setdefault(integration_id, integration)
     _apply_provider_settings_side_effects()
 
     if _AUDIT_LOG is not None and _AUDIT_LOG.enabled:
@@ -12142,7 +16796,15 @@ def _memory_should_schedule_consolidation(
         return False
 
     normalized_scope = str(memory_scope or "session").strip().lower() or "session"
-    if normalized_scope not in {"session", "user", "tenant", "agent", "workflow", "global"}:
+    if normalized_scope not in {
+        "session",
+        "user",
+        "playbook",
+        "tenant",
+        "agent",
+        "workflow",
+        "global",
+    }:
         return False
 
     normalized_source = str(source or "memory-node").strip().lower()
@@ -12466,6 +17128,1405 @@ def _project_memory_world_graph(
     projection = _build_memory_world_graph_projection(consolidated_entry, candidates)
     _NEO4J_GRAPH.project_memory_summary(projection=projection)
     return projection
+
+
+def _json_projection_value(value: Any) -> str:
+    return json.dumps(redact_sensitive_payload(value), sort_keys=True, default=str)
+
+
+def _projection_text(value: Any) -> str:
+    redacted = redact_sensitive_payload(str(value or ""))
+    return str(redacted or "")
+
+
+def _projection_refs(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    refs: list[str] = []
+    for item in values:
+        ref = redact_sensitive_ref(item).strip()
+        if ref and ref not in refs:
+            refs.append(ref)
+    return refs
+
+
+def _causal_projection_limit(name: str, default: int) -> int:
+    return _env_int(name, default, minimum=1, maximum=100_000)
+
+
+def _count_causal_history_entries(history: Any) -> int:
+    if not isinstance(history, dict):
+        return 0
+    return sum(len(entries) for entries in history.values() if isinstance(entries, list))
+
+
+def _count_causal_belief_records(assembly_state: dict[str, Any]) -> int:
+    count = 0
+    columns = (
+        assembly_state.get("columns") if isinstance(assembly_state.get("columns"), dict) else {}
+    )
+    for column in columns.values():
+        if isinstance(column, dict) and isinstance(column.get("belief_set"), list):
+            count += len([item for item in column.get("belief_set", []) if isinstance(item, dict)])
+    belief_history = (
+        assembly_state.get("belief_history")
+        if isinstance(assembly_state.get("belief_history"), dict)
+        else {}
+    )
+    for entries in belief_history.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if isinstance(entry, dict) and isinstance(entry.get("belief_set"), list):
+                count += len(
+                    [item for item in entry.get("belief_set", []) if isinstance(item, dict)]
+                )
+    return count
+
+
+def _enforce_causal_projection_size_limits(
+    assembly_id: str, assembly_state: dict[str, Any]
+) -> None:
+    columns = (
+        assembly_state.get("columns") if isinstance(assembly_state.get("columns"), dict) else {}
+    )
+    outcomes = (
+        assembly_state.get("outcomes") if isinstance(assembly_state.get("outcomes"), list) else []
+    )
+    history_count = _count_causal_history_entries(assembly_state.get("belief_history"))
+    history_count += _count_causal_history_entries(assembly_state.get("confidence_history"))
+    counts = {
+        "columns": len(columns),
+        "beliefs": _count_causal_belief_records(assembly_state),
+        "histories": history_count,
+        "outcomes": len([item for item in outcomes if isinstance(item, dict)]),
+    }
+    limits = {
+        "columns": _causal_projection_limit("FRONTIER_CAUSAL_GRAPH_MAX_COLUMNS", 128),
+        "beliefs": _causal_projection_limit("FRONTIER_CAUSAL_GRAPH_MAX_BELIEFS", 1_024),
+        "histories": _causal_projection_limit("FRONTIER_CAUSAL_GRAPH_MAX_HISTORIES", 2_048),
+        "outcomes": _causal_projection_limit("FRONTIER_CAUSAL_GRAPH_MAX_OUTCOMES", 256),
+    }
+    for key, count in counts.items():
+        limit = limits[key]
+        if count > limit:
+            raise HTTPException(
+                status_code=413,
+                detail={
+                    "message": "Causal graph projection exceeds size limit",
+                    "reason_code": "projection_size_exceeded",
+                    "assembly_id": assembly_id,
+                    "limit": key,
+                    "count": count,
+                    "max": limit,
+                },
+            )
+
+
+def _build_causal_assembly_graph_projection(
+    assembly_id: str, assembly_state: dict[str, Any]
+) -> dict[str, Any]:
+    normalized_assembly_id = str(assembly_id or "").strip()
+    if not normalized_assembly_id:
+        raise ValueError("assembly_id is required")
+
+    columns_payload = (
+        assembly_state.get("columns") if isinstance(assembly_state.get("columns"), dict) else {}
+    )
+    belief_history = (
+        assembly_state.get("belief_history")
+        if isinstance(assembly_state.get("belief_history"), dict)
+        else {}
+    )
+    confidence_history = (
+        assembly_state.get("confidence_history")
+        if isinstance(assembly_state.get("confidence_history"), dict)
+        else {}
+    )
+    outcomes_payload = (
+        assembly_state.get("outcomes") if isinstance(assembly_state.get("outcomes"), list) else []
+    )
+    updated_at = float(assembly_state.get("updated_at") or 0.0)
+
+    assembly_node_id = f"causal-assembly:{normalized_assembly_id}"
+    columns: list[dict[str, Any]] = []
+    belief_snapshots: list[dict[str, Any]] = []
+    beliefs: list[dict[str, Any]] = []
+    confidence_samples: list[dict[str, Any]] = []
+    outcomes: list[dict[str, Any]] = []
+    relations: list[dict[str, Any]] = []
+    support_edges: list[dict[str, Any]] = []
+    dissent_edges: list[dict[str, Any]] = []
+
+    for column_id, column_payload in sorted(columns_payload.items()):
+        if not isinstance(column_payload, dict):
+            continue
+        normalized_column_id = str(column_id or "").strip()
+        if not normalized_column_id:
+            continue
+        column_node_id = f"causal-column:{normalized_assembly_id}:{normalized_column_id}"
+        belief_set = (
+            column_payload.get("belief_set")
+            if isinstance(column_payload.get("belief_set"), list)
+            else []
+        )
+        column_entity = {
+            "id": column_node_id,
+            "assembly_id": normalized_assembly_id,
+            "column_id": normalized_column_id,
+            "kind": str(column_payload.get("kind") or "unknown"),
+            "confidence": float(column_payload.get("confidence") or 0.0),
+            "last_updated": float(column_payload.get("last_updated") or 0.0),
+            "evidence_refs": _projection_refs(column_payload.get("evidence_refs")),
+            "adaptation_metrics_json": _json_projection_value(
+                column_payload.get("adaptation_metrics")
+                if isinstance(column_payload.get("adaptation_metrics"), dict)
+                else {}
+            ),
+            "belief_count": len([item for item in belief_set if isinstance(item, dict)]),
+        }
+        columns.append(column_entity)
+        relations.append({"type": "HAS_COLUMN", "from": assembly_node_id, "to": column_node_id})
+
+        raw_belief_snapshots = (
+            belief_history.get(normalized_column_id)
+            if isinstance(belief_history.get(normalized_column_id), list)
+            else []
+        )
+        for snapshot_index, snapshot in enumerate(raw_belief_snapshots):
+            if not isinstance(snapshot, dict):
+                continue
+            snapshot_node_id = f"causal-belief-snapshot:{normalized_assembly_id}:{normalized_column_id}:{snapshot_index}"
+            snapshot_beliefs = (
+                snapshot.get("belief_set") if isinstance(snapshot.get("belief_set"), list) else []
+            )
+            snapshot_entity = {
+                "id": snapshot_node_id,
+                "assembly_id": normalized_assembly_id,
+                "column_id": normalized_column_id,
+                "column_node_id": column_node_id,
+                "recorded_at": float(snapshot.get("at") or 0.0),
+                "confidence": float(snapshot.get("confidence") or 0.0),
+                "evidence_refs": _projection_refs(snapshot.get("evidence_refs")),
+                "cause_json": _json_projection_value(
+                    snapshot.get("cause") if isinstance(snapshot.get("cause"), dict) else {}
+                ),
+                "belief_count": len([item for item in snapshot_beliefs if isinstance(item, dict)]),
+            }
+            belief_snapshots.append(snapshot_entity)
+            relations.append(
+                {"type": "HAS_BELIEF_SNAPSHOT", "from": column_node_id, "to": snapshot_node_id}
+            )
+
+            for belief_index, belief in enumerate(snapshot_beliefs):
+                if not isinstance(belief, dict):
+                    continue
+                belief_node_id = f"causal-belief:{normalized_assembly_id}:{normalized_column_id}:{snapshot_index}:{belief_index}"
+                belief_entity = {
+                    "id": belief_node_id,
+                    "snapshot_id": snapshot_node_id,
+                    "assembly_id": normalized_assembly_id,
+                    "column_id": normalized_column_id,
+                    "belief_key": _projection_text(belief.get("key") or f"belief_{belief_index}"),
+                    "value_json": _json_projection_value(belief.get("value")),
+                    "confidence": float(belief.get("confidence") or 0.0),
+                    "evidence_refs": _projection_refs(belief.get("evidence_refs")),
+                    "rationale": _projection_text(belief.get("rationale") or ""),
+                    "metadata_json": _json_projection_value(
+                        belief.get("metadata") if isinstance(belief.get("metadata"), dict) else {}
+                    ),
+                    "redacted": bool(
+                        isinstance(belief.get("metadata"), dict)
+                        and belief.get("metadata", {}).get("redacted") is True
+                    ),
+                }
+                beliefs.append(belief_entity)
+                relations.append(
+                    {"type": "HAS_BELIEF", "from": snapshot_node_id, "to": belief_node_id}
+                )
+
+        raw_confidence_samples = (
+            confidence_history.get(normalized_column_id)
+            if isinstance(confidence_history.get(normalized_column_id), list)
+            else []
+        )
+        for sample_index, sample in enumerate(raw_confidence_samples):
+            if not isinstance(sample, dict):
+                continue
+            sample_node_id = (
+                f"causal-confidence:{normalized_assembly_id}:{normalized_column_id}:{sample_index}"
+            )
+            sample_entity = {
+                "id": sample_node_id,
+                "assembly_id": normalized_assembly_id,
+                "column_id": normalized_column_id,
+                "column_node_id": column_node_id,
+                "recorded_at": float(sample.get("at") or 0.0),
+                "confidence": float(sample.get("confidence") or 0.0),
+                "adaptation_metrics_json": _json_projection_value(
+                    sample.get("adaptation_metrics")
+                    if isinstance(sample.get("adaptation_metrics"), dict)
+                    else {}
+                ),
+                "cause_json": _json_projection_value(
+                    sample.get("cause") if isinstance(sample.get("cause"), dict) else {}
+                ),
+            }
+            confidence_samples.append(sample_entity)
+            relations.append(
+                {"type": "HAS_CONFIDENCE_SAMPLE", "from": column_node_id, "to": sample_node_id}
+            )
+
+    for outcome_index, outcome_payload in enumerate(outcomes_payload):
+        if not isinstance(outcome_payload, dict):
+            continue
+        outcome_node_id = f"causal-outcome:{normalized_assembly_id}:{outcome_index}"
+        commitment = (
+            outcome_payload.get("commitment")
+            if isinstance(outcome_payload.get("commitment"), dict)
+            else {}
+        )
+        outcome_entity = {
+            "id": outcome_node_id,
+            "assembly_id": normalized_assembly_id,
+            "outcome": str(outcome_payload.get("outcome") or "unknown"),
+            "recorded_at": float(outcome_payload.get("at") or 0.0),
+            "metadata_json": _json_projection_value(
+                outcome_payload.get("metadata")
+                if isinstance(outcome_payload.get("metadata"), dict)
+                else {}
+            ),
+            "decision": _projection_text(commitment.get("decision") or ""),
+            "commitment_confidence": float(commitment.get("confidence") or 0.0),
+            "is_ready": bool(commitment.get("is_ready", False)),
+            "blockers": _projection_refs(commitment.get("blockers")),
+            "next_actions": _projection_refs(commitment.get("next_actions")),
+            "supporting_columns": [
+                str(item) for item in commitment.get("supporting_columns", []) if str(item).strip()
+            ]
+            if isinstance(commitment.get("supporting_columns"), list)
+            else [],
+            "dissenting_columns": [
+                str(item) for item in commitment.get("dissenting_columns", []) if str(item).strip()
+            ]
+            if isinstance(commitment.get("dissenting_columns"), list)
+            else [],
+            "redacted": bool(
+                isinstance(outcome_payload.get("metadata"), dict)
+                and outcome_payload.get("metadata", {}).get("redacted") is True
+            ),
+        }
+        outcomes.append(outcome_entity)
+        relations.append({"type": "HAS_OUTCOME", "from": assembly_node_id, "to": outcome_node_id})
+
+        for column_id in outcome_entity["supporting_columns"]:
+            edge = {
+                "outcome_id": outcome_node_id,
+                "column_id": f"causal-column:{normalized_assembly_id}:{column_id}",
+            }
+            support_edges.append(edge)
+            relations.append(
+                {"type": "SUPPORTED_BY", "from": outcome_node_id, "to": edge["column_id"]}
+            )
+        for column_id in outcome_entity["dissenting_columns"]:
+            edge = {
+                "outcome_id": outcome_node_id,
+                "column_id": f"causal-column:{normalized_assembly_id}:{column_id}",
+            }
+            dissent_edges.append(edge)
+            relations.append(
+                {"type": "DISSENTED_BY", "from": outcome_node_id, "to": edge["column_id"]}
+            )
+
+    assembly_entity = {
+        "id": assembly_node_id,
+        "assembly_id": normalized_assembly_id,
+        "updated_at": updated_at,
+        "column_count": len(columns),
+        "belief_snapshot_count": len(belief_snapshots),
+        "belief_count": len(beliefs),
+        "confidence_sample_count": len(confidence_samples),
+        "outcome_count": len(outcomes),
+    }
+
+    return {
+        "assembly": assembly_entity,
+        "columns": columns,
+        "belief_snapshots": belief_snapshots,
+        "beliefs": beliefs,
+        "confidence_samples": confidence_samples,
+        "outcomes": outcomes,
+        "support_edges": support_edges,
+        "dissent_edges": dissent_edges,
+        "entities": [
+            assembly_entity,
+            *columns,
+            *belief_snapshots,
+            *beliefs,
+            *confidence_samples,
+            *outcomes,
+        ],
+        "relations": relations,
+    }
+
+
+def _project_causal_assembly_graph(
+    assembly_id: str, assembly_state: dict[str, Any]
+) -> dict[str, Any] | None:
+    if not _env_flag("FRONTIER_CAUSAL_GRAPH_PROJECTION_ENABLED", True):
+        return None
+    if not _NEO4J_GRAPH.enabled or not _NEO4J_GRAPH.healthcheck():
+        return None
+    projection = _build_causal_assembly_graph_projection(assembly_id, assembly_state)
+    if not _NEO4J_GRAPH.project_causal_assembly(projection=projection):
+        return None
+    return projection
+
+
+def _run_causal_assembly_graph_projection(
+    *,
+    actor: str,
+    assembly_id: str | None = None,
+    tenant_id: str | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    bounded_limit = max(1, min(200, int(limit)))
+    normalized_assembly_id = str(assembly_id or "").strip() or None
+    if not _env_flag("FRONTIER_CAUSAL_GRAPH_PROJECTION_ENABLED", True):
+        result = {
+            "ok": True,
+            "status": "disabled",
+            "projected": 0,
+            "requested_assembly_id": normalized_assembly_id,
+            "projections": [],
+        }
+        _append_cortical_audit_event(
+            "cognition.causal_graph.project",
+            actor,
+            "allowed",
+            tenant_id=tenant_id or "",
+            assembly_id=normalized_assembly_id or "",
+            decision="disabled",
+            reason="disabled",
+            metadata=result,
+        )
+        return result
+    if not _NEO4J_GRAPH.enabled or not _NEO4J_GRAPH.healthcheck():
+        result = {
+            "ok": False,
+            "status": "unavailable",
+            "projected": 0,
+            "requested_assembly_id": normalized_assembly_id,
+            "projections": [],
+        }
+        _append_cortical_audit_event(
+            "cognition.causal_graph.project",
+            actor,
+            "error",
+            tenant_id=tenant_id or "",
+            assembly_id=normalized_assembly_id or "",
+            decision="unavailable",
+            reason="unavailable",
+            metadata=result,
+        )
+        return result
+
+    causal_state = load_causal_state()
+    raw_assemblies = (
+        causal_state.get("assemblies") if isinstance(causal_state.get("assemblies"), dict) else {}
+    )
+    candidate_ids = (
+        [normalized_assembly_id]
+        if normalized_assembly_id
+        else sorted(
+            raw_assemblies,
+            key=lambda key: (
+                -float((raw_assemblies.get(key) or {}).get("updated_at") or 0.0),
+                str(key),
+            ),
+        )[:bounded_limit]
+    )
+
+    projections: list[dict[str, Any]] = []
+    failed_projection_ids: list[str] = []
+    for current_assembly_id in candidate_ids:
+        if current_assembly_id is None:
+            continue
+        assembly_payload = raw_assemblies.get(current_assembly_id)
+        if not isinstance(assembly_payload, dict):
+            continue
+        requested_tenant_id = str(tenant_id or "").strip()
+        assembly_tenant_id = str(assembly_payload.get("tenant_id") or "").strip()
+        if assembly_tenant_id and not requested_tenant_id:
+            _append_cortical_audit_event(
+                "cognition.causal_graph.project",
+                actor,
+                "blocked",
+                tenant_id="",
+                assembly_id=current_assembly_id,
+                decision="rejected",
+                reason="projection_tenant_required",
+            )
+            raise HTTPException(status_code=403, detail="Assembly tenant authorization required")
+        if requested_tenant_id and assembly_tenant_id and assembly_tenant_id != requested_tenant_id:
+            _append_cortical_audit_event(
+                "cognition.causal_graph.project",
+                actor,
+                "blocked",
+                tenant_id=requested_tenant_id,
+                assembly_id=current_assembly_id,
+                decision="rejected",
+                reason="tenant_mismatch",
+            )
+            raise HTTPException(status_code=403, detail="Assembly tenant access denied")
+        try:
+            _enforce_causal_projection_size_limits(current_assembly_id, assembly_payload)
+        except HTTPException as exc:
+            _append_cortical_audit_event(
+                "cognition.causal_graph.project",
+                actor,
+                "blocked",
+                tenant_id=requested_tenant_id,
+                assembly_id=current_assembly_id,
+                decision="rejected",
+                reason="projection_size_exceeded",
+                metadata={"projection_error": exc.detail},
+            )
+            raise
+        projection = _project_causal_assembly_graph(current_assembly_id, assembly_payload)
+        if projection is not None:
+            projections.append(projection)
+        else:
+            failed_projection_ids.append(current_assembly_id)
+
+    status = "processed"
+    ok = True
+    audit_outcome = "allowed"
+    if failed_projection_ids:
+        status = "partial_failure" if projections else "write_failed"
+        ok = False
+        audit_outcome = "error"
+
+    result = {
+        "ok": ok,
+        "status": status,
+        "projected": len(projections),
+        "requested_assembly_id": normalized_assembly_id,
+        "failed_projection_ids": failed_projection_ids,
+        "projections": projections,
+    }
+    _append_cortical_audit_event(
+        "cognition.causal_graph.project",
+        actor,
+        audit_outcome,
+        tenant_id=tenant_id or "",
+        assembly_id=normalized_assembly_id or "",
+        decision=str(result["status"]),
+        reason=str(result["status"]),
+        metadata={
+            "status": result["status"],
+            "projected": result["projected"],
+            "requested_assembly_id": normalized_assembly_id,
+            "failed_projection_ids": failed_projection_ids,
+        },
+    )
+    return result
+
+
+def _assembly_owner_value(
+    assembly_state: dict[str, Any], key: str, outcome_metadata: dict[str, Any]
+) -> str:
+    return str(assembly_state.get(key) or outcome_metadata.get(key) or "").strip()
+
+
+def _run_cortical_assembly_execution(
+    *,
+    actor: str,
+    task: str,
+    assembly_id: str | None = None,
+    tenant_id: str = "",
+    auth_context: dict[str, Any] | None = None,
+    require_tenant_context: bool = False,
+    assembly_definition: AssemblyDefinition | None = None,
+    admission_policy: AssemblyAdmissionPolicy | None = None,
+    provider: str = "",
+    model: str = "",
+    tool_ids: tuple[str, ...] = (),
+    retrieval_sources: tuple[str, ...] = (),
+    network_hosts: tuple[str, ...] = (),
+    context: dict[str, Any] | None = None,
+    human_approval_granted: bool = False,
+    confidence_threshold: float = 0.6,
+    project_graph: bool = True,
+) -> dict[str, Any]:
+    normalized_task = str(task or "").strip()
+    if not normalized_task:
+        raise ValueError("task is required")
+
+    requested_assembly_id = str(assembly_id or "").strip()
+    normalized_assembly_id = requested_assembly_id or f"assembly:{uuid4()}"
+    normalized_tenant_id = str(tenant_id or "").strip()
+    if requested_assembly_id:
+        existing_state = load_assembly_causal_state(normalized_assembly_id)
+        existing_outcome = _latest_cortical_assembly_outcome(existing_state)
+        if existing_outcome is not None:
+            existing_metadata = (
+                existing_outcome.get("metadata")
+                if isinstance(existing_outcome.get("metadata"), dict)
+                else {}
+            )
+            existing_task = _assembly_owner_value(existing_state, "task", existing_metadata)
+            existing_tenant_id = _assembly_owner_value(
+                existing_state, "tenant_id", existing_metadata
+            )
+            if existing_task and existing_task != normalized_task:
+                _append_cortical_audit_event(
+                    "cognition.assembly.admission",
+                    actor,
+                    "blocked",
+                    tenant_id=normalized_tenant_id,
+                    assembly_id=normalized_assembly_id,
+                    decision="rejected",
+                    reason="assembly_id already exists for a different task",
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="assembly_id already exists for a different task",
+                )
+            if existing_tenant_id and existing_tenant_id != normalized_tenant_id:
+                _append_cortical_audit_event(
+                    "cognition.assembly.admission",
+                    actor,
+                    "blocked",
+                    tenant_id=normalized_tenant_id,
+                    assembly_id=normalized_assembly_id,
+                    decision="rejected",
+                    reason="assembly_id already exists for a different tenant",
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="assembly_id already exists for a different tenant",
+                )
+
+            projection_result = (
+                _run_causal_assembly_graph_projection(
+                    actor=actor,
+                    assembly_id=normalized_assembly_id,
+                    tenant_id=normalized_tenant_id,
+                )
+                if project_graph
+                else {"ok": True, "status": "skipped", "projected": 0, "projections": []}
+            )
+            result = _cortical_assembly_result_from_persisted_state(
+                assembly_id=normalized_assembly_id,
+                assembly_state=existing_state,
+                projection_result=projection_result,
+                idempotent_replay=True,
+            )
+            _append_cortical_audit_event(
+                "cognition.assembly.admission",
+                actor,
+                "allowed",
+                tenant_id=normalized_tenant_id,
+                assembly_id=normalized_assembly_id,
+                decision="admitted",
+                reason="allowed",
+                metadata={"idempotent_replay": True},
+            )
+            _append_cortical_audit_event(
+                "cognition.assembly.run",
+                actor,
+                "allowed",
+                tenant_id=normalized_tenant_id,
+                assembly_id=normalized_assembly_id,
+                decision=str(result["outcome"]),
+                reason=str(result["outcome"]),
+                metadata={
+                    "assembly_id": normalized_assembly_id,
+                    "outcome": result["outcome"],
+                    "projected": result["projected"],
+                    "idempotent_replay": True,
+                },
+            )
+            return result
+
+    _append_cortical_audit_event(
+        "cognition.assembly.admission",
+        actor,
+        "allowed",
+        tenant_id=normalized_tenant_id,
+        assembly_id=normalized_assembly_id,
+        decision="admitted",
+        reason="allowed",
+    )
+
+    def _audit_column_runtime_gate(
+        action: str,
+        audit_actor: str,
+        outcome: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        audit_outcome: Literal["allowed", "blocked", "error"] = (
+            outcome if outcome in {"allowed", "blocked", "error"} else "error"
+        )
+        audit_metadata = dict(metadata or {})
+        event_assembly_id = str(audit_metadata.get("assembly_id") or normalized_assembly_id)
+        event_tenant_id = str(audit_metadata.get("tenant_id") or normalized_tenant_id)
+        event_column_id = str(audit_metadata.get("column_id") or "")
+        reason = str(audit_metadata.get("reason") or outcome or "")
+        if action == "cognition.column.runtime_gate":
+            decision = "allowed" if audit_outcome == "allowed" else "rejected"
+            _append_cortical_audit_event(
+                "cognition.policy.decision",
+                audit_actor,
+                audit_outcome,
+                tenant_id=event_tenant_id,
+                assembly_id=event_assembly_id,
+                column_id=event_column_id,
+                decision=decision,
+                reason=reason,
+                metadata=audit_metadata,
+            )
+            if audit_outcome == "allowed":
+                _append_cortical_audit_event(
+                    "cognition.column.started",
+                    audit_actor,
+                    "allowed",
+                    tenant_id=event_tenant_id,
+                    assembly_id=event_assembly_id,
+                    column_id=event_column_id,
+                    decision="started",
+                    reason="allowed",
+                    metadata=audit_metadata,
+                )
+                _append_cortical_audit_event(
+                    "cognition.column.completed",
+                    audit_actor,
+                    "allowed",
+                    tenant_id=event_tenant_id,
+                    assembly_id=event_assembly_id,
+                    column_id=event_column_id,
+                    decision="completed",
+                    reason="allowed",
+                    metadata=audit_metadata,
+                )
+            else:
+                _append_cortical_audit_event(
+                    "cognition.column.blocked",
+                    audit_actor,
+                    "blocked",
+                    tenant_id=event_tenant_id,
+                    assembly_id=event_assembly_id,
+                    column_id=event_column_id,
+                    decision="blocked",
+                    reason=reason,
+                    metadata=audit_metadata,
+                )
+        elif action == "cognition.commitment.gate":
+            _append_cortical_audit_event(
+                action,
+                audit_actor,
+                audit_outcome,
+                tenant_id=event_tenant_id,
+                assembly_id=event_assembly_id,
+                decision="allowed" if audit_outcome == "allowed" else "escalated",
+                reason=reason,
+                metadata=audit_metadata,
+            )
+            return
+        _append_audit_event(action, audit_actor, audit_outcome, audit_metadata)
+
+    try:
+        run_result = AssemblyRunner().run(
+            AssemblyRunRequest(
+                assembly_id=normalized_assembly_id,
+                task=normalized_task,
+                actor=actor,
+                tenant_id=tenant_id,
+                auth_context=auth_context,
+                require_tenant_context=require_tenant_context,
+                assembly_definition=assembly_definition,
+                admission_policy=admission_policy or AssemblyAdmissionPolicy(),
+                provider=provider,
+                model=model,
+                tool_ids=tool_ids,
+                retrieval_sources=retrieval_sources,
+                network_hosts=network_hosts,
+                audit_callback=_audit_column_runtime_gate,
+                human_approval_granted=human_approval_granted,
+                confidence_threshold=confidence_threshold,
+                context=dict(context or {}),
+            )
+        )
+    except AssemblyDefinitionAdmissionError as exc:
+        _append_cortical_audit_event(
+            "cognition.assembly.admission",
+            actor,
+            "blocked",
+            tenant_id=normalized_tenant_id,
+            assembly_id=normalized_assembly_id,
+            decision="rejected",
+            reason=str(exc),
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except ColumnRuntimeGateError as exc:
+        _append_cortical_audit_event(
+            "cognition.assembly.admission",
+            actor,
+            "blocked",
+            tenant_id=normalized_tenant_id,
+            assembly_id=normalized_assembly_id,
+            decision="rejected",
+            reason=str(exc),
+        )
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    except CommitmentValidationError as exc:
+        _append_cortical_audit_event(
+            "cognition.commitment.gate",
+            actor,
+            "blocked",
+            tenant_id=normalized_tenant_id,
+            assembly_id=normalized_assembly_id,
+            decision="rejected",
+            reason=str(exc),
+        )
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    projection_result = (
+        _run_causal_assembly_graph_projection(
+            actor=actor,
+            assembly_id=run_result.assembly_id,
+            tenant_id=tenant_id,
+        )
+        if project_graph
+        else {"ok": True, "status": "skipped", "projected": 0, "projections": []}
+    )
+    commitment = run_result.state.commitment
+    result = {
+        "ok": True,
+        "status": run_result.outcome,
+        "assembly_id": run_result.assembly_id,
+        "outcome": run_result.outcome,
+        "commitment": {
+            "decision": commitment.decision if commitment else "",
+            "confidence": commitment.confidence if commitment else 0.0,
+            "is_ready": commitment.is_ready if commitment else False,
+            "supporting_columns": list(commitment.supporting_columns) if commitment else [],
+            "dissenting_columns": list(commitment.dissenting_columns) if commitment else [],
+            "blockers": list(commitment.blockers) if commitment else [],
+            "next_actions": list(commitment.next_actions) if commitment else [],
+        },
+        "projected": int(projection_result.get("projected") or 0),
+        "projection_status": str(projection_result.get("status") or "unknown"),
+        "idempotent_replay": False,
+        "replay_status": "created",
+    }
+    commitment_action = (
+        "cognition.commitment.finalized"
+        if run_result.outcome == "committed"
+        else "cognition.commitment.escalated"
+    )
+    _append_cortical_audit_event(
+        commitment_action,
+        actor,
+        "allowed" if run_result.outcome == "committed" else "blocked",
+        tenant_id=normalized_tenant_id,
+        assembly_id=run_result.assembly_id,
+        decision=commitment.decision if commitment else run_result.outcome,
+        reason=run_result.outcome,
+        metadata={
+            "outcome": run_result.outcome,
+            "confidence": commitment.confidence if commitment else 0.0,
+            "blockers": list(commitment.blockers) if commitment else [],
+        },
+    )
+    _append_cortical_audit_event(
+        "cognition.assembly.run",
+        actor,
+        "allowed",
+        tenant_id=normalized_tenant_id,
+        assembly_id=run_result.assembly_id,
+        decision=run_result.outcome,
+        reason=run_result.outcome,
+        metadata={
+            "assembly_id": run_result.assembly_id,
+            "outcome": run_result.outcome,
+            "projected": result["projected"],
+        },
+    )
+    return result
+
+
+def _latest_cortical_assembly_outcome(assembly_state: dict[str, Any]) -> dict[str, Any] | None:
+    outcomes = (
+        assembly_state.get("outcomes") if isinstance(assembly_state.get("outcomes"), list) else []
+    )
+    for outcome in reversed(outcomes):
+        if isinstance(outcome, dict):
+            return outcome
+    return None
+
+
+def _cortical_assembly_result_from_persisted_state(
+    *,
+    assembly_id: str,
+    assembly_state: dict[str, Any],
+    projection_result: dict[str, Any],
+    idempotent_replay: bool,
+) -> dict[str, Any]:
+    outcome_payload = _latest_cortical_assembly_outcome(assembly_state) or {}
+    commitment = (
+        outcome_payload.get("commitment")
+        if isinstance(outcome_payload.get("commitment"), dict)
+        else {}
+    )
+    outcome = str(outcome_payload.get("outcome") or "unknown")
+    return {
+        "ok": True,
+        "status": outcome,
+        "assembly_id": assembly_id,
+        "outcome": outcome,
+        "commitment": {
+            "decision": str(commitment.get("decision") or ""),
+            "confidence": float(commitment.get("confidence") or 0.0),
+            "is_ready": bool(commitment.get("is_ready", False)),
+            "supporting_columns": [
+                str(item) for item in commitment.get("supporting_columns", []) if str(item).strip()
+            ]
+            if isinstance(commitment.get("supporting_columns"), list)
+            else [],
+            "dissenting_columns": [
+                str(item) for item in commitment.get("dissenting_columns", []) if str(item).strip()
+            ]
+            if isinstance(commitment.get("dissenting_columns"), list)
+            else [],
+            "blockers": [str(item) for item in commitment.get("blockers", []) if str(item).strip()]
+            if isinstance(commitment.get("blockers"), list)
+            else [],
+            "next_actions": [
+                str(item) for item in commitment.get("next_actions", []) if str(item).strip()
+            ]
+            if isinstance(commitment.get("next_actions"), list)
+            else [],
+        },
+        "projected": int(projection_result.get("projected") or 0),
+        "projection_status": str(projection_result.get("status") or "unknown"),
+        "idempotent_replay": idempotent_replay,
+        "replay_status": "replayed" if idempotent_replay else "created",
+    }
+
+
+def _coerce_cognitive_event(payload: dict[str, Any]) -> tuple[AgentEvent, Any]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Cognitive message payload must be an object")
+    event_payload = payload.get("payload")
+    if not isinstance(event_payload, dict):
+        raise HTTPException(status_code=400, detail="Cognitive event payload must be an object")
+    event = AgentEvent(
+        event_type=str(payload.get("event_type") or ""),
+        source=str(payload.get("source") or ""),
+        payload=event_payload,
+        id=str(payload.get("id") or uuid4()),
+        created_at=str(payload.get("created_at") or _now_iso()),
+        previous_hash=str(payload.get("previous_hash") or "") or None,
+        event_hash=str(payload.get("event_hash") or "") or None,
+        signature=str(payload.get("signature") or "") or None,
+        signer=str(payload.get("signer") or "") or None,
+    )
+    if not is_cognitive_event(event):
+        raise HTTPException(status_code=400, detail="Event does not carry a cognitive message")
+    try:
+        message = event_to_column_message(event)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=_projection_text(str(exc))) from None
+    return event, message
+
+
+def _require_matching_cognitive_field(
+    payload: dict[str, Any], field_name: str, expected_value: str
+) -> str:
+    value = str(payload.get(field_name) or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail=f"Cognitive message missing {field_name}")
+    if expected_value and value != expected_value:
+        raise HTTPException(status_code=401, detail=f"Cognitive message {field_name} mismatch")
+    return value
+
+
+def _enforce_column_capability(
+    *,
+    column_id: str,
+    column_kind: Any,
+    capability: ColumnCapability | str,
+    explicit_grants: tuple[ColumnCapability | str, ...] = (),
+) -> None:
+    try:
+        require_column_capability(
+            column_id=column_id,
+            column_kind=column_kind,
+            capability=capability,
+            explicit_grants=explicit_grants,
+        )
+    except ColumnCapabilityError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+
+
+def _admit_signed_cognitive_message(
+    request: Request,
+    payload: dict[str, Any],
+    *,
+    actor: str,
+) -> dict[str, Any]:
+    auth_context = getattr(request.state, "frontier_auth_context", None)
+    if (
+        not isinstance(auth_context, dict)
+        or auth_context.get("trusted_subject_authenticated") is not True
+    ):
+        _append_cortical_audit_event(
+            "cognition.message.admit",
+            actor,
+            "blocked",
+            decision="rejected",
+            reason="signed_cognitive_message_required",
+        )
+        raise HTTPException(status_code=401, detail="Signed cognitive message required")
+
+    event, message = _coerce_cognitive_event(payload)
+    event_payload = event.payload
+    header_nonce = str(request.headers.get("x-frontier-nonce") or "").strip()
+    header_timestamp = str(request.headers.get("x-frontier-timestamp") or "").strip()
+    trusted_subject = str(auth_context.get("subject") or "").strip()
+
+    tenant_id = _require_matching_cognitive_field(event_payload, "tenant_id", "")
+    _require_matching_cognitive_field(event_payload, "nonce", header_nonce)
+    _require_matching_cognitive_field(event_payload, "timestamp", header_timestamp)
+    _require_matching_cognitive_field(event_payload, "trusted_subject", trusted_subject)
+
+    if not str(message.target_column or "").strip():
+        raise HTTPException(status_code=400, detail="Cognitive message missing target_column")
+
+    assembly_state = load_assembly_causal_state(message.assembly_id)
+    assembly_tenant_id = str(assembly_state.get("tenant_id") or "").strip()
+    if assembly_tenant_id and assembly_tenant_id != tenant_id:
+        _append_cortical_audit_event(
+            "cognition.message.admit",
+            actor,
+            "blocked",
+            tenant_id=tenant_id,
+            assembly_id=message.assembly_id,
+            column_id=message.source_column,
+            decision="rejected",
+            reason="tenant_mismatch",
+            metadata={
+                "reason": "tenant_mismatch",
+                "assembly_id": message.assembly_id,
+                "tenant_id": tenant_id,
+            },
+        )
+        raise HTTPException(status_code=403, detail="Cognitive message tenant access denied")
+
+    columns = (
+        assembly_state.get("columns") if isinstance(assembly_state.get("columns"), dict) else {}
+    )
+    if message.source_column not in columns:
+        _append_cortical_audit_event(
+            "cognition.message.admit",
+            actor,
+            "blocked",
+            tenant_id=tenant_id,
+            assembly_id=message.assembly_id,
+            column_id=message.source_column,
+            decision="rejected",
+            reason="unknown_source_column",
+            metadata={
+                "reason": "unknown_source_column",
+                "assembly_id": message.assembly_id,
+                "source_column": message.source_column,
+            },
+        )
+        raise HTTPException(status_code=400, detail="Unknown cognitive source column")
+    if str(message.target_column or "") not in columns:
+        _append_cortical_audit_event(
+            "cognition.message.admit",
+            actor,
+            "blocked",
+            tenant_id=tenant_id,
+            assembly_id=message.assembly_id,
+            column_id=str(message.target_column or ""),
+            decision="rejected",
+            reason="unknown_target_column",
+            metadata={
+                "reason": "unknown_target_column",
+                "assembly_id": message.assembly_id,
+                "target_column": message.target_column,
+            },
+        )
+        raise HTTPException(status_code=400, detail="Unknown cognitive target column")
+
+    source_column_payload = columns.get(message.source_column)
+    source_column_kind = (
+        source_column_payload.get("kind") if isinstance(source_column_payload, dict) else ""
+    )
+    try:
+        if message.message_type in {MessageType.COMMITMENT, MessageType.SYNTHESIS_PROPOSAL}:
+            _enforce_column_capability(
+                column_id=message.source_column,
+                column_kind=source_column_kind,
+                capability=ColumnCapability.PROPOSE_COMMITMENT,
+            )
+        elif message.message_type == MessageType.EVIDENCE_CLAIM:
+            _enforce_column_capability(
+                column_id=message.source_column,
+                column_kind=source_column_kind,
+                capability=ColumnCapability.RETRIEVE,
+            )
+        elif message.message_type == MessageType.EVALUATION_SCORE:
+            _enforce_column_capability(
+                column_id=message.source_column,
+                column_kind=source_column_kind,
+                capability=ColumnCapability.SCORE,
+            )
+        elif message.message_type == MessageType.UNCERTAINTY_SIGNAL:
+            _enforce_column_capability(
+                column_id=message.source_column,
+                column_kind=source_column_kind,
+                capability=ColumnCapability.EMIT_BLOCKER,
+            )
+        elif message.message_type == MessageType.DISSENT:
+            _enforce_column_capability(
+                column_id=message.source_column,
+                column_kind=source_column_kind,
+                capability=ColumnCapability.VETO,
+            )
+    except HTTPException as exc:
+        _append_cortical_audit_event(
+            "cognition.message.admit",
+            actor,
+            "blocked",
+            tenant_id=tenant_id,
+            assembly_id=message.assembly_id,
+            column_id=message.source_column,
+            decision="rejected",
+            reason=str(exc.detail),
+            metadata={
+                "message_type": message.message_type.value,
+                "source_column": message.source_column,
+                "target_column": message.target_column,
+            },
+        )
+        raise
+
+    replay_marker = record_cognitive_message_replay_marker(
+        message.assembly_id,
+        tenant_id=tenant_id,
+        source_column=message.source_column,
+        target_column=str(message.target_column or ""),
+        message_type=message.message_type.value,
+        payload_ref=message.payload_ref,
+        nonce=header_nonce,
+        timestamp=header_timestamp,
+    )
+    if replay_marker.get("replay_status") == "duplicate":
+        _append_cortical_audit_event(
+            "cognition.message.admit",
+            actor,
+            "blocked",
+            tenant_id=tenant_id,
+            assembly_id=message.assembly_id,
+            column_id=message.source_column,
+            decision="rejected",
+            reason="duplicate_cognitive_message",
+            metadata={
+                "reason": "duplicate_cognitive_message",
+                "assembly_id": message.assembly_id,
+                "tenant_id": tenant_id,
+                "source_column": message.source_column,
+                "target_column": message.target_column,
+                "message_type": message.message_type.value,
+                "payload_ref": message.payload_ref,
+            },
+        )
+        raise HTTPException(status_code=409, detail="Duplicate cognitive message mutation")
+
+    _append_cortical_audit_event(
+        "cognition.message.admit",
+        actor,
+        "allowed",
+        tenant_id=tenant_id,
+        assembly_id=message.assembly_id,
+        column_id=message.source_column,
+        decision="accepted",
+        reason="allowed",
+        metadata={
+            "assembly_id": message.assembly_id,
+            "tenant_id": tenant_id,
+            "source_column": message.source_column,
+            "target_column": message.target_column,
+            "message_type": message.message_type.value,
+        },
+    )
+    return {
+        "accepted": True,
+        "assembly_id": message.assembly_id,
+        "tenant_id": tenant_id,
+        "source_column": message.source_column,
+        "target_column": message.target_column,
+        "message_type": message.message_type.value,
+        "payload_ref": message.payload_ref,
+        "replay_status": str(replay_marker.get("replay_status") or "accepted"),
+        "replay_marker": str(replay_marker.get("marker") or ""),
+    }
+
+
+def _bounded_cortical_text_field(
+    value: Any,
+    *,
+    field_name: str,
+    max_length: int,
+    required: bool = False,
+) -> str:
+    if value is not None and not isinstance(value, str):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a string")
+    normalized = str(value or "").strip()
+    if required and not normalized:
+        raise HTTPException(status_code=400, detail=f"{field_name} is required")
+    if len(normalized) > max_length:
+        raise HTTPException(status_code=400, detail=f"{field_name} exceeds max length")
+    return normalized
+
+
+def _bounded_cortical_context(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=400, detail="context must be an object")
+    encoded = json.dumps(value, sort_keys=True, default=str)
+    if len(encoded.encode("utf-8")) > 65536:
+        raise HTTPException(status_code=413, detail="context payload too large")
+    if len(value) > 64:
+        raise HTTPException(status_code=400, detail="context has too many keys")
+    redacted = redact_sensitive_payload(dict(value))
+    if not isinstance(redacted, dict):
+        return {}
+    redacted.pop("redacted", None)
+    return redacted
+
+
+def _coerce_request_bool(
+    value: Any, *, default: bool = True, field_name: str = "project_graph"
+) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise HTTPException(status_code=400, detail=f"{field_name} must be a boolean")
+
+
+def _coerce_cortical_confidence_threshold(value: Any, *, default: float = 0.6) -> float:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise HTTPException(status_code=400, detail="confidence_threshold must be a number")
+    if not isinstance(value, int | float | str):
+        raise HTTPException(status_code=400, detail="confidence_threshold must be a number")
+    try:
+        threshold = float(value)
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail="confidence_threshold must be a number"
+        ) from None
+    if not math.isfinite(threshold) or threshold < 0.0 or threshold > 1.0:
+        raise HTTPException(
+            status_code=400,
+            detail="confidence_threshold must be between 0 and 1",
+        )
+    return threshold
+
+
+def _coerce_cortical_int(
+    value: Any, *, field_name: str, default: int, minimum: int, maximum: int
+) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be an integer")
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be an integer") from None
+    if normalized < minimum or normalized > maximum:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must be between {minimum} and {maximum}",
+        )
+    return normalized
+
+
+def _coerce_cortical_string_list(
+    value: Any, *, field_name: str, limit: int = 64
+) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a list")
+    if len(value) > limit:
+        raise HTTPException(status_code=400, detail=f"{field_name} has too many entries")
+    normalized: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise HTTPException(status_code=400, detail=f"{field_name}[{index}] must be a string")
+        text = item.strip()
+        if text and text not in normalized:
+            normalized.append(text)
+    return tuple(normalized)
+
+
+def _coerce_cortical_column_kinds(raw_columns: Any) -> tuple[tuple[str, ...], dict[str, str]]:
+    if not isinstance(raw_columns, list):
+        raise HTTPException(status_code=400, detail="assembly_definition.columns must be a list")
+    columns: list[str] = []
+    column_kinds: dict[str, str] = {}
+    for index, item in enumerate(raw_columns):
+        if isinstance(item, str):
+            column_id = item.strip()
+            kind = ""
+        elif isinstance(item, dict):
+            column_id = str(item.get("id") or item.get("column_id") or "").strip()
+            kind = str(item.get("kind") or "").strip()
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"assembly_definition.columns[{index}] must be a string or object",
+            )
+        if not column_id:
+            raise HTTPException(
+                status_code=400, detail=f"assembly_definition.columns[{index}] is required"
+            )
+        if column_id not in columns:
+            columns.append(column_id)
+        if kind:
+            column_kinds[column_id] = kind
+    return tuple(columns), column_kinds
+
+
+def _coerce_assembly_definition(
+    value: Any, *, fallback_assembly_id: str
+) -> AssemblyDefinition | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=400, detail="assembly_definition must be an object")
+    assembly_id = str(value.get("assembly_id") or fallback_assembly_id or "").strip()
+    raw_columns = value.get("columns")
+    if raw_columns is None:
+        raise HTTPException(status_code=400, detail="assembly_definition.columns is required")
+    columns, column_kinds = _coerce_cortical_column_kinds(raw_columns)
+    raw_column_kinds = value.get("column_kinds")
+    if isinstance(raw_column_kinds, dict):
+        for column_id, kind in raw_column_kinds.items():
+            column_id_text = str(column_id or "").strip()
+            kind_text = str(kind or "").strip()
+            if column_id_text and kind_text:
+                column_kinds[column_id_text] = kind_text
+    elif raw_column_kinds is not None:
+        raise HTTPException(
+            status_code=400, detail="assembly_definition.column_kinds must be an object"
+        )
+    budget_payload = value.get("budget") if isinstance(value.get("budget"), dict) else {}
+    return AssemblyDefinition(
+        assembly_id=assembly_id,
+        columns=columns,
+        column_kinds=column_kinds,
+        budget_constraints=AssemblyBudget(
+            max_iterations=_coerce_cortical_int(
+                budget_payload.get("max_iterations"),
+                field_name="assembly_definition.budget.max_iterations",
+                default=3,
+                minimum=1,
+                maximum=128,
+            ),
+            max_messages=_coerce_cortical_int(
+                budget_payload.get("max_messages"),
+                field_name="assembly_definition.budget.max_messages",
+                default=32,
+                minimum=1,
+                maximum=10_000,
+            ),
+            max_columns=_coerce_cortical_int(
+                budget_payload.get("max_columns"),
+                field_name="assembly_definition.budget.max_columns",
+                default=8,
+                minimum=1,
+                maximum=128,
+            ),
+        ),
+    )
+
+
+def _coerce_assembly_admission_policy(value: Any) -> AssemblyAdmissionPolicy:
+    if value is None:
+        return AssemblyAdmissionPolicy()
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=400, detail="assembly_policy must be an object")
+    return AssemblyAdmissionPolicy(
+        max_columns=_coerce_cortical_int(
+            value.get("max_columns"),
+            field_name="assembly_policy.max_columns",
+            default=8,
+            minimum=1,
+            maximum=128,
+        ),
+        max_iterations=_coerce_cortical_int(
+            value.get("max_iterations"),
+            field_name="assembly_policy.max_iterations",
+            default=3,
+            minimum=1,
+            maximum=128,
+        ),
+        max_messages=_coerce_cortical_int(
+            value.get("max_messages"),
+            field_name="assembly_policy.max_messages",
+            default=32,
+            minimum=1,
+            maximum=10_000,
+        ),
+        allowed_column_kinds=_coerce_cortical_string_list(
+            value.get("allowed_column_kinds"), field_name="assembly_policy.allowed_column_kinds"
+        ),
+        allowed_tenant_ids=_coerce_cortical_string_list(
+            value.get("allowed_tenant_ids"), field_name="assembly_policy.allowed_tenant_ids"
+        ),
+        allowed_providers=_coerce_cortical_string_list(
+            value.get("allowed_providers"), field_name="assembly_policy.allowed_providers"
+        ),
+        allowed_models=_coerce_cortical_string_list(
+            value.get("allowed_models"), field_name="assembly_policy.allowed_models"
+        ),
+        allowed_tools=_coerce_cortical_string_list(
+            value.get("allowed_tools"), field_name="assembly_policy.allowed_tools"
+        ),
+        allowed_retrieval_sources=_coerce_cortical_string_list(
+            value.get("allowed_retrieval_sources"),
+            field_name="assembly_policy.allowed_retrieval_sources",
+        ),
+        allowed_network_hosts=_coerce_cortical_string_list(
+            value.get("allowed_network_hosts"), field_name="assembly_policy.allowed_network_hosts"
+        ),
+        high_risk_commitment_decisions=_coerce_cortical_string_list(
+            value.get("high_risk_commitment_decisions"),
+            field_name="assembly_policy.high_risk_commitment_decisions",
+        ),
+        require_human_approval_for_high_risk=_coerce_request_bool(
+            value.get("require_human_approval_for_high_risk"),
+            default=True,
+            field_name="assembly_policy.require_human_approval_for_high_risk",
+        ),
+    )
 
 
 def _run_memory_world_graph_projection(
@@ -12889,7 +18950,7 @@ def health() -> dict[str, str]:
 
 
 @app.get("/healthz")
-def healthz() -> dict[str, str]:
+def healthz() -> dict[str, Any]:
     payload = _build_health_payload()
     runtime_profile = _active_runtime_profile()
     if runtime_profile.public_health_minimal:
@@ -13180,16 +19241,30 @@ def get_auth_session(request: Request) -> dict[str, Any]:
         else {}
     )
     bearer_authenticated = bool(auth_context.get("used_bearer_token"))
+    if (
+        not bearer_authenticated
+        and _effective_require_authenticated_requests()
+        and str(os.getenv("FRONTIER_AUTH_MODE") or "shared-token").strip().lower() != "oidc"
+    ):
+        raise HTTPException(status_code=401, detail="Authentication required")
     capabilities = {
         "can_admin": _request_has_admin_access(request) if bearer_authenticated else False,
         "can_builder": _request_has_builder_access(request) if bearer_authenticated else False,
     }
     configured_oidc: dict[str, str] = {}
     oidc_validation_error = ""
+    browser_flow_configured = False
+    browser_flow_validation_error = ""
     try:
         configured_oidc = _configured_operator_oidc()
     except Exception:  # noqa: BLE001
         oidc_validation_error = _public_configuration_error("OIDC configuration is invalid.")
+    try:
+        browser_flow_configured = bool(_configured_operator_oidc_browser_flow())
+    except Exception:  # noqa: BLE001
+        browser_flow_validation_error = _public_configuration_error(
+            "OIDC browser sign-in is invalid."
+        )
 
     allowed_modes = ["user"]
     if capabilities["can_builder"]:
@@ -13204,6 +19279,12 @@ def get_auth_session(request: Request) -> dict[str, Any]:
     session_principal_type = str(auth_context.get("principal_type") or "user").strip() or "user"
     if not bearer_authenticated:
         session_principal_type = "user"
+
+    session_auth_mode = str(auth_context.get("bearer_auth_kind") or "").strip().lower()
+    if session_auth_mode in {"", "none"}:
+        session_auth_mode = str(os.getenv("FRONTIER_AUTH_MODE") or "shared-token").strip()
+    if not session_auth_mode:
+        session_auth_mode = "shared-token"
 
     return {
         "authenticated": bearer_authenticated,
@@ -13222,12 +19303,7 @@ def get_auth_session(request: Request) -> dict[str, Any]:
         "preferred_username": str(claims.get("preferred_username") or "").strip()
         if bearer_authenticated
         else "",
-        "auth_mode": str(
-            auth_context.get("bearer_auth_kind")
-            or os.getenv("FRONTIER_AUTH_MODE")
-            or "shared-token"
-        ).strip()
-        or "shared-token",
+        "auth_mode": session_auth_mode,
         "provider": str(
             configured_oidc.get("provider") or os.getenv("FRONTIER_AUTH_OIDC_PROVIDER") or ""
         ).strip(),
@@ -13241,8 +19317,111 @@ def get_auth_session(request: Request) -> dict[str, Any]:
             "audience": str(configured_oidc.get("audience") or "").strip(),
             "provider": str(configured_oidc.get("provider") or "").strip(),
             "validation_error": oidc_validation_error,
+            "browser_flow_configured": browser_flow_configured,
+            "browser_flow_error": browser_flow_validation_error,
         },
     }
+
+
+@app.get("/auth/oidc/start")
+def start_oidc_browser_login(
+    request: Request, intent: str = OidcBrowserIntent.SIGNIN, next: str = "/inbox"
+) -> RedirectResponse:
+    chosen_intent = str(intent or OidcBrowserIntent.SIGNIN).strip().lower()
+    if chosen_intent not in {OidcBrowserIntent.SIGNIN, OidcBrowserIntent.SIGNUP}:
+        response = RedirectResponse(
+            url=_oidc_error_redirect("OIDC browser sign-in is unavailable."),
+            status_code=302,
+        )
+        _clear_oidc_browser_flow_cookie(response, request)
+        return response
+
+    state = base64.urlsafe_b64encode(os.urandom(24)).decode("utf-8").rstrip("=")
+    nonce = base64.urlsafe_b64encode(os.urandom(24)).decode("utf-8").rstrip("=")
+    code_verifier = _generate_oidc_pkce_verifier()
+    payload = {
+        "intent": chosen_intent,
+        "state": state,
+        "nonce": nonce,
+        "code_verifier": code_verifier,
+        "return_to": _safe_post_auth_redirect_path(next),
+        "expires_at": (
+            datetime.now(timezone.utc) + timedelta(seconds=_oidc_browser_flow_ttl_seconds())
+        ).isoformat(),
+    }
+
+    try:
+        provider_url = _build_oidc_provider_redirect_url(
+            request,
+            intent=chosen_intent,
+            state=state,
+            code_verifier=code_verifier,
+            nonce=nonce,
+        )
+    except Exception:  # noqa: BLE001
+        response = RedirectResponse(
+            url=_oidc_error_redirect("OIDC browser sign-in is unavailable."),
+            status_code=302,
+        )
+        _clear_oidc_browser_flow_cookie(response, request)
+        return response
+
+    response = RedirectResponse(url=provider_url, status_code=302)
+    _set_oidc_browser_flow_cookie(response, request, _encode_oidc_browser_flow_cookie(payload))
+    return response
+
+
+@app.get("/auth/oidc/callback")
+def complete_oidc_browser_login(request: Request) -> RedirectResponse:
+    error_code = str(request.query_params.get("error") or "").strip()
+    error_description = str(request.query_params.get("error_description") or "").strip()
+    if error_code:
+        response = RedirectResponse(
+            url=_oidc_error_redirect(error_description or "Browser sign-in was cancelled."),
+            status_code=302,
+        )
+        _clear_oidc_browser_flow_cookie(response, request)
+        return response
+
+    cookie_value = str(request.cookies.get(_oidc_browser_flow_cookie_name()) or "").strip()
+    state = str(request.query_params.get("state") or "").strip()
+    code = str(request.query_params.get("code") or "").strip()
+    if not cookie_value or not state or not code:
+        response = RedirectResponse(
+            url=_oidc_error_redirect("Unable to complete browser sign-in."),
+            status_code=302,
+        )
+        _clear_oidc_browser_flow_cookie(response, request)
+        return response
+
+    try:
+        browser_flow = _decode_oidc_browser_flow_cookie(cookie_value)
+        expires_at = _parse_iso_datetime(str(browser_flow.get("expires_at") or ""))
+        if expires_at is None or expires_at <= datetime.now(timezone.utc):
+            raise ValueError("Expired OIDC browser flow cookie")
+        expected_state = str(browser_flow.get("state") or "").strip()
+        if not expected_state or not hmac.compare_digest(expected_state, state):
+            raise ValueError("OIDC browser flow state mismatch")
+        code_verifier = str(browser_flow.get("code_verifier") or "").strip()
+        token_payload = _exchange_oidc_authorization_code(
+            request,
+            code=code,
+            code_verifier=code_verifier,
+        )
+        session_token = _verified_oidc_session_token_from_exchange(token_payload)
+        return_to = _safe_post_auth_redirect_path(str(browser_flow.get("return_to") or "/inbox"))
+    except Exception:  # noqa: BLE001
+        response = RedirectResponse(
+            url=_oidc_error_redirect("Unable to complete browser sign-in."),
+            status_code=302,
+        )
+        _clear_oidc_browser_flow_cookie(response, request)
+        return response
+
+    response = RedirectResponse(url=return_to, status_code=302)
+    _set_operator_session_cookie(response, request, session_token)
+    _clear_oidc_browser_flow_cookie(response, request)
+    return response
 
 
 @app.post("/auth/login")
@@ -13740,17 +19919,19 @@ def import_bundle(
     return {"ok": not errors, **counts, "errors": errors}
 
 
-def _build_health_payload() -> dict[str, str]:
-    postgres_ok = _POSTGRES_STATE.enabled
+def _build_health_payload() -> dict[str, Any]:
+    postgres_status, postgres_reason = _service_status_with_reason(_POSTGRES_STATE)
     redis_ok = _REDIS_MEMORY.healthcheck() if _REDIS_MEMORY.enabled else False
-    long_term_ok = _POSTGRES_MEMORY.healthcheck() if _POSTGRES_MEMORY.enabled else False
+    long_term_status, long_term_reason = _service_status_with_reason(_POSTGRES_MEMORY)
+    long_term_ok = long_term_status == "connected"
     neo4j_ok = _NEO4J_GRAPH.healthcheck() if _NEO4J_GRAPH.enabled else False
-    return {
-        "status": "ok",
+    secure_profile = _secure_profile_deployment_report()
+    payload = {
+        "status": "ok" if secure_profile["status"] == "ok" else secure_profile["status"],
         "timestamp": _now_iso(),
-        "postgres": "connected" if postgres_ok else "disabled",
+        "postgres": postgres_status,
         "redis": "connected" if redis_ok else "disabled",
-        "long_term_memory": "connected" if long_term_ok else "disabled",
+        "long_term_memory": long_term_status,
         "memory_consolidation": "enabled"
         if long_term_ok and _env_flag("FRONTIER_MEMORY_CONSOLIDATION_ENABLED", True)
         else "disabled",
@@ -13761,11 +19942,17 @@ def _build_health_payload() -> dict[str, str]:
         if neo4j_ok and _env_flag("FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED", True)
         else "disabled",
         "neo4j": "connected" if neo4j_ok else "disabled",
+        "secure_profile": secure_profile,
     }
+    if postgres_reason:
+        payload["postgres_reason"] = postgres_reason
+    if long_term_reason:
+        payload["long_term_memory_reason"] = long_term_reason
+    return payload
 
 
 @app.get("/healthz/details")
-def healthz_details(request: Request) -> dict[str, str]:
+def healthz_details(request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="health.details.read")
     _append_audit_event("health.details.read", actor, "allowed")
     return _build_health_payload()
@@ -13790,16 +19977,166 @@ def get_federation_status(request: Request) -> dict[str, Any]:
 def get_runtime_providers(request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="runtime.providers.read")
     _append_audit_event("runtime.providers.read", actor, "allowed")
+    principal = _resolve_auth_context_principal(request, actor)
     status = _openai_status()
+    providers = [status.model_dump()]
+    for provider_name, provider_config in sorted(
+        _user_provider_configs(principal["principal_id"]).items()
+    ):
+        providers.append(
+            {
+                "provider": provider_name,
+                "configured": True,
+                "model": provider_config.model,
+                "mode": "live",
+                "preferred": provider_config.preferred,
+                "base_url": _sanitize_base_url(provider_config.base_url),
+            }
+        )
     framework_adapters = {
         engine: _framework_runtime_probe(engine)
         for engine in sorted(_SUPPORTED_RUNTIME_ENGINES)
         if engine != "native"
     }
     return {
-        "providers": [status.model_dump()],
+        "providers": providers,
         "framework_adapters": framework_adapters,
     }
+
+
+@app.get("/runtime/user-providers")
+def get_user_runtime_providers(request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="runtime.user_providers.read")
+    principal = _resolve_auth_context_principal(request, actor)
+    configs = _user_provider_configs(principal["principal_id"])
+    return {
+        "principal_id": principal["principal_id"],
+        "providers": [
+            _build_user_provider_config_payload(principal["principal_id"], provider_name, config)
+            for provider_name, config in sorted(configs.items())
+        ],
+    }
+
+
+@app.get("/skills/user")
+def get_user_skills(request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="skills.user.read")
+    principal = _resolve_auth_context_principal(request, actor)
+    _append_audit_event(
+        "skills.user.read",
+        actor,
+        "allowed",
+        {"principal_id": principal["principal_id"]},
+    )
+    return _build_user_skills_payload(
+        principal["principal_id"], _user_skills(principal["principal_id"])
+    )
+
+
+@app.put("/skills/user")
+def save_user_skills(payload: UserSkillsPayload, request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="skills.user.write")
+    principal = _resolve_auth_context_principal(request, actor)
+    current = _user_skills(principal["principal_id"])
+    now = _now_iso()
+    stored = StoredUserSkills(
+        skills=_validated_skill_paths(payload.skills, field_name="skills"),
+        created_at=current.created_at if current else now,
+        updated_at=now,
+    )
+    store.user_skills[principal["principal_id"]] = stored
+    _persist_store_state()
+    _append_audit_event(
+        "skills.user.write",
+        actor,
+        "allowed",
+        {
+            "principal_id": principal["principal_id"],
+            "skill_count": len(stored.skills),
+        },
+    )
+    return _build_user_skills_payload(principal["principal_id"], stored)
+
+
+@app.put("/runtime/user-providers/{provider}")
+def save_user_runtime_provider(
+    provider: str, payload: UserRuntimeProviderConfigPayload, request: Request
+) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="runtime.user_providers.write")
+    principal = _resolve_auth_context_principal(request, actor)
+    normalized_provider = _normalize_chat_provider(provider)
+    model = _validated_runtime_model_id(payload.model, field_name="model")
+
+    available_models = []
+    for index, item in enumerate(payload.available_models):
+        normalized_model = _validated_runtime_model_id(
+            item, field_name=f"available_models[{index}]"
+        )
+        if normalized_model and normalized_model not in available_models:
+            available_models.append(normalized_model)
+    if model not in available_models:
+        available_models.insert(0, model)
+
+    provider_configs = dict(_user_provider_configs(principal["principal_id"]))
+    if payload.preferred:
+        provider_configs = {
+            key: value.model_copy(update={"preferred": False})
+            for key, value in provider_configs.items()
+        }
+
+    now = _now_iso()
+    existing = provider_configs.get(normalized_provider)
+    next_api_key = str(payload.api_key or "").strip()
+    encrypted_api_key = (
+        existing.api_key_encrypted
+        if existing and not next_api_key
+        else _encrypt_provider_secret(next_api_key)
+    )
+    if not encrypted_api_key:
+        raise HTTPException(status_code=400, detail="api_key is required")
+    stored = StoredUserRuntimeProviderConfig(
+        provider=normalized_provider,
+        model=model,
+        available_models=available_models,
+        base_url=_normalize_provider_base_url(normalized_provider, payload.base_url),
+        api_key_encrypted=encrypted_api_key,
+        preferred=bool(payload.preferred),
+        created_at=existing.created_at if existing else now,
+        updated_at=now,
+    )
+    provider_configs[normalized_provider] = stored
+    store.user_runtime_provider_configs[principal["principal_id"]] = provider_configs
+    _persist_store_state()
+    _append_audit_event(
+        "runtime.user_providers.write",
+        actor,
+        "allowed",
+        {"principal_id": principal["principal_id"], "provider": normalized_provider},
+    )
+    return _build_user_provider_config_payload(
+        principal["principal_id"], normalized_provider, stored
+    )
+
+
+@app.delete("/runtime/user-providers/{provider}")
+def delete_user_runtime_provider(provider: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, action="runtime.user_providers.delete")
+    principal = _resolve_auth_context_principal(request, actor)
+    normalized_provider = _normalize_chat_provider(provider)
+    provider_configs = dict(_user_provider_configs(principal["principal_id"]))
+    provider_configs.pop(normalized_provider, None)
+    if provider_configs:
+        store.user_runtime_provider_configs[principal["principal_id"]] = provider_configs
+    else:
+        store.user_runtime_provider_configs.pop(principal["principal_id"], None)
+    _persist_store_state()
+    _append_audit_event(
+        "runtime.user_providers.delete",
+        actor,
+        "allowed",
+        {"principal_id": principal["principal_id"], "provider": normalized_provider},
+    )
+    return {"ok": True}
 
 
 @app.get("/runtime/l3-parity-report")
@@ -14086,7 +20423,16 @@ def approve_run_escalation(run_id: str, escalation_id: str, request: Request) ->
 def get_platform_settings(request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="platform.settings.read")
     _append_audit_event("platform.settings.read", actor, "allowed")
-    return _masked_provider_settings_view(store.platform_settings.model_dump())
+    response = _masked_provider_settings_view(store.platform_settings.model_dump())
+    baseline = _default_immutable_security_baseline()
+    response["require_authenticated_requests"] = _effective_require_authenticated_requests()
+    response["require_a2a_runtime_headers"] = _effective_require_a2a_runtime_headers()
+    if baseline.enforce_signed_a2a_messages:
+        response["a2a_require_signed_messages"] = True
+    if baseline.enforce_a2a_replay_protection:
+        response["a2a_replay_protection"] = True
+    response["secure_profile"] = _secure_profile_deployment_report()
+    return response
 
 
 @app.get("/platform/security-policy")
@@ -14181,10 +20527,22 @@ def save_platform_settings(
     for key in current.keys():
         if key in payload:
             merged[key] = payload[key]
+    if "allowed_egress_hosts" in payload:
+        merged["allowed_egress_hosts"] = _validated_platform_egress_hosts(
+            payload.get("allowed_egress_hosts", []), field_name="allowed_egress_hosts"
+        )
+    if "allowed_mcp_server_urls" in payload:
+        merged["allowed_mcp_server_urls"] = _validated_platform_mcp_server_urls(
+            payload.get("allowed_mcp_server_urls", []), field_name="allowed_mcp_server_urls"
+        )
     if "allowed_runtime_engines" in payload:
         merged["allowed_runtime_engines"] = _normalize_runtime_engine_list(
             payload.get("allowed_runtime_engines", [])
         ) or ["native"]
+    if "tenant_scoped_skills" in payload:
+        merged["tenant_scoped_skills"] = _validated_skill_paths(
+            payload.get("tenant_scoped_skills", []), field_name="tenant_scoped_skills"
+        )
     if "default_runtime_engine" in payload:
         merged["default_runtime_engine"] = _normalize_runtime_engine(
             payload.get("default_runtime_engine")
@@ -14200,6 +20558,24 @@ def save_platform_settings(
                 merged.get("default_runtime_engine") or "native"
             ),
         )
+    if "allow_local_network_hostnames" in payload:
+        requested_local_hostnames = payload.get("allow_local_network_hostnames")
+        if isinstance(requested_local_hostnames, list):
+            merged["allow_local_network_hostnames"] = [
+                str(item).strip() for item in requested_local_hostnames if str(item).strip()
+            ]
+        elif isinstance(requested_local_hostnames, str):
+            merged["allow_local_network_hostnames"] = [
+                item.strip() for item in requested_local_hostnames.split(",") if item.strip()
+            ]
+        elif requested_local_hostnames is True:
+            merged["allow_local_network_hostnames"] = list(
+                current_settings.allow_local_network_hostnames or ["localhost", ".local"]
+            )
+        elif requested_local_hostnames is False or requested_local_hostnames is None:
+            merged["allow_local_network_hostnames"] = []
+        # Any other type is left as submitted so model validation rejects it
+        # with a 400 instead of being silently coerced.
     try:
         candidate_settings = PlatformSettings.model_validate(merged)
     except ValidationError as exc:
@@ -14347,6 +20723,91 @@ def run_memory_world_graph_projection(
     )
     _persist_store_state()
     return result
+
+
+@app.post("/internal/cognition/assemblies/run")
+def run_cortical_assembly(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="cognition.assembly.run")
+    _enforce_emergency_write_policy("cognition.assembly.run", actor)
+    raw_task = payload.get("task")
+    if raw_task is None or (isinstance(raw_task, str) and not raw_task.strip()):
+        raw_task = payload.get("prompt")
+    task = _bounded_cortical_text_field(
+        raw_task,
+        field_name="task",
+        max_length=8192,
+        required=True,
+    )
+    confidence_threshold = _coerce_cortical_confidence_threshold(
+        payload.get("confidence_threshold"), default=0.6
+    )
+    assembly_id = (
+        _bounded_cortical_text_field(
+            payload.get("assembly_id"),
+            field_name="assembly_id",
+            max_length=160,
+        )
+        or None
+    )
+    tenant_id = _bounded_cortical_text_field(
+        payload.get("tenant_id"),
+        field_name="tenant_id",
+        max_length=160,
+    )
+    assembly_definition = _coerce_assembly_definition(
+        payload.get("assembly_definition"),
+        fallback_assembly_id=assembly_id or "",
+    )
+    admission_policy = _coerce_assembly_admission_policy(payload.get("assembly_policy"))
+    context = _bounded_cortical_context(payload.get("context"))
+    result = _run_cortical_assembly_execution(
+        actor=actor,
+        task=task,
+        assembly_id=assembly_id,
+        tenant_id=tenant_id,
+        auth_context=getattr(request.state, "frontier_auth_context", None),
+        require_tenant_context=_coerce_request_bool(
+            payload.get("require_tenant_context"),
+            default=False,
+            field_name="require_tenant_context",
+        ),
+        assembly_definition=assembly_definition,
+        admission_policy=admission_policy,
+        provider=_bounded_cortical_text_field(
+            payload.get("provider"), field_name="provider", max_length=160
+        ),
+        model=_bounded_cortical_text_field(
+            payload.get("model"), field_name="model", max_length=160
+        ),
+        tool_ids=_coerce_cortical_string_list(payload.get("tool_ids"), field_name="tool_ids"),
+        retrieval_sources=_coerce_cortical_string_list(
+            payload.get("retrieval_sources"), field_name="retrieval_sources"
+        ),
+        network_hosts=_coerce_cortical_string_list(
+            payload.get("network_hosts"), field_name="network_hosts"
+        ),
+        context=context,
+        human_approval_granted=_coerce_request_bool(
+            payload.get("human_approval_granted"),
+            default=False,
+            field_name="human_approval_granted",
+        ),
+        confidence_threshold=confidence_threshold,
+        project_graph=_coerce_request_bool(payload.get("project_graph"), default=True),
+    )
+    _persist_store_state()
+    return result
+
+
+@app.post("/internal/cognition/messages/admit")
+def admit_cognitive_message(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="cognition.message.admit")
+    _enforce_emergency_write_policy("cognition.message.admit", actor)
+    return _admit_signed_cognitive_message(request, payload, actor=actor)
 
 
 @app.get("/workflows/published")
@@ -15134,14 +21595,38 @@ def _run_worker_concurrency() -> int:
 # Bounded executor for run execution: a burst of run creations queues here
 # instead of consuming the API server's shared request threadpool. This is the
 # seam the future external worker (resource plan 2.1) replaces.
-_RUN_EXECUTOR = ThreadPoolExecutor(
-    max_workers=_run_worker_concurrency(), thread_name_prefix="frontier-run"
-)
+def _new_run_executor() -> ThreadPoolExecutor:
+    return ThreadPoolExecutor(
+        max_workers=_run_worker_concurrency(), thread_name_prefix="frontier-run"
+    )
+
+
+_RUN_EXECUTOR = _new_run_executor()
+_RUN_EXECUTOR_LOCK = Lock()
+_RUN_EXECUTOR_SHUT_DOWN = False
+
+
+def _submit_run_task(fn: Callable[[], Any]) -> None:
+    """Submit run work to the bounded executor.
+
+    The executor is shut down on app shutdown; if the app is started again in
+    the same process (e.g. a new ASGI lifespan), a fresh executor is created
+    instead of failing with "cannot schedule new futures after shutdown".
+    """
+    global _RUN_EXECUTOR, _RUN_EXECUTOR_SHUT_DOWN
+    with _RUN_EXECUTOR_LOCK:
+        if _RUN_EXECUTOR_SHUT_DOWN:
+            _RUN_EXECUTOR = _new_run_executor()
+            _RUN_EXECUTOR_SHUT_DOWN = False
+        _RUN_EXECUTOR.submit(fn)
 
 
 @app.on_event("shutdown")
 def _shutdown_run_executor() -> None:
-    _RUN_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+    global _RUN_EXECUTOR_SHUT_DOWN
+    with _RUN_EXECUTOR_LOCK:
+        _RUN_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+        _RUN_EXECUTOR_SHUT_DOWN = True
 
 
 @app.post("/workflow-runs")
@@ -15157,11 +21642,32 @@ def create_workflow_run(
             status_code=423, detail="New workflow runs are temporarily blocked by policy"
         )
 
-    run_id = str(uuid4())
-    title = str(payload.get("title") or payload.get("workflowName") or "Workflow Run")
+    follow_up_run_id = str(
+        payload.get("follow_up_to_run_id") or payload.get("source_run_id") or ""
+    ).strip()
+    existing_run = None
+    if follow_up_run_id:
+        existing_run = store.runs.get(follow_up_run_id)
+        if existing_run is not None:
+            _enforce_run_access(request, actor, follow_up_run_id, action="workflow.run.update")
+
+    run_id = existing_run.id if existing_run is not None else str(uuid4())
+    # Console chat-workspace hint (explicit session kind / follow-up context);
+    # reconciled with the mainline target-based kind below.
+    console_run_kind = _resolve_workflow_run_kind(payload)
+    explicit_kind = _normalize_workflow_run_kind(
+        payload.get("session_kind") or payload.get("sessionKind") or payload.get("kind")
+    )
+    explicit_title = str(payload.get("title") or "").strip()
+    title = explicit_title or str(payload.get("workflowName") or "Workflow Run")
+    title_source: Literal["system", "generated", "user"] = "user" if explicit_title else "system"
     prompt_text = str(payload.get("prompt") or "").strip()
-    model_prompt = _clean_inbox_prompt(prompt_text)
+    model_prompt = _build_follow_up_request_prompt(prompt_text, payload)
     tokens_raw = payload.get("tokens") if isinstance(payload.get("tokens"), list) else []
+
+    if existing_run is not None:
+        title = existing_run.title
+        title_source = existing_run.title_source
 
     requested_agent_tokens = [
         str(token.get("value", "")).strip()
@@ -15232,12 +21738,20 @@ def create_workflow_run(
     requested_playbook_tokens = _normalize_string_list(
         payload.get("playbooks") or payload.get("playbook") or []
     )
-    if requested_playbook_tokens or payload.get("playbook_id"):
-        run_kind: Literal["individual", "agent", "workflow", "playbook"] = "playbook"
+    run_kind: WorkflowRunKind
+    if existing_run is not None:
+        # Follow-ups keep the kind of the run they continue.
+        run_kind = existing_run.kind
+    elif explicit_kind is not None:
+        run_kind = explicit_kind
+    elif requested_playbook_tokens or payload.get("playbook_id"):
+        run_kind = "playbook"
     elif requested_workflows:
         run_kind = "workflow"
     elif requested_agents:
         run_kind = "agent"
+    elif console_run_kind in {"chat", "playbook", "workflow"}:
+        run_kind = console_run_kind
     else:
         run_kind = "individual"
 
@@ -15266,6 +21780,17 @@ def create_workflow_run(
         selected_agent_definition = _ensure_default_chat_agent_present(
             actor="system/default-chat-agent"
         )
+
+    if not explicit_title and existing_run is None:
+        title, inferred_title_source = _generate_workflow_run_title(
+            prompt_text=prompt_text,
+            run_kind=run_kind,
+            actor=actor,
+            request=request,
+            payload=payload,
+            agent_definition=selected_agent_definition,
+        )
+        title_source = inferred_title_source
 
     selected_agent = selected_agent_definition.name
     selected_agent_id = selected_agent_definition.id
@@ -15301,6 +21826,7 @@ def create_workflow_run(
         store.runs[run_id] = WorkflowRunSummary(
             id=run_id,
             title=title,
+            title_source=title_source,
             status=run_status,
             updatedAt="just now",
             progressLabel="Blocked by policy",
@@ -15381,7 +21907,16 @@ def create_workflow_run(
             "(approach, files/components, tests, risks). Do not execute tools or modify files."
         )
 
-    access_context = _build_run_access_context(request, actor)
+    # Follow-ups continue an existing run: keep its access context, graph,
+    # artifacts and traces rather than starting from scratch.
+    existing_detail = (
+        store.run_details.get(run_id) if isinstance(store.run_details.get(run_id), dict) else {}
+    )
+    access_context = (
+        existing_detail.get("access")
+        if isinstance(existing_detail.get("access"), dict)
+        else _build_run_access_context(request, actor)
+    )
 
     # If this run targets a published multi-agent workflow (cyclic or >=2 agent
     # nodes), execute the real graph through the LangGraph compiler instead of
@@ -15398,7 +21933,7 @@ def create_workflow_run(
             if title == "Workflow Run" or title.startswith("Workflow Run —"):
                 title = _wf_def.name or title
 
-    graph_nodes = [
+    default_graph_nodes = [
         {"id": "n-trigger", "title": "Trigger", "type": "trigger", "x": 80, "y": 110},
         {
             "id": "n-agent",
@@ -15410,50 +21945,119 @@ def create_workflow_run(
         },
         {"id": "n-output", "title": "Output", "type": "output", "x": 660, "y": 110},
     ]
-    graph_links = [
+    default_graph_links = [
         {"from": "n-trigger", "to": "n-agent", "from_port": "output", "to_port": "in"},
         {"from": "n-agent", "to": "n-output", "from_port": "output", "to_port": "in"},
     ]
+    existing_graph = (
+        existing_detail.get("graph") if isinstance(existing_detail.get("graph"), dict) else {}
+    )
+    graph_nodes = (
+        existing_graph.get("nodes")
+        if isinstance(existing_graph.get("nodes"), list) and existing_graph.get("nodes")
+        else default_graph_nodes
+    )
+    graph_links = (
+        existing_graph.get("links")
+        if isinstance(existing_graph.get("links"), list) and existing_graph.get("links")
+        else default_graph_links
+    )
+    existing_artifacts = (
+        existing_detail.get("artifacts")
+        if isinstance(existing_detail.get("artifacts"), list)
+        else []
+    )
+    existing_agent_traces = (
+        existing_detail.get("agent_traces")
+        if isinstance(existing_detail.get("agent_traces"), list)
+        else []
+    )
+
     store.runs[run_id] = WorkflowRunSummary(
         id=run_id,
         title=title,
+        title_source=title_source,
         status="Running",
         updatedAt="just now",
-        progressLabel="Executing agent",
+        progressLabel="Executing agent" if existing_run is None else "Responding",
         kind=run_kind,
     )
-    store.run_events[run_id] = [
-        WorkflowRunEvent(
-            id=f"evt-{uuid4()}",
-            type="step_started",
-            title="Run started",
-            summary="Workflow execution started.",
-            createdAt=_now_iso(),
-            metadata={"payload": payload},
-        ),
-        WorkflowRunEvent(
-            id=f"evt-{uuid4()}",
-            type="user_message",
-            title="User task",
-            summary=(prompt_text or "Task kickoff submitted.")[:500],
-            createdAt=_now_iso(),
-            metadata={"tokens": tokens_raw},
-        ),
-    ]
+    store.run_events.setdefault(run_id, [])
+    store.run_events[run_id].extend(
+        [
+            WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="step_started",
+                title="Run started" if existing_run is None else "Follow-up started",
+                summary="Workflow execution started."
+                if existing_run is None
+                else "Follow-up execution started.",
+                createdAt=_now_iso(),
+                metadata={"payload": payload},
+            ),
+            WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="user_message",
+                title="User task",
+                summary=(prompt_text or "Task kickoff submitted.")[:500],
+                content=prompt_text or "Task kickoff submitted.",
+                createdAt=_now_iso(),
+                metadata={"tokens": tokens_raw},
+            ),
+        ]
+    )
     store.run_details[run_id] = {
-        "artifacts": [],
+        **existing_detail,
+        "title": title,
+        "title_source": title_source,
+        "artifacts": existing_artifacts,
         "status": "Running",
         "graph": workflow_graph_json or {"nodes": graph_nodes, "links": graph_links},
-        "agent_traces": [],
+        "agent_traces": list(existing_agent_traces),
         "approvals": {"required": False, "pending": False},
+        "runtime": {"mode": "live", "state": "queued"},
+        "response_text": "",
         "access": access_context,
         "mode": composer_opts["mode"],
         "working_folder": (composer_opts["workspace"] or {}).get("repo_path", ""),
     }
+    store.run_streams[run_id] = []
+    store.run_stream_complete[run_id] = False
+    _append_run_stream_event(run_id, "status", {"status": "queued"})
     _append_audit_event(
         "workflow.run.create", actor, "allowed", {"run_id": run_id, "status": "started"}
     )
     _persist_store_state()
+
+    def _finish_stream() -> None:
+        if not store.run_stream_complete.get(run_id):
+            _mark_run_stream_complete(run_id)
+
+    def _resolve_user_scoped_runtime() -> dict[str, Any] | None:
+        """Return a user-scoped provider runtime (/runtime/user-providers) when one applies.
+
+        Platform/env-configured providers (OpenAI, NIM, Ollama, ...) keep using the
+        mainline client path; a missing user runtime (412) falls back to it. Any
+        other policy rejection is re-raised so the run fails closed.
+        """
+        explicitly_requested = isinstance(payload.get("runtime"), dict) or bool(
+            str(payload.get("provider") or "").strip()
+        )
+        try:
+            candidate_runtime = _resolve_request_chat_runtime(
+                request=request,
+                actor=actor,
+                payload=payload,
+                agent_definition=selected_agent_definition,
+                fallback_model=selected_model,
+            )
+        except HTTPException as exc:
+            if exc.status_code == 412:
+                return None
+            raise
+        if str(candidate_runtime.get("source") or "") == "user_config" or explicitly_requested:
+            return candidate_runtime
+        return None
 
     def _execute_run() -> None:
         try:
@@ -15467,6 +22071,19 @@ def create_workflow_run(
                     payload=payload,
                     access_context=access_context,
                 )
+                compiled_detail = store.run_details.get(run_id)
+                _append_run_stream_event(
+                    run_id,
+                    "final",
+                    {
+                        "text": str(
+                            (compiled_detail or {}).get("response_text") or ""
+                            if isinstance(compiled_detail, dict)
+                            else ""
+                        )
+                    },
+                )
+                _finish_stream()
                 return
             # Mode gate: only "execute" exposes MCP tools; "plan"/"chat" are
             # analysis/conversation only. MCP selection filters the set.
@@ -15512,21 +22129,48 @@ def create_workflow_run(
                     )
                 )
 
-            response_text, model_meta = _run_agent_iterations(
-                run_id,
-                selected_agent_definition,
-                system_prompt=system_prompt,
-                user_prompt=request_prompt,
-                model=selected_model,
-                work_id=primary_work_id,
-                max_iterations=_resolve_agent_max_iterations(selected_agent_definition, payload),
-                temperature=0.2,
-                tools=tool_schemas or None,
-                tool_executor=_execute_mcp_tool if tool_dispatch else None,
-                max_tool_calls=max(1, int(store.platform_settings.max_tool_calls_per_run or 8)),
-                on_tool_event=_emit_tool_event,
-                reasoning_effort=composer_opts["reasoning_effort"],
-            )
+            user_runtime = None if tool_schemas else _resolve_user_scoped_runtime()
+            if user_runtime is not None:
+                # User-scoped provider: stream deltas to /workflow-runs/{id}/stream.
+                response_buffer: list[str] = []
+
+                def _on_chunk(chunk: str) -> None:
+                    if not chunk:
+                        return
+                    response_buffer.append(chunk)
+                    detail = store.run_details.get(run_id)
+                    if isinstance(detail, dict):
+                        detail["response_text"] = "".join(response_buffer)
+                        store.run_details[run_id] = detail
+                    _append_run_stream_event(run_id, "delta", {"text": chunk})
+
+                chunks, model_meta = _collect_chat_response_chunks(
+                    system_prompt=system_prompt,
+                    user_prompt=request_prompt,
+                    model=str(user_runtime.get("model") or selected_model).strip(),
+                    temperature=0.2,
+                    runtime=user_runtime,
+                    on_chunk=_on_chunk,
+                )
+                response_text = "".join(chunks).strip()
+            else:
+                response_text, model_meta = _run_agent_iterations(
+                    run_id,
+                    selected_agent_definition,
+                    system_prompt=system_prompt,
+                    user_prompt=request_prompt,
+                    model=selected_model,
+                    work_id=primary_work_id,
+                    max_iterations=_resolve_agent_max_iterations(
+                        selected_agent_definition, payload
+                    ),
+                    temperature=0.2,
+                    tools=tool_schemas or None,
+                    tool_executor=_execute_mcp_tool if tool_dispatch else None,
+                    max_tool_calls=max(1, int(store.platform_settings.max_tool_calls_per_run or 8)),
+                    on_tool_event=_emit_tool_event,
+                    reasoning_effort=composer_opts["reasoning_effort"],
+                )
             if tool_sources:
                 model_meta = {**model_meta, "tool_sources": tool_sources}
 
@@ -15544,12 +22188,13 @@ def create_workflow_run(
                 store.runs[run_id] = WorkflowRunSummary(
                     id=run_id,
                     title=title,
+                    title_source=title_source,
                     status="Failed",
                     updatedAt="just now",
                     progressLabel="Provider configuration error",
                     kind=run_kind,
                 )
-                store.run_events[run_id].extend(
+                store.run_events.setdefault(run_id, []).extend(
                     [
                         WorkflowRunEvent(
                             id=f"evt-{uuid4()}",
@@ -15577,50 +22222,18 @@ def create_workflow_run(
                         ),
                     ]
                 )
+                failed_prior_detail = (
+                    store.run_details.get(run_id)
+                    if isinstance(store.run_details.get(run_id), dict)
+                    else {}
+                )
                 store.run_details[run_id] = {
-                    "artifacts": [failure_artifact.model_dump()],
+                    **failed_prior_detail,
+                    "artifacts": [*existing_artifacts, failure_artifact.model_dump()],
                     "status": "Failed",
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "n-trigger",
-                                "title": "Trigger",
-                                "type": "trigger",
-                                "x": 80,
-                                "y": 110,
-                            },
-                            {
-                                "id": "n-agent",
-                                "title": selected_agent,
-                                "type": "agent",
-                                "x": 360,
-                                "y": 110,
-                                "config": {"agent_id": selected_agent_id},
-                            },
-                            {
-                                "id": "n-output",
-                                "title": "Output",
-                                "type": "output",
-                                "x": 660,
-                                "y": 110,
-                            },
-                        ],
-                        "links": [
-                            {
-                                "from": "n-trigger",
-                                "to": "n-agent",
-                                "from_port": "output",
-                                "to_port": "in",
-                            },
-                            {
-                                "from": "n-agent",
-                                "to": "n-output",
-                                "from_port": "out",
-                                "to_port": "in",
-                            },
-                        ],
-                    },
+                    "graph": {"nodes": graph_nodes, "links": graph_links},
                     "agent_traces": [
+                        *existing_agent_traces,
                         {
                             "agent": selected_agent,
                             "reasoningSummary": "Execution halted due to provider authentication/configuration error.",
@@ -15630,15 +22243,14 @@ def create_workflow_run(
                                 "Failed provider auth/config check",
                             ],
                             "output": reason,
-                        }
+                        },
                     ],
                     "response_text": reason,
-                    "approvals": {
-                        "required": False,
-                        "pending": False,
-                    },
+                    "approvals": {"required": False, "pending": False},
+                    "runtime": model_meta,
                     "access": access_context,
                 }
+                _append_run_stream_event(run_id, "error", {"message": reason})
                 _persist_store_state()
                 _append_audit_event(
                     "workflow.run.create",
@@ -15646,6 +22258,7 @@ def create_workflow_run(
                     "error",
                     {"run_id": run_id, "status": "failed_provider"},
                 )
+                _finish_stream()
                 return
 
             guardrail_output_triggered = False
@@ -15715,6 +22328,7 @@ def create_workflow_run(
             store.runs[run_id] = WorkflowRunSummary(
                 id=run_id,
                 title=title,
+                title_source=title_source,
                 status=run_status,
                 updatedAt="just now",
                 progressLabel=progress_label,
@@ -15745,13 +22359,14 @@ def create_workflow_run(
                 reasoning_summary_text = "Processed the task prompt and generated a response."
 
             primary_agent_event_id = f"evt-{uuid4()}"
-            store.run_events[run_id].extend(
+            store.run_events.setdefault(run_id, []).extend(
                 [
                     WorkflowRunEvent(
                         id=primary_agent_event_id,
                         type="agent_message",
                         title=f"{selected_agent} response",
                         summary=event_response_summary,
+                        content=event_response_text,
                         createdAt=_now_iso(),
                         metadata={
                             "model": model_meta,
@@ -15824,14 +22439,30 @@ def create_workflow_run(
                 except Exception:  # noqa: BLE001 - collaboration is best-effort
                     pass
 
+            prior_detail = (
+                store.run_details.get(run_id)
+                if isinstance(store.run_details.get(run_id), dict)
+                else {}
+            )
+            prior_artifacts = (
+                prior_detail.get("artifacts")
+                if isinstance(prior_detail.get("artifacts"), list)
+                else []
+            )
+            prior_agent_traces = (
+                prior_detail.get("agent_traces")
+                if isinstance(prior_detail.get("agent_traces"), list)
+                else []
+            )
             store.run_details[run_id] = {
-                "artifacts": [artifact.model_dump() for artifact in artifacts],
+                **prior_detail,
+                "title": title,
+                "title_source": title_source,
+                "artifacts": [*prior_artifacts, *[artifact.model_dump() for artifact in artifacts]],
                 "status": run_status,
-                "graph": {
-                    "nodes": graph_nodes,
-                    "links": graph_links,
-                },
+                "graph": {"nodes": graph_nodes, "links": graph_links},
                 "agent_traces": [
+                    *prior_agent_traces,
                     {
                         "agent": selected_agent,
                         "reasoningSummary": reasoning_summary_text,
@@ -15843,7 +22474,7 @@ def create_workflow_run(
                             "Emitted response artifact",
                         ],
                         "output": response_text,
-                    }
+                    },
                 ],
                 "approvals": {
                     "required": approval_required and not guardrail_output_triggered,
@@ -15887,6 +22518,7 @@ def create_workflow_run(
                 agent=selected_agent,
                 workflow=requested_workflows[0] if requested_workflows else None,
             )
+            _append_run_stream_event(run_id, "final", {"text": response_text, "model": model_meta})
             _append_audit_event(
                 "workflow.run.execute",
                 actor,
@@ -15894,10 +22526,13 @@ def create_workflow_run(
                 {"run_id": run_id, "status": run_status.lower()},
             )
             _persist_store_state()
-        except Exception as exc:
+            _finish_stream()
+        except Exception as exc:  # noqa: BLE001
+            message = _sanitize_runtime_error_message(exc)
             store.runs[run_id] = WorkflowRunSummary(
                 id=run_id,
                 title=title,
+                title_source=title_source,
                 status="Failed",
                 updatedAt="just now",
                 progressLabel="Execution error",
@@ -15908,27 +22543,34 @@ def create_workflow_run(
                     id=f"evt-{uuid4()}",
                     type="error",
                     title="Agent execution failed",
-                    summary=f"Unexpected execution error: {exc}",
+                    summary=message,
                     createdAt=_now_iso(),
                     metadata={"selected_agent_id": selected_agent_id},
                 )
             )
-            failed_detail = store.run_details.get(run_id)
-            if isinstance(failed_detail, dict):
-                failed_detail["status"] = "Failed"
-                store.run_details[run_id] = failed_detail
+            failed_detail = (
+                store.run_details.get(run_id)
+                if isinstance(store.run_details.get(run_id), dict)
+                else {}
+            )
+            failed_detail["status"] = "Failed"
+            failed_detail["response_text"] = str(failed_detail.get("response_text") or "")
+            failed_detail["access"] = access_context
+            store.run_details[run_id] = failed_detail
+            _append_run_stream_event(run_id, "error", {"message": message})
             _append_audit_event(
                 "workflow.run.execute",
                 actor,
                 "error",
-                {"run_id": run_id, "status": "failed_execution"},
+                {"run_id": run_id, "status": "failed_execution", "message": message},
             )
             _persist_store_state()
+            _finish_stream()
 
     if _sync_run_execution_enabled():
         _execute_run()
     else:
-        _RUN_EXECUTOR.submit(_execute_run)
+        _submit_run_task(_execute_run)
     return {"id": run_id, "status": "started"}
 
 
@@ -15940,11 +22582,15 @@ def get_workflow_runs(
     items = list(store.runs.values())
     visible_run_ids = _visible_run_ids(request, actor)
     items = [item for item in items if item.id in visible_run_ids]
-    # Archived runs are hidden from the inbox/nav unless explicitly requested.
-    if not include_archived:
+    # Archived runs are hidden from the inbox/nav unless explicitly requested,
+    # either via include_archived or by filtering on status=Archived.
+    requested_archived = bool(status) and str(status).strip().lower() == "archived"
+    if not include_archived and not requested_archived:
         items = [item for item in items if not getattr(item, "archived", False)]
     if status:
         items = [item for item in items if item.status.lower() == status.lower()]
+    else:
+        items = [item for item in items if item.status != "Archived"]
     return [item.model_dump() for item in items]
 
 
@@ -16326,7 +22972,7 @@ def send_run_message(
                 current.progressLabel = "Message error"
             _persist_store_state()
 
-    _RUN_EXECUTOR.submit(_respond)
+    _submit_run_task(_respond)
     _append_audit_event("workflow.run.message", actor, "allowed", {"run_id": run_id})
     _persist_store_state()
     return {"ok": True, "run_id": run_id}
@@ -16345,9 +22991,50 @@ def rename_workflow_run(
     if not title:
         raise HTTPException(status_code=400, detail="A new title is required")
     run.title = title[:200]
+    run.title_source = "user"
+    detail = store.run_details.get(run_id)
+    if isinstance(detail, dict):
+        detail["title"] = run.title
+        detail["title_source"] = run.title_source
     _append_audit_event("workflow.run.rename", actor, "allowed", {"run_id": run_id})
     _persist_store_state()
     return run.model_dump()
+
+
+@app.patch("/workflow-runs/{run_id}")
+def update_workflow_run(
+    run_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="workflow.run.update")
+    _enforce_run_access(request, actor, run_id, action="workflow.run.update")
+    run = store.runs.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Title is required")
+
+    updated = run.model_copy(update={"title": title[:120], "title_source": "user"})
+    store.runs[run_id] = updated
+
+    for item in store.inbox:
+        if item.runId == run_id:
+            item.runName = updated.title
+
+    detail = store.run_details.get(run_id)
+    if isinstance(detail, dict):
+        detail["title"] = updated.title
+        detail["title_source"] = updated.title_source
+
+    _persist_store_state()
+    _append_audit_event(
+        "workflow.run.update",
+        actor,
+        "allowed",
+        {"run_id": run_id, "title_source": "user"},
+    )
+    return updated.model_dump()
 
 
 @app.get("/workflow-runs/{run_id}")
@@ -16356,6 +23043,10 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
     _enforce_run_access(request, actor, run_id, action="workflow.run.read")
     detail = store.run_details.get(run_id)
     if detail:
+        summary = store.runs.get(run_id)
+        if summary is not None:
+            detail["title"] = summary.title
+            detail["title_source"] = summary.title_source
         detail_changed = False
         detail_status = str(detail.get("status") or "").strip().lower()
         if detail_status == "failed":
@@ -16567,13 +23258,13 @@ def get_workflow_run_events(
 ) -> list[dict[str, Any]]:
     actor = _enforce_request_authn(request, action="workflow.run.events.read")
     _enforce_run_access(request, actor, run_id, action="workflow.run.events.read")
-    events = store.run_events.get(run_id, [])
+    serialized = _serialize_workflow_run_events(run_id)
     if after:
-        for index, event in enumerate(events):
-            if event.id == after:
-                events = events[index + 1 :]
+        for index, item in enumerate(serialized):
+            if item.get("id") == after:
+                serialized = serialized[index + 1 :]
                 break
-    return [event.model_dump() for event in events]
+    return serialized
 
 
 _RUN_STREAM_MAX_SECONDS = 300
@@ -17992,6 +24683,45 @@ def delete_local_model(model_id: str, request: Request) -> dict[str, Any]:
     return {"ok": True, "removed": removed}
 
 
+@app.get("/workflow-runs/{run_id}/stream")
+def stream_workflow_run(run_id: str, request: Request) -> StreamingResponse:
+    actor = _enforce_request_authn(request, action="workflow.run.events.read")
+    _enforce_run_access(request, actor, run_id, action="workflow.run.events.read")
+
+    def event_stream() -> Any:
+        last_index = 0
+        keepalive_every = 15.0
+        last_keepalive = time.monotonic()
+        deadline = time.monotonic() + _RUN_STREAM_MAX_SECONDS
+        while time.monotonic() < deadline:
+            stream_items = store.run_streams.get(run_id, [])
+            while last_index < len(stream_items):
+                item = stream_items[last_index]
+                last_index += 1
+                yield f"data: {json.dumps(item, default=_persist_json_default)}\n\n"
+
+            # Runs that never opened a delta stream (e.g. blocked at intake or
+            # created before streaming existed) have nothing further to send.
+            if store.run_stream_complete.get(run_id, True):
+                break
+
+            now = time.monotonic()
+            if now - last_keepalive >= keepalive_every:
+                yield ": keepalive\n\n"
+                last_keepalive = now
+            time.sleep(0.25)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.post("/workflow-runs/{run_id}/archive")
 def archive_workflow_run(run_id: str, request: Request) -> dict[str, bool]:
     actor = _enforce_request_authn(request, action="workflow.run.archive")
@@ -17999,7 +24729,7 @@ def archive_workflow_run(run_id: str, request: Request) -> dict[str, bool]:
     run = _enforce_run_access(request, actor, run_id, action="workflow.run.archive")
     previous_status = run.status
 
-    run.status = "Done"
+    run.status = "Archived"
     run.progressLabel = "Archived"
     run.updatedAt = "just now"
     run.archived = True  # hides it from the default run list / inbox nav
@@ -18007,7 +24737,7 @@ def archive_workflow_run(run_id: str, request: Request) -> dict[str, bool]:
 
     if run_id in store.run_details and isinstance(store.run_details[run_id], dict):
         detail = store.run_details[run_id]
-        detail["status"] = "Done"
+        detail["status"] = "Archived"
         approvals = detail.get("approvals")
         if isinstance(approvals, dict):
             approvals["pending"] = False
@@ -18031,7 +24761,7 @@ def archive_workflow_run(run_id: str, request: Request) -> dict[str, bool]:
         "workflow.run.archive",
         actor,
         "allowed",
-        {"run_id": run_id, "before_status": previous_status, "after_status": "Done"},
+        {"run_id": run_id, "before_status": previous_status, "after_status": "Archived"},
     )
     _persist_store_state()
 
@@ -18206,6 +24936,473 @@ def get_integrations(request: Request) -> list[dict[str, Any]]:
     return [_integration_response_payload(item) for item in store.integrations.values()]
 
 
+@app.get("/integrations/starters")
+def get_integration_starters(request: Request) -> list[dict[str, Any]]:
+    _enforce_builder_access(request, action="integration.starter_catalog.read")
+    return [item.model_dump() for item in _build_integration_starter_catalog()]
+
+
+@app.get("/integrations/mcp")
+def get_mcp_connections(request: Request) -> list[dict[str, Any]]:
+    _enforce_builder_access(request, action="integration.mcp.list")
+    return [_mcp_connection_response_payload(item) for item in store.mcp_connections.values()]
+
+
+@app.get("/integrations/mcp/starters")
+def get_mcp_connection_starters(request: Request) -> list[dict[str, Any]]:
+    _enforce_builder_access(request, action="integration.mcp.starter_catalog.read")
+    return [item.model_dump() for item in _build_mcp_starter_catalog()]
+
+
+@app.post("/integrations/mcp")
+def save_mcp_connection(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="integration.mcp.save")
+    _enforce_emergency_write_policy("integration.mcp.save", actor)
+
+    connection_id = str(payload.get("id") or uuid4())
+    existing = store.mcp_connections.get(connection_id)
+    previous_state = existing.model_dump() if existing else None
+
+    starter_id = str(payload.get("starter_id") or (existing.starter_id if existing else "")).strip()
+    starter = _resolve_mcp_starter(starter_id)
+    if starter is None:
+        raise HTTPException(status_code=400, detail="mcp starter_id is invalid")
+
+    transport = str(
+        payload.get("transport") or (existing.transport if existing else starter.transport)
+    )
+    if transport not in {"streamable_http", "sse", "custom"}:
+        transport = starter.transport
+
+    auth_type = str(
+        payload.get("auth_type") or (existing.auth_type if existing else starter.auth_type)
+    )
+    if auth_type not in {"none", "api_key", "bearer", "oauth2", "basic", "mcp_token"}:
+        auth_type = starter.auth_type
+
+    raw_server_url = (
+        payload.get("server_url")
+        if "server_url" in payload
+        else (existing.server_url if existing else "")
+    )
+    normalized_server_url = ""
+    if str(raw_server_url or "").strip():
+        normalized_server_url = _validated_platform_mcp_server_urls(
+            [raw_server_url], field_name="server_url"
+        )[0]
+
+    raw_secret_ref = (
+        payload.get("secret_ref")
+        if "secret_ref" in payload
+        else (existing.secret_ref if existing else starter.secret_ref)
+    )
+    normalized_secret_ref = _normalize_secret_ref(str(raw_secret_ref), auth_type)
+
+    capabilities = _validated_integration_label_list(
+        payload.get("capabilities")
+        if "capabilities" in payload
+        else (existing.capabilities if existing else list(starter.capabilities)),
+        field_name="capabilities",
+    )
+    permission_scopes = _validated_integration_label_list(
+        payload.get("permission_scopes")
+        if "permission_scopes" in payload
+        else (existing.permission_scopes if existing else list(starter.permission_scopes)),
+        field_name="permission_scopes",
+    )
+    data_access = _validated_integration_label_list(
+        payload.get("data_access")
+        if "data_access" in payload
+        else (existing.data_access if existing else list(starter.data_access)),
+        field_name="data_access",
+    )
+
+    default_egress_allowlist = (
+        list(existing.egress_allowlist) if existing else list(starter.egress_allowlist)
+    )
+    if not default_egress_allowlist and normalized_server_url:
+        server_host = _extract_host(normalized_server_url)
+        if server_host:
+            default_egress_allowlist.append(server_host)
+    egress_allowlist = _validated_integration_egress_allowlist(
+        payload.get("egress_allowlist")
+        if "egress_allowlist" in payload
+        else default_egress_allowlist
+    )
+
+    publisher = str(
+        payload.get("publisher") or (existing.publisher if existing else starter.publisher)
+    )
+    if publisher not in {"first_party", "third_party", "custom"}:
+        publisher = starter.publisher
+
+    execution_mode = str(
+        payload.get("execution_mode")
+        or (existing.execution_mode if existing else starter.execution_mode)
+    )
+    if execution_mode not in {"local", "sandboxed"}:
+        execution_mode = starter.execution_mode
+
+    metadata_json = dict(existing.metadata_json) if existing else {}
+    if isinstance(payload.get("metadata_json"), dict):
+        metadata_json.update(payload.get("metadata_json") or {})
+    metadata_json["starter"] = {
+        "id": starter.id,
+        "wave": starter.wave,
+        "transport": transport,
+    }
+
+    connection = MCPConnectionDefinition(
+        id=connection_id,
+        starter_id=starter.id,
+        wave=starter.wave,
+        name=str(payload.get("name") or (existing.name if existing else starter.name)).strip()
+        or starter.name,
+        status="draft",
+        server_url=normalized_server_url,
+        transport=transport,  # type: ignore[arg-type]
+        auth_type=auth_type,  # type: ignore[arg-type]
+        secret_ref=normalized_secret_ref,
+        metadata_json=metadata_json,
+        capabilities=capabilities,
+        permission_scopes=permission_scopes,
+        data_access=data_access,
+        egress_allowlist=egress_allowlist,
+        publisher=publisher,  # type: ignore[arg-type]
+        execution_mode=execution_mode,  # type: ignore[arg-type]
+        approved_by="",
+        approved_at="",
+        last_validated_at="",
+        last_validation_error="",
+    )
+
+    store.mcp_connections[connection_id] = connection
+    _append_config_mutation_audit(
+        "integration.mcp.save",
+        actor,
+        entity_type="mcp_connection",
+        entity_id=connection_id,
+        before=previous_state,
+        after={
+            "status": connection.status,
+            "starter_id": connection.starter_id,
+            "name": connection.name,
+        },
+    )
+    _persist_store_state()
+    return {"ok": True, "id": connection_id, "status": connection.status}
+
+
+@app.post("/integrations/mcp/{connection_id}/validate")
+def validate_mcp_connection(connection_id: str, request: Request) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, action="integration.mcp.validate")
+    _enforce_emergency_write_policy("integration.mcp.validate", actor)
+    connection = store.mcp_connections.get(connection_id)
+    if not connection:
+        raise HTTPException(status_code=404, detail="mcp connection not found")
+
+    previous_state = connection.model_dump()
+    validation = _evaluate_mcp_connection_validation(connection, store.platform_settings)
+    connection.last_validated_at = _now_iso()
+    connection.last_validation_error = "; ".join(validation["errors"])
+    connection.status = "validated" if validation["ok"] else "validation_failed"
+    store.mcp_connections[connection_id] = connection
+
+    _append_config_mutation_audit(
+        "integration.mcp.validate",
+        actor,
+        entity_type="mcp_connection",
+        entity_id=connection_id,
+        before=previous_state,
+        after={
+            "status": connection.status,
+            "last_validated_at": connection.last_validated_at,
+        },
+        extra={"validation": validation},
+    )
+    _persist_store_state()
+    return {
+        "ok": validation["ok"],
+        "id": connection_id,
+        "status": connection.status,
+        "validation": validation,
+    }
+
+
+@app.post("/integrations/mcp/{connection_id}/approve")
+def approve_mcp_connection(connection_id: str, request: Request) -> dict[str, Any]:
+    actor = _enforce_admin_access(request, action="integration.mcp.approve")
+    _enforce_emergency_write_policy("integration.mcp.approve", actor)
+    connection = store.mcp_connections.get(connection_id)
+    if not connection:
+        raise HTTPException(status_code=404, detail="mcp connection not found")
+    if connection.status != "validated":
+        _append_audit_event(
+            "integration.mcp.approve",
+            actor,
+            "blocked",
+            {"connection_id": connection_id, "reason": "validation_required"},
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="mcp connection must validate successfully before approval",
+        )
+
+    previous_state = connection.model_dump()
+    connection.status = "approved"
+    connection.approved_by = actor
+    connection.approved_at = _now_iso()
+    store.mcp_connections[connection_id] = connection
+
+    _append_config_mutation_audit(
+        "integration.mcp.approve",
+        actor,
+        entity_type="mcp_connection",
+        entity_id=connection_id,
+        before=previous_state,
+        after={
+            "status": connection.status,
+            "approved_by": connection.approved_by,
+        },
+    )
+    _persist_store_state()
+    return {"ok": True, "id": connection_id, "status": connection.status}
+
+
+@app.get("/integrations/{integration_id}/oauth/status")
+def get_integration_oauth_status(integration_id: str, request: Request) -> dict[str, Any]:
+    _enforce_builder_access(request, action="integration.oauth.status.read")
+    integration = store.integrations.get(integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="integration not found")
+    return _integration_oauth_status_payload(integration, request)
+
+
+@app.post("/integrations/{integration_id}/oauth/connect")
+def connect_integration_oauth(
+    integration_id: str,
+    payload: IntegrationOAuthConnectPayload,
+    request: Request,
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(
+        request, payload=payload.model_dump(), action="integration.oauth.connect"
+    )
+    _enforce_emergency_write_policy("integration.oauth.connect", actor)
+    integration = store.integrations.get(integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="integration not found")
+    if integration.auth_type != "oauth2":
+        raise HTTPException(status_code=409, detail="integration is not configured for oauth2")
+
+    auth = _integration_oauth_auth(integration)
+    if not auth:
+        raise HTTPException(status_code=400, detail="oauth2 auth metadata is missing")
+
+    if str(auth.get("grant_type") or "") == "client_credentials":
+        token_payload = _exchange_integration_oauth_token(
+            integration,
+            grant_type="client_credentials",
+        )
+        _persist_integration_oauth_tokens(integration, token_payload)
+        _persist_store_state()
+        _append_audit_event(
+            "integration.oauth.connect",
+            actor,
+            "allowed",
+            {
+                "integration_id": integration_id,
+                "provider": auth.get("provider"),
+                "grant_type": "client_credentials",
+            },
+        )
+        return {
+            "ok": True,
+            "mode": "client_credentials",
+            "status": _integration_oauth_status_payload(integration, request),
+        }
+
+    state = str(uuid4())
+    redirect_uri = _integration_oauth_callback_url(request, integration_id)
+    return_to = _safe_post_auth_redirect_path(
+        payload.return_to or str(auth.get("redirect_path") or "/builder/integrations")
+    )
+    _store_integration_oauth_session(
+        integration,
+        session_update={
+            "pending_state": state,
+            "pending_return_to": return_to,
+            "pending_started_at": _now_iso(),
+            "last_error": "",
+        },
+    )
+    connect_query = {
+        "response_type": "code",
+        "client_id": str(auth.get("client_id") or ""),
+        "redirect_uri": redirect_uri,
+        "state": state,
+    }
+    scopes = [str(item).strip() for item in auth.get("scopes") or [] if str(item).strip()]
+    if scopes:
+        connect_query["scope"] = " ".join(scopes)
+    if auth.get("audience"):
+        connect_query["audience"] = str(auth.get("audience") or "").strip()
+    if auth.get("resource"):
+        connect_query["resource"] = str(auth.get("resource") or "").strip()
+    if str(auth.get("provider") or "") == "google":
+        connect_query["access_type"] = "offline"
+        connect_query["prompt"] = "consent"
+
+    _persist_store_state()
+    _append_audit_event(
+        "integration.oauth.connect",
+        actor,
+        "allowed",
+        {
+            "integration_id": integration_id,
+            "provider": auth.get("provider"),
+            "grant_type": "authorization_code",
+        },
+    )
+    return {
+        "ok": True,
+        "mode": "authorization_code",
+        "connect_url": _append_query_values(str(auth.get("authorize_url") or ""), connect_query),
+        "redirect_uri": redirect_uri,
+        "status": _integration_oauth_status_payload(integration, request),
+    }
+
+
+@app.get("/integrations/{integration_id}/oauth/callback")
+def integration_oauth_callback(integration_id: str, request: Request) -> RedirectResponse:
+    integration = store.integrations.get(integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="integration not found")
+    if integration.auth_type != "oauth2":
+        raise HTTPException(status_code=409, detail="integration is not configured for oauth2")
+
+    auth = _integration_oauth_auth(integration)
+    session = _integration_oauth_session(integration)
+    return_to = _safe_post_auth_redirect_path(
+        str(
+            session.get("pending_return_to") or auth.get("redirect_path") or "/builder/integrations"
+        )
+    )
+    error = str(request.query_params.get("error") or "").strip()
+    state = str(request.query_params.get("state") or "").strip()
+    code = str(request.query_params.get("code") or "").strip()
+
+    if error:
+        _store_integration_oauth_session(
+            integration,
+            session_update={
+                "pending_state": "",
+                "pending_return_to": "",
+                "last_error": error,
+            },
+        )
+        _persist_store_state()
+        return RedirectResponse(
+            url=_append_query_values(
+                return_to, {"oauth": "error", "integration_id": integration_id}
+            ),
+            status_code=302,
+        )
+
+    if not state or state != str(session.get("pending_state") or ""):
+        raise HTTPException(
+            status_code=400,
+            detail="OAuth callback state did not match the pending integration session",
+        )
+    if not code:
+        raise HTTPException(status_code=400, detail="OAuth callback missing authorization code")
+
+    token_payload = _exchange_integration_oauth_token(
+        integration,
+        grant_type="authorization_code",
+        code=code,
+        redirect_uri=_integration_oauth_callback_url(request, integration_id),
+    )
+    _persist_integration_oauth_tokens(integration, token_payload)
+    _persist_store_state()
+    _append_audit_event(
+        "integration.oauth.callback",
+        "oauth-callback",
+        "allowed",
+        {"integration_id": integration_id, "provider": auth.get("provider")},
+    )
+    return RedirectResponse(
+        url=_append_query_values(
+            return_to, {"oauth": "connected", "integration_id": integration_id}
+        ),
+        status_code=302,
+    )
+
+
+@app.post("/integrations/{integration_id}/oauth/refresh")
+def refresh_integration_oauth(integration_id: str, request: Request) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, action="integration.oauth.refresh")
+    _enforce_emergency_write_policy("integration.oauth.refresh", actor)
+    integration = store.integrations.get(integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="integration not found")
+    if integration.auth_type != "oauth2":
+        raise HTTPException(status_code=409, detail="integration is not configured for oauth2")
+
+    auth = _integration_oauth_auth(integration)
+    grant_type: Literal["client_credentials", "refresh_token"] = (
+        "client_credentials"
+        if str(auth.get("grant_type") or "") == "client_credentials"
+        else "refresh_token"
+    )
+    token_payload = _exchange_integration_oauth_token(integration, grant_type=grant_type)
+    _persist_integration_oauth_tokens(integration, token_payload)
+    _persist_store_state()
+    _append_audit_event(
+        "integration.oauth.refresh",
+        actor,
+        "allowed",
+        {
+            "integration_id": integration_id,
+            "provider": auth.get("provider"),
+            "grant_type": grant_type,
+        },
+    )
+    return {"ok": True, "status": _integration_oauth_status_payload(integration, request)}
+
+
+@app.post("/integrations/{integration_id}/oauth/disconnect")
+def disconnect_integration_oauth(integration_id: str, request: Request) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, action="integration.oauth.disconnect")
+    _enforce_emergency_write_policy("integration.oauth.disconnect", actor)
+    integration = store.integrations.get(integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="integration not found")
+
+    _store_integration_oauth_session(
+        integration,
+        session_update={
+            "access_token_encrypted": "",
+            "refresh_token_encrypted": "",
+            "connected_at": "",
+            "expires_at": "",
+            "pending_state": "",
+            "pending_return_to": "",
+            "last_error": "",
+            "account_label": "",
+        },
+    )
+    _persist_store_state()
+    _append_audit_event(
+        "integration.oauth.disconnect",
+        actor,
+        "allowed",
+        {"integration_id": integration_id},
+    )
+    return {"ok": True, "status": _integration_oauth_status_payload(integration, request)}
+
+
 @app.post("/integrations")
 def save_integration(
     request: Request, payload: dict[str, Any] = Body(default_factory=dict)
@@ -18242,22 +25439,25 @@ def save_integration(
         else (existing.secret_ref if existing else "")
     )
 
-    capabilities = _normalize_string_list(
+    capabilities = _validated_integration_label_list(
         payload.get("capabilities")
         if "capabilities" in payload
-        else (existing.capabilities if existing else [])
+        else (existing.capabilities if existing else []),
+        field_name="capabilities",
     )
-    permission_scopes = _normalize_string_list(
+    permission_scopes = _validated_integration_label_list(
         payload.get("permission_scopes")
         if "permission_scopes" in payload
-        else (existing.permission_scopes if existing else [])
+        else (existing.permission_scopes if existing else []),
+        field_name="permission_scopes",
     )
-    data_access = _normalize_string_list(
+    data_access = _validated_integration_label_list(
         payload.get("data_access")
         if "data_access" in payload
-        else (existing.data_access if existing else [])
+        else (existing.data_access if existing else []),
+        field_name="data_access",
     )
-    egress_allowlist = _normalize_string_list(
+    egress_allowlist = _validated_integration_egress_allowlist(
         payload.get("egress_allowlist")
         if "egress_allowlist" in payload
         else (existing.egress_allowlist if existing else [])
@@ -18287,6 +25487,15 @@ def save_integration(
         payload.get("name") or (existing.name if existing else "Untitled Integration")
     )
     integration_base_url = str(payload.get("base_url") or (existing.base_url if existing else ""))
+    normalized_secret_ref = _normalize_secret_ref(str(raw_secret_ref), auth_type)
+    metadata_json["auth"] = _normalize_integration_auth_metadata(
+        auth_type,
+        metadata_json,
+        fallback_secret_ref=normalized_secret_ref,
+    )
+    if auth_type != "oauth2":
+        metadata_json.pop("oauth_session", None)
+        metadata_json.pop("oauth_preset", None)
 
     integration = IntegrationDefinition(
         id=integration_id,
@@ -18295,7 +25504,7 @@ def save_integration(
         status=integration_status,
         base_url=integration_base_url,
         auth_type=auth_type,
-        secret_ref=_normalize_secret_ref(str(raw_secret_ref), auth_type),
+        secret_ref=normalized_secret_ref,
         metadata_json=metadata_json,
         capabilities=capabilities,
         permission_scopes=permission_scopes,
@@ -18354,6 +25563,21 @@ def test_integration(integration_id: str, request: Request) -> dict[str, Any]:
         and checks.get("no_embedded_credentials")
         and (not checks.get("secret_required") or checks.get("has_secret_ref"))
     )
+    connectivity_message = "Integration test failed one or more policy checks"
+    connectivity_warnings = list(diagnostics.get("warnings", []))
+    if is_valid and integration.base_url.strip():
+        try:
+            headers = _integration_auth_headers(integration)
+            with httpx.Client(
+                timeout=httpx.Timeout(10.0, connect=5.0), follow_redirects=True
+            ) as client:
+                response = client.request("GET", integration.base_url, headers=headers)
+                response.raise_for_status()
+            connectivity_message = f"Connectivity check succeeded ({response.status_code})"
+        except Exception as exc:  # noqa: BLE001
+            is_valid = False
+            connectivity_message = f"Connectivity check failed: {str(exc)[:180]}"
+            connectivity_warnings.append("Remote endpoint probe failed")
     if store.platform_settings.enforce_integration_policies and not bool(policy.get("ok", True)):
         is_valid = False
 
@@ -18361,7 +25585,7 @@ def test_integration(integration_id: str, request: Request) -> dict[str, Any]:
     metadata["last_test"] = {
         "at": _now_iso(),
         "ok": is_valid,
-        "warnings": diagnostics.get("warnings", []),
+        "warnings": connectivity_warnings,
         "checks": checks,
     }
     integration.metadata_json = metadata
@@ -18379,9 +25603,7 @@ def test_integration(integration_id: str, request: Request) -> dict[str, Any]:
         "ok": is_valid,
         "id": integration_id,
         "status": integration.status,
-        "message": "Connectivity check simulated successfully"
-        if is_valid
-        else "Integration test failed one or more policy checks",
+        "message": connectivity_message,
         "diagnostics": diagnostics,
     }
 
@@ -18472,6 +25694,12 @@ def instantiate_agent_template(
         prompt_file=str(config_json.get("prompt_file") or "") or None,
         url_manifest=str(config_json.get("url_manifest") or "") or None,
     )
+    canonical_config["graph_json"] = _ensure_supported_graph_json(
+        canonical_config.get("graph_json")
+        if isinstance(canonical_config.get("graph_json"), dict)
+        else {"nodes": [], "links": []},
+        context_label="Agent template instantiation",
+    )
 
     store.agent_definitions[new_agent_id] = AgentDefinition(
         id=new_agent_id,
@@ -18560,10 +25788,159 @@ def instantiate_workflow_template(
     return {"ok": True, "id": new_workflow_id}
 
 
+def _normalize_playbook_status(
+    value: Any, *, default: Literal["draft", "published", "archived"] = "draft"
+) -> Literal["draft", "published", "archived"]:
+    candidate = str(value or "").strip().lower()
+    if candidate in {"published", "active"}:
+        return "published"
+    if candidate in {"archived", "deprecated"}:
+        return "archived"
+    if candidate == "draft":
+        return "draft"
+    return default
+
+
+def _serialize_playbook_definition(
+    item: PlaybookDefinition, *, include_graph: bool = True
+) -> dict[str, Any]:
+    payload = item.model_dump(exclude=None if include_graph else {"graph_json"})
+    payload["status"] = _normalize_playbook_status(payload.get("status"), default="draft")
+    return payload
+
+
 @app.get("/playbooks")
 def get_playbooks(request: Request) -> list[dict[str, Any]]:
     _enforce_builder_access(request, action="playbook.list")
-    return [item.model_dump(exclude={"graph_json"}) for item in store.playbooks.values()]
+    return [
+        _serialize_playbook_definition(item, include_graph=False)
+        for item in store.playbooks.values()
+    ]
+
+
+@app.post("/playbooks")
+def save_playbook_definition(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="playbook.save")
+    _enforce_emergency_write_policy("playbook.save", actor)
+
+    playbook_id = str(payload.get("id") or uuid4())
+    existing = store.playbooks.get(playbook_id)
+    previous_state = existing.model_dump() if existing else None
+    playbook_name = str(payload.get("name") or (existing.name if existing else "Untitled Playbook"))
+    playbook_description = str(
+        payload.get("description") or (existing.description if existing else "")
+    )
+    playbook_category = str(payload.get("category") or (existing.category if existing else "other"))
+    if playbook_category not in {"go_to_market", "security", "support", "operations", "other"}:
+        playbook_category = "other"
+    playbook_status = _normalize_playbook_status(
+        payload.get("status") or (existing.status if existing else "draft"),
+        default="draft",
+    )
+
+    normalized_graph_json = _ensure_supported_graph_json(
+        payload.get("graph_json") or {},
+        context_label="Playbook definition",
+    )
+    metadata_json = (
+        dict(existing.metadata_json)
+        if existing and isinstance(existing.metadata_json, dict)
+        else {}
+    )
+    if isinstance(payload.get("metadata_json"), dict):
+        metadata_json.update(payload.get("metadata_json"))
+
+    store.playbooks[playbook_id] = PlaybookDefinition(
+        id=playbook_id,
+        name=playbook_name,
+        description=playbook_description,
+        category=playbook_category,  # type: ignore[arg-type]
+        status=playbook_status,  # type: ignore[arg-type]
+        graph_json=normalized_graph_json,
+        metadata_json=metadata_json,
+    )
+
+    _append_config_mutation_audit(
+        "playbook.save",
+        actor,
+        entity_type="playbook_definition",
+        entity_id=playbook_id,
+        before=previous_state,
+        after={
+            "status": store.playbooks[playbook_id].status,
+            "name": store.playbooks[playbook_id].name,
+        },
+    )
+    _persist_store_state()
+    return {"ok": True, "id": playbook_id}
+
+
+@app.post("/playbooks/{playbook_id}/publish")
+def publish_playbook_definition(playbook_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_builder_access(request, action="playbook.publish")
+    _enforce_emergency_write_policy("playbook.publish", actor)
+    item = store.playbooks.get(playbook_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="playbook not found")
+    previous_state = _serialize_playbook_definition(item)
+    item.status = "published"
+    store.playbooks[playbook_id] = item
+    _append_config_mutation_audit(
+        "playbook.publish",
+        actor,
+        entity_type="playbook_definition",
+        entity_id=playbook_id,
+        before=previous_state,
+        after={"status": item.status, "name": item.name},
+    )
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.post("/playbooks/{playbook_id}/unpublish")
+def unpublish_playbook_definition(playbook_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_builder_access(request, action="playbook.unpublish")
+    _enforce_emergency_write_policy("playbook.unpublish", actor)
+    item = store.playbooks.get(playbook_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="playbook not found")
+    previous_state = _serialize_playbook_definition(item)
+    item.status = "draft"
+    store.playbooks[playbook_id] = item
+    _append_config_mutation_audit(
+        "playbook.unpublish",
+        actor,
+        entity_type="playbook_definition",
+        entity_id=playbook_id,
+        before=previous_state,
+        after={"status": item.status, "name": item.name},
+    )
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.post("/playbooks/{playbook_id}/archive")
+def archive_playbook_definition(playbook_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_builder_access(request, action="playbook.archive")
+    _enforce_emergency_write_policy("playbook.archive", actor)
+    item = store.playbooks.get(playbook_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="playbook not found")
+    previous_state = _serialize_playbook_definition(item)
+    item.status = "archived"
+    store.playbooks[playbook_id] = item
+    _append_config_mutation_audit(
+        "playbook.archive",
+        actor,
+        entity_type="playbook_definition",
+        entity_id=playbook_id,
+        before=previous_state,
+        after={"status": item.status, "name": item.name},
+    )
+    _persist_store_state()
+    return {"ok": True}
 
 
 @app.get("/playbooks/{playbook_id}")
@@ -18572,7 +25949,7 @@ def get_playbook(playbook_id: str, request: Request) -> dict[str, Any]:
     item = store.playbooks.get(playbook_id)
     if not item:
         raise HTTPException(status_code=404, detail="playbook not found")
-    return item.model_dump()
+    return _serialize_playbook_definition(item)
 
 
 @app.post("/playbooks/{playbook_id}/instantiate")
@@ -18719,8 +26096,10 @@ def join_collaboration_session(
     ).strip()
     requested_role = str(payload.get("role") or "editor").strip()
 
-    if entity_type not in {"agent", "workflow"}:
-        raise HTTPException(status_code=400, detail="entity_type must be 'agent' or 'workflow'")
+    if entity_type not in {"agent", "workflow", "playbook"}:
+        raise HTTPException(
+            status_code=400, detail="entity_type must be 'agent', 'workflow', or 'playbook'"
+        )
     if not entity_id:
         raise HTTPException(status_code=400, detail="entity_id is required")
     if requested_role not in {"owner", "editor", "viewer"}:
@@ -19274,6 +26653,13 @@ def save_workflow_definition(
         or {},
         context_label="Workflow definition",
     )
+    normalized_graph_json = _validate_builder_graph_models(
+        request=request,
+        actor=actor,
+        graph_json=normalized_graph_json,
+        context_label=f"Workflow definition '{workflow_name}'",
+        runtime_policy=security_config,
+    )
     store.workflow_definitions[item_id] = WorkflowDefinition(
         id=item_id,
         name=workflow_name,
@@ -19397,6 +26783,44 @@ def publish_workflow_definition(item_id: str, request: Request) -> dict[str, Any
         "ok": True,
         "generated_artifacts": [artifact.model_dump() for artifact in generated_artifacts],
     }
+
+
+@app.post("/workflow-definitions/{item_id}/unpublish")
+def unpublish_workflow_definition(item_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_builder_access(request, action="workflow.definition.unpublish")
+    _enforce_emergency_write_policy("workflow.definition.unpublish", actor)
+    item = store.workflow_definitions.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="workflow definition not found")
+    previous_state = item.model_dump()
+    item.status = "draft"
+    item.version += 1
+    item.published_revision_id = None
+    item.published_at = None
+    store.workflow_definitions[item_id] = item
+    _record_definition_revision(
+        entity_type="workflow_definition",
+        entity_id=item_id,
+        actor=actor,
+        action="unpublish",
+        snapshot=item,
+    )
+    _append_config_mutation_audit(
+        "workflow.definition.unpublish",
+        actor,
+        entity_type="workflow_definition",
+        entity_id=item_id,
+        before={
+            "version": previous_state.get("version"),
+            "status": previous_state.get("status"),
+        },
+        after={
+            "version": item.version,
+            "status": item.status,
+        },
+    )
+    _persist_store_state()
+    return {"ok": True}
 
 
 @app.post("/workflow-definitions/{item_id}/archive")
@@ -19653,6 +27077,17 @@ def save_agent_definition(
         merged_config.get("security") if isinstance(merged_config.get("security"), dict) else {},
         label="Agent security policy",
     )
+    validated_model_defaults = _validate_builder_model_defaults(
+        request=request,
+        actor=actor,
+        model_defaults=merged_config.get("model_defaults")
+        if isinstance(merged_config.get("model_defaults"), dict)
+        else None,
+        context_label=f"Agent definition '{agent_name}'",
+        runtime_policy=merged_config.get("security")
+        if isinstance(merged_config.get("security"), dict)
+        else None,
+    )
 
     canonical_config = _canonicalize_agent_config(
         merged_config,
@@ -19660,9 +27095,7 @@ def save_agent_definition(
         agent_name=agent_name,
         source_agent_id=str(merged_config.get("source_agent_id") or item_id),
         system_prompt=str(merged_config.get("system_prompt") or ""),
-        model_defaults=merged_config.get("model_defaults")
-        if isinstance(merged_config.get("model_defaults"), dict)
-        else None,
+        model_defaults=validated_model_defaults,
         tags=_normalize_text_list(merged_config.get("tags")),
         capabilities=_normalize_text_list(merged_config.get("capabilities")),
         owners=_normalize_text_list(merged_config.get("owners")),
@@ -19670,6 +27103,20 @@ def save_agent_definition(
         seed_source=str(merged_config.get("seed_source") or "") or None,
         prompt_file=str(merged_config.get("prompt_file") or "") or None,
         url_manifest=str(merged_config.get("url_manifest") or "") or None,
+    )
+    canonical_config["graph_json"] = _validate_builder_graph_models(
+        request=request,
+        actor=actor,
+        graph_json=_ensure_supported_graph_json(
+            canonical_config.get("graph_json")
+            if isinstance(canonical_config.get("graph_json"), dict)
+            else {"nodes": [], "links": []},
+            context_label=f"Agent definition '{agent_name}'",
+        ),
+        context_label=f"Agent definition '{agent_name}'",
+        runtime_policy=merged_config.get("security")
+        if isinstance(merged_config.get("security"), dict)
+        else None,
     )
 
     store.agent_definitions[item_id] = AgentDefinition(
@@ -19798,6 +27245,84 @@ def publish_agent_definition(item_id: str, request: Request) -> dict[str, Any]:
         "ok": True,
         "generated_artifacts": [artifact.model_dump() for artifact in generated_artifacts],
     }
+
+
+@app.post("/agent-definitions/{item_id}/unpublish")
+def unpublish_agent_definition(item_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_admin_access(request, action="agent.definition.unpublish")
+    _enforce_emergency_write_policy("agent.definition.unpublish", actor)
+    item = store.agent_definitions.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="agent definition not found")
+    previous_state = item.model_dump()
+    item.status = "draft"
+    item.version += 1
+    item.published_revision_id = None
+    item.published_at = None
+    store.agent_definitions[item_id] = item
+    _record_definition_revision(
+        entity_type="agent_definition",
+        entity_id=item_id,
+        actor=actor,
+        action="unpublish",
+        snapshot=item,
+    )
+    _append_config_mutation_audit(
+        "agent.definition.unpublish",
+        actor,
+        entity_type="agent_definition",
+        entity_id=item_id,
+        before={
+            "version": previous_state.get("version"),
+            "status": previous_state.get("status"),
+        },
+        after={
+            "version": item.version,
+            "status": item.status,
+        },
+    )
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.post("/agent-definitions/{item_id}/archive")
+def archive_agent_definition(item_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_admin_access(request, action="agent.definition.archive")
+    _enforce_emergency_write_policy("agent.definition.archive", actor)
+    item = store.agent_definitions.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="agent definition not found")
+    previous_state = item.model_dump()
+    item.status = "archived"
+    item.version += 1
+    item.published_revision_id = None
+    item.published_at = None
+    item.active_revision_id = None
+    item.active_at = None
+    store.agent_definitions[item_id] = item
+    _record_definition_revision(
+        entity_type="agent_definition",
+        entity_id=item_id,
+        actor=actor,
+        action="archive",
+        snapshot=item,
+    )
+    _append_config_mutation_audit(
+        "agent.definition.archive",
+        actor,
+        entity_type="agent_definition",
+        entity_id=item_id,
+        before={
+            "version": previous_state.get("version"),
+            "status": previous_state.get("status"),
+        },
+        after={
+            "version": item.version,
+            "status": item.status,
+        },
+    )
+    _persist_store_state()
+    return {"ok": True}
 
 
 @app.delete("/agent-definitions/{item_id}")
@@ -20211,6 +27736,55 @@ def get_node_definitions(request: Request, include_internal: bool = False) -> li
             color="#7863d3",
         ),
         NodeDefinition(
+            type_key="frontier/router",
+            title="Router",
+            description="Make deterministic routing decisions from rules, thresholds, or keyword classifiers.",
+            category="Logic",
+            color="#3158a4",
+        ),
+        NodeDefinition(
+            type_key="frontier/iterator",
+            title="Iterator",
+            description="Process lists, batches, and paginated payloads with loop and done branches.",
+            category="Logic",
+            color="#5670d9",
+        ),
+        NodeDefinition(
+            type_key="frontier/transform",
+            title="Transform",
+            description="Shape payloads deterministically through mapping, templating, extraction, redaction, or merge operations.",
+            category="Logic",
+            color="#1e8a72",
+        ),
+        NodeDefinition(
+            type_key="frontier/event",
+            title="Event",
+            description="Publish or consume workflow events with structured envelopes and receipts.",
+            category="Integration",
+            color="#0f8c8c",
+        ),
+        NodeDefinition(
+            type_key="frontier/data-store",
+            title="Data Store",
+            description="Create, read, update, append, or delete business records inside a scoped data store.",
+            category="Integration",
+            color="#6e7c2d",
+        ),
+        NodeDefinition(
+            type_key="frontier/error-handler",
+            title="Error Handler",
+            description="Normalize failures, apply fallback payloads, and emit structured recovery status for downstream steps.",
+            category="Control",
+            color="#aa5a2f",
+        ),
+        NodeDefinition(
+            type_key="frontier/wait",
+            title="Wait",
+            description="Delay, timeout, or resume execution windows with explicit resume and timeout branches.",
+            category="Control",
+            color="#8c6a13",
+        ),
+        NodeDefinition(
             type_key="frontier/output",
             title="Output",
             description="Finalize artifacts, emit events, and publish run outcomes.",
@@ -20244,7 +27818,7 @@ def get_guardrail_rulesets(request: Request) -> list[dict[str, Any]]:
 @app.post("/guardrail-rulesets")
 def save_guardrail_ruleset(
     request: Request, payload: dict[str, Any] = Body(default_factory=dict)
-) -> dict[str, bool]:
+) -> dict[str, Any]:
     actor = _enforce_admin_access(request, payload=payload, action="guardrail.ruleset.save")
     _enforce_emergency_write_policy("guardrail.ruleset.save", actor)
     item_id = str(payload.get("id") or uuid4())
@@ -20300,7 +27874,7 @@ def save_guardrail_ruleset(
         },
     )
     _persist_store_state()
-    return {"ok": True}
+    return {"ok": True, "id": item_id}
 
 
 @app.post("/guardrail-rulesets/{item_id}/publish")
@@ -20525,9 +28099,14 @@ def rollback_guardrail_ruleset(
     }
 
 
-@app.delete("/node-definitions/{_item_id}")
-def delete_node_definition(_item_id: str) -> dict[str, bool]:
-    return {"ok": True}
+@app.delete("/node-definitions/{_item_id:path}")
+def delete_node_definition(_item_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_builder_access(request, action="node.definition.delete")
+    _enforce_emergency_write_policy("node.definition.delete", actor)
+    raise HTTPException(
+        status_code=501,
+        detail="Node definitions are currently read-only; custom node deletion is not supported.",
+    )
 
 
 @app.post("/graph/validate")
@@ -21125,6 +28704,18 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
     runtime = payload.input.get("runtime") if isinstance(payload.input, dict) else {}
     if not isinstance(runtime, dict):
         runtime = {}
+    if any(_normalize_node_type(node.type).startswith("frontier/agent") for node in payload.nodes):
+        resolved_runtime = _resolve_request_chat_runtime(
+            request=request,
+            actor=actor,
+            payload=payload.input if isinstance(payload.input, dict) else {},
+            agent_definition=None,
+            fallback_model=_default_openai_model(),
+        )
+        runtime = {
+            **runtime,
+            **resolved_runtime,
+        }
     runtime_info = _resolve_runtime_engine(payload.input, store.platform_settings)
     session_id = str(
         runtime.get("session_id") or payload.input.get("session_id") or f"session:{run_id}"
@@ -21135,6 +28726,16 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
         "session_id": session_id,
         "runtime_info": runtime_info,
         "effective_security_policy": _resolve_execution_security_policy(payload.input),
+        "assembly_policy": (
+            payload.input.get("assembly_policy")
+            if isinstance(payload.input.get("assembly_policy"), dict)
+            else {}
+        ),
+        "tenant_runtime_policy": (
+            payload.input.get("tenant_runtime_policy")
+            if isinstance(payload.input.get("tenant_runtime_policy"), dict)
+            else {}
+        ),
     }
 
     events.append(
@@ -21197,8 +28798,30 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
             )
         )
         try:
-            incoming = _incoming_values(node_id, payload.links, node_results)
-            incoming_by_port = _incoming_values_by_port(node_id, payload.links, node_results)
+            all_incoming_edges = _incoming_edges(node_id, payload.links)
+            active_incoming = _active_incoming_edges(
+                node_id,
+                payload.links,
+                node_by_id=node_by_id,
+                node_results=node_results,
+            )
+
+            if _should_skip_node_execution(resolved_node, all_incoming_edges, active_incoming):
+                node_results[node_id] = _build_skipped_node_result(resolved_node)
+                events.append(
+                    GraphRunEvent(
+                        id=f"evt-{uuid4()}",
+                        node_id=node_id,
+                        type="node_completed",
+                        title=f"{resolved_node.title} skipped",
+                        summary="No active inbound flow reached this node.",
+                        created_at=_now_iso(),
+                    )
+                )
+                continue
+
+            incoming = _incoming_values(node_id, active_incoming, node_results)
+            incoming_by_port = _incoming_values_by_port(node_id, active_incoming, node_results)
             node_results[node_id] = _execute_node(
                 node=resolved_node,
                 incoming=incoming,

@@ -1,13 +1,17 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowCanvas, type GraphLink, type GraphNode } from "@/components/reactflow-canvas";
 import { normalizeNodeTypeForSchema, resolveNodePortAlias } from "@/lib/frontier-node-schema";
+import type { IntegrationDefinition } from "@/types/frontier";
 import {
   clearMemorySession,
   getCollaborationSession,
   getGuardrailRulesets,
+  getIntegrations,
+  getMcpConnections,
   getMemorySession,
   getModelsOverview,
   getNodeDefinitions,
@@ -15,6 +19,7 @@ import {
   getObservabilityRunTrace,
   getPlatformSettings,
   getRuntimeProviders,
+  getUserSkills,
   joinCollaborationSession,
   runGraph,
   syncCollaborationSession,
@@ -30,7 +35,15 @@ import {
   validateGraph,
 } from "@/lib/api";
 
-type StudioEntityType = "agent" | "workflow";
+type StudioEntityType = "agent" | "workflow" | "playbook";
+
+type CanvasApi = {
+  addNode: (node: { type: string; title?: string; x?: number; y?: number; config?: Record<string, unknown> }) => void;
+  autoLayout: (options?: { fitView?: boolean }) => void;
+  replaceGraph: (graph: { nodes: GraphNode[]; links: GraphLink[] }, options?: { fitView?: boolean }) => void;
+  clear: () => void;
+  serialize: () => { nodes: GraphNode[]; links: GraphLink[] };
+};
 
 type Props = {
   entityType: StudioEntityType;
@@ -42,8 +55,13 @@ type Props = {
   initialLinks: GraphLink[];
   initialGeneratedArtifacts?: unknown[];
   rightSidebarSlot?: React.ReactNode;
+  externalWidgetOptionOverrides?: Record<string, Record<string, string[]>>;
   onSave: (payload: { nodes: GraphNode[]; links: GraphLink[] }) => Promise<void>;
-  onPublish: () => Promise<void>;
+  onPublish?: (() => Promise<void>) | undefined;
+  onNodeSelected?: (node: GraphNode | null) => void;
+  onEditAgent?: (agentId: string) => void;
+  onCanvasReady?: (api: CanvasApi) => void;
+  returnAction?: { label: string; href: string };
 };
 
 function generateCollaborationUserId(entityType: StudioEntityType, entityId: string): string {
@@ -64,6 +82,131 @@ function generateCollaborationUserId(entityType: StudioEntityType, entityId: str
   return `${prefix}${Date.now().toString(36)}`;
 }
 
+function readLocalStorage(key: string): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const storage = window.localStorage;
+  if (!storage || typeof storage.getItem !== "function") {
+    return null;
+  }
+
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalStorage(key: string, value: string): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const storage = window.localStorage;
+  if (!storage || typeof storage.setItem !== "function") {
+    return;
+  }
+
+  try {
+    storage.setItem(key, value);
+  } catch {
+    // Ignore storage write failures and continue with in-memory state.
+  }
+}
+
+function mergeUniqueOptions(...groups: Array<string[] | undefined>): string[] {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+
+  for (const group of groups) {
+    for (const entry of group ?? []) {
+      const normalized = String(entry ?? "").trim();
+      if (!normalized || seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      merged.push(normalized);
+    }
+  }
+
+  return merged;
+}
+
+function toMatchTokens(values: string[] | undefined): Set<string> {
+  const tokens = new Set<string>();
+
+  for (const value of values ?? []) {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (!normalized) {
+      continue;
+    }
+
+    for (const candidate of [normalized, normalized.replace(/^\/+/, "")]) {
+      if (!candidate) {
+        continue;
+      }
+      tokens.add(candidate);
+      for (const part of candidate.split(/[^a-z0-9]+/)) {
+        if (part.length >= 2) {
+          tokens.add(part);
+        }
+      }
+    }
+  }
+
+  return tokens;
+}
+
+function rankIntegrationSkillMatches(
+  integrations: IntegrationDefinition[],
+  scopedSkills: string[],
+): string[] {
+  const skillTokens = toMatchTokens(scopedSkills);
+
+  return integrations
+    .filter((integration) => integration.status !== "archived")
+    .map((integration) => {
+      const capabilityTokens = toMatchTokens(integration.capabilities);
+      let score = 0;
+      let matched = false;
+
+      for (const token of skillTokens) {
+        if (capabilityTokens.has(token)) {
+          matched = true;
+          score += token.includes("/") ? 6 : 2;
+        }
+      }
+
+      if (matched && integration.status === "configured") {
+        score += 1;
+      }
+
+      return {
+        id: integration.id,
+        name: integration.name,
+        score,
+      };
+    })
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score || left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+    .map((item) => item.id);
+}
+
+const defaultToolIdOptions = [
+  "tool/unspecified",
+  "tool/search",
+  "tool/http",
+  "tool/retrieval",
+  "tool/code",
+  "tool/sql",
+  "tool/file",
+  "tool/email",
+  "tool/slack",
+  "tool/mcp",
+];
+
 export function StudioFullCanvas({
   entityType,
   entityId,
@@ -72,9 +215,16 @@ export function StudioFullCanvas({
   description,
   initialNodes,
   initialLinks,
+  rightSidebarSlot,
+  externalWidgetOptionOverrides,
   onSave,
   onPublish,
+  onNodeSelected,
+  onEditAgent,
+  onCanvasReady,
+  returnAction,
 }: Props) {
+  const router = useRouter();
   const canvasApiRef = useRef<{
     addNode: (node: { type: string; title?: string; x?: number; y?: number; config?: Record<string, unknown> }) => void;
     autoLayout: (options?: { fitView?: boolean }) => void;
@@ -99,6 +249,7 @@ export function StudioFullCanvas({
   const [validationIssues, setValidationIssues] = useState<Array<{ code: string; message: string; path: string }>>([]);
   const [runResult, setRunResult] = useState<GraphRunResponse | null>(null);
   const [providerStatus, setProviderStatus] = useState<RuntimeProvider | null>(null);
+  const [runtimeLoadError, setRuntimeLoadError] = useState<string | null>(null);
   const [frameworkAdapters, setFrameworkAdapters] = useState<Record<string, RuntimeFrameworkAdapterProbe>>({});
   const [runtimePolicy, setRuntimePolicy] = useState<PlatformRuntimePolicySettings>({
     default_runtime_engine: "native",
@@ -141,6 +292,7 @@ export function StudioFullCanvas({
   const [selectedTrace, setSelectedTrace] = useState<ObservabilityRunTrace | null>(null);
   const [collabUserId, setCollabUserId] = useState("local-user");
   const [runtimePanelCollapsed, setRuntimePanelCollapsed] = useState(false);
+  const [headerPanelCollapsed, setHeaderPanelCollapsed] = useState(false);
   const isInternalBuilderMode = builderMode === "internal";
 
   const isReadOnly = collabRole === "viewer";
@@ -250,6 +402,51 @@ export function StudioFullCanvas({
         }
       }
 
+      if (normalizedType === "router") {
+        if (incomingTo(node.id, ["in"]) === 0) {
+          issues.push({ code: "ROUTER_FLOW_INPUT_REQUIRED", message: `${node.title}: connect flow input to 'in'.` });
+        }
+        if (incomingTo(node.id, ["candidate"]) === 0) {
+          issues.push({ code: "ROUTER_CANDIDATE_INPUT_REQUIRED", message: `${node.title}: connect candidate input to 'candidate'.` });
+        }
+      }
+
+      if (normalizedType === "transform") {
+        if (incomingTo(node.id, ["in"]) === 0) {
+          issues.push({ code: "TRANSFORM_FLOW_INPUT_REQUIRED", message: `${node.title}: connect flow input to 'in'.` });
+        }
+        if (incomingTo(node.id, ["source"]) === 0) {
+          issues.push({ code: "TRANSFORM_SOURCE_INPUT_REQUIRED", message: `${node.title}: connect source input to 'source'.` });
+        }
+      }
+
+      if (normalizedType === "iterator") {
+        if (incomingTo(node.id, ["in"]) === 0) {
+          issues.push({ code: "ITERATOR_FLOW_INPUT_REQUIRED", message: `${node.title}: connect flow input to 'in'.` });
+        }
+        if (incomingTo(node.id, ["items"]) === 0) {
+          issues.push({ code: "ITERATOR_ITEMS_INPUT_REQUIRED", message: `${node.title}: connect items input to 'items'.` });
+        }
+      }
+
+      if (normalizedType === "event") {
+        if (incomingTo(node.id, ["in"]) === 0) {
+          issues.push({ code: "EVENT_FLOW_INPUT_REQUIRED", message: `${node.title}: connect flow input to 'in'.` });
+        }
+        if (incomingTo(node.id, ["payload"]) === 0) {
+          issues.push({ code: "EVENT_PAYLOAD_INPUT_REQUIRED", message: `${node.title}: connect payload input to 'payload'.` });
+        }
+      }
+
+      if (normalizedType === "data-store") {
+        if (incomingTo(node.id, ["in"]) === 0) {
+          issues.push({ code: "DATA_STORE_FLOW_INPUT_REQUIRED", message: `${node.title}: connect flow input to 'in'.` });
+        }
+        if (incomingTo(node.id, ["record"]) === 0) {
+          issues.push({ code: "DATA_STORE_RECORD_INPUT_REQUIRED", message: `${node.title}: connect record input to 'record'.` });
+        }
+      }
+
       if (normalizedType === "tool-call") {
         if (incomingTo(node.id, ["in"]) === 0) {
           issues.push({ code: "TOOL_FLOW_INPUT_REQUIRED", message: `${node.title}: connect flow input to 'in'.` });
@@ -265,6 +462,21 @@ export function StudioFullCanvas({
         }
         if (incomingTo(node.id, ["result"]) === 0) {
           issues.push({ code: "OUTPUT_RESULT_INPUT_REQUIRED", message: `${node.title}: connect payload input to 'result'.` });
+        }
+      }
+
+      if (normalizedType === "error-handler") {
+        if (incomingTo(node.id, ["in"]) === 0) {
+          issues.push({ code: "ERROR_HANDLER_FLOW_INPUT_REQUIRED", message: `${node.title}: connect flow input to 'in'.` });
+        }
+        if (incomingTo(node.id, ["error"]) === 0) {
+          issues.push({ code: "ERROR_HANDLER_INPUT_REQUIRED", message: `${node.title}: connect error input to 'error'.` });
+        }
+      }
+
+      if (normalizedType === "wait") {
+        if (incomingTo(node.id, ["in"]) === 0) {
+          issues.push({ code: "WAIT_FLOW_INPUT_REQUIRED", message: `${node.title}: connect flow input to 'in'.` });
         }
       }
     }
@@ -302,16 +514,14 @@ export function StudioFullCanvas({
 
   useEffect(() => {
     const storageKey = `frontier:collab:${entityType}:${entityId}:user`;
-    const existing = typeof window !== "undefined" ? window.localStorage.getItem(storageKey) : null;
+    const existing = readLocalStorage(storageKey);
     if (existing) {
       setCollabUserId(existing);
       return;
     }
 
     const generated = generateCollaborationUserId(entityType, entityId);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(storageKey, generated);
-    }
+    writeLocalStorage(storageKey, generated);
     setCollabUserId(generated);
   }, [entityId, entityType]);
 
@@ -465,7 +675,8 @@ export function StudioFullCanvas({
     async function loadGuardrailOptions() {
       const [rulesets, modelsOverview] = await Promise.all([
         getGuardrailRulesets(),
-        getModelsOverview().catch(() => null),
+        // Wrapped so a synchronous throw also degrades to the static model options.
+        Promise.resolve().then(() => getModelsOverview()).catch(() => null),
       ]);
       if (cancelled) {
         return;
@@ -503,12 +714,13 @@ export function StudioFullCanvas({
         }
       }
 
-      setWidgetOptionOverrides((previous) => ({
-        ...previous,
+      setWidgetOptionOverrides((current) => ({
+        ...current,
         guardrail: {
+          ...(current.guardrail ?? {}),
           ruleset_id: publishedRuleSetIds,
         },
-        ...(modelOptions.length > 0 ? { agent: { ...(previous.agent ?? {}), model: modelOptions } } : {}),
+        ...(modelOptions.length > 0 ? { agent: { ...(current.agent ?? {}), model: modelOptions } } : {}),
       }));
     }
 
@@ -522,45 +734,107 @@ export function StudioFullCanvas({
   useEffect(() => {
     let cancelled = false;
 
-    async function loadRuntimeProvider() {
-      const [response, platformSettings] = await Promise.all([getRuntimeProviders(), getPlatformSettings()]);
-      if (cancelled) {
-        return;
-      }
-      const openai = response.providers.find((provider) => provider.provider === "openai") ?? null;
-      setProviderStatus(openai);
-      setFrameworkAdapters(response.framework_adapters ?? {});
-      if (openai?.model) {
-        setRuntimeModel(openai.model);
-      }
+    async function loadSkillScopedOptions() {
+      try {
+        const [platformSettings, userSkillsResponse, integrations, mcpConnections] = await Promise.all([
+          getPlatformSettings(),
+          getUserSkills(),
+          getIntegrations(),
+          getMcpConnections(),
+        ]);
+        if (cancelled) {
+          return;
+        }
 
-      const nextPolicy: PlatformRuntimePolicySettings = {
-        default_runtime_engine: (platformSettings.default_runtime_engine ?? "native") as RuntimeEngineName,
-        default_runtime_strategy: (platformSettings.default_runtime_strategy ?? "single") as RuntimeStrategyName,
-        default_hybrid_runtime_routing: {
-          default: (platformSettings.default_hybrid_runtime_routing?.default ?? "native") as RuntimeEngineName,
-          orchestration: (platformSettings.default_hybrid_runtime_routing?.orchestration ?? platformSettings.default_hybrid_runtime_routing?.default ?? "native") as RuntimeEngineName,
-          retrieval: (platformSettings.default_hybrid_runtime_routing?.retrieval ?? platformSettings.default_hybrid_runtime_routing?.default ?? "native") as RuntimeEngineName,
-          tooling: (platformSettings.default_hybrid_runtime_routing?.tooling ?? platformSettings.default_hybrid_runtime_routing?.default ?? "native") as RuntimeEngineName,
-          collaboration: (platformSettings.default_hybrid_runtime_routing?.collaboration ?? platformSettings.default_hybrid_runtime_routing?.default ?? "native") as RuntimeEngineName,
-        },
-        allowed_runtime_engines: ((platformSettings.allowed_runtime_engines ?? ["native"]) as string[]).filter(Boolean),
-        allow_runtime_engine_override: Boolean(platformSettings.allow_runtime_engine_override),
-        enforce_runtime_engine_allowlist: Boolean(platformSettings.enforce_runtime_engine_allowlist),
-      };
-      if ((nextPolicy.allowed_runtime_engines ?? []).length === 0) {
-        nextPolicy.allowed_runtime_engines = ["native"];
+        const skillOptions = mergeUniqueOptions(userSkillsResponse.skills, platformSettings.tenant_scoped_skills);
+        const likelyIntegrationIds = rankIntegrationSkillMatches(integrations, skillOptions);
+        const approvedMcpConnectionIds = mcpConnections
+          .filter((connection) => connection.status === "approved")
+          .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+          .map((connection) => connection.id);
+        const remainingIntegrationIds = integrations
+          .filter((integration) => integration.status !== "archived")
+          .map((integration) => integration.id)
+          .filter((integrationId) => !likelyIntegrationIds.includes(integrationId))
+          .sort((left, right) => left.localeCompare(right));
+        setWidgetOptionOverrides((current) => ({
+          ...current,
+          agent: {
+            ...(current.agent ?? {}),
+            skills: skillOptions,
+          },
+          "tool-call": {
+            ...(current["tool-call"] ?? {}),
+            tool_id: [...likelyIntegrationIds, ...defaultToolIdOptions, ...remainingIntegrationIds],
+            mcp_connection_id: approvedMcpConnectionIds,
+          },
+        }));
+      } catch {
+        if (cancelled) {
+          return;
+        }
       }
-      setRuntimePolicy(nextPolicy);
-      setRuntimeEngine(nextPolicy.default_runtime_engine as RuntimeEngineName);
-      setRuntimeStrategy(nextPolicy.default_runtime_strategy ?? "single");
-      setHybridRouting({
-        default: nextPolicy.default_hybrid_runtime_routing?.default ?? nextPolicy.default_runtime_engine ?? "native",
-        orchestration: nextPolicy.default_hybrid_runtime_routing?.orchestration ?? nextPolicy.default_hybrid_runtime_routing?.default ?? nextPolicy.default_runtime_engine ?? "native",
-        retrieval: nextPolicy.default_hybrid_runtime_routing?.retrieval ?? nextPolicy.default_hybrid_runtime_routing?.default ?? nextPolicy.default_runtime_engine ?? "native",
-        tooling: nextPolicy.default_hybrid_runtime_routing?.tooling ?? nextPolicy.default_hybrid_runtime_routing?.default ?? nextPolicy.default_runtime_engine ?? "native",
-        collaboration: nextPolicy.default_hybrid_runtime_routing?.collaboration ?? nextPolicy.default_hybrid_runtime_routing?.default ?? nextPolicy.default_runtime_engine ?? "native",
-      });
+    }
+
+    void loadSkillScopedOptions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRuntimeProvider() {
+      try {
+        const [response, platformSettings] = await Promise.all([getRuntimeProviders(), getPlatformSettings()]);
+        if (cancelled) {
+          return;
+        }
+        setRuntimeLoadError(null);
+        const openai = response.providers.find((provider) => provider.provider === "openai") ?? null;
+        setProviderStatus(openai);
+        setFrameworkAdapters(response.framework_adapters ?? {});
+        if (openai?.model) {
+          setRuntimeModel(openai.model);
+        }
+
+        const nextPolicy: PlatformRuntimePolicySettings = {
+          default_runtime_engine: (platformSettings.default_runtime_engine ?? "native") as RuntimeEngineName,
+          default_runtime_strategy: (platformSettings.default_runtime_strategy ?? "single") as RuntimeStrategyName,
+          default_hybrid_runtime_routing: {
+            default: (platformSettings.default_hybrid_runtime_routing?.default ?? "native") as RuntimeEngineName,
+            orchestration: (platformSettings.default_hybrid_runtime_routing?.orchestration ?? platformSettings.default_hybrid_runtime_routing?.default ?? "native") as RuntimeEngineName,
+            retrieval: (platformSettings.default_hybrid_runtime_routing?.retrieval ?? platformSettings.default_hybrid_runtime_routing?.default ?? "native") as RuntimeEngineName,
+            tooling: (platformSettings.default_hybrid_runtime_routing?.tooling ?? platformSettings.default_hybrid_runtime_routing?.default ?? "native") as RuntimeEngineName,
+            collaboration: (platformSettings.default_hybrid_runtime_routing?.collaboration ?? platformSettings.default_hybrid_runtime_routing?.default ?? "native") as RuntimeEngineName,
+          },
+          allowed_runtime_engines: ((platformSettings.allowed_runtime_engines ?? ["native"]) as string[]).filter(Boolean),
+          allow_runtime_engine_override: Boolean(platformSettings.allow_runtime_engine_override),
+          enforce_runtime_engine_allowlist: Boolean(platformSettings.enforce_runtime_engine_allowlist),
+        };
+        if ((nextPolicy.allowed_runtime_engines ?? []).length === 0) {
+          nextPolicy.allowed_runtime_engines = ["native"];
+        }
+        setRuntimePolicy(nextPolicy);
+        setRuntimeEngine(nextPolicy.default_runtime_engine as RuntimeEngineName);
+        setRuntimeStrategy(nextPolicy.default_runtime_strategy ?? "single");
+        setHybridRouting({
+          default: nextPolicy.default_hybrid_runtime_routing?.default ?? nextPolicy.default_runtime_engine ?? "native",
+          orchestration: nextPolicy.default_hybrid_runtime_routing?.orchestration ?? nextPolicy.default_hybrid_runtime_routing?.default ?? nextPolicy.default_runtime_engine ?? "native",
+          retrieval: nextPolicy.default_hybrid_runtime_routing?.retrieval ?? nextPolicy.default_hybrid_runtime_routing?.default ?? nextPolicy.default_runtime_engine ?? "native",
+          tooling: nextPolicy.default_hybrid_runtime_routing?.tooling ?? nextPolicy.default_hybrid_runtime_routing?.default ?? nextPolicy.default_runtime_engine ?? "native",
+          collaboration: nextPolicy.default_hybrid_runtime_routing?.collaboration ?? nextPolicy.default_hybrid_runtime_routing?.default ?? nextPolicy.default_runtime_engine ?? "native",
+        });
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setProviderStatus(null);
+        setFrameworkAdapters({});
+        setRuntimeLoadError(error instanceof Error ? error.message : "Unable to load runtime provider status.");
+      }
     }
 
     void loadRuntimeProvider();
@@ -614,17 +888,42 @@ export function StudioFullCanvas({
     }));
   }, []);
 
-  async function handleSaveDraft() {
+  const mergedWidgetOptionOverrides = useMemo(() => {
+    const merged: Record<string, Record<string, string[]>> = {};
+    for (const source of [widgetOptionOverrides, externalWidgetOptionOverrides ?? {}]) {
+      for (const [nodeType, options] of Object.entries(source)) {
+        merged[nodeType] = {
+          ...(merged[nodeType] ?? {}),
+          ...options,
+        };
+      }
+    }
+    return merged;
+  }, [externalWidgetOptionOverrides, widgetOptionOverrides]);
+
+  async function handleSaveDraft(): Promise<boolean> {
     setSaveState("saving");
     try {
       await onSave(graph);
       setSaveState("saved");
+      return true;
     } catch {
       setSaveState("error");
+      return false;
+    }
+  }
+
+  async function handleSaveAndReturn() {
+    const saved = await handleSaveDraft();
+    if (saved && returnAction) {
+      router.push(returnAction.href);
     }
   }
 
   async function handlePublish() {
+    if (!onPublish) {
+      return;
+    }
     setPublishState("publishing");
     try {
       // Persist the current canvas FIRST, then publish — otherwise publish
@@ -725,8 +1024,8 @@ export function StudioFullCanvas({
     canvasApiRef.current?.autoLayout({ fitView: true });
   }
 
-  const title = entityType === "agent" ? "Agent Studio" : "Workflow Studio";
-  const backHref = entityType === "agent" ? "/builder/agents" : "/builder/workflows";
+  const title = entityType === "agent" ? "Agent Studio" : entityType === "workflow" ? "Workflow Studio" : "Playbook Studio";
+  const backHref = entityType === "agent" ? "/builder/agents" : entityType === "workflow" ? "/builder/workflows" : "/builder/playbooks";
 
   return (
     <section className="-m-5 h-[calc(100vh-var(--fx-content-top,57px))] overflow-hidden md:-m-6">
@@ -737,42 +1036,89 @@ export function StudioFullCanvas({
           links={graph.links}
           readOnly={isReadOnly}
           extraNodeDefinitions={extraNodeDefinitions}
-          widgetOptionOverrides={widgetOptionOverrides}
+          widgetOptionOverrides={mergedWidgetOptionOverrides}
           edgeType={edgeType}
           edgeAnimated={edgeAnimated}
           onGraphChange={handleGraphChange}
+          onNodeSelected={onNodeSelected}
+          onEditAgent={onEditAgent}
           onReady={(api) => {
             canvasApiRef.current = api;
+            onCanvasReady?.(api);
           }}
         />
 
-        <div className="pointer-events-none absolute inset-x-3 top-3 flex items-center justify-between gap-3">
-          <div className="pointer-events-auto fx-panel px-3 py-2 text-[var(--foreground)] shadow-[0_8px_20px_rgba(0,0,0,0.35)]">
-            <Link href={backHref} className="text-[11px] font-mono fx-muted underline decoration-dotted underline-offset-4">
+        <div className="pointer-events-none absolute inset-x-3 top-3 flex items-start justify-between gap-3">
+          <div className="pointer-events-auto w-full max-w-[30rem] overflow-hidden rounded-[1.6rem] border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_96%,hsl(var(--background))_4%)] px-4 py-3 text-[var(--foreground)] shadow-[0_24px_60px_rgba(15,23,42,0.1)] backdrop-blur-md xl:max-w-[34rem]">
+            <Link href={backHref} className="text-[0.72rem] font-medium fx-muted underline decoration-dotted underline-offset-4">
               Back to Library
             </Link>
-            <div className="mt-1 text-sm font-semibold text-[var(--foreground)]">
-              {title} / {entityName}
+            <div className="mt-1 flex items-center justify-between gap-2">
+              <div className="min-w-0 text-[1rem] font-semibold tracking-[-0.02em] text-[var(--foreground)]">
+                <span className="truncate">{title} / {entityName}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHeaderPanelCollapsed((current) => !current)}
+                className="fx-btn-secondary shrink-0 px-2 py-0.5 text-[10px]"
+                aria-label={headerPanelCollapsed ? "Expand Header Details panel" : "Collapse Header Details panel"}
+                title={headerPanelCollapsed ? "Expand panel" : "Collapse panel"}
+              >
+                {headerPanelCollapsed ? "Expand" : "Collapse"}
+              </button>
             </div>
-            <div className="text-[11px] font-mono fx-muted">{entityType}_id: {entityId}</div>
-            <div className="mt-1 flex items-center gap-1 text-[10px]">
-              <span className="fx-muted">collab:</span>
-              <span className="font-mono text-[var(--foreground)]">{collabSessionId ? collabSessionId.slice(0, 8) : "--"}</span>
-              <span className="fx-muted">role:</span>
-              <span className="font-semibold text-[var(--foreground)]">{collabRole}</span>
-              <span className="fx-muted">sync:</span>
-              <span className="font-semibold text-[var(--foreground)]">{collabSyncState}</span>
-                {isInternalBuilderMode && (
-                  <>
-                    <span className="fx-muted">mode:</span>
-                    <span className="font-semibold text-[var(--foreground)]">internal</span>
-                  </>
-                )}
+            <div className={headerPanelCollapsed ? "mt-0.5 flex items-center gap-1 text-[10px]" : "mt-1"}>
+              <div className="text-[11px] font-mono fx-muted">{entityType}_id: {entityId}</div>
+              <div className={headerPanelCollapsed ? "flex min-w-0 flex-wrap items-center gap-1 text-[10px]" : "mt-1 flex flex-wrap items-center gap-1 text-[10px]"}>
+                <span className="fx-muted">collab:</span>
+                <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-0.5 font-mono text-[var(--foreground)]">{collabSessionId ? collabSessionId.slice(0, 8) : "--"}</span>
+                <span className="fx-muted">role:</span>
+                <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-0.5 font-semibold text-[var(--foreground)]">{collabRole}</span>
+                <span className="fx-muted">sync:</span>
+                <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-0.5 font-semibold text-[var(--foreground)]">{collabSyncState}</span>
+                  {isInternalBuilderMode && (
+                    <>
+                      <span className="fx-muted">mode:</span>
+                      <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-0.5 font-semibold text-[var(--foreground)]">internal</span>
+                    </>
+                  )}
+              </div>
             </div>
+
+            {!headerPanelCollapsed ? (
+              <div className="mt-2 border-t border-[var(--fx-border)] pt-2">
+                <div className="max-h-[32vh] space-y-2 overflow-y-auto pr-1 lg:max-h-[40vh]">
+                  <div>
+                    <div className="mb-1 text-[0.72rem] font-medium text-[var(--fx-muted)]">Diagram Summary</div>
+                    <p className="text-[9px] leading-5 fx-muted">{description}</p>
+                    <dl className="mt-2 grid grid-cols-2 gap-1 text-[9px]">
+                      <div className="rounded-[0.95rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.92)] p-2">
+                        <dt className="text-[8px] fx-muted">Nodes</dt>
+                        <dd className="text-xs font-semibold text-[var(--foreground)]">{summary.nodes}</dd>
+                      </div>
+                      <div className="rounded-[0.95rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.92)] p-2">
+                        <dt className="text-[8px] fx-muted">Edges</dt>
+                        <dd className="text-xs font-semibold text-[var(--foreground)]">{summary.edges}</dd>
+                      </div>
+                    </dl>
+                    <div className="mt-2 grid gap-1 text-[9px] sm:grid-cols-2">
+                      {summary.topTypes.map(([type, count]) => (
+                        <div key={type} className="rounded-[0.9rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.92)] px-2 py-1 text-[0.72rem]">
+                          <span className="truncate text-[var(--foreground)]">{type}</span>
+                          <span className="ml-2 shrink-0 fx-muted">{count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {rightSidebarSlot ? <div>{rightSidebarSlot}</div> : null}
+                </div>
+              </div>
+            ) : null}
           </div>
 
-          <div className="pointer-events-auto fx-panel flex items-center gap-2 px-2 py-2 text-[var(--foreground)] shadow-[0_8px_20px_rgba(0,0,0,0.35)]">
-            <span className="hidden text-[10px] uppercase tracking-[0.08em] fx-muted lg:inline">Canvas Actions</span>
+          <div className="pointer-events-auto flex items-center gap-2 rounded-[1.4rem] border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_96%,hsl(var(--background))_4%)] px-3 py-2 text-[var(--foreground)] shadow-[0_20px_48px_rgba(15,23,42,0.1)] backdrop-blur-md">
+            <span className="hidden text-[0.72rem] font-medium fx-muted lg:inline">Canvas Actions</span>
             <label className="flex items-center gap-1 text-[10px] fx-muted">
               <span>Edge</span>
               <select
@@ -809,7 +1155,6 @@ export function StudioFullCanvas({
               onClick={handleValidate}
               className="fx-btn-secondary px-3 py-1.5 text-xs font-medium"
               disabled={validateState === "validating"}
-              aria-busy={validateState === "validating"}
             >
               {validateState === "validating" ? "Validating..." : "Validate"}
             </button>
@@ -817,7 +1162,6 @@ export function StudioFullCanvas({
               onClick={handleRunTest}
               className="fx-btn-secondary px-3 py-1.5 text-xs font-medium"
               disabled={runState === "running"}
-              aria-busy={runState === "running"}
             >
               {runState === "running" ? "Running..." : "Run Test"}
             </button>
@@ -825,51 +1169,37 @@ export function StudioFullCanvas({
               onClick={handleSaveDraft}
               className="fx-btn-secondary px-3 py-1.5 text-xs font-medium"
               disabled={saveState === "saving" || isReadOnly}
-              aria-busy={saveState === "saving"}
             >
               {saveState === "saving" ? "Saving..." : "Save Draft"}
             </button>
-            <button
-              onClick={handlePublish}
-              className="fx-btn-primary px-3 py-1.5 text-xs font-medium"
-              disabled={publishState === "publishing" || isReadOnly}
-              aria-busy={publishState === "publishing"}
-            >
-              {publishState === "publishing" ? "Publishing..." : "Publish"}
-            </button>
+            {returnAction ? (
+              <button
+                onClick={handleSaveAndReturn}
+                className="fx-btn-secondary px-3 py-1.5 text-xs font-medium"
+                disabled={saveState === "saving" || isReadOnly}
+              >
+                {saveState === "saving" ? "Saving..." : returnAction.label}
+              </button>
+            ) : null}
+            {onPublish ? (
+              <button
+                onClick={handlePublish}
+                className="fx-btn-primary px-3 py-1.5 text-xs font-medium"
+                disabled={publishState === "publishing" || isReadOnly}
+              >
+                {publishState === "publishing" ? "Publishing..." : "Publish"}
+              </button>
+            ) : null}
           </div>
         </div>
 
-        <div className="pointer-events-none absolute bottom-3 left-3 z-20 fx-panel px-2.5 py-1.5 text-[11px] fx-muted shadow-[0_8px_20px_rgba(0,0,0,0.35)]">
+        <div className="pointer-events-none absolute bottom-3 left-3 z-20 rounded-full border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_94%,hsl(var(--background))_6%)] px-3 py-1.5 text-[0.72rem] font-medium fx-muted shadow-[0_12px_30px_rgba(15,23,42,0.08)] backdrop-blur-md">
           Tip: right-click canvas to add frontier nodes
         </div>
 
-        <aside className="absolute right-3 top-24 z-20 w-32 fx-panel p-1.5 text-[var(--foreground)] shadow-[0_8px_20px_rgba(0,0,0,0.35)]">
-          <h2 className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--foreground)]">Diagram Summary</h2>
-          <p className="mt-0.5 text-[9px] leading-tight fx-muted">{description}</p>
-          <dl className="mt-1.5 grid grid-cols-2 gap-1 text-[10px]">
-            <div className="fx-panel p-1">
-              <dt className="text-[9px] fx-muted">Nodes</dt>
-              <dd className="text-sm font-semibold text-[var(--foreground)]">{summary.nodes}</dd>
-            </div>
-            <div className="fx-panel p-1">
-              <dt className="text-[9px] fx-muted">Edges</dt>
-              <dd className="text-sm font-semibold text-[var(--foreground)]">{summary.edges}</dd>
-            </div>
-          </dl>
-          <div className="mt-1.5 space-y-0.5 text-[10px]">
-            {summary.topTypes.map(([type, count]) => (
-              <div key={type} className="fx-panel flex items-center justify-between px-1 py-0.5">
-                <span className="text-[var(--foreground)]">{type}</span>
-                <span className="fx-muted">{count}</span>
-              </div>
-            ))}
-          </div>
-        </aside>
-
-        <aside className={`absolute bottom-3 right-3 z-20 fx-panel p-2 text-[var(--foreground)] shadow-[0_8px_20px_rgba(0,0,0,0.35)] ${runtimePanelCollapsed ? "w-auto" : "w-[420px]"}`}>
+        <aside className={`absolute bottom-3 right-3 z-20 rounded-[1.5rem] border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_96%,hsl(var(--background))_4%)] p-3 text-[var(--foreground)] shadow-[0_24px_60px_rgba(15,23,42,0.12)] backdrop-blur-md ${runtimePanelCollapsed ? "w-auto" : "w-[420px]"}`}>
           <div className="mb-1 flex items-center justify-between">
-            <h3 className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--foreground)]">Validation & Runtime</h3>
+            <h3 className="text-sm font-semibold tracking-[-0.02em] text-[var(--foreground)]">Validation & Runtime</h3>
             <div className="flex items-center gap-2">
               <div className="text-[10px] fx-muted">
                 validate={validateState} run={runState}
@@ -891,7 +1221,7 @@ export function StudioFullCanvas({
             <>
 
           {wiringIssues.length > 0 && (
-            <div className="mb-1 border border-[color-mix(in_srgb,var(--fx-warning)_58%,var(--fx-border)_42%)] bg-[color-mix(in_srgb,var(--fx-warning)_14%,var(--fx-surface)_86%)] p-1 text-[10px] text-[var(--foreground)]">
+            <div className="mb-2 rounded-[1rem] border border-[color-mix(in_srgb,var(--fx-warning)_58%,var(--fx-border)_42%)] bg-[color-mix(in_srgb,var(--fx-warning)_14%,var(--fx-surface)_86%)] p-2 text-[10px] text-[var(--foreground)]">
               <div className="mb-1 font-semibold text-[var(--fx-warning)]">Wiring checks (pre-validate)</div>
               <ul className="max-h-20 list-disc space-y-0.5 overflow-auto pl-4 text-[var(--foreground)]">
                 {wiringIssues.slice(0, 6).map((issue) => (
@@ -902,7 +1232,7 @@ export function StudioFullCanvas({
           )}
 
           {validationIssues.length > 0 ? (
-            <ul className="max-h-24 overflow-auto border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-1 text-[10px]">
+            <ul className="max-h-24 overflow-auto rounded-[1rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2 text-[10px]">
               {validationIssues.slice(0, 5).map((issue) => (
                 <li key={`${issue.code}-${issue.path}`} className="mb-1 border-b border-[var(--fx-border)] pb-1 last:mb-0 last:border-b-0 last:pb-0">
                   <div className="font-semibold text-[var(--fx-danger)]">{issue.code}</div>
@@ -912,11 +1242,11 @@ export function StudioFullCanvas({
               ))}
             </ul>
           ) : (
-            <div className="fx-panel px-2 py-1 text-[10px] fx-muted">No validation issues.</div>
+            <div className="rounded-[0.95rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.9)] px-3 py-2 text-[10px] fx-muted">No validation issues.</div>
           )}
 
           {runResult && (
-            <div className="mt-1 border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-1 text-[10px]">
+            <div className="mt-2 rounded-[1rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2 text-[10px]">
               <div className="fx-muted">run_id</div>
               <div className="font-mono text-[var(--foreground)]">{runResult.run_id}</div>
               {isInternalBuilderMode && runResult.runtime && (
@@ -938,7 +1268,7 @@ export function StudioFullCanvas({
                   {Array.isArray(runResult.runtime.node_dispatches) && runResult.runtime.node_dispatches.length > 0 && (
                     <>
                       <div className="mt-1 fx-muted">node dispatches</div>
-                      <ul className="max-h-20 overflow-auto border border-[var(--fx-border)] bg-[var(--fx-input)] p-1 text-[9px] text-[var(--fx-input-text)]">
+                      <ul className="max-h-20 overflow-auto rounded-[0.85rem] border border-[var(--fx-border)] bg-[var(--fx-input)] p-1.5 text-[9px] text-[var(--fx-input-text)]">
                         {runResult.runtime.node_dispatches.slice(0, 8).map((dispatch) => (
                           <li key={`${dispatch.node_id}:${dispatch.role ?? "default"}`}>
                             {dispatch.node_id} [{dispatch.role ?? "default"}] {dispatch.requested_engine ?? "native"}→{dispatch.executed_engine ?? "native"} ({dispatch.mode ?? "native"})
@@ -956,7 +1286,7 @@ export function StudioFullCanvas({
               {runOutputPreview && (
                 <>
                   <div className="mt-1 fx-muted">output preview</div>
-                  <pre className="max-h-28 overflow-auto whitespace-pre-wrap border border-[var(--fx-border)] bg-[var(--fx-input)] p-1 text-[var(--fx-input-text)]">
+                  <pre className="max-h-28 overflow-auto whitespace-pre-wrap rounded-[0.85rem] border border-[var(--fx-border)] bg-[var(--fx-input)] p-1.5 text-[var(--fx-input-text)]">
                     {runOutputPreview}
                   </pre>
                 </>
@@ -965,18 +1295,19 @@ export function StudioFullCanvas({
           )}
 
           {isInternalBuilderMode ? (
-            <div className="mt-2 fx-panel p-1.5 text-[10px]">
+            <div className="mt-2 rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.9)] p-2 text-[10px]">
               <div className="mb-1 fx-muted">Model Runtime</div>
               <div className="mb-1 text-[var(--foreground)]">
-                openai={providerStatus?.configured ? "configured" : "not-configured"} mode={providerStatus?.mode ?? "simulated"}
+                openai={providerStatus?.configured ? "configured" : "not-configured"} mode={providerStatus?.mode ?? "unknown"}
               </div>
+              {runtimeLoadError ? <div className="mb-1 text-[9px] text-[var(--fx-danger)]">{runtimeLoadError}</div> : null}
               <div className="mb-1 flex items-center justify-between gap-2 text-[9px]">
                 <span className="fx-muted">engine_override={runtimePolicy.allow_runtime_engine_override ? "enabled" : "disabled"}</span>
                 <span className="fx-muted">effective={effectiveRuntimeEngine}</span>
               </div>
               <div className="mb-1 text-[9px] fx-muted">allowed={(runtimePolicy.allowed_runtime_engines ?? []).join(", ") || "native"}</div>
               <div className="mb-1 text-[9px] fx-muted">Framework adapters</div>
-              <ul className="mb-1 max-h-20 overflow-auto border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-1">
+              <ul className="mb-1 max-h-20 overflow-auto rounded-[0.85rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-1.5">
                 {frameworkAdapterRows.length === 0 ? (
                   <li className="fx-muted">No adapter probe data.</li>
                 ) : (
@@ -1158,7 +1489,6 @@ export function StudioFullCanvas({
                     onClick={handleRefreshMemory}
                     className="fx-btn-secondary px-2 py-0.5 text-[10px]"
                     disabled={memoryBusy}
-                    aria-busy={memoryBusy}
                   >
                     Refresh
                   </button>
@@ -1166,7 +1496,6 @@ export function StudioFullCanvas({
                     onClick={handleClearMemory}
                     className="fx-btn-warning px-2 py-0.5 text-[10px]"
                     disabled={memoryBusy}
-                    aria-busy={memoryBusy}
                   >
                     Clear
                   </button>
@@ -1174,7 +1503,7 @@ export function StudioFullCanvas({
               </div>
             </div>
           ) : (
-            <div className="mt-2 fx-panel p-1.5 text-[10px]">
+            <div className="mt-2 rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.9)] p-2 text-[10px]">
               <div className="mb-1 fx-muted">Execution Profile</div>
               <div className="text-[var(--foreground)]">
                 Runs use platform-managed runtime defaults and internal memory policies.
@@ -1185,7 +1514,7 @@ export function StudioFullCanvas({
             </div>
           )}
 
-          <div className="mt-2 fx-panel p-1.5 text-[10px]">
+          <div className="mt-2 rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.9)] p-2 text-[10px]">
             <div className="mb-1 flex items-center justify-between">
               <span className="fx-muted">Collaboration</span>
               <span className="font-mono text-[var(--foreground)]">v{collabVersion}</span>
@@ -1193,7 +1522,7 @@ export function StudioFullCanvas({
             <div className="mb-1 text-[var(--foreground)]">
               user={collabUserId.slice(-10)} role={collabRole} sync={collabSyncState}
             </div>
-            <ul className="max-h-20 overflow-auto border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-1">
+            <ul className="max-h-20 overflow-auto rounded-[0.85rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-1.5">
               {collabParticipants.length === 0 ? (
                 <li className="fx-muted">No active participants.</li>
               ) : (
@@ -1207,18 +1536,18 @@ export function StudioFullCanvas({
             </ul>
           </div>
 
-          <div className="mt-2 fx-panel p-1.5 text-[10px]">
+          <div className="mt-2 rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.9)] p-2 text-[10px]">
             <div className="mb-1 fx-muted">Observability</div>
             {observabilityDashboard ? (
               <>
                 <div className="grid grid-cols-2 gap-1 text-[var(--foreground)]">
-                  <div className="fx-panel p-1">runs: {observabilityDashboard.summary.total_runs}</div>
-                  <div className="fx-panel p-1">tokens: {observabilityDashboard.summary.token_estimate}</div>
-                  <div className="fx-panel p-1">cost: ${observabilityDashboard.summary.cost_estimate_usd.toFixed(4)}</div>
-                  <div className="fx-panel p-1">latency avg: {observabilityDashboard.summary.average_latency_ms} ms</div>
+                  <div className="rounded-[0.85rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.94)] p-2">runs: {observabilityDashboard.summary.total_runs}</div>
+                  <div className="rounded-[0.85rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.94)] p-2">tokens: {observabilityDashboard.summary.token_estimate}</div>
+                  <div className="rounded-[0.85rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.94)] p-2">cost: ${observabilityDashboard.summary.cost_estimate_usd.toFixed(4)}</div>
+                  <div className="rounded-[0.85rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.94)] p-2">latency avg: {observabilityDashboard.summary.average_latency_ms} ms</div>
                 </div>
                 <div className="mt-1 text-[9px] fx-muted">Recent runs</div>
-                <ul className="max-h-20 overflow-auto border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-1">
+                <ul className="max-h-20 overflow-auto rounded-[0.85rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-1.5">
                   {observabilityDashboard.runs.map((run) => (
                     <li key={run.run_id} className="mb-1 border-b border-[var(--fx-border)] pb-1 last:mb-0 last:border-b-0 last:pb-0">
                       <button
@@ -1244,7 +1573,7 @@ export function StudioFullCanvas({
             )}
 
             {selectedTrace && (
-              <div className="mt-1 border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-1">
+              <div className="mt-2 rounded-[0.9rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2">
                 <div className="font-mono text-[var(--foreground)]">trace {selectedTrace.run_id}</div>
                 <div className="fx-muted">status {selectedTrace.status}</div>
                 <div className="mt-1 text-[var(--foreground)]">events {selectedTrace.event_count} · nodes {selectedTrace.node_count} · edges {selectedTrace.edge_count}</div>
