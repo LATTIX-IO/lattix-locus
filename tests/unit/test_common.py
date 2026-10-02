@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from frontier_tooling import common
+from locus_tooling import common
 
 
 def test_portal_urls_prefer_loopback_before_vanity_host(monkeypatch, tmp_path: Path) -> None:
@@ -13,7 +13,7 @@ def test_portal_urls_prefer_loopback_before_vanity_host(monkeypatch, tmp_path: P
             [
                 "LOCAL_GATEWAY_BIND_HOST=127.0.0.1",
                 "LOCAL_GATEWAY_HTTP_PORT=80",
-                "LOCAL_STACK_HOST=xfrontier.localhost",
+                "LOCAL_STACK_HOST=locus.localhost",
             ]
         )
         + "\n",
@@ -23,4 +23,4 @@ def test_portal_urls_prefer_loopback_before_vanity_host(monkeypatch, tmp_path: P
 
     urls = common.portal_urls(root=tmp_path)
 
-    assert urls == ["http://127.0.0.1", "http://xfrontier.localhost"]
+    assert urls == ["http://127.0.0.1", "http://locus.localhost"]

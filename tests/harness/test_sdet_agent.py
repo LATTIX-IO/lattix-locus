@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from frontier_runtime.harness.agent_library import list_shipped_agents, load_agent_spec
+from locus_runtime.harness.agent_library import list_shipped_agents, load_agent_spec
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -31,7 +31,7 @@ def test_sdet_agent_config_is_valid_and_complete():
     assert cfg["name"]
     assert cfg["model_defaults"]["capability_profile"] == "local-32b-class"
     tool_names = {t.get("type") for t in cfg["tools"]}
-    assert "frontier-coding" in tool_names
+    assert "locus-coding" in tool_names
 
 
 def test_sdet_spec_builds_profile_and_prompt():
@@ -58,8 +58,8 @@ def test_sdet_agent_drives_eval_with_reference_solver(tmp_path):
     import sys
 
     sys.path.insert(0, str(REPO_ROOT / "apps" / "evals"))
-    from frontier_evals.config import EvalConfig
-    from frontier_evals.runner import run_eval
+    from locus_evals.config import EvalConfig
+    from locus_evals.runner import run_eval
 
     config = EvalConfig(
         mode="plumbing",

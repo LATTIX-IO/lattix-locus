@@ -1,12 +1,12 @@
 {
-  "name": "lattix-frontier-installer",
+  "name": "lattix-locus-installer",
   "version": "0.1.0",
   "bootstrap": {
     "sh": "install/bootstrap.sh",
     "powershell": "install/bootstrap.ps1"
   },
-  "publicRepo": "https://github.com/LATTIX-IO/lattix-xfrontier",
-  "entrypoint": "frontier_tooling/installer.py",
+  "publicRepo": "https://github.com/LATTIX-IO/lattix-locus",
+  "entrypoint": "locus_tooling/installer.py",
   "update_command": "lattix update",
-  "release_notes_url": "https://github.com/LATTIX-IO/lattix-xfrontier"
+  "release_notes_url": "https://github.com/LATTIX-IO/lattix-locus"
 }

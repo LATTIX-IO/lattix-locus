@@ -13,17 +13,17 @@ coverage
 apps/frontend/.next
 apps/frontend/node_modules
 apps/frontend/dev.log
-lattix-frontier-frontend/.next
-lattix-frontier-frontend/node_modules
-lattix-frontier-frontend/dev.log
-lattix-frontier-frontend/.pytest_cache
+lattix-locus-frontend/.next
+lattix-locus-frontend/node_modules
+lattix-locus-frontend/dev.log
+lattix-locus-frontend/.pytest_cache
 
 # Secrets and local state — never bake into images
 .env
 .env.*
 apps/frontend/.env.local
 .installer
-.frontier
+.locus
 .sandbox
 .tmp-auth-cookie.txt
 CLAUDE.local.md

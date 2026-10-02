@@ -1,6 +1,6 @@
-# frontier-evals — DeepSWE / SWE-bench evaluation harness
+# locus-evals — DeepSWE / SWE-bench evaluation harness
 
-Drives `frontier_runtime.harness.SweAgent` over a dataset, grades each produced
+Drives `locus_runtime.harness.SweAgent` over a dataset, grades each produced
 patch **by test execution only**, runs multiple seeds, and reports the mean
 resolve rate ± SEM (SWE-rebench protocol). The headline gate is **gpt-oss-20b ≥
 30 % on DeepSWE/SWE-bench Verified**.
@@ -15,8 +15,8 @@ to end.
 
 ```bash
 # from the repo root
-python -c "import sys; sys.path.insert(0,'apps/evals'); from frontier_evals.cli import cli; cli()" smoke
-# or, installed:  frontier-evals smoke
+python -c "import sys; sys.path.insert(0,'apps/evals'); from locus_evals.cli import cli; cli()" smoke
+# or, installed:  locus-evals smoke
 ```
 
 The automated gate test runs this in CI: `tests/evals/test_deepswe_eval.py`.
@@ -31,10 +31,10 @@ rule, enforced in code). Point it at a runner.
 # on the runner box (GPU): serve the model
 vllm serve openai/gpt-oss-20b --port 8000 --max-model-len 131072
 #   (gpt-oss needs harmony-aware serving + its in-distribution tools; see
-#    frontier_runtime/harness/model_profiles.py gpt-oss profiles)
+#    locus_runtime/harness/model_profiles.py gpt-oss profiles)
 
 # drive the benchmark (from anywhere that can reach the runner)
-frontier-evals run \
+locus-evals run \
   --mode live --dataset swe-bench \
   --api-base-url http://runner:8000/v1 --model openai/gpt-oss-20b \
   --provider vllm --docker-host tcp://runner:2376 \
@@ -42,7 +42,7 @@ frontier-evals run \
   --output-dir eval-results/gpt-oss-20b-deepswe
 ```
 
-`--instance-ids` (or `FRONTIER_EVALS` ids) selects the SWE-bench subset. Exit
+`--instance-ids` (or `LOCUS_EVALS` ids) selects the SWE-bench subset. Exit
 code is `0` iff the mean resolve rate meets `--threshold`.
 
 ## What each module does
@@ -71,7 +71,7 @@ code is `0` iff the mean resolve rate meets `--threshold`.
 ## Improving the gpt-oss-20b score toward / past 30 %
 
 The harness already implements the highest-impact levers (see
-`frontier_runtime/harness/README.md`). To push the live number:
+`locus_runtime/harness/README.md`). To push the live number:
 
 1. Serve gpt-oss with **harmony** fidelity (the `gpt-oss-harmony` profile) — the
    single biggest lever; generic Chat-Completions serving leaves ~30 pts on the

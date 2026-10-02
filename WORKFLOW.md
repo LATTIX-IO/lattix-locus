@@ -22,12 +22,12 @@ tracker:
 polling:
   interval_ms: 30000
 workspace:
-  root: "E:/lattix/.symphony/workspaces/lattix-xfrontier"
+  root: "E:/lattix/.symphony/workspaces/lattix-locus"
 hooks:
   timeout_ms: 120000
   after_create: |
     set -euo pipefail
-    git clone --branch "main" "https://github.com/LATTIX-IO/lattix-xfrontier.git" .
+    git clone --branch "main" "https://github.com/LATTIX-IO/lattix-locus.git" .
   before_run: |
     set -euo pipefail
     if [ -d .git ] && [ -z "$(git status --porcelain)" ]; then
@@ -53,9 +53,9 @@ codex:
   stall_timeout_ms: 300000
   approval_policy: never
 symphony:
-  repo: "lattix-xfrontier"
+  repo: "lattix-locus"
   path: "."
-  remote: "https://github.com/LATTIX-IO/lattix-xfrontier.git"
+  remote: "https://github.com/LATTIX-IO/lattix-locus.git"
   default_branch: "main"
   linear_team_key: "FRONT"
   technologies:
@@ -68,9 +68,9 @@ symphony:
     - docs
 ---
 
-# Symphony Workflow — lattix-xfrontier
+# Symphony Workflow — lattix-locus
 
-You are the coding agent for **Lattix xFrontier** (`lattix-xfrontier`) running under Symphony. Symphony has selected this Linear issue and created an isolated per-issue workspace. Treat the workspace as the only place where commands and file edits may run.
+You are the coding agent for **Lattix Locus** (`lattix-locus`) running under Symphony. Symphony has selected this Linear issue and created an isolated per-issue workspace. Treat the workspace as the only place where commands and file edits may run.
 
 ## Issue context
 
@@ -86,7 +86,7 @@ Use the issue description, labels, blockers, linked assets, and repository conte
 - Linear team: `FRONT`
 - Default branch: `main`
 - Detected technology profile: python, typescript, react, docker, helm, rego, docs
-- Surfaces: `apps/backend/` (control plane), `apps/workers/` + `frontier_runtime/` (runtime), `apps/frontend/` (UI), `frontier_tooling/` (CLI/installer), `packages/contracts/`, `policies/`, `helm/`
+- Surfaces: `apps/backend/` (control plane), `apps/workers/` + `locus_runtime/` (runtime), `apps/frontend/` (UI), `locus_tooling/` (CLI/installer), `packages/contracts/`, `policies/`, `helm/`
 
 ### Technology-specific execution spec
 
@@ -157,13 +157,13 @@ Prefer the documented aggregate gate over hand-assembled commands, but still run
 | `helm/**` | `make helm-validate` |
 | `docker-compose*.yml`, `docker/**`, `envoy/**` | `docker compose config --quiet` for both compose files |
 | `apps/frontend/**` | `npm run lint`, `npm test`, `npm run build` |
-| `install/**`, `frontier_tooling/installer.py`, `frontier_runtime/install.py` | the installer test set in `tests/unit/` |
-| `frontier_runtime/sandbox.py`, `security.py` | `tests/unit/test_sandbox_policy.py`, `test_tool_jail.py`, `test_biscuit_tokens.py`, `test_event_signing.py` |
+| `install/**`, `locus_tooling/installer.py`, `locus_runtime/install.py` | the installer test set in `tests/unit/` |
+| `locus_runtime/sandbox.py`, `security.py` | `tests/unit/test_sandbox_policy.py`, `test_tool_jail.py`, `test_biscuit_tokens.py`, `test_event_signing.py` |
 | a node type | backend executor tests **and** `apps/frontend` schema/catalog tests together |
 
 ### Known gate limitations — state these in the handoff
 
-- `make typecheck` and CI cover only `frontier_tooling/` and `frontier_runtime/`. `apps/backend/` is **not** type-checked.
+- `make typecheck` and CI cover only `locus_tooling/` and `locus_runtime/`. `apps/backend/` is **not** type-checked.
 - CI runs `ruff check` but not `ruff format --check`. Run `ruff format` on files you touch.
 - The Python suite passes only in the `pyproject.toml` `testpaths` order (`apps/backend/tests` before `tests`). If you reorder, expect cross-file state leakage — do not "fix" it by muting tests.
 

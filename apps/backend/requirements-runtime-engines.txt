@@ -1,5 +1,5 @@
 # Optional agent-runtime engine adapters, installed only when
-# FRONTIER_INSTALL_RUNTIME_ENGINES=1 (see docker-compose.local.yml).
+# LOCUS_INSTALL_RUNTIME_ENGINES=1 (see docker-compose.local.yml).
 # These are heavy; the default chat path needs none of them.
 langchain>=0.3.0
 langchain-openai>=0.2.0

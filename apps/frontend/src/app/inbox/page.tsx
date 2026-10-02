@@ -1,7 +1,7 @@
 import { InboxWorkspace } from "@/components/inbox-workspace";
 import { UserChatWorkspace } from "@/components/user-chat-workspace";
 import { getInbox, getWorkflowRuns } from "@/lib/api";
-import type { InboxItem, WorkflowRunSummary } from "@/types/frontier";
+import type { InboxItem, WorkflowRunSummary } from "@/types/locus";
 
 type InboxPageProps = {
   searchParams: Promise<{ session?: string; details?: string; tab?: string; view?: string }>;

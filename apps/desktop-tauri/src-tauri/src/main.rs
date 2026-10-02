@@ -1,7 +1,7 @@
-// Lattix xFrontier desktop shell (Tauri v2).
+// Lattix Locus desktop shell (Tauri v2).
 //
 // Topology: this shell spawns ONE backend sidecar — the packaged supervisor
-// (`frontier-backend`, see frontier_tooling/desktop_main.py) — which in turn
+// (`locus-backend`, see locus_tooling/desktop_main.py) — which in turn
 // brings up every native service (Postgres+pgvector, Neo4j world models, NATS,
 // Ollama, the confined agents, the FastAPI backend, and the Next.js frontend).
 // Once the backend reports healthy, we navigate the webview to the local UI.
@@ -131,13 +131,13 @@ fn main() {
             // icon at compile time (`include_image!`) rather than relying on
             // `default_window_icon()`, which can be None and would otherwise leave
             // the user with a hidden, unquittable process holding files in use.
-            let open_item = MenuItem::with_id(app, "open", "Open Lattix xFrontier", true, None::<&str>)?;
+            let open_item = MenuItem::with_id(app, "open", "Open Lattix Locus", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[&open_item, &quit_item])?;
             let tray_icon = include_image!("icons/32x32.png");
             if let Err(e) = TrayIconBuilder::with_id("lattix-tray")
                 .icon(tray_icon)
-                .tooltip("Lattix xFrontier")
+                .tooltip("Lattix Locus")
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -173,15 +173,15 @@ fn main() {
             // the bundle's `externalBin` (name + target triple suffix).
             let sidecar = app
                 .shell()
-                .sidecar("frontier-backend")
-                .expect("frontier-backend sidecar is missing from the bundle")
+                .sidecar("locus-backend")
+                .expect("locus-backend sidecar is missing from the bundle")
                 // Single source of truth for the version: the Tauri app/package
-                // version. The backend reports this (FRONTIER_APP_VERSION wins in
+                // version. The backend reports this (LOCUS_APP_VERSION wins in
                 // _platform_version), so the UI no longer shows a stale 0.0.0.
-                .env("FRONTIER_APP_VERSION", app.package_info().version.to_string());
+                .env("LOCUS_APP_VERSION", app.package_info().version.to_string());
             let (mut rx, _child) = sidecar
                 .spawn()
-                .expect("failed to spawn the frontier-backend sidecar");
+                .expect("failed to spawn the locus-backend sidecar");
             // Remember the supervisor PID so we can kill its whole tree on quit.
             BACKEND_PID.store(_child.pid(), Ordering::SeqCst);
 
@@ -232,7 +232,7 @@ fn main() {
                 } else {
                     let _ = handle.emit(
                         "firstrun-progress",
-                        "⚠ The interface didn't start in time. See logs in %LOCALAPPDATA%\\Lattix\\xFrontier."
+                        "⚠ The interface didn't start in time. See logs in %LOCALAPPDATA%\\Lattix\\Locus."
                             .to_string(),
                     );
                     eprintln!("frontend did not become reachable within {HEALTH_TIMEOUT_SECS}s");
@@ -244,7 +244,7 @@ fn main() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building the Lattix xFrontier desktop shell")
+        .expect("error while building the Lattix Locus desktop shell")
         .run(|_app_handle, event| {
             // Final backstop: whenever the app exits (tray Quit, window-driven
             // quit, OS signal, updater restart), reap the backend supervisor and

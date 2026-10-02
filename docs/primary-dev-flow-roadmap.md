@@ -1,4 +1,4 @@
-# Roadmap: xFrontier as your primary code-development flow
+# Roadmap: Locus as your primary code-development flow
 
 > Date: 2026-06-13. Goal: gpt-oss-20b on your local repos, a multi-agent team that
 > challenges/moderates to ship high-quality, secure, performant, lean code from a
@@ -13,8 +13,8 @@
 | Local repos / git | ✅ `LocalDirectExecutor` + `Workspace` (clean diffs, host-side git) |
 | SWE agent (implement + test + submit) | ✅ `SweAgent`, hardened by real-run trajectories |
 | **Agent team** (architect, SDET, code/security/perf reviewers, moderator) | ✅ shipped in `examples/agents/`, published, visible in the modeler |
-| **TeamFlow** (plan→implement→review panel→moderate→bounded fix loop) | ✅ `frontier_runtime/harness/team.py`, deterministic tests |
-| Trigger a team on a local repo | ✅ `frontier-evals team --repo <path> --spec @spec.md` |
+| **TeamFlow** (plan→implement→review panel→moderate→bounded fix loop) | ✅ `locus_runtime/harness/team.py`, deterministic tests |
+| Trigger a team on a local repo | ✅ `locus-evals team --repo <path> --spec @spec.md` |
 | Lossless trajectories (chain-of-thought capture substrate) | ✅ `trajectory.py` (JSONL, per-agent) |
 | SWE-bench Verified benchmark path | ✅ wired + Docker exec proven; needs a runner endpoint |
 | **Azure Cloud Engineer agent** | ✅ shipped (`examples/agents/azure-cloud-engineer-agent`) |
@@ -48,7 +48,7 @@ optional parallel mirror, never the source of truth.
   architect + implementer + reviewer context.
 - **Persist**: after a run, write decisions/patterns back into the columns and store the
   trajectory (for SFT/RL). The moderator's verdict becomes evidence in the
-  goal/evidence/synthesis columns (`frontier_runtime/cognitive.py`).
+  goal/evidence/synthesis columns (`locus_runtime/cognitive.py`).
 - **Obsidian (optional, parallel)**: a one-way mirror that maps the vault folder structure
   into the memory system and writes run summaries back, in parallel — toggleable, additive,
   and clearly secondary to the Postgres/Neo4j store.
@@ -94,7 +94,7 @@ platform's **MCP gateway** + integrations, gated by the capability/OPA layer.
 
 ## Try the team now (local, gpt-oss-20b)
 ```bash
-python -c "import sys; sys.path.insert(0,'apps/evals'); from frontier_evals.cli import cli; cli()" \
+python -c "import sys; sys.path.insert(0,'apps/evals'); from locus_evals.cli import cli; cli()" \
   team --repo /path/to/your/repo --spec @spec.md \
   --test-command "python -m pytest -q" \
   --api-base-url http://localhost:11434/v1 --model gpt-oss:20b --provider ollama \

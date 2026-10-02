@@ -12,8 +12,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from frontier_tooling import native_launcher as nl  # noqa: E402
-from frontier_tooling import native_secrets as ns  # noqa: E402
+from locus_tooling import native_launcher as nl  # noqa: E402
+from locus_tooling import native_secrets as ns  # noqa: E402
 
 
 def _which_factory(available: set[str]):
@@ -49,9 +49,9 @@ def _config(tmp_path, **kw) -> nl.NativeConfig:
 # --- plan: env derivation ----------------------------------------------------
 def test_profile_and_core_env(tmp_path):
     plan = nl.build_native_plan(_config(tmp_path), which=_which_factory(_ALL))
-    assert plan.env["FRONTIER_RUNTIME_PROFILE"] == "local-native"
-    assert plan.env["POSTGRES_DSN"].startswith("postgresql://frontier:")
-    assert plan.env["POSTGRES_DSN"].endswith("@127.0.0.1:5432/frontier")
+    assert plan.env["LOCUS_RUNTIME_PROFILE"] == "local-native"
+    assert plan.env["POSTGRES_DSN"].startswith("postgresql://locus:")
+    assert plan.env["POSTGRES_DSN"].endswith("@127.0.0.1:5432/locus")
     assert plan.env["NATS_URL"] == "nats://127.0.0.1:4222"
     assert plan.env["OLLAMA_BASE_URL"] == "http://127.0.0.1:11434"
     # No-proxy native topology: the browser hits the backend directly.
@@ -77,7 +77,7 @@ def test_world_models_ride_on_postgres_no_neo4j(tmp_path):
     )
     assert "neo4j" not in plan.service_names()
     assert "NEO4J_URI" not in plan.env and "NEO4J_PASSWORD" not in plan.env
-    assert plan.env["FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED"] == "true"
+    assert plan.env["LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED"] == "true"
     assert "POSTGRES_DSN" in plan.env
 
 
@@ -88,7 +88,7 @@ def test_world_models_off_when_postgres_absent_degrade(tmp_path):
         _config(tmp_path, enable_world_models=True, degrade_when_missing=True),
         which=_which_factory(avail),
     )
-    assert plan.env["FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED"] == "false"
+    assert plan.env["LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED"] == "false"
     assert any("world models requested" in w.lower() for w in plan.warnings)
 
 
@@ -97,7 +97,7 @@ def test_world_models_off_disables_projection(tmp_path):
         _config(tmp_path, enable_world_models=False), which=_which_factory(_ALL)
     )
     assert "neo4j" not in plan.service_names()
-    assert plan.env["FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED"] == "false"
+    assert plan.env["LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED"] == "false"
 
 
 # --- plan: required vs optional binaries ------------------------------------
@@ -133,7 +133,7 @@ def test_postgres_initdb_and_pgvector_steps(tmp_path):
     assert any("initdb" in step.argv[0] and step.skip_if_exists for step in pg.pre_start)
     # post-start creates the DB and the pgvector extension.
     joined = [" ".join(step.argv) for step in pg.post_start]
-    assert any("CREATE DATABASE frontier" in j for j in joined)
+    assert any("CREATE DATABASE locus" in j for j in joined)
     assert any("CREATE EXTENSION IF NOT EXISTS vector" in j for j in joined)
 
 
@@ -250,7 +250,7 @@ def test_agent_spec_env_and_argv(tmp_path):
     code = next(s for s in plan.services if s.name == "agent-code")
     assert code.env["AGENT_ID"] == "code"
     assert code.env["AGENT_PORT"] == "8082"
-    assert code.env["FRONTIER_SANDBOX_AGENTS"] == "1"  # tool exec confined (Track 0)
+    assert code.env["LOCUS_SANDBOX_AGENTS"] == "1"  # tool exec confined (Track 0)
     assert "PYTHONPATH" in code.env and "workers" in code.env["PYTHONPATH"]
     assert "uvicorn" in code.argv and "app:app" in code.argv
     assert "--app-dir" in code.argv and "8082" in code.argv

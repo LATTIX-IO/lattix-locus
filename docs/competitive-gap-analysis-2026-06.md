@@ -1,4 +1,4 @@
-# Competitive Gap Analysis — xFrontier vs FOSS Coding Harnesses & Multi-Agent Platforms
+# Competitive Gap Analysis — Locus vs FOSS Coding Harnesses & Multi-Agent Platforms
 
 > Date: 2026-06-12 · Branch context: `feat/cognitive-mvp-foundation`
 > Goal anchor: stable platform + locally hosted models (gpt-oss et al.) running long-running
@@ -8,7 +8,7 @@
 
 ## 1. Executive verdict
 
-xFrontier's moat is real but it is **not where the immediate goal needs it to be**. The platform
+Locus's moat is real but it is **not where the immediate goal needs it to be**. The platform
 has a genuinely differentiated governed runtime (multi-backend sandbox, DLP/Presidio, Biscuit
 capability tokens, OPA scaffolding, mention-driven multi-agent collaboration, SSE streaming,
 local-first Ollama catalog including gpt-oss). What it lacks is the entire **coding-agent layer**
@@ -23,7 +23,7 @@ Two findings from the field reframe the strategy:
    API) scores >74% on SWE-bench Verified with frontier models. Harness value has migrated to
    what surrounds the loop: edit reliability for weak models, execution feedback, context/cache
    discipline, sandboxing, policy, observability, and orchestration UX. That surrounding layer
-   is exactly what xFrontier is built to be — it just hasn't pointed it at code yet.
+   is exactly what Locus is built to be — it just hasn't pointed it at code yet.
 2. **Local-model quality is mostly a harness-fidelity problem.** gpt-oss-120b publishes 62.4%
    SWE-bench Verified but scores ~26% on generic scaffolds. The ~36-point gap is harness
    mismatch: harmony format, in-distribution tools (`apply_patch`, `container.exec`), tool defs
@@ -33,35 +33,35 @@ Two findings from the field reframe the strategy:
 Strategic opening on the platform side: nobody ships **OpenClaw-class UX on a governed,
 enforceable runtime**. OpenClaw has 138+ CVEs, a 40k-exposed-gateway incident, and an 8.5%
 malicious skill registry; NVIDIA's NemoClaw (21k stars, alpha) exists precisely to bolt security
-onto it — validating the market for xFrontier's thesis. The differentiation is only credible
+onto it — validating the market for Locus's thesis. The differentiation is only credible
 once enforcement is actually wired in.
 
 ---
 
-## 2. Where xFrontier stands today (honest snapshot)
+## 2. Where Locus stands today (honest snapshot)
 
 ### Solid / shipped
 | Capability | Where | Notes |
 |---|---|---|
 | Local-first model catalog | `apps/backend/app/local_models.py` | Ollama OpenAI-compat bridge; curated allowlist incl. gpt-oss-20b/120b, Qwen, DeepSeek R1 |
-| Conversation compaction | `frontier_runtime/conversation.py` | 3-stage rule-based truncation, no LLM tax |
+| Conversation compaction | `locus_runtime/conversation.py` | 3-stage rule-based truncation, no LLM tax |
 | Agent iteration loop | `apps/backend/app/main.py` (~12100–12400) | `<CONTINUE>`/`<DONE>` markers, max-iteration caps, progress events |
 | Multi-agent collaboration | `apps/backend/app/main.py` (~11800–12100) | @mention extraction, routing gates, threading, turn caps |
-| Sandbox isolation | `frontier_runtime/sandbox.py` | bubblewrap+seccomp / seatbelt / Docker / gVisor-K8s, auto-detect |
-| DLP + PII | `frontier_runtime/guardrails.py`, Presidio lazy-load | regex fallback, classification escalation |
+| Sandbox isolation | `locus_runtime/sandbox.py` | bubblewrap+seccomp / seatbelt / Docker / gVisor-K8s, auto-detect |
+| DLP + PII | `locus_runtime/guardrails.py`, Presidio lazy-load | regex fallback, classification escalation |
 | SSE event streaming | `/workflow-runs/{id}/events/stream` | resumable via `?after=` |
 | Triggers | cron/webhook/manual on workflow definitions | platform-grade proactivity primitive |
 | Test coverage | `apps/backend/tests/` (13 files) | incl. 14 collaboration tests |
 
 ### Defined but not enforced / half-built
-- **OPA**: client + `PolicyEvaluationRequest` exist (`frontier_runtime/security.py`); no live
+- **OPA**: client + `PolicyEvaluationRequest` exist (`locus_runtime/security.py`); no live
   policy call gates tool execution. High-risk regex blacklist is the actual gate.
 - **Biscuit capability tokens**: minting + verifier implemented; tokens are not passed through
   the agent loop or checked per tool invocation.
-- **Checkpointing**: file-based JSON snapshot (`frontier_runtime/persistence.py`) for
+- **Checkpointing**: file-based JSON snapshot (`locus_runtime/persistence.py`) for
   audit/replay only — no resume-from-checkpoint. The LangGraph postgres checkpointer is a
   declared dependency but unused.
-- **Workflow orchestrator**: `frontier_runtime/orchestrator.py` is a stub; workflow catalog
+- **Workflow orchestrator**: `locus_runtime/orchestrator.py` is a stub; workflow catalog
   hardcoded.
 - **Cognitive MVP** (goal/evidence/synthesis columns): framework solid, not wired into the
   default agent loop; `EvidenceColumn.observe()` returns empty.
@@ -83,9 +83,9 @@ once enforcement is actually wired in.
 
 Common baseline across OpenCode, Codex CLI, pi, Cline, Goose, Aider (full research in §7 refs):
 
-| Baseline capability | xFrontier | Gap action |
+| Baseline capability | Locus | Gap action |
 |---|---|---|
-| read/write/exact-match-edit/bash tool quartet + ripgrep/glob | ❌ | Build as first-class frontier tools (sandbox-executed) |
+| read/write/exact-match-edit/bash tool quartet + ripgrep/glob | ❌ | Build as first-class locus tools (sandbox-executed) |
 | Explicit edit-reliability strategy (search/replace default, fuzzy or whole-file fallback, well-formed-edit-rate metric) | ❌ | Required for local models; track edit success as telemetry |
 | AGENTS.md project-instruction ingestion | ❌ | Cheap, standard, do it |
 | MCP client | 🟡 gateway exists | Keep; add per-agent tool budgeting (pi's context-economics critique) |
@@ -106,7 +106,7 @@ Seven capabilities define a credible platform: always-on gateway, heartbeat/cron
 channel presence, self-curated persistent memory, skills as the unit of extension,
 sub-agent spawning, provider abstraction with local models.
 
-xFrontier scorecard: provider abstraction ✅ · cron/webhook triggers ✅ · skills ✅ (better
+Locus scorecard: provider abstraction ✅ · cron/webhook triggers ✅ · skills ✅ (better
 governance potential) · sub-agents 🟡 (collaboration turn-taking, not isolated spawning) ·
 memory 🟡 (pgvector + cognitive columns vs OpenClaw's human-inspectable markdown; consider a
 human-readable memory surface) · always-on gateway 🟡 (FastAPI control plane exists; no
@@ -115,10 +115,10 @@ heartbeat-driven agent turns) · channels ❌ (no messaging integrations).
 **Positioning**: don't chase 20 channels. Ship 2–3 (Slack + one consumer channel) on top of an
 *enforced* runtime and own "the governed OpenClaw" position. NemoClaw proves demand
 (Adobe/Salesforce/SAP reportedly building on it); it is alpha, OpenClaw-dependent, and
-NVIDIA-flavored. xFrontier's OPA + Biscuit + Presidio + multi-backend sandbox stack is the
+NVIDIA-flavored. Locus's OPA + Biscuit + Presidio + multi-backend sandbox stack is the
 right architecture — once it enforces.
 
-Unshipped-by-anyone differentiators that map to existing xFrontier assets:
+Unshipped-by-anyone differentiators that map to existing Locus assets:
 - **Signed skills / vetted registry** (ClawHavoc: 1,184 malicious skills on ClawHub).
 - **Memory provenance / injection defense** (top enterprise risk in Hermes threat model).
 - **Secure-by-default gateway** (40k exposed OpenClaw instances were a default-config failure).
@@ -135,7 +135,7 @@ benchmark quality. Ranked by expected points-on-benchmark per unit effort:
 Small **fixed** toolset, DeepSWE/R2E-Gym shape: `execute_bash`, `search`, `str_replace_editor`
 (view/create/search-replace-edit), `submit`. Weak/local models need few rigid in-distribution
 tools; rich freedom is for frontier models. Execute via the existing `ToolJailService`/sandbox —
-this is where xFrontier's sandbox stops being generic and becomes the SWE execution
+this is where Locus's sandbox stops being generic and becomes the SWE execution
 environment. Add per-repo workspace provisioning (clone/worktree per run) and a test-runner
 tool whose verbatim output feeds back into the loop. Tool-output truncation discipline
 (pi: 50KB/2,000 lines).
@@ -179,13 +179,13 @@ DeepSWE hybrid scaling: best-of-8/16 rollouts judged by (a) execution-based veri
 (agent-written regression tests) and (b) an execution-free LLM patch judge — complementary,
 either alone is much weaker; most gain by K=8. Nearly free in wall-clock under vLLM continuous
 batching. This is how a 32B-class local model reaches 59%-class output quality, and it is a
-natural fit for xFrontier's multi-agent machinery (verifier agents are just agents).
+natural fit for Locus's multi-agent machinery (verifier agents are just agents).
 
 ### 5.7 Cache discipline (makes 100-step trajectories affordable locally)
 Frozen prompt prefix (system + tool defs first, never reordered); append-only history;
 cache-safe compaction (fork + append, never rewrite history); llama.cpp `--cache-ram` / vLLM
 automatic prefix caching. On local hardware prefill is the bottleneck: 128K re-prefill drops
-~60s → ~200ms with cache discipline. Audit `frontier_runtime/conversation.py` stages 1–3 —
+~60s → ~200ms with cache discipline. Audit `locus_runtime/conversation.py` stages 1–3 —
 rule-based rewriting of old turns as currently designed **breaks prefix caching**; restructure
 to append-only summarization forks.
 
@@ -193,7 +193,7 @@ to append-only summarization forks.
 - Wire OPA decisions and Biscuit verification into the actual tool-execution gate (replace the
   regex blacklist). This is simultaneously the permission-tier feature every harness has and
   the security story nobody else can match.
-- `frontier exec` headless mode (JSON out) for CI and benchmark automation.
+- `locus exec` headless mode (JSON out) for CI and benchmark automation.
 - Begin decomposing `main.py` (773 KB) — extract the agent loop, collaboration, and graph
   execution into modules before the coding-agent work multiplies its size.
 

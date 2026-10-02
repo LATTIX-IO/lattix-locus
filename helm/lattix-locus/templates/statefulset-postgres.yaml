@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "lattix-locus.fullname" . }}-postgres
+spec:
+  serviceName: {{ include "lattix-locus.fullname" . }}-postgres
+  selector:
+    matchLabels:
+      app: lattix-postgres
+  template:
+    metadata:
+      labels:
+        app: lattix-postgres
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: {{ include "lattix-locus.imageRef" .Values.postgres.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

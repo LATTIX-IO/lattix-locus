@@ -15,7 +15,7 @@ import {
   statusFromRunStatus,
 } from "@/components/fx-ui";
 import { getInbox, getWorkflowRuns } from "@/lib/api";
-import type { InboxItem, WorkflowRunSummary } from "@/types/frontier";
+import type { InboxItem, WorkflowRunSummary } from "@/types/locus";
 
 const PIPELINE_STEPS = [
   { id: "s1", label: "Ingest Request", status: "complete" as const },

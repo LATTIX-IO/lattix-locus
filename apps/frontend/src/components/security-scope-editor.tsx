@@ -12,7 +12,7 @@ import type {
   PlatformSignalEnforcement,
   SecurityPolicyResponse,
   SecurityScopeConfig,
-} from "@/types/frontier";
+} from "@/types/locus";
 
 type Props = {
   entityType: "agent" | "workflow";

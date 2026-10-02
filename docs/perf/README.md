@@ -50,7 +50,7 @@ make resource-baseline  # snapshot to file
 ## Local stack profiles
 
 - **Zero-container mode**: leave `POSTGRES_DSN` unset and set
-  `FRONTIER_SQLITE_STATE_PATH=.frontier/state.db`, then run uvicorn directly —
+  `LOCUS_SQLITE_STATE_PATH=.locus/state.db`, then run uvicorn directly —
   state and audit persist to SQLite with no containers at all.
 - `make local-up` — backend + frontend + postgres + redis (Neo4j excluded).
 - Neo4j world-graph: `docker compose --profile graph -f docker-compose.local.yml up`

@@ -605,3 +605,14 @@ input[data-no-focus-ring]:focus-visible {
   font-size: 12px;
   border-bottom: 1px solid var(--ui-border);
 }
+
+/* Locus brand mark: show the variant that matches the active theme. */
+.locus-mark-on-light {
+  display: none;
+}
+.theme-light .locus-mark-on-dark {
+  display: none;
+}
+.theme-light .locus-mark-on-light {
+  display: inline-block;
+}

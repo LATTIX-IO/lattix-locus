@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FRONTEND_ROOT="$REPO_ROOT/apps/frontend"
 STEP_RESULTS=()
 
-echo "Lattix xFrontier pre-commit checks"
+echo "Lattix Locus pre-commit checks"
 
 add_step_result() {
   local name="$1"
@@ -173,11 +173,11 @@ run_python_format_check() {
 }
 
 run_python_typecheck() {
-  invoke_python -m mypy frontier_tooling/ frontier_runtime/
+  invoke_python -m mypy locus_tooling/ locus_runtime/
 }
 
 run_python_tests() {
-  invoke_python -m pytest apps/backend/tests tests -v --cov=app --cov=frontier_runtime --cov-report=term-missing
+  invoke_python -m pytest apps/backend/tests tests -v --cov=app --cov=locus_runtime --cov-report=term-missing
 }
 
 run_policy_tests() {
@@ -220,8 +220,8 @@ run_syft_sbom() {
 }
 
 run_helm_validation() {
-  "$HELM_CMD" lint ./helm/lattix-frontier
-  "$HELM_CMD" template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml >/dev/null
+  "$HELM_CMD" lint ./helm/lattix-locus
+  "$HELM_CMD" template lattix ./helm/lattix-locus -f helm/lattix-locus/values-prod.yaml >/dev/null
 }
 
 get_python_command

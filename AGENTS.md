@@ -1,14 +1,14 @@
-# AGENTS.md — Lattix xFrontier
+# AGENTS.md — Lattix Locus
 
 Guidance for AI coding agents (Codex, Claude Code, Copilot, Cowork) working in this repo. More specific files closer to the working directory take precedence.
 
 This file has two parts:
 
-1. **xFrontier repo rules** — specific to this repository.
+1. **Locus repo rules** — specific to this repository.
 2. **The shared Lattix engineering standard** — identical across every Lattix repo. Canonical source: `LATTIX-IO/lattix-monorepo:AGENTS.md`, bundle `2026.05.05`. When it changes upstream, re-merge that section; do not drift it locally.
 
 ## What this repo is
-Lattix xFrontier — a secure, local-first multi-agent orchestration platform (AGPL-3.0-or-later). Four layers: LangGraph orchestration → Microsoft Agent Framework guardrails → MAF ChatAgents + A2A execution → infra (Vault, OPA, Envoy, NATS, Biscuit, Presidio). Backend `apps/backend/`, workers `apps/workers/`, frontend `apps/frontend/`, runtime `frontier_runtime/`, contracts `packages/contracts/`.
+Lattix Locus — a secure, local-first multi-agent orchestration platform (AGPL-3.0-or-later). Four layers: LangGraph orchestration → Microsoft Agent Framework guardrails → MAF ChatAgents + A2A execution → infra (Vault, OPA, Envoy, NATS, Biscuit, Presidio). Backend `apps/backend/`, workers `apps/workers/`, frontend `apps/frontend/`, runtime `locus_runtime/`, contracts `packages/contracts/`.
 
 ## Build / test / quality (run before handoff)
 - `make test` — all tests
@@ -24,7 +24,7 @@ Lattix xFrontier — a secure, local-first multi-agent orchestration platform (A
 Known gate gaps as of 2026-08-10 — several gates are currently **red**; do not assume a clean baseline:
 - `pytest` aborts during collection: `tests/harness/` has an `__init__.py` but `tests/` does not, so `tests.harness` is unimportable.
 - `ruff check .` reports 24 errors, including `F821 Undefined name 'platform'` at `apps/backend/app/main.py:1587` — a latent `NameError`.
-- `make typecheck` covers only `frontier_tooling/` and `frontier_runtime/`, and reports 38 errors even there. `apps/backend/` is **not** type-checked (491 errors).
+- `make typecheck` covers only `locus_tooling/` and `locus_runtime/`, and reports 38 errors even there. `apps/backend/` is **not** type-checked (491 errors).
 - CI runs `ruff check` but not `ruff format --check`.
 
 If your change is unrelated to these, say so explicitly in the handoff rather than claiming a green run.
@@ -61,7 +61,7 @@ This repo participates in the **Nexus Obsidian-backed memory system**. Durable, 
 mem_type: repo_rule        # preference|fact|decision|pattern|repo_rule|project_state
 scope: repo
 project: lattix
-repo: lattix-xfrontier
+repo: lattix-locus
 source: codex|claude|copilot
 confidence: high|medium|low
 status: candidate

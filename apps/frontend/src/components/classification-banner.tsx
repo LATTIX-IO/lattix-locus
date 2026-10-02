@@ -70,7 +70,7 @@ export const DEFAULT_CLASSIFICATION_TEXT =
   "Internal · Operational Console · Zero Trust Enforced";
 export const DEFAULT_CLASSIFICATION_PRESET: ClassificationPreset = "success";
 
-const STORAGE_KEY = "frontier-classification-banner";
+const STORAGE_KEY = "locus-classification-banner";
 
 export type ClassificationBannerState = {
   enabled: boolean;
@@ -112,7 +112,7 @@ export function writeClassificationBannerState(state: ClassificationBannerState)
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    window.dispatchEvent(new CustomEvent("frontier-classification-change", { detail: state }));
+    window.dispatchEvent(new CustomEvent("locus-classification-change", { detail: state }));
   } catch {
     /* ignore storage failures */
   }
@@ -135,10 +135,10 @@ function subscribe(callback: () => void): () => void {
     cachedSnapshot = readClassificationBannerState();
     callback();
   };
-  window.addEventListener("frontier-classification-change", handler);
+  window.addEventListener("locus-classification-change", handler);
   window.addEventListener("storage", handler);
   return () => {
-    window.removeEventListener("frontier-classification-change", handler);
+    window.removeEventListener("locus-classification-change", handler);
     window.removeEventListener("storage", handler);
   };
 }

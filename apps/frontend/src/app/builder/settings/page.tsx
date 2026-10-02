@@ -13,7 +13,7 @@ import {
   type ModelsOverview,
 } from "@/lib/api";
 import { useToast } from "@/components/toast";
-import type { PlatformSettings, PlatformSignalEnforcement, SecurityPolicyResponse } from "@/types/frontier";
+import type { PlatformSettings, PlatformSignalEnforcement, SecurityPolicyResponse } from "@/types/locus";
 
 const runtimeEngineOptions = ["native", "langgraph", "langchain", "semantic-kernel", "autogen"] as const;
 

@@ -1,4 +1,4 @@
-title = "lattix-xfrontier gitleaks config"
+title = "lattix-locus gitleaks config"
 
 [extend]
 useDefault = true
@@ -11,7 +11,7 @@ regexes = [
 ]
 paths = [
   "(?i)\\..*\\.env",
-  "apps/frontend/src/lib/frontier-node-catalog.ts"
+  "apps/frontend/src/lib/locus-node-catalog.ts"
 ]
 
 [[allowlists]]

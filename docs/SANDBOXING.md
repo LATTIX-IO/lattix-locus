@@ -1,6 +1,6 @@
 # Sandboxing
 
-Lattix xFrontier implements a **three-tier hybrid sandbox** that adapts to deployment context while maintaining Codex-grade kernel-level isolation guarantees.
+Lattix Locus implements a **three-tier hybrid sandbox** that adapts to deployment context while maintaining Codex-grade kernel-level isolation guarantees.
 
 ## Goals
 
@@ -12,16 +12,16 @@ Lattix xFrontier implements a **three-tier hybrid sandbox** that adapts to deplo
 
 ## Three-Tier Hybrid Model
 
-The `SandboxManager` (in `frontier_runtime/sandbox.py`) auto-detects the strongest available isolation and selects it automatically.
+The `SandboxManager` (in `locus_runtime/sandbox.py`) auto-detects the strongest available isolation and selects it automatically.
 
 ### Tier 1: Kernel Sandbox (Laptop/Desktop — No Docker Required)
 
-When `bubblewrap` (Linux) or `/usr/bin/sandbox-exec` (macOS) is available, xFrontier uses **direct kernel-level sandboxing** with no Docker daemon:
+When `bubblewrap` (Linux) or `/usr/bin/sandbox-exec` (macOS) is available, Locus uses **direct kernel-level sandboxing** with no Docker daemon:
 
 **Linux (bubblewrap + seccomp):**
 - Read-only root filesystem (`--ro-bind / /`)
 - Explicit writable mounts only for allowed paths
-- Sensitive subpaths re-protected even inside writable parents (`.git`, `.frontier`, `.ssh`, `.gnupg`, `.aws`, `.kube`)
+- Sensitive subpaths re-protected even inside writable parents (`.git`, `.locus`, `.ssh`, `.gnupg`, `.aws`, `.kube`)
 - PID, user, IPC, and network namespace isolation (`--unshare-*`)
 - `--new-session` (prevents signal injection from parent terminal)
 - `--die-with-parent` (cleanup on crash)
@@ -35,7 +35,7 @@ When `bubblewrap` (Linux) or `/usr/bin/sandbox-exec` (macOS) is available, xFron
 - Hardcoded `/usr/bin/sandbox-exec` path (prevents PATH injection)
 
 **Windows (AppContainer + Job Object):** the `windows-appcontainer` strategy
-(`frontier_runtime/sandbox.py` → `frontier_runtime/win_sandbox.py`) confines the
+(`locus_runtime/sandbox.py` → `locus_runtime/win_sandbox.py`) confines the
 child via Win32 directly — no Docker, no WSL:
 - **AppContainer (default tier):** low-privilege, capability-gated execution with
   default-deny filesystem. The bound worktree is ACL-granted to the container SID
@@ -45,7 +45,7 @@ child via Win32 directly — no Docker, no WSL:
 - **Job Object (fallback tier):** memory limit + active-process cap + kill-on-job-close
   so a runaway/forkbomb child is bounded and dies with the launcher. Used when
   AppContainer setup fails. **Note:** this tier bounds *resources* but does NOT
-  confine filesystem or network — see `FRONTIER_WIN_SANDBOX_REQUIRE_APPCONTAINER`
+  confine filesystem or network — see `LOCUS_WIN_SANDBOX_REQUIRE_APPCONTAINER`
   below to fail closed instead of silently degrading to it.
 
 **When to use:** Local development on a laptop or desktop where Docker is not installed or too heavy. This is the fastest mode (~1ms startup on Linux/macOS).
@@ -98,13 +98,13 @@ The `SandboxManager` returns pod spec metadata (RuntimeClass, securityContext, r
 
 The `SandboxManager` selects strategy in this priority order:
 
-1. **K8s mode** — if `FRONTIER_RUNTIME_PROFILE=hosted` or `KUBERNETES_SERVICE_HOST` is set
+1. **K8s mode** — if `LOCUS_RUNTIME_PROFILE=hosted` or `KUBERNETES_SERVICE_HOST` is set
 2. **Kernel bubblewrap** — if `bwrap` is on PATH (Linux)
 3. **Kernel seatbelt** — if `/usr/bin/sandbox-exec` exists (macOS)
-4. **Windows AppContainer** — on Windows when `FRONTIER_RUNTIME_PROFILE` is `local-native`/`native`, or `FRONTIER_FORCE_WINDOWS_APPCONTAINER=1`
+4. **Windows AppContainer** — on Windows when `LOCUS_RUNTIME_PROFILE` is `local-native`/`native`, or `LOCUS_FORCE_WINDOWS_APPCONTAINER=1`
 5. **Restricted process** — under `local-native`/`native` the manager is Dockerless and never falls back to a Docker daemon
 6. **Hardened Docker** — if `docker` is on PATH (non-native profiles)
-7. **Restricted process** — last-resort fallback with no sandbox (gated behind `FRONTIER_ALLOW_RESTRICTED_PROCESS_SANDBOX`; off by default → fails closed)
+7. **Restricted process** — last-resort fallback with no sandbox (gated behind `LOCUS_ALLOW_RESTRICTED_PROCESS_SANDBOX`; off by default → fails closed)
 
 Override with `SandboxManager(force_strategy=IsolationStrategy.HARDENED_DOCKER)`.
 
@@ -166,7 +166,7 @@ The `SandboxManager` auto-detects available sandbox backends at runtime. For loc
 
 **Windows:** No installation needed — the `windows-appcontainer` strategy uses
 built-in Win32 AppContainer + Job Object APIs (active under the `local-native`
-profile or via `FRONTIER_FORCE_WINDOWS_APPCONTAINER=1`). WSL2-with-bubblewrap or
+profile or via `LOCUS_FORCE_WINDOWS_APPCONTAINER=1`). WSL2-with-bubblewrap or
 Docker Desktop remain optional alternatives.
 
 ## Security Model
@@ -185,12 +185,12 @@ Docker Desktop remain optional alternatives.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FRONTIER_RUNTIME_PROFILE` | `local-lightweight` | Sandbox tier selection hint |
-| `FRONTIER_SECCOMP_PROFILE` | `docker/sandbox/seccomp-strict.json` | Path to custom seccomp profile |
+| `LOCUS_RUNTIME_PROFILE` | `local-lightweight` | Sandbox tier selection hint |
+| `LOCUS_SECCOMP_PROFILE` | `docker/sandbox/seccomp-strict.json` | Path to custom seccomp profile |
 | `SANDBOX_RUNNER_IMAGE` | `python:3.12.10-slim-bookworm` | Docker image for tool execution |
-| `SANDBOX_INTERNAL_NETWORK` | `frontier-sandbox-internal` | Docker network for sandbox containers |
+| `SANDBOX_INTERNAL_NETWORK` | `locus-sandbox-internal` | Docker network for sandbox containers |
 | `SANDBOX_EGRESS_GATEWAY` | `sandbox-egress-gateway:3128` | Squid proxy address |
-| `FRONTIER_FORCE_WINDOWS_APPCONTAINER` | _(unset)_ | Force the Windows AppContainer strategy even outside the `local-native` profile |
-| `FRONTIER_WIN_SANDBOX_TIER` | `appcontainer` | Windows confinement tier: `appcontainer` (default) or `job` (resource-only baseline) |
-| `FRONTIER_WIN_SANDBOX_REQUIRE_APPCONTAINER` | _(unset)_ | Fail **closed** if AppContainer can't be established instead of silently degrading to the resource-only Job-Object tier. Set for the hostile-code threat model where losing filesystem/network confinement is unacceptable |
-| `FRONTIER_ALLOW_RESTRICTED_PROCESS_SANDBOX` | _(unset)_ | Permit the last-resort no-isolation fallback. Off by default → execution fails closed when no real sandbox backend is available |
+| `LOCUS_FORCE_WINDOWS_APPCONTAINER` | _(unset)_ | Force the Windows AppContainer strategy even outside the `local-native` profile |
+| `LOCUS_WIN_SANDBOX_TIER` | `appcontainer` | Windows confinement tier: `appcontainer` (default) or `job` (resource-only baseline) |
+| `LOCUS_WIN_SANDBOX_REQUIRE_APPCONTAINER` | _(unset)_ | Fail **closed** if AppContainer can't be established instead of silently degrading to the resource-only Job-Object tier. Set for the hostile-code threat model where losing filesystem/network confinement is unacceptable |
+| `LOCUS_ALLOW_RESTRICTED_PROCESS_SANDBOX` | _(unset)_ | Permit the last-resort no-isolation fallback. Off by default → execution fails closed when no real sandbox backend is available |

@@ -1,0 +1,22 @@
+runtime:
+  profile: hosted
+  requireA2ARuntimeHeaders: true
+
+orchestrator:
+  replicaCount: 2
+  resources:
+    requests: { cpu: "1", memory: 1Gi }
+    limits: { cpu: "4", memory: 4Gi }
+vault:
+  dev: false
+networkPolicies:
+  enabled: true
+ingress:
+  enabled: true
+  tls:
+    enabled: true
+    secretName: lattix-locus-tls
+federation:
+  enabled: false
+  clusterName: locus-prod
+  region: us-east

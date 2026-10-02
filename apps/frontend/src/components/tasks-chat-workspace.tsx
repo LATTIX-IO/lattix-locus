@@ -19,7 +19,7 @@ import { getWorkflowRun, getWorkflowRunEvents, type WorkflowRunDetail } from "@/
 import type {
   WorkflowRunEvent,
   WorkflowRunSummary,
-} from "@/types/frontier";
+} from "@/types/locus";
 
 const FALLBACK_REASONING: ReasoningStep[] = [
   { type: "system", text: "Task initialized. Agent: Compliance Agent (gpt-4o)" },

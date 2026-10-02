@@ -17,6 +17,6 @@
     "capability_profile": "local-32b-class"
   },
   "tools": [
-    { "name": "repo-read", "type": "frontier-coding", "config": { "toolset": ["execute_bash", "search", "str_replace_editor"], "mode": "read-only" } }
+    { "name": "repo-read", "type": "locus-coding", "config": { "toolset": ["execute_bash", "search", "str_replace_editor"], "mode": "read-only" } }
   ]
 }

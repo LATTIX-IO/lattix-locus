@@ -3,7 +3,7 @@
 **Status:** Draft v0.1 · 2 Oct 2026 · Owner: James Booth
 **Audience:** Anyone (human or agent) designing, building, or reviewing Locus.
 
-> **Naming.** The product is **Locus** (formerly xFrontier). Code identifiers are not renamed by these docs: the repo (`lattix-xfrontier`), package (`lattix-frontier`), modules (`frontier_runtime`, `frontier_tooling`), and node types (`frontier/*`) keep their names until a dedicated rename task changes them. Delivery is tracked in the Linear project [Locus](https://linear.app/lattix/project/locus-3b160e533200/overview).
+> **Naming.** The product is **Locus** (formerly xFrontier). The code rename is complete: repo `lattix-locus`, package `lattix-locus`, modules `locus_runtime` / `locus_tooling`, node types `locus/*`, and environment variables `LOCUS_*`. Pre-rename installs keep working through read-only shims (`locus_runtime/legacy.py`): `FRONTIER_*` variables, `frontier_*` tables, `frontier/*` node types and the old app-home directories are accepted and migrated. Delivery is tracked in the Linear project [Locus](https://linear.app/lattix/project/locus-3b160e533200/overview).
 
 This folder defines **what Locus is, who it is for, and how it should behave**. It is the product layer above the engineering and status records at the repo root (`AGENTS.md`, `DESIGN.md`, `SECURITY.md`, `THREAT-MODEL.md`, `QUALITY_SCORE.md`, `PLANS.md`) and in [`docs/`](../).
 

@@ -18,8 +18,8 @@ class TestVectorDedup:
     @patch.dict(
         os.environ,
         {
-            "FRONTIER_MEMORY_VECTOR_DEDUP_ENABLED": "true",
-            "FRONTIER_MEMORY_VECTOR_DEDUP_THRESHOLD": "0.92",
+            "LOCUS_MEMORY_VECTOR_DEDUP_ENABLED": "true",
+            "LOCUS_MEMORY_VECTOR_DEDUP_THRESHOLD": "0.92",
         },
     )
     def test_vector_dedup_finds_similar(self):
@@ -43,7 +43,7 @@ class TestVectorDedup:
             assert result["id"] == "existing-1"
             mock_pg.find_similar_entries.assert_called_once()
 
-    @patch.dict(os.environ, {"FRONTIER_MEMORY_VECTOR_DEDUP_ENABLED": "true"})
+    @patch.dict(os.environ, {"LOCUS_MEMORY_VECTOR_DEDUP_ENABLED": "true"})
     def test_vector_dedup_falls_back_to_overlap(self):
         with patch("app.main._POSTGRES_MEMORY") as mock_pg:
             mock_pg.enabled = True
@@ -64,7 +64,7 @@ class TestVectorDedup:
             # Should fall through to overlap check
             mock_pg.get_entries.assert_called_once()
 
-    @patch.dict(os.environ, {"FRONTIER_MEMORY_VECTOR_DEDUP_ENABLED": "false"})
+    @patch.dict(os.environ, {"LOCUS_MEMORY_VECTOR_DEDUP_ENABLED": "false"})
     def test_vector_dedup_disabled_uses_overlap_only(self):
         with patch("app.main._POSTGRES_MEMORY") as mock_pg:
             mock_pg.enabled = True

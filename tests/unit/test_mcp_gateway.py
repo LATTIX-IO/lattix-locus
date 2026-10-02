@@ -1,7 +1,7 @@
 import asyncio
 
-from frontier_runtime.mcp import MCPGateway, ToolRegistry
-from frontier_runtime.sandbox import ExecutionSpec
+from locus_runtime.mcp import MCPGateway, ToolRegistry
+from locus_runtime.sandbox import ExecutionSpec
 
 
 def test_mcp_gateway_plans_tool_execution() -> None:

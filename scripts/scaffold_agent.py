@@ -1,4 +1,4 @@
-"""CLI helper to scaffold a Frontier agent."""
+"""CLI helper to scaffold a Locus agent."""
 
 from __future__ import annotations
 

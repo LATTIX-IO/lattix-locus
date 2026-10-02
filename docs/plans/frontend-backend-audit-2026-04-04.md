@@ -156,7 +156,7 @@ Relevant files:
 
 ### 3. Contracts are conceptually shared but not actually shared in code
 
-The frontend maintains independent TypeScript shapes in `apps/frontend/src/types/frontier.ts`, while the backend defines parallel Pydantic models in `apps/backend/app/main.py`. The contracts package is effectively a placeholder right now.
+The frontend maintains independent TypeScript shapes in `apps/frontend/src/types/locus.ts`, while the backend defines parallel Pydantic models in `apps/backend/app/main.py`. The contracts package is effectively a placeholder right now.
 
 Impact:
 
@@ -166,7 +166,7 @@ Impact:
 
 Relevant files:
 
-- `apps/frontend/src/types/frontier.ts`
+- `apps/frontend/src/types/locus.ts`
 - `apps/backend/app/main.py`
 - `packages/contracts/README.md`
 

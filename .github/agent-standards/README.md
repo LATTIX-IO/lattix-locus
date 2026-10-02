@@ -15,16 +15,16 @@ Every file below carries a `BEGIN LATTIX GENERATED AGENT STANDARDS` header namin
 
 ## Locally merged files — safe to edit
 
-These carry the shared standard **plus** xFrontier-specific content, so they are not byte-identical to the monorepo source and are not managed as generated files:
+These carry the shared standard **plus** Locus-specific content, so they are not byte-identical to the monorepo source and are not managed as generated files:
 
-- `AGENTS.md` — xFrontier repo rules + the shared Lattix principal-engineer standard
-- `.github/copilot-instructions.md` — xFrontier Nexus memory guidance + the shared desloppify workflow
+- `AGENTS.md` — Locus repo rules + the shared Lattix principal-engineer standard
+- `.github/copilot-instructions.md` — Locus Nexus memory guidance + the shared desloppify workflow
 
 When the shared portions change upstream, re-merge those sections by hand rather than overwriting the whole file.
 
 ## Refreshing the bundle
 
-`lattix-xfrontier` is **not** registered in the monorepo's `.gitmodules`, so `sync-agent-standards.ps1` cannot target it automatically. Until it is registered, refresh manually from a monorepo checkout that has already been synced:
+`lattix-locus` is **not** registered in the monorepo's `.gitmodules`, so `sync-agent-standards.ps1` cannot target it automatically. Until it is registered, refresh manually from a monorepo checkout that has already been synced:
 
 ```
 cp <monorepo>/<any-synced-child>/.github/instructions/*.instructions.md .github/instructions/
@@ -33,7 +33,7 @@ cp <monorepo>/<any-synced-child>/.github/prompts/*.prompt.md .github/prompts/
 
 Then update `VERSION` to match `<monorepo>/.github/agent-standards/VERSION` and re-merge the shared sections of `AGENTS.md` and `.github/copilot-instructions.md`.
 
-To make this automatic instead, add `lattix-xfrontier` as a submodule in the monorepo's `.gitmodules`; the `Agent Standards Sync` workflow then picks it up like every other child repo.
+To make this automatic instead, add `lattix-locus` as a submodule in the monorepo's `.gitmodules`; the `Agent Standards Sync` workflow then picks it up like every other child repo.
 
 ## Repo-specific standards
 

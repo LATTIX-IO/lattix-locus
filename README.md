@@ -1,20 +1,22 @@
-# Lattix xFrontier
+# Lattix Locus
 
-Lattix xFrontier is a secure, local-first multi-agent orchestration platform licensed under the GNU Affero General Public License v3.0-or-later (AGPLv3+). It pairs a **zero trust security core** with a **cortical-column ("Thousand Brains") cognitive model** so that agentic work is both contained by default and reasoned about by many independent models rather than a single prompt loop.
+Lattix Locus is a secure, local-first multi-agent orchestration platform licensed under the GNU Affero General Public License v3.0-or-later (AGPLv3+). It pairs a **zero trust security core** with a **cortical-column ("Thousand Brains") cognitive model** so that agentic work is both contained by default and reasoned about by many independent models rather than a single prompt loop.
 
 This README leads with the methodology, then a quick start (Kubernetes + desktop install on macOS, Windows, and Linux), and only then dives into the architecture and implementation.
 
-> Lattix xFrontier is an independent project created by Lattix. It is not affiliated with, endorsed by, sponsored by, or otherwise associated with OpenAI or with any OpenAI initiative, branding, or program that uses the term "Frontier." The Lattix xFrontier name, ideas, and product direction were developed independently by Lattix.
+> Lattix Locus is an independent project created by Lattix. The Lattix Locus name, ideas, and product direction were developed independently by Lattix.
+
+> **Formerly xFrontier.** Existing installs upgrade in place; see [`docs/UPGRADING-TO-LOCUS.md`](docs/UPGRADING-TO-LOCUS.md).
 
 ---
 
 ## Methodology
 
-xFrontier is built on two convictions: that an agent platform must **trust nothing implicitly**, and that reliable machine reasoning comes from **many independent models reaching consensus**, not from one large context window.
+Locus is built on two convictions: that an agent platform must **trust nothing implicitly**, and that reliable machine reasoning comes from **many independent models reaching consensus**, not from one large context window.
 
 ### Zero trust core
 
-Zero trust in xFrontier is not a slogan layered on at the edge — it is a design style that recurs at every major boundary. Identity, scope, or capability is checked *before* work proceeds, and the default posture is fail-closed.
+Zero trust in Locus is not a slogan layered on at the edge — it is a design style that recurs at every major boundary. Identity, scope, or capability is checked *before* work proceeds, and the default posture is fail-closed.
 
 - **Route-level access classification.** Every backend route is assigned one of `public-minimal`, `authenticated-read`, `authenticated-mutate`, or `internal-only`, and the inventory is validated at startup so no endpoint can appear without an access class.
 - **Authenticated operator sessions.** Protected UI does not render its data surfaces until an operator session is resolved and authenticated. Secure-local installs default to OIDC-backed auth and disable unsigned header-only actor trust.
@@ -27,7 +29,7 @@ See [`THREAT-MODEL.md`](THREAT-MODEL.md) for the canonical trust-boundary refere
 
 ### Cortical column ("Thousand Brains") cognitive model
 
-xFrontier's reasoning model is inspired by the **Thousand Brains theory of intelligence**: intelligence emerges from many cortical columns, each building its own model of the world from its own evidence, voting toward a shared conclusion. Translated into the platform, this means agents become *coordination shells* and the actual reasoning is distributed across **cognitive columns** that are fused by **explicit consensus**.
+Locus's reasoning model is inspired by the **Thousand Brains theory of intelligence**: intelligence emerges from many cortical columns, each building its own model of the world from its own evidence, voting toward a shared conclusion. Translated into the platform, this means agents become *coordination shells* and the actual reasoning is distributed across **cognitive columns** that are fused by **explicit consensus**.
 
 - **Columns** are independent reasoning units. Each maintains its own belief state, evidence references, and confidence — and the platform deliberately keeps them independent so failures are not correlated.
 - **Assemblies** are task-specific coalitions of columns with a defined inference mode, consensus policy, and stopping condition.
@@ -37,12 +39,12 @@ The target state is a distributed cognitive system that maintains multiple indep
 
 **What ships today** is an additive, bounded **cognitive MVP** — the first slice of that columnar architecture. It adds four graph-native node types without replacing the existing agent runtime:
 
-- `frontier/goal` — explicit goal framing
-- `frontier/evidence` — evidence capture and missing-evidence detection
-- `frontier/assembly` — bounded weighted-support assembly fusion
-- `frontier/commitment` — commitment generation with confidence, blockers, dissent, and next actions
+- `locus/goal` — explicit goal framing
+- `locus/evidence` — evidence capture and missing-evidence detection
+- `locus/assembly` — bounded weighted-support assembly fusion
+- `locus/commitment` — commitment generation with confidence, blockers, dissent, and next actions
 
-Legacy graphs continue to validate and run, and `frontier/agent` semantics are unchanged. Advanced columns (Evaluation, Uncertainty, State, Decomposition, Prediction, Adaptation) are planned but not yet part of the shipped slice.
+Legacy graphs continue to validate and run, and `locus/agent` semantics are unchanged. Advanced columns (Evaluation, Uncertainty, State, Decomposition, Prediction, Adaptation) are planned but not yet part of the shipped slice.
 
 ---
 
@@ -50,7 +52,7 @@ The cortical column runtime follows the same zero-trust control-plane model. Col
 
 ## Quick start
 
-Pick the path that matches how you want to run xFrontier. All three converge on the same control plane and secure defaults.
+Pick the path that matches how you want to run Locus. All three converge on the same control plane and secure defaults.
 
 ### A. Kubernetes (Helm)
 
@@ -58,7 +60,7 @@ The Helm chart is pinned to the `hosted` runtime profile and deploys the control
 
 ```bash
 # Replace the placeholder A2A_JWT_SECRET in the values file before applying.
-helm install lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml
+helm install lattix ./helm/lattix-locus -f helm/lattix-locus/values-prod.yaml
 ```
 
 The chart wires `A2A_JWT_SECRET` into the API/orchestrator paths so hosted clusters enforce the same signed runtime-header contract as the backend profile tests. `values-dev.yaml` is available for non-production clusters.
@@ -83,12 +85,12 @@ For a full local-first stack on your own machine, run the public bootstrap insta
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh
+curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-locus/main/install/bootstrap.sh | sh
 ```
 
 ```powershell
 # Windows PowerShell
-powershell -ExecutionPolicy Bypass -c "iwr https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.ps1 -UseBasicParsing | iex"
+powershell -ExecutionPolicy Bypass -c "iwr https://raw.githubusercontent.com/LATTIX-IO/lattix-locus/main/install/bootstrap.ps1 -UseBasicParsing | iex"
 ```
 
 Then start, open, and check the stack:
@@ -102,7 +104,7 @@ On clean machines the bootstrap detects your OS and installs Python 3.12+ and Do
 
 For source-checkout testing, you can still run `pwsh -File .\install\bootstrap.ps1` on Windows or `sh ./install/bootstrap.sh` on POSIX shells. When launched from a checkout, those bootstrap scripts use the checkout's bundled installer instead of downloading `main` again.
 
-Open `http://xfrontier.local` (or your configured `LOCAL_STACK_HOST`); the installer also prints clickable `http://127.0.0.1` and LAN URLs after `lattix up`. If prerequisites cannot be installed automatically, the bootstrap requires a working Python 3 runtime (`py -3` or `python`) on `PATH` — on Windows the Microsoft Store placeholder alias is not sufficient by itself.
+Open `http://locus.local` (or your configured `LOCAL_STACK_HOST`); the installer also prints clickable `http://127.0.0.1` and LAN URLs after `lattix up`. If prerequisites cannot be installed automatically, the bootstrap requires a working Python 3 runtime (`py -3` or `python`) on `PATH` — on Windows the Microsoft Store placeholder alias is not sufficient by itself.
 
 Common follow-ups:
 
@@ -113,13 +115,13 @@ lattix remove    # tear down local stacks + installer-managed env (leaves your c
 
 `lattix update` keeps `.installer/` env files and Docker data volumes in place, reapplies the package, and restarts the active stack. Re-running the published bootstrap over an existing install follows the same non-destructive posture: it preserves `.installer/` and `.env`, keeps Docker volumes intact, and reuses prior secure-local passwords, bootstrap identities, and OIDC settings as interactive defaults.
 
-> **Profiles.** Set `FRONTIER_RUNTIME_PROFILE` to pin security posture explicitly: `local-secure` (fail-closed local/full-stack) or `hosted` (authenticated operator access + signed A2A headers). For lighter local-only iteration, `make local-up` exposes the frontend at `http://localhost:3000` and the backend at `http://localhost:8000` without the gateway `/api` path. The intended default is the **secure full platform stack** (`make up` / `make stack-up`).
+> **Profiles.** Set `LOCUS_RUNTIME_PROFILE` to pin security posture explicitly: `local-secure` (fail-closed local/full-stack) or `hosted` (authenticated operator access + signed A2A headers). For lighter local-only iteration, `make local-up` exposes the frontend at `http://localhost:3000` and the backend at `http://localhost:8000` without the gateway `/api` path. The intended default is the **secure full platform stack** (`make up` / `make stack-up`).
 
 ---
 
 ## Architecture
 
-xFrontier separates authoring, coordination, execution, memory, and review into explicit layers — it is intentionally *not* a monolith with one undifferentiated memory or agent runtime. The canonical backend surface is `apps/backend/` (control plane) and `apps/workers/` (runtime/worker surface).
+Locus separates authoring, coordination, execution, memory, and review into explicit layers — it is intentionally *not* a monolith with one undifferentiated memory or agent runtime. The canonical backend surface is `apps/backend/` (control plane) and `apps/workers/` (runtime/worker surface).
 
 ### Security + reasoning layers
 
@@ -145,7 +147,7 @@ The running system is organized into five cooperating planes:
 
 1. **User interface plane** — the Next.js builder, run console, settings, collaboration, and artifacts (`apps/frontend/`).
 2. **Control plane** — the FastAPI backend (`apps/backend/app/main.py`); the canonical API surface owning route classification, auth, definitions, run management, memory APIs, and observability.
-3. **Runtime/orchestration plane** — shared runtime primitives (`frontier_runtime/`) and worker runtime (`apps/workers/runtime/`) managing staged execution, approvals, discovery, envelopes, middleware, A2A dispatch, and sandbox planning.
+3. **Runtime/orchestration plane** — shared runtime primitives (`locus_runtime/`) and worker runtime (`apps/workers/runtime/`) managing staged execution, approvals, discovery, envelopes, middleware, A2A dispatch, and sandbox planning.
 4. **Execution plane** — agents and tools execute through bounded runtime contracts; A2A work flows through envelopes and event topics, with tool execution mediated by the sandbox.
 5. **State and memory plane** — short-term, durable, and long-term memory plus consolidation queues and world-graph projection, split across Redis, PostgreSQL/pgvector, Neo4j, and local persisted state.
 
@@ -157,11 +159,11 @@ For the full narrative — control plane, memory tiers, isolation strategies, th
 
 ### Secure-local installs and runtime profiles
 
-Supported runtime profiles are explicit: `local-secure` (fail-closed secure local/full-stack profile used by `docker-compose.yml`) and `hosted` (non-local; requires authenticated operator access and signed A2A runtime headers). Set `FRONTIER_RUNTIME_PROFILE` to pin the posture. Legacy flags like `FRONTIER_SECURE_LOCAL_MODE` and `FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS` still exist for compatibility, but the named profile is the canonical contract.
+Supported runtime profiles are explicit: `local-secure` (fail-closed secure local/full-stack profile used by `docker-compose.yml`) and `hosted` (non-local; requires authenticated operator access and signed A2A runtime headers). Set `LOCUS_RUNTIME_PROFILE` to pin the posture. Legacy flags like `LOCUS_SECURE_LOCAL_MODE` and `LOCUS_REQUIRE_AUTHENTICATED_REQUESTS` still exist for compatibility, but the named profile is the canonical contract.
 
-Hosted deployments also require signed runtime messages, replay protection, egress allowlists, and MCP local-server policy unless remote MCP servers are explicitly confirmed with `FRONTIER_CONFIRM_REMOTE_MCP_SERVERS=true`. Operators can verify the active posture through authenticated `/healthz/details` and `/platform/settings`; both expose the `secure_profile` report used by startup/profile validation.
+Hosted deployments also require signed runtime messages, replay protection, egress allowlists, and MCP local-server policy unless remote MCP servers are explicitly confirmed with `LOCUS_CONFIRM_REMOTE_MCP_SERVERS=true`. Operators can verify the active posture through authenticated `/healthz/details` and `/platform/settings`; both expose the `secure_profile` report used by startup/profile validation.
 
-Secure local installs default to OIDC-backed operator authentication and disable unsigned header-only actor trust. The installer ships with a Casdoor preset by default, but can also emit generic OIDC settings for another IAM provider when you want to connect Frontier to an external identity plane. The frontend includes a generic `/auth` portal that points users to the configured provider-hosted sign-in and sign-up URLs, so the same console entry flow works with Casdoor or another OIDC-compliant IAM. The secure local stack exposes Casdoor directly on loopback (`http://127.0.0.1:8081` by default) and also keeps the optional `http://casdoor.localhost` gateway route for environments where that hostname resolves. The installer seeds a default bootstrap admin identity (`frontier-admin` / `admin@<hostname>.localhost`) into both the admin and builder actor allowlists so the first authenticated operator lands with the right keys.
+Secure local installs default to OIDC-backed operator authentication and disable unsigned header-only actor trust. The installer ships with a Casdoor preset by default, but can also emit generic OIDC settings for another IAM provider when you want to connect Locus to an external identity plane. The frontend includes a generic `/auth` portal that points users to the configured provider-hosted sign-in and sign-up URLs, so the same console entry flow works with Casdoor or another OIDC-compliant IAM. The secure local stack exposes Casdoor directly on loopback (`http://127.0.0.1:8081` by default) and also keeps the optional `http://casdoor.localhost` gateway route for environments where that hostname resolves. The installer seeds a default bootstrap admin identity (`locus-admin` / `admin@<hostname>.localhost`) into both the admin and builder actor allowlists so the first authenticated operator lands with the right keys.
 
 Secure-local installs also mirror installer-managed secrets and configuration snapshots into the local Vault instance. The Docker Compose stack backs Vault with the durable `vault-data` volume, while PostgreSQL and Neo4j continue using their own persistent named volumes for long-term platform data. Older installs that do not already have this manifest are upgraded into it automatically during install/update.
 
@@ -171,26 +173,26 @@ Memory is tiered, scoped, and selectively promotable:
 
 - **Redis** handles short-term, hot working memory and session caching.
 - **PostgreSQL + pgvector** handles long-term persistent memory and semantic recall.
-- **Consolidation scaffolding** queues durable memory candidates when `FRONTIER_MEMORY_CONSOLIDATION_ENABLED=true`.
-- **Hybrid retrieval** blends short-term session memory, long-term semantic memory, and world-graph context when `FRONTIER_MEMORY_HYBRID_RETRIEVAL_ENABLED=true`, with hidden relevance ranking, role-aware boosts, and a bounded token budget.
-- **Task learning** promotes task outcomes into long-term memory when `FRONTIER_MEMORY_LEARNING_ENABLED=true`.
+- **Consolidation scaffolding** queues durable memory candidates when `LOCUS_MEMORY_CONSOLIDATION_ENABLED=true`.
+- **Hybrid retrieval** blends short-term session memory, long-term semantic memory, and world-graph context when `LOCUS_MEMORY_HYBRID_RETRIEVAL_ENABLED=true`, with hidden relevance ranking, role-aware boosts, and a bounded token budget.
+- **Task learning** promotes task outcomes into long-term memory when `LOCUS_MEMORY_LEARNING_ENABLED=true`.
 
 Internal operators can process queued consolidation candidates via `POST /internal/memory/consolidation/run` and project consolidated summaries into the Neo4j world graph via `POST /internal/memory/world-graph/project`. Useful tuning flags:
 
-- `FRONTIER_MEMORY_CONSOLIDATION_MIN_CANDIDATES` — minimum candidates before standard memory is summarized.
-- `FRONTIER_MEMORY_TASK_LEARNING_MIN_CANDIDATES` — lower threshold for task-learning consolidation.
-- `FRONTIER_MEMORY_CONSOLIDATION_MAX_POINTS` — maximum bullet points retained in a synthesized summary.
-- `FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP` — token-overlap threshold to suppress near-duplicate summaries.
-- `FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_HISTORY_LIMIT` — how many recent summaries are checked for duplicates.
-- `FRONTIER_MEMORY_HYBRID_MAX_TOKENS` — caps the token budget for ranked hybrid memory injected into execution.
-- `FRONTIER_MEMORY_HYBRID_MAX_TOPICS` — caps world-graph topics surfaced alongside ranked hybrid memory.
-- `FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED` — enables internal Neo4j projection for consolidated summaries.
-- `FRONTIER_MEMORY_GRAPH_MAX_TOPICS` — maximum topic nodes linked from each consolidated memory.
-- `FRONTIER_MEMORY_GRAPH_TOPIC_MIN_OCCURRENCES` — minimum repeated occurrences before a topic is projected.
+- `LOCUS_MEMORY_CONSOLIDATION_MIN_CANDIDATES` — minimum candidates before standard memory is summarized.
+- `LOCUS_MEMORY_TASK_LEARNING_MIN_CANDIDATES` — lower threshold for task-learning consolidation.
+- `LOCUS_MEMORY_CONSOLIDATION_MAX_POINTS` — maximum bullet points retained in a synthesized summary.
+- `LOCUS_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP` — token-overlap threshold to suppress near-duplicate summaries.
+- `LOCUS_MEMORY_CONSOLIDATION_DUPLICATE_HISTORY_LIMIT` — how many recent summaries are checked for duplicates.
+- `LOCUS_MEMORY_HYBRID_MAX_TOKENS` — caps the token budget for ranked hybrid memory injected into execution.
+- `LOCUS_MEMORY_HYBRID_MAX_TOPICS` — caps world-graph topics surfaced alongside ranked hybrid memory.
+- `LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED` — enables internal Neo4j projection for consolidated summaries.
+- `LOCUS_MEMORY_GRAPH_MAX_TOPICS` — maximum topic nodes linked from each consolidated memory.
+- `LOCUS_MEMORY_GRAPH_TOPIC_MIN_OCCURRENCES` — minimum repeated occurrences before a topic is projected.
 
 ### Execution isolation
 
-`SandboxManager` (`frontier_runtime/sandbox.py`) selects the strongest available isolation backend and materializes it from a single declarative policy, so the rest of the runtime never needs to know which backend is in use:
+`SandboxManager` (`locus_runtime/sandbox.py`) selects the strongest available isolation backend and materializes it from a single declarative policy, so the rest of the runtime never needs to know which backend is in use:
 
 1. **Kernel sandbox** on Linux/macOS via `bubblewrap` or `sandbox-exec`.
 2. **Hardened Docker** — read-only root, dropped capabilities, seccomp, resource caps, explicit mounts, optional network disablement.
@@ -198,8 +200,8 @@ Internal operators can process queued consolidation candidates via `POST /intern
 
 ### Repository layout
 
-- `frontier_tooling/` — canonical repo CLI and installer entrypoints
-- `frontier_runtime/` — shared runtime/security/config primitives used by backend and worker surfaces
+- `locus_tooling/` — canonical repo CLI and installer entrypoints
+- `locus_runtime/` — shared runtime/security/config primitives used by backend and worker surfaces
 - `apps/frontend/` — Next.js builder and operator UI
 - `apps/backend/` — FastAPI orchestration/control-plane service
 - `apps/workers/` — worker and runtime helpers
@@ -209,11 +211,11 @@ Internal operators can process queued consolidation candidates via `POST /intern
 - `deploy/infra/`, `deploy/gitops/` — public-safe deployment references
 - `examples/agents/` — public demo agent assets used by default in local-first development
 - `docker-compose.yml` / `docker-compose.local.yml` — local-first stack definitions
-- `helm/lattix-frontier/` — Kubernetes deployment chart
+- `helm/lattix-locus/` — Kubernetes deployment chart
 - `policies/` — baseline OPA policies and tests
-- `docs/reference/lattix-frontier-docs/` — imported legacy documentation tree
+- `docs/reference/lattix-locus-docs/` — imported legacy documentation tree
 
-By default, local-first development seeds safe public demo agents from `examples/agents/`. Layer in private agent definitions by setting `FRONTIER_AGENT_ASSETS_ROOT` to an external directory.
+By default, local-first development seeds safe public demo agents from `examples/agents/`. Layer in private agent definitions by setting `LOCUS_AGENT_ASSETS_ROOT` to an external directory.
 
 ### CLI
 
@@ -241,7 +243,7 @@ make helm-validate
 make test
 ```
 
-Windows PowerShell equivalents use `.\scripts\frontier.ps1 <target>` (e.g. `.\scripts\frontier.ps1 test`). Policy tests use a repo-local OPA binary at `.tools/opa/opa(.exe)` when present, otherwise `opa` on `PATH`; install the pinned binary on Windows with `.\scripts\frontier.ps1 install-opa`.
+Windows PowerShell equivalents use `.\scripts\locus.ps1 <target>` (e.g. `.\scripts\locus.ps1 test`). Policy tests use a repo-local OPA binary at `.tools/opa/opa(.exe)` when present, otherwise `opa` on `PATH`; install the pinned binary on Windows with `.\scripts\locus.ps1 install-opa`.
 
 Focused validation for the cognitive MVP:
 
@@ -249,7 +251,7 @@ Focused validation for the cognitive MVP:
 .venv/Scripts/python.exe -m pytest apps/backend/tests/test_cognitive_graph.py tests/unit/test_cognitive_runtime.py tests/e2e/test_full_pipeline.py -q
 
 cd apps/frontend
-npm test -- --run src/lib/frontier-node-schema.spec.ts src/components/run-conversation-console.spec.tsx
+npm test -- --run src/lib/locus-node-schema.spec.ts src/components/run-conversation-console.spec.tsx
 ```
 
 For the cortical column zero-trust MVP slice, use the focused verification suite below before merging or promoting behavior changes:
@@ -258,20 +260,20 @@ For the cortical column zero-trust MVP slice, use the focused verification suite
 python -m pytest tests/unit/test_cognition.py tests/unit/test_assembly_runner.py tests/unit/test_causal_state_persistence.py tests/unit/test_cognitive_transport.py
 python -m pytest apps/backend/tests/test_cortical_assembly_endpoint.py
 python -m pytest apps/backend/tests/test_generated_artifacts.py -k "secure_profile or runtime_profile or projection or tenant_allowed_runtime or tenant_denied_runtime"
-python -m py_compile apps/backend/app/main.py apps/backend/app/request_security.py frontier_runtime/cognition.py frontier_runtime/assembly_runner.py frontier_runtime/events.py frontier_runtime/envelope.py frontier_runtime/persistence.py
+python -m py_compile apps/backend/app/main.py apps/backend/app/request_security.py locus_runtime/cognition.py locus_runtime/assembly_runner.py locus_runtime/events.py locus_runtime/envelope.py locus_runtime/persistence.py
 ```
 
 Expected coverage includes signed cognitive message admission, replay/idempotency hardening, column capability policy, assembly admission, shared runtime policy gates, commitment validation, sensitive-data redaction, audit event emission, projection safety, secure profile deployment checks, and local-development usability. No separate runtime test is required for documentation-only updates, but behavior-changing slices should update these docs with the applicable commands and expected suites.
 
 ### Stack management and rollback
 
-`make stack-up` is kept as an explicit alias for the secure full stack (`make up`); use it when you need the heavier full platform for gateway/sandbox/policy-infra work. `make local-up` runs the lighter `docker-compose.local.yml` stack, which uses `FRONTIER_LOCAL_API_BASE_URL` rather than the gateway-based `/api` path.
+`make stack-up` is kept as an explicit alias for the secure full stack (`make up`); use it when you need the heavier full platform for gateway/sandbox/policy-infra work. `make local-up` runs the lighter `docker-compose.local.yml` stack, which uses `LOCUS_LOCAL_API_BASE_URL` rather than the gateway-based `/api` path.
 
 To tear down the installed local app and delete installer-managed env files so you can test a clean reinstall, use `lattix remove`. Equivalent repo-local helpers remain available:
 
 ```text
 make remove
-.\scripts\frontier.ps1 remove
+.\scripts\locus.ps1 remove
 ```
 
 For rollback, preserve persistent causal state, replay markers, audit/event-chain artifacts, database volumes, and the A2A signing configuration unless the incident is a signing-key compromise. Roll back application image/configuration first, then rerun the focused zero-trust suite and confirm `/healthz/details` plus `/platform/settings` report an acceptable `secure_profile.status` before reopening write traffic.
@@ -284,7 +286,7 @@ This repository is licensed under **AGPL-3.0-or-later**.
 - If you run a modified version for users over a network, you must make the corresponding source available to those users.
 - AGPL does **not** prohibit commercial use; it requires reciprocity and source availability for covered modifications.
 
-See [`LICENSE`](LICENSE) for the full text. The public repository intentionally excludes proprietary Lattix agent definitions; open-source development should rely on `examples/agents/` or an explicit external `FRONTIER_AGENT_ASSETS_ROOT`.
+See [`LICENSE`](LICENSE) for the full text. The public repository intentionally excludes proprietary Lattix agent definitions; open-source development should rely on `examples/agents/` or an explicit external `LOCUS_AGENT_ASSETS_ROOT`.
 
 ### Documentation
 

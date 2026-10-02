@@ -1,6 +1,6 @@
 project:
   environment: stage
-  name: lattix-frontier-stage
+  name: lattix-locus-stage
   endpoint: https://REPLACE-STAGE-ENDPOINT.services.ai.azure.com/api/projects/REPLACE-STAGE-PROJECT
   region: eastus2
   auth:

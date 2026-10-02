@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import type { GraphLink, GraphNode } from "@/components/reactflow-canvas";
 import { getPlaybook, getWorkflowDefinitions, savePlaybook } from "@/lib/api";
-import type { PlaybookDefinition, WorkflowDefinition } from "@/types/frontier";
+import type { PlaybookDefinition, WorkflowDefinition } from "@/types/locus";
 
 const StudioFullCanvas = dynamic(
   () => import("@/components/studio-full-canvas").then((module) => module.StudioFullCanvas),

@@ -250,7 +250,7 @@ LOCAL_MODEL_CATALOG: list[dict[str, Any]] = [
         "family": "Qwen",
         "size_gb": 142.0,
         "min_ram_gb": 160,
-        "notes": "Flagship MoE (22B active); frontier open-weight quality. Multi-GPU / very large host only.",
+        "notes": "Flagship MoE (22B active); locus open-weight quality. Multi-GPU / very large host only.",
     },
 ]
 

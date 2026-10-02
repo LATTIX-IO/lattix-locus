@@ -1,6 +1,6 @@
 import asyncio
 
-from frontier_runtime.events import AgentEvent, get_event_bus
+from locus_runtime.events import AgentEvent, get_event_bus
 
 
 def test_event_bus_publishes() -> None:

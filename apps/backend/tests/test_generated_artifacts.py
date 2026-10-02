@@ -15,7 +15,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from frontier_runtime.cognition import (
+from locus_runtime.cognition import (
     AssemblyDefinition,
     AssemblyState,
     BeliefRecord,
@@ -23,14 +23,14 @@ from frontier_runtime.cognition import (
     ColumnState,
     Commitment,
 )
-from frontier_runtime.persistence import (
+from locus_runtime.persistence import (
     load_assembly_causal_state,
     persist_assembly_state,
     persist_column_state,
     record_assembly_outcome,
     reset_shared_state_backend,
 )
-from frontier_runtime.security import mint_token
+from locus_runtime.security import mint_token
 
 if (
     not str(os.environ.get("A2A_JWT_SECRET") or "").strip()
@@ -38,24 +38,24 @@ if (
 ):
     os.environ["A2A_JWT_SECRET"] = "unit-test-super-secret-value-32bytes"
 if (
-    not str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").strip()
-    or "placeholder" in str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").lower()
+    not str(os.environ.get("LOCUS_API_BEARER_TOKEN") or "").strip()
+    or "placeholder" in str(os.environ.get("LOCUS_API_BEARER_TOKEN") or "").lower()
 ):
-    os.environ["FRONTIER_API_BEARER_TOKEN"] = "unit-test-bearer"
+    os.environ["LOCUS_API_BEARER_TOKEN"] = "unit-test-bearer"
 
 
 @pytest.fixture(autouse=True)
 def _default_runtime_profile(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FRONTIER_RUNTIME_PROFILE", raising=False)
-    monkeypatch.delenv("FRONTIER_SECURE_LOCAL_MODE", raising=False)
-    monkeypatch.delenv("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS", raising=False)
-    monkeypatch.delenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
-    monkeypatch.delenv("FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR", raising=False)
-    monkeypatch.delenv("FRONTIER_ADMIN_ACTORS", raising=False)
-    monkeypatch.delenv("FRONTIER_BUILDER_ACTORS", raising=False)
-    monkeypatch.setenv("FRONTIER_BOOTSTRAP_ADMIN_USERNAME", "frontier-admin")
-    monkeypatch.setenv("FRONTIER_BOOTSTRAP_ADMIN_EMAIL", "admin@frontier.localhost")
-    monkeypatch.setenv("FRONTIER_BOOTSTRAP_ADMIN_SUBJECT", "frontier-admin")
+    monkeypatch.delenv("LOCUS_RUNTIME_PROFILE", raising=False)
+    monkeypatch.delenv("LOCUS_SECURE_LOCAL_MODE", raising=False)
+    monkeypatch.delenv("LOCUS_REQUIRE_AUTHENTICATED_REQUESTS", raising=False)
+    monkeypatch.delenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
+    monkeypatch.delenv("LOCUS_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR", raising=False)
+    monkeypatch.delenv("LOCUS_ADMIN_ACTORS", raising=False)
+    monkeypatch.delenv("LOCUS_BUILDER_ACTORS", raising=False)
+    monkeypatch.setenv("LOCUS_BOOTSTRAP_ADMIN_USERNAME", "locus-admin")
+    monkeypatch.setenv("LOCUS_BOOTSTRAP_ADMIN_EMAIL", "admin@locus.localhost")
+    monkeypatch.setenv("LOCUS_BOOTSTRAP_ADMIN_SUBJECT", "locus-admin")
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -84,7 +84,7 @@ class _FakeRedisMemoryStore:
         self._entries: dict[str, list[dict[str, object]]] = defaultdict(list)
         self._nonces: dict[str, int] = {}
         self.wal_enabled = False
-        self.wal_dir = Path(tempfile.gettempdir()) / "frontier-test-memory-wal"
+        self.wal_dir = Path(tempfile.gettempdir()) / "locus-test-memory-wal"
 
     def _entry_store(self) -> dict[str, list[dict[str, object]]]:
         entries = getattr(self, "_entries", None)
@@ -94,7 +94,7 @@ class _FakeRedisMemoryStore:
         return entries
 
     def _wal_path(self, session_id: str) -> Path:
-        wal_dir = getattr(self, "wal_dir", Path(tempfile.gettempdir()) / "frontier-test-memory-wal")
+        wal_dir = getattr(self, "wal_dir", Path(tempfile.gettempdir()) / "locus-test-memory-wal")
         return Path(wal_dir) / f"{session_id}.jsonl"
 
     def _wal_append(self, session_id: str, entry: dict[str, object]) -> None:
@@ -411,14 +411,14 @@ main_module._NEO4J_GRAPH = _FakeNeo4jRunGraph()
 
 client = TestClient(app)
 
-AUTH_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "tester"}
-ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "frontier-admin"}
+AUTH_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-locus-actor": "tester"}
+ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-locus-actor": "locus-admin"}
 MEMBER_AUTH_HEADERS = {
     "Authorization": "Bearer unit-test-bearer",
-    "x-frontier-actor": "member-user",
+    "x-locus-actor": "member-user",
 }
-OWNER_AUTH_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "owner-user"}
-NON_ADMIN_HEADERS = {"x-frontier-actor": "member-user"}
+OWNER_AUTH_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-locus-actor": "owner-user"}
+NON_ADMIN_HEADERS = {"x-locus-actor": "member-user"}
 
 
 def _signed_internal_headers(
@@ -432,12 +432,12 @@ def _signed_internal_headers(
 ) -> dict[str, str]:
     resolved_timestamp = timestamp or str(int(time.time()))
     return {
-        "x-frontier-actor": actor,
+        "x-locus-actor": actor,
         "x-correlation-id": correlation_id,
-        "x-frontier-subject": subject,
-        "x-frontier-nonce": nonce,
-        "x-frontier-timestamp": resolved_timestamp,
-        "x-frontier-signature": main_module._build_runtime_signature(
+        "x-locus-subject": subject,
+        "x-locus-nonce": nonce,
+        "x-locus-timestamp": resolved_timestamp,
+        "x-locus-signature": main_module._build_runtime_signature(
             subject, nonce, correlation_id, payload, timestamp=resolved_timestamp
         ),
         "content-type": "application/json",
@@ -618,7 +618,7 @@ def test_workflow_definition_defaults_graph_schema_version_when_missing() -> Non
     assert response.status_code == 200
 
     stored = store.workflow_definitions[workflow_id]
-    assert stored.graph_json.get("schema_version") == "frontier-graph/1.0"
+    assert stored.graph_json.get("schema_version") == "locus-graph/1.0"
 
     store.workflow_definitions.pop(workflow_id, None)
 
@@ -666,7 +666,7 @@ def test_workflow_definition_rejects_unsupported_graph_schema_version() -> None:
         "description": "Workflow save should reject unsupported graph schema versions.",
         "graph_json": {
             **_sample_graph(),
-            "schema_version": "frontier-graph/9.9",
+            "schema_version": "locus-graph/9.9",
         },
     }
 
@@ -784,9 +784,9 @@ def test_append_audit_event_marks_store_truncation() -> None:
 
 
 def test_auth_session_hides_oidc_validation_details(monkeypatch) -> None:
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://example.com")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://example.com/.well-known/jwks.json")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "http://example.com")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_JWKS_URL", "http://example.com/.well-known/jwks.json")
 
     response = client.get("/auth/session", headers=AUTH_HEADERS)
 
@@ -794,7 +794,7 @@ def test_auth_session_hides_oidc_validation_details(monkeypatch) -> None:
     body = response.json()
     assert body["oidc"]["validation_error"] == "OIDC configuration is invalid."
     assert "trusted_issuers" not in body["oidc"]["validation_error"].lower()
-    assert "frontier_auth_oidc_issuer" not in body["oidc"]["validation_error"].lower()
+    assert "locus_auth_oidc_issuer" not in body["oidc"]["validation_error"].lower()
 
 
 def test_platform_version_reports_update_metadata(monkeypatch) -> None:
@@ -804,7 +804,7 @@ def test_platform_version_reports_update_metadata(monkeypatch) -> None:
         lambda: {
             "version": "9.9.9",
             "update_command": "lattix update",
-            "publicRepo": "https://github.com/LATTIX-IO/lattix-xfrontier",
+            "publicRepo": "https://github.com/LATTIX-IO/lattix-locus",
         },
     )
 
@@ -822,7 +822,7 @@ def test_platform_version_reports_update_metadata(monkeypatch) -> None:
 
 
 def test_platform_version_prefers_installed_distribution_metadata(monkeypatch) -> None:
-    monkeypatch.delenv("FRONTIER_APP_VERSION", raising=False)
+    monkeypatch.delenv("LOCUS_APP_VERSION", raising=False)
     monkeypatch.setattr(main_module, "_fetch_remote_release_manifest", lambda: None)
     monkeypatch.setattr(main_module.importlib_metadata, "version", lambda _name: "2.4.6")
 
@@ -858,7 +858,7 @@ def test_load_seeded_agents_supports_asset_roots_outside_repo(monkeypatch, tmp_p
     )
 
     monkeypatch.setattr(main_module, "_repository_root", lambda: repo_root)
-    monkeypatch.setenv("FRONTIER_AGENT_ASSETS_ROOT", str(external_assets_root))
+    monkeypatch.setenv("LOCUS_AGENT_ASSETS_ROOT", str(external_assets_root))
 
     seeded = main_module._load_seeded_agents_from_repo()
 
@@ -877,8 +877,8 @@ def test_version_comparator_prefers_stable_over_prerelease() -> None:
 def test_remote_release_manifest_uses_ttl_cache(monkeypatch) -> None:
     call_count = {"count": 0}
 
-    monkeypatch.setenv("FRONTIER_UPDATE_MANIFEST_URL", "https://example.com/install/manifest.json")
-    monkeypatch.setenv("FRONTIER_UPDATE_MANIFEST_CACHE_TTL_SECONDS", "300")
+    monkeypatch.setenv("LOCUS_UPDATE_MANIFEST_URL", "https://example.com/install/manifest.json")
+    monkeypatch.setenv("LOCUS_UPDATE_MANIFEST_CACHE_TTL_SECONDS", "300")
     monkeypatch.setitem(main_module._REMOTE_RELEASE_MANIFEST_CACHE, "manifest_url", "")
     monkeypatch.setitem(
         main_module._REMOTE_RELEASE_MANIFEST_CACHE,
@@ -905,7 +905,7 @@ def test_publish_workflow_definition_hides_internal_graph_parse_details() -> Non
         "name": "Invalid Publish Workflow",
         "description": "Workflow publish should not leak parser internals.",
         "graph_json": {
-            "schema_version": "frontier-graph/1.0",
+            "schema_version": "locus-graph/1.0",
             "nodes": [{"id": "trigger", "type": "trigger"}],
             "links": [],
         },
@@ -928,7 +928,7 @@ def test_graph_run_rejects_unsupported_graph_schema_version() -> None:
     response = client.post(
         "/graph/runs",
         json={
-            "schema_version": "frontier-graph/2.0",
+            "schema_version": "locus-graph/2.0",
             "nodes": _sample_graph()["nodes"],
             "links": _sample_graph()["links"],
             "input": {"message": "hello"},
@@ -945,18 +945,18 @@ def test_graph_run_threads_assembly_retrieval_policy_to_evidence_column() -> Non
     response = client.post(
         "/graph/runs",
         json={
-            "schema_version": "frontier-graph/1.0",
+            "schema_version": "locus-graph/1.0",
             "nodes": [
                 {
                     "id": "trigger",
                     "title": "Trigger",
-                    "type": "frontier/trigger",
+                    "type": "locus/trigger",
                     "config": {"trigger_mode": "manual"},
                 },
                 {
                     "id": "retrieve",
                     "title": "Evidence Retrieval",
-                    "type": "frontier/retrieval",
+                    "type": "locus/retrieval",
                     "config": {
                         "column_kind": "evidence",
                         "source_type": "knowledge_base",
@@ -1723,7 +1723,7 @@ def test_memory_endpoint_loads_long_term_entries_into_short_term() -> None:
         source="test",
     )
 
-    response = client.get(f"/memory/{session_id}", headers={"x-frontier-actor": "tester"})
+    response = client.get(f"/memory/{session_id}", headers={"x-locus-actor": "tester"})
     assert response.status_code == 200
     body = response.json()
     assert body["long_term_count"] == 1
@@ -1916,8 +1916,8 @@ def test_memory_consolidation_skips_duplicate_summaries() -> None:
     main_module._POSTGRES_MEMORY.clear_entries(bucket_id=bucket_id, memory_scope="agent")
     main_module._NEO4J_GRAPH.memory_projections = []
 
-    original_overlap = os.environ.get("FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP")
-    os.environ["FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP"] = "60"
+    original_overlap = os.environ.get("LOCUS_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP")
+    os.environ["LOCUS_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP"] = "60"
     try:
         main_module._memory_append_entry(
             bucket_id,
@@ -1973,9 +1973,9 @@ def test_memory_consolidation_skips_duplicate_summaries() -> None:
         assert len(duplicate_candidates) >= 2
     finally:
         if original_overlap is None:
-            os.environ.pop("FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP", None)
+            os.environ.pop("LOCUS_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP", None)
         else:
-            os.environ["FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP"] = original_overlap
+            os.environ["LOCUS_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP"] = original_overlap
 
 
 def test_internal_world_graph_projection_endpoint_replays_consolidated_memories() -> None:
@@ -2065,7 +2065,7 @@ def test_hybrid_memory_context_includes_world_graph_results() -> None:
 def test_causal_assembly_graph_projection_projects_persisted_runtime_state(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
 
@@ -2152,7 +2152,7 @@ def test_causal_assembly_graph_projection_projects_persisted_runtime_state(
 def test_causal_assembly_graph_projection_overwrites_existing_graph_projection(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
 
@@ -2192,7 +2192,7 @@ def test_causal_assembly_graph_projection_overwrites_existing_graph_projection(
 
 
 def test_causal_assembly_graph_projection_denies_wrong_tenant(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
     state = ColumnState(
@@ -2227,8 +2227,8 @@ def test_causal_assembly_graph_projection_denies_wrong_tenant(monkeypatch, tmp_p
 def test_causal_assembly_graph_projection_rejects_oversized_projection_before_write(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
-    monkeypatch.setenv("FRONTIER_CAUSAL_GRAPH_MAX_COLUMNS", "1")
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_CAUSAL_GRAPH_MAX_COLUMNS", "1")
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
     for column_id, kind in (("goal-1", ColumnKind.GOAL), ("evidence-1", ColumnKind.EVIDENCE)):
@@ -2258,7 +2258,7 @@ def test_causal_assembly_graph_projection_rejects_oversized_projection_before_wr
 def test_causal_assembly_graph_projection_unavailable_graph_reports_safe_status(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
     state = ColumnState(
@@ -2289,7 +2289,7 @@ def test_causal_assembly_graph_projection_unavailable_graph_reports_safe_status(
 def test_causal_assembly_graph_projection_write_failure_preserves_causal_state(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
     state = ColumnState(
@@ -2325,7 +2325,7 @@ def test_causal_assembly_graph_projection_write_failure_preserves_causal_state(
 def test_cortical_assembly_execution_persists_and_projects_result(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
 
@@ -2350,7 +2350,7 @@ def test_cortical_assembly_execution_persists_and_projects_result(
 def test_cortical_assembly_execution_escalates_low_confidence_result(
     monkeypatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "runtime-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "runtime-state.json"))
     reset_shared_state_backend()
     main_module._NEO4J_GRAPH.causal_projections = {}
 
@@ -2420,24 +2420,24 @@ def test_node_definitions_hide_internal_memory_node_by_default() -> None:
     assert default_response.status_code == 200
     default_types = {item["type_key"] for item in default_response.json()}
     assert {
-        "frontier/router",
-        "frontier/iterator",
-        "frontier/transform",
-        "frontier/event",
-        "frontier/data-store",
-        "frontier/error-handler",
-        "frontier/wait",
+        "locus/router",
+        "locus/iterator",
+        "locus/transform",
+        "locus/event",
+        "locus/data-store",
+        "locus/error-handler",
+        "locus/wait",
     }.issubset(default_types)
-    assert "frontier/memory" not in default_types
+    assert "locus/memory" not in default_types
 
     internal_response = client.get("/node-definitions?include_internal=true", headers=AUTH_HEADERS)
     assert internal_response.status_code == 200
     internal_types = {item["type_key"] for item in internal_response.json()}
-    assert "frontier/memory" in internal_types
+    assert "locus/memory" in internal_types
 
 
 def test_node_definition_delete_fails_closed_until_custom_lifecycle_exists() -> None:
-    response = client.delete("/node-definitions/frontier/router", headers=ADMIN_HEADERS)
+    response = client.delete("/node-definitions/locus/router", headers=ADMIN_HEADERS)
 
     assert response.status_code == 501
     assert "read-only" in response.json()["detail"]
@@ -2699,7 +2699,7 @@ def test_save_integration_persists_oauth_form_authored_metadata() -> None:
                         "grant_type": "authorization_code",
                         "authorize_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
                         "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-                        "client_id": "frontier-microsoft-client",
+                        "client_id": "locus-microsoft-client",
                         "scopes": ["User.Read", "Mail.ReadWrite", "offline_access"],
                         "audience": "https://graph.microsoft.com",
                         "resource": "",
@@ -2729,7 +2729,7 @@ def test_save_integration_persists_oauth_form_authored_metadata() -> None:
             == "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
         )
         assert auth["token_url"] == "https://login.microsoftonline.com/common/oauth2/v2.0/token"
-        assert auth["client_id"] == "frontier-microsoft-client"
+        assert auth["client_id"] == "locus-microsoft-client"
         assert auth["scopes"] == ["User.Read", "Mail.ReadWrite", "offline_access"]
         assert auth["audience"] == "https://graph.microsoft.com"
         assert auth["tenant"] == "common"
@@ -2760,7 +2760,7 @@ def test_save_integration_rejects_discouraged_google_client_credentials_oauth() 
                     "provider": "google",
                     "grant_type": "client_credentials",
                     "token_url": "https://oauth2.googleapis.com/token",
-                    "client_id": "frontier-google-client",
+                    "client_id": "locus-google-client",
                     "scopes": [],
                     "audience": "https://www.googleapis.com",
                 }
@@ -2906,7 +2906,7 @@ def test_save_mcp_connection_validate_and_approve() -> None:
         approve_body = approve_response.json()
         assert approve_body["ok"] is True
         assert approve_body["status"] == "approved"
-        assert store.mcp_connections[connection_id].approved_by == "frontier-admin"
+        assert store.mcp_connections[connection_id].approved_by == "locus-admin"
     finally:
         store.platform_settings.allowed_mcp_server_urls = original_allowed_urls
         store.platform_settings.mcp_require_local_server = original_require_local
@@ -3282,8 +3282,8 @@ def test_secure_local_mode_fail_closes_sensitive_diagnostics(monkeypatch) -> Non
 
     try:
         store.platform_settings.require_authenticated_requests = False
-        monkeypatch.setenv("FRONTIER_SECURE_LOCAL_MODE", "true")
-        monkeypatch.delenv("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS", raising=False)
+        monkeypatch.setenv("LOCUS_SECURE_LOCAL_MODE", "true")
+        monkeypatch.delenv("LOCUS_REQUIRE_AUTHENTICATED_REQUESTS", raising=False)
 
         assert client.get("/platform/security-policy").status_code == 401
         assert client.get("/runtime/providers").status_code == 401
@@ -3318,8 +3318,8 @@ def test_secure_local_mode_keeps_public_health_minimal_and_gates_details(monkeyp
 
     try:
         store.platform_settings.require_authenticated_requests = False
-        monkeypatch.setenv("FRONTIER_SECURE_LOCAL_MODE", "true")
-        monkeypatch.delenv("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS", raising=False)
+        monkeypatch.setenv("LOCUS_SECURE_LOCAL_MODE", "true")
+        monkeypatch.delenv("LOCUS_REQUIRE_AUTHENTICATED_REQUESTS", raising=False)
 
         public_health = client.get("/healthz")
         assert public_health.status_code == 200
@@ -3397,8 +3397,8 @@ def test_secure_local_mode_fail_closes_mutation_routes_without_store_toggle(monk
 
     try:
         store.platform_settings.require_authenticated_requests = False
-        monkeypatch.setenv("FRONTIER_SECURE_LOCAL_MODE", "true")
-        monkeypatch.delenv("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS", raising=False)
+        monkeypatch.setenv("LOCUS_SECURE_LOCAL_MODE", "true")
+        monkeypatch.delenv("LOCUS_REQUIRE_AUTHENTICATED_REQUESTS", raising=False)
 
         unauthorized_response = client.post(
             "/workflow-definitions",
@@ -3436,9 +3436,9 @@ def test_secure_local_mode_uses_expiring_nonce_replay_cache(monkeypatch) -> None
         store.platform_settings.require_authenticated_requests = False
         store.a2a_seen_nonces = {}
         main_module._REDIS_MEMORY.enabled = False
-        monkeypatch.setenv("FRONTIER_SECURE_LOCAL_MODE", "true")
-        monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
-        monkeypatch.setenv("FRONTIER_A2A_NONCE_TTL_SECONDS", "60")
+        monkeypatch.setenv("LOCUS_SECURE_LOCAL_MODE", "true")
+        monkeypatch.setenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+        monkeypatch.setenv("LOCUS_A2A_NONCE_TTL_SECONDS", "60")
 
         headers = _signed_internal_headers(nonce="nonce-1")
 
@@ -3473,8 +3473,8 @@ def test_signed_a2a_nonce_replay_survives_in_memory_reset_with_redis_cache(monke
         main_module._REDIS_MEMORY.enabled = True
         if hasattr(main_module._REDIS_MEMORY, "_nonces"):
             main_module._REDIS_MEMORY._nonces = {}
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
-        monkeypatch.setenv("FRONTIER_A2A_NONCE_TTL_SECONDS", "60")
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
+        monkeypatch.setenv("LOCUS_A2A_NONCE_TTL_SECONDS", "60")
 
         headers = _signed_internal_headers(nonce="redis-backed-nonce-1")
 
@@ -3506,8 +3506,8 @@ def test_signed_a2a_nonce_replay_survives_restart_via_state_snapshot_when_redis_
         store.a2a_seen_nonces = {}
         main_module._REDIS_MEMORY.enabled = False
         main_module._POSTGRES_STATE._payload = None
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
-        monkeypatch.setenv("FRONTIER_A2A_NONCE_TTL_SECONDS", "60")
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
+        monkeypatch.setenv("LOCUS_A2A_NONCE_TTL_SECONDS", "60")
 
         headers = _signed_internal_headers(nonce="persisted-nonce-1")
 
@@ -3535,10 +3535,10 @@ def test_platform_settings_round_trip_persists_banner_and_console_fields_across_
     original_state_payload = main_module._POSTGRES_STATE.load_state()
 
     payload = {
-        "org_name": "Acme Frontier",
-        "org_slug": "acme-frontier",
+        "org_name": "Acme Locus",
+        "org_slug": "acme-locus",
         "support_email": "ops@acme.example",
-        "website": "https://acme.example/frontier",
+        "website": "https://acme.example/locus",
         "console_classification_banner_enabled": False,
         "console_classification_banner_text": "Restricted • Incident Console",
         "console_classification_banner_background_color": "#1d4ed8",
@@ -3604,7 +3604,7 @@ def test_platform_settings_read_returns_effective_immutable_controls_for_secure_
     original_seen_nonces = dict(store.a2a_seen_nonces)
 
     try:
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
         store.a2a_seen_nonces = {}
         store.platform_settings.require_authenticated_requests = False
         store.platform_settings.require_a2a_runtime_headers = False
@@ -3616,7 +3616,7 @@ def test_platform_settings_read_returns_effective_immutable_controls_for_secure_
         response = client.get(
             "/platform/settings",
             headers=_signed_internal_headers(
-                actor="frontier-admin", nonce="hosted-settings-read-nonce"
+                actor="locus-admin", nonce="hosted-settings-read-nonce"
             ),
         )
 
@@ -3643,7 +3643,7 @@ def test_hosted_profile_rejects_insecure_deployment_settings(
     original_seen_nonces = dict(store.a2a_seen_nonces)
 
     try:
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
         store.a2a_seen_nonces = {}
 
         payload = {"enforce_egress_allowlist": False, "confirm_security_change": True}
@@ -3653,7 +3653,7 @@ def test_hosted_profile_rejects_insecure_deployment_settings(
             content=payload_bytes,
             headers={
                 **_signed_internal_headers(
-                    actor="frontier-admin",
+                    actor="locus-admin",
                     nonce="hosted-reject-egress-disable",
                     correlation_id="hosted-reject-egress-disable",
                     payload=payload_bytes,
@@ -3672,7 +3672,7 @@ def test_hosted_profile_rejects_insecure_deployment_settings(
             content=payload_bytes,
             headers={
                 **_signed_internal_headers(
-                    actor="frontier-admin",
+                    actor="locus-admin",
                     nonce="hosted-reject-mcp-disable",
                     correlation_id="hosted-reject-mcp-disable",
                     payload=payload_bytes,
@@ -3682,7 +3682,7 @@ def test_hosted_profile_rejects_insecure_deployment_settings(
         )
 
         assert response.status_code == 400
-        assert "FRONTIER_CONFIRM_REMOTE_MCP_SERVERS" in str(response.json()["detail"])
+        assert "LOCUS_CONFIRM_REMOTE_MCP_SERVERS" in str(response.json()["detail"])
     finally:
         store.platform_settings = original_settings
         store.a2a_seen_nonces = original_seen_nonces
@@ -3714,7 +3714,7 @@ def test_health_details_reports_blocked_status_for_unsafe_hosted_config(
     original_seen_nonces = dict(store.a2a_seen_nonces)
 
     try:
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
         store.a2a_seen_nonces = {}
         store.platform_settings.enforce_egress_allowlist = False
         store.platform_settings.mcp_require_local_server = False
@@ -3742,7 +3742,7 @@ def test_saved_graph_definitions_round_trip_layouts_and_configs_across_restart()
     original_state_payload = main_module._POSTGRES_STATE.load_state()
 
     workflow_graph = {
-        "schema_version": "frontier-graph/1.0",
+        "schema_version": "locus-graph/1.0",
         "nodes": [
             {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 120, "y": 80},
             {
@@ -3765,7 +3765,7 @@ def test_saved_graph_definitions_round_trip_layouts_and_configs_across_restart()
         ],
     }
     agent_graph = {
-        "schema_version": "frontier-graph/1.0",
+        "schema_version": "locus-graph/1.0",
         "nodes": [
             {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 60, "y": 60},
             {
@@ -3787,7 +3787,7 @@ def test_saved_graph_definitions_round_trip_layouts_and_configs_across_restart()
         ],
     }
     playbook_graph = {
-        "schema_version": "frontier-graph/1.0",
+        "schema_version": "locus-graph/1.0",
         "nodes": [
             {
                 "id": "intake",
@@ -3896,7 +3896,7 @@ def test_playbook_builder_can_save_and_join_collaboration_session() -> None:
                 "category": "operations",
                 "status": "active",
                 "graph_json": {
-                    "schema_version": "frontier-graph/1.0",
+                    "schema_version": "locus-graph/1.0",
                     "nodes": [
                         {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 0, "y": 0},
                         {
@@ -3941,12 +3941,12 @@ def test_signed_a2a_json_requests_require_raw_request_body_for_signature_verific
     request = types.SimpleNamespace(
         headers={
             "x-correlation-id": "corr-raw-body",
-            "x-frontier-timestamp": timestamp,
+            "x-locus-timestamp": timestamp,
             "content-type": "application/json",
             "content-length": str(len(payload_bytes)),
         },
         method="POST",
-        state=types.SimpleNamespace(frontier_raw_body=None),
+        state=types.SimpleNamespace(locus_raw_body=None),
         _body=None,
     )
 
@@ -3976,7 +3976,7 @@ def test_signed_a2a_requests_require_timestamp_header() -> None:
     request = types.SimpleNamespace(
         headers={"x-correlation-id": "corr-missing-ts"},
         method="GET",
-        state=types.SimpleNamespace(frontier_raw_body=b""),
+        state=types.SimpleNamespace(locus_raw_body=b""),
         _body=b"",
     )
 
@@ -4000,10 +4000,10 @@ def test_runtime_profile_local_secure_matches_fail_closed_local_behavior(monkeyp
 
     try:
         store.platform_settings.require_authenticated_requests = False
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
-        monkeypatch.delenv("FRONTIER_SECURE_LOCAL_MODE", raising=False)
-        monkeypatch.delenv("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS", raising=False)
-        monkeypatch.delenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.delenv("LOCUS_SECURE_LOCAL_MODE", raising=False)
+        monkeypatch.delenv("LOCUS_REQUIRE_AUTHENTICATED_REQUESTS", raising=False)
+        monkeypatch.delenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
 
         public_health = client.get("/healthz")
         assert public_health.status_code == 200
@@ -4030,10 +4030,10 @@ def test_runtime_profile_hosted_is_immutable_and_requires_a2a_headers(monkeypatc
     try:
         store.platform_settings.require_authenticated_requests = False
         store.a2a_seen_nonces = {}
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
-        monkeypatch.setenv("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS", "false")
-        monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "false")
-        monkeypatch.delenv("FRONTIER_SECURE_LOCAL_MODE", raising=False)
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
+        monkeypatch.setenv("LOCUS_REQUIRE_AUTHENTICATED_REQUESTS", "false")
+        monkeypatch.setenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", "false")
+        monkeypatch.delenv("LOCUS_SECURE_LOCAL_MODE", raising=False)
 
         public_health = client.get("/healthz")
         assert public_health.status_code == 200
@@ -4043,7 +4043,7 @@ def test_runtime_profile_hosted_is_immutable_and_requires_a2a_headers(monkeypatc
         assert client.get("/platform/security-policy").status_code == 401
         assert (
             client.get(
-                "/platform/security-policy", headers={"x-frontier-actor": "tester"}
+                "/platform/security-policy", headers={"x-locus-actor": "tester"}
             ).status_code
             == 401
         )
@@ -4066,7 +4066,7 @@ def test_cors_preflight_uses_explicit_methods_and_headers() -> None:
         headers={
             "Origin": "http://localhost:3000",
             "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "authorization,content-type,x-frontier-actor,x-frontier-signature,x-frontier-nonce,x-frontier-timestamp",
+            "Access-Control-Request-Headers": "authorization,content-type,x-locus-actor,x-locus-signature,x-locus-nonce,x-locus-timestamp",
         },
     )
 
@@ -4076,10 +4076,10 @@ def test_cors_preflight_uses_explicit_methods_and_headers() -> None:
     assert "POST" in response.headers["access-control-allow-methods"]
     assert response.headers["access-control-allow-headers"] != "*"
     allowed_headers = response.headers["access-control-allow-headers"].lower()
-    assert "x-frontier-actor" in allowed_headers
-    assert "x-frontier-signature" in allowed_headers
-    assert "x-frontier-nonce" in allowed_headers
-    assert "x-frontier-timestamp" in allowed_headers
+    assert "x-locus-actor" in allowed_headers
+    assert "x-locus-signature" in allowed_headers
+    assert "x-locus-nonce" in allowed_headers
+    assert "x-locus-timestamp" in allowed_headers
 
 
 def test_security_headers_are_applied_from_shared_policy() -> None:
@@ -4100,7 +4100,7 @@ def test_security_headers_are_applied_from_shared_policy() -> None:
 
 
 def test_hosted_runtime_profile_adds_hsts_header(monkeypatch) -> None:
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "hosted")
 
     response = client.get("/healthz")
 
@@ -4134,7 +4134,7 @@ def test_central_route_policy_protects_previously_unenforced_read_surfaces() -> 
             unauthorized = client.get(path)
             assert unauthorized.status_code == 401, path
 
-            header_only = client.get(path, headers={"x-frontier-actor": "tester"})
+            header_only = client.get(path, headers={"x-locus-actor": "tester"})
             assert header_only.status_code == 401, path
 
             authorized = client.get(
@@ -4498,7 +4498,7 @@ def test_workflow_run_without_explicit_agent_redeploys_and_uses_default_chat_age
         response = client.post(
             "/workflow-runs",
             json={"prompt": "Draft a secure rollout checklist for a local-first release."},
-            headers={"x-frontier-actor": "tester"},
+            headers={"x-locus-actor": "tester"},
         )
         assert response.status_code == 200
         body = response.json()
@@ -4540,7 +4540,7 @@ def test_workflow_run_kind_is_derived_from_backend_metadata() -> None:
     workflow_response = client.post(
         "/workflow-runs",
         json={"workflow_definition_id": "wf-demo", "title": "Workflow kickoff"},
-        headers={"x-frontier-actor": "tester"},
+        headers={"x-locus-actor": "tester"},
     )
     assert workflow_response.status_code == 200
     workflow_run = store.runs[workflow_response.json()["id"]]
@@ -4549,7 +4549,7 @@ def test_workflow_run_kind_is_derived_from_backend_metadata() -> None:
     follow_up_response = client.post(
         "/workflow-runs",
         json={"title": "Follow-up", "source_run_id": "run-123", "prompt": "Continue this thread"},
-        headers={"x-frontier-actor": "tester"},
+        headers={"x-locus-actor": "tester"},
     )
     assert follow_up_response.status_code == 200
     follow_up_run = store.runs[follow_up_response.json()["id"]]
@@ -4558,7 +4558,7 @@ def test_workflow_run_kind_is_derived_from_backend_metadata() -> None:
     playbook_response = client.post(
         "/workflow-runs",
         json={"title": "Playbook task", "playbook_id": "pbk-demo", "prompt": "Run the playbook"},
-        headers={"x-frontier-actor": "tester"},
+        headers={"x-locus-actor": "tester"},
     )
     assert playbook_response.status_code == 200
     playbook_run = store.runs[playbook_response.json()["id"]]
@@ -4567,7 +4567,7 @@ def test_workflow_run_kind_is_derived_from_backend_metadata() -> None:
     explicit_response = client.post(
         "/workflow-runs",
         json={"title": "Task kickoff", "prompt": "Do the task", "session_kind": "task"},
-        headers={"x-frontier-actor": "tester"},
+        headers={"x-locus-actor": "tester"},
     )
     assert explicit_response.status_code == 200
     explicit_run = store.runs[explicit_response.json()["id"]]
@@ -4608,7 +4608,7 @@ def test_follow_up_run_uses_hidden_recent_context_without_exposing_it_in_user_me
 
     # Execute the run inline in the request (bounded-executor escape hatch) so
     # the assertions below observe the completed run deterministically.
-    monkeypatch.setenv("FRONTIER_SYNC_RUN_EXECUTION", "1")
+    monkeypatch.setenv("LOCUS_SYNC_RUN_EXECUTION", "1")
     monkeypatch.setattr(
         main_module, "_resolve_request_chat_runtime", _fake_resolve_request_chat_runtime
     )
@@ -4647,7 +4647,7 @@ def test_follow_up_run_uses_hidden_recent_context_without_exposing_it_in_user_me
                 "recent_context": "User: Summarize the current risks.\nAgent: I drafted the review plan.",
             },
         },
-        headers={"x-frontier-actor": "tester"},
+        headers={"x-locus-actor": "tester"},
     )
 
     assert response.status_code == 200
@@ -4668,7 +4668,7 @@ def test_presidio_analyzer_is_disabled_by_default(monkeypatch) -> None:
         def __init__(self) -> None:
             analyzer_calls.append("called")
 
-    monkeypatch.delenv("FRONTIER_ENABLE_PRESIDIO_PII_ANALYZER", raising=False)
+    monkeypatch.delenv("LOCUS_ENABLE_PRESIDIO_PII_ANALYZER", raising=False)
     monkeypatch.setattr(main_module, "_PRESIDIO_ANALYZER", None)
     monkeypatch.setattr(main_module, "AnalyzerEngine", _StubAnalyzer)
 
@@ -4689,7 +4689,7 @@ def test_workflow_run_generates_title_when_client_omits_one(monkeypatch) -> None
     response = client.post(
         "/workflow-runs",
         json={"prompt": "Please triage the latest incident and summarize owner actions."},
-        headers={"x-frontier-actor": "tester"},
+        headers={"x-locus-actor": "tester"},
     )
 
     assert response.status_code == 200
@@ -4706,7 +4706,7 @@ def test_workflow_run_title_can_be_renamed_by_user(monkeypatch) -> None:
     created = client.post(
         "/workflow-runs",
         json={"title": "Original title", "prompt": "Keep this run idle."},
-        headers={"x-frontier-actor": "tester"},
+        headers={"x-locus-actor": "tester"},
     )
     assert created.status_code == 200
 
@@ -4714,7 +4714,7 @@ def test_workflow_run_title_can_be_renamed_by_user(monkeypatch) -> None:
     renamed = client.patch(
         f"/workflow-runs/{run_id}",
         json={"title": "Renamed session"},
-        headers={"x-frontier-actor": "tester"},
+        headers={"x-locus-actor": "tester"},
     )
 
     assert renamed.status_code == 200
@@ -4755,7 +4755,7 @@ def test_workflow_run_uses_preferred_user_runtime_provider_and_model(monkeypatch
 
     # Execute the run inline in the request (bounded-executor escape hatch) so
     # the assertions below observe the completed run deterministically.
-    monkeypatch.setenv("FRONTIER_SYNC_RUN_EXECUTION", "1")
+    monkeypatch.setenv("LOCUS_SYNC_RUN_EXECUTION", "1")
     monkeypatch.setattr(
         main_module,
         "_collect_chat_response_chunks",
@@ -4854,7 +4854,7 @@ def test_graph_run_uses_preferred_user_runtime_provider_and_model(monkeypatch) -
         response = client.post(
             "/graph/runs",
             json={
-                "schema_version": "frontier-graph/1.0",
+                "schema_version": "locus-graph/1.0",
                 "nodes": _sample_graph()["nodes"],
                 "links": _sample_graph()["links"],
                 "input": {
@@ -4880,7 +4880,7 @@ def test_graph_run_rejects_runtime_override_to_tenant_disallowed_provider() -> N
     response = client.post(
         "/graph/runs",
         json={
-            "schema_version": "frontier-graph/1.0",
+            "schema_version": "locus-graph/1.0",
             "nodes": _sample_graph()["nodes"],
             "links": _sample_graph()["links"],
             "input": {
@@ -4949,7 +4949,7 @@ def test_graph_run_fallback_chooses_tenant_allowed_model(monkeypatch) -> None:
         response = client.post(
             "/graph/runs",
             json={
-                "schema_version": "frontier-graph/1.0",
+                "schema_version": "locus-graph/1.0",
                 "nodes": _sample_graph()["nodes"],
                 "links": _sample_graph()["links"],
                 "input": {
@@ -5185,7 +5185,7 @@ def test_platform_settings_rejects_invalid_network_allowlists(
 
 
 def test_save_agent_definition_rejects_disallowed_model_defaults() -> None:
-    principal_id = "frontier-admin"
+    principal_id = "locus-admin"
 
     try:
         save_provider = client.put(
@@ -5222,7 +5222,7 @@ def test_save_agent_definition_rejects_disallowed_model_defaults() -> None:
 
 
 def test_save_agent_definition_rejects_tenant_disallowed_model_defaults() -> None:
-    principal_id = "frontier-admin"
+    principal_id = "locus-admin"
 
     try:
         save_provider = client.put(
@@ -5294,7 +5294,7 @@ def test_save_platform_settings_accepts_boolean_local_hostname_toggle() -> None:
 
 
 def test_save_workflow_definition_rejects_disallowed_agent_node_model() -> None:
-    principal_id = "frontier-admin"
+    principal_id = "locus-admin"
 
     try:
         save_provider = client.put(
@@ -5319,7 +5319,7 @@ def test_save_workflow_definition_rejects_disallowed_agent_node_model() -> None:
                         {
                             "id": "trigger",
                             "title": "Trigger",
-                            "type": "frontier/trigger",
+                            "type": "locus/trigger",
                             "x": 10,
                             "y": 10,
                             "config": {"trigger_mode": "manual"},
@@ -5327,7 +5327,7 @@ def test_save_workflow_definition_rejects_disallowed_agent_node_model() -> None:
                         {
                             "id": "agent",
                             "title": "Agent",
-                            "type": "frontier/agent",
+                            "type": "locus/agent",
                             "x": 120,
                             "y": 10,
                             "config": {
@@ -5351,10 +5351,10 @@ def test_save_workflow_definition_rejects_disallowed_agent_node_model() -> None:
 
 
 def test_save_workflow_definition_rejects_disallowed_agent_subtype_model() -> None:
-    principal_id = "frontier-admin"
+    principal_id = "locus-admin"
     graph = _sample_graph()
     agent_node = next(node for node in graph["nodes"] if node["type"] == "agent")
-    agent_node["type"] = "frontier/agent-delegate"
+    agent_node["type"] = "locus/agent-delegate"
     agent_node["config"]["model"] = "gpt-4.1"
 
     try:
@@ -5387,11 +5387,11 @@ def test_save_workflow_definition_rejects_disallowed_agent_subtype_model() -> No
 
 
 def test_save_agent_definition_rejects_disallowed_graph_agent_subtype_model() -> None:
-    principal_id = "frontier-admin"
+    principal_id = "locus-admin"
     agent_id = str(uuid4())
     graph = _sample_graph()
     agent_node = next(node for node in graph["nodes"] if node["type"] == "agent")
-    agent_node["type"] = "frontier/agent-delegate"
+    agent_node["type"] = "locus/agent-delegate"
     agent_node["config"]["model"] = "gpt-4.1"
 
     try:
@@ -5427,10 +5427,10 @@ def test_save_agent_definition_rejects_disallowed_graph_agent_subtype_model() ->
 
 
 def test_save_workflow_definition_rejects_agent_subtype_tenant_disallowed_provider() -> None:
-    principal_id = "frontier-admin"
+    principal_id = "locus-admin"
     graph = _sample_graph()
     agent_node = next(node for node in graph["nodes"] if node["type"] == "agent")
-    agent_node["type"] = "frontier/agent-delegate"
+    agent_node["type"] = "locus/agent-delegate"
     agent_node["config"]["provider"] = "anthropic"
     agent_node["config"]["model"] = "gpt-5.4"
 
@@ -5478,7 +5478,7 @@ def test_graph_run_environment_provider_cannot_override_tenant_deny_policy(
     response = client.post(
         "/graph/runs",
         json={
-            "schema_version": "frontier-graph/1.0",
+            "schema_version": "locus-graph/1.0",
             "nodes": _sample_graph()["nodes"],
             "links": _sample_graph()["links"],
             "input": {
@@ -5598,7 +5598,7 @@ def test_builder_routes_require_builder_capability_in_secure_mode(monkeypatch) -
 
     try:
         store.platform_settings.require_authenticated_requests = False
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
 
         denied = client.post(
             "/workflow-definitions",
@@ -5639,22 +5639,22 @@ def test_auth_session_reports_bootstrap_admin_capabilities_from_claim_references
         ttl_seconds=60,
         additional_claims={
             "actor": "bootstrap-admin-subject",
-            "preferred_username": "frontier-admin",
-            "email": "admin@frontier.localhost",
+            "preferred_username": "locus-admin",
+            "email": "admin@locus.localhost",
             "roles": ["member"],
         },
     )
 
     try:
         store.platform_settings.require_authenticated_requests = False
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
-        monkeypatch.setenv("FRONTIER_ADMIN_ACTORS", "frontier-admin,admin@frontier.localhost")
-        monkeypatch.setenv("FRONTIER_BUILDER_ACTORS", "frontier-admin,admin@frontier.localhost")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("LOCUS_ADMIN_ACTORS", "locus-admin,admin@locus.localhost")
+        monkeypatch.setenv("LOCUS_BUILDER_ACTORS", "locus-admin,admin@locus.localhost")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "casdoor")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
         monkeypatch.setenv(
-            "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+            "LOCUS_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
         )
 
         response = client.get(
@@ -5667,8 +5667,8 @@ def test_auth_session_reports_bootstrap_admin_capabilities_from_claim_references
         assert body["capabilities"]["can_admin"] is True
         assert body["capabilities"]["can_builder"] is True
         assert body["allowed_modes"] == ["user", "builder"]
-        assert body["preferred_username"] == "frontier-admin"
-        assert body["email"] == "admin@frontier.localhost"
+        assert body["preferred_username"] == "locus-admin"
+        assert body["email"] == "admin@locus.localhost"
         assert body["oidc"]["configured"] is True
         assert body["oidc"]["issuer"] == "http://casdoor.localhost"
     finally:
@@ -5685,23 +5685,23 @@ def test_auth_session_treats_local_oidc_operator_as_bootstrap_admin_when_enabled
         additional_claims={
             "actor": "different-local-operator",
             "preferred_username": "james",
-            "email": "james@xfrontier.localhost",
+            "email": "james@locus.localhost",
             "roles": ["member"],
         },
     )
 
     try:
         store.platform_settings.require_authenticated_requests = False
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
-        monkeypatch.setenv("FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR", "true")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("LOCUS_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR", "true")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "casdoor")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
         monkeypatch.setenv(
-            "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+            "LOCUS_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
         )
-        monkeypatch.setenv("FRONTIER_ADMIN_ACTORS", "frontier-admin,admin@frontier.localhost")
-        monkeypatch.setenv("FRONTIER_BUILDER_ACTORS", "frontier-admin,admin@frontier.localhost")
+        monkeypatch.setenv("LOCUS_ADMIN_ACTORS", "locus-admin,admin@locus.localhost")
+        monkeypatch.setenv("LOCUS_BUILDER_ACTORS", "locus-admin,admin@locus.localhost")
 
         response = client.get(
             "/auth/session", headers={"authorization": f"Bearer {operator_token}"}
@@ -5721,15 +5721,15 @@ def test_auth_session_remains_public_for_auth_bootstrap_in_secure_profiles(monke
 
     try:
         store.platform_settings.require_authenticated_requests = False
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
-        monkeypatch.setenv("FRONTIER_AUTH_MODE", "oidc")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("LOCUS_AUTH_MODE", "oidc")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "casdoor")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
         monkeypatch.setenv(
-            "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+            "LOCUS_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
         )
-        monkeypatch.setenv("FRONTIER_ALLOW_HEADER_ACTOR_AUTH", "true")
+        monkeypatch.setenv("LOCUS_ALLOW_HEADER_ACTOR_AUTH", "true")
 
         anonymous = client.get("/auth/session")
         assert anonymous.status_code == 200
@@ -5739,7 +5739,7 @@ def test_auth_session_remains_public_for_auth_bootstrap_in_secure_profiles(monke
         assert anonymous_body["oidc"]["configured"] is True
         assert anonymous_body["oidc"]["provider"] == "casdoor"
 
-        header_only = client.get("/auth/session", headers={"x-frontier-actor": "frontier-admin"})
+        header_only = client.get("/auth/session", headers={"x-locus-actor": "locus-admin"})
         assert header_only.status_code == 200
         header_only_body = header_only.json()
         assert header_only_body["authenticated"] is False
@@ -5753,12 +5753,12 @@ def test_local_password_login_sets_cookie_and_authenticates_session(monkeypatch)
 
     try:
         store.platform_settings.require_authenticated_requests = False
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "casdoor")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
         monkeypatch.setenv(
-            "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+            "LOCUS_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
         )
         monkeypatch.setattr(
             main_module,
@@ -5766,8 +5766,8 @@ def test_local_password_login_sets_cookie_and_authenticates_session(monkeypatch)
             lambda username, password: {
                 "owner": "built-in",
                 "name": username,
-                "displayName": "Frontier Admin",
-                "email": "admin@frontier.localhost",
+                "displayName": "Locus Admin",
+                "email": "admin@locus.localhost",
                 "isAdmin": True,
             },
         )
@@ -5775,7 +5775,7 @@ def test_local_password_login_sets_cookie_and_authenticates_session(monkeypatch)
         with TestClient(app, base_url="http://localhost") as local_client:
             login = local_client.post(
                 "/auth/login",
-                json={"username": "frontier-admin", "password": "correct horse battery staple"},
+                json={"username": "locus-admin", "password": "correct horse battery staple"},
             )
             assert login.status_code == 200
             assert main_module._operator_session_cookie_name() in login.headers.get(
@@ -5786,8 +5786,8 @@ def test_local_password_login_sets_cookie_and_authenticates_session(monkeypatch)
             assert session.status_code == 200
             body = session.json()
             assert body["authenticated"] is True
-            assert body["preferred_username"] == "frontier-admin"
-            assert body["display_name"] == "Frontier Admin"
+            assert body["preferred_username"] == "locus-admin"
+            assert body["display_name"] == "Locus Admin"
             assert body["capabilities"]["can_admin"] is True
             assert body["capabilities"]["can_builder"] is True
     finally:
@@ -5800,12 +5800,12 @@ def test_local_password_register_creates_member_session(monkeypatch) -> None:
 
     try:
         store.platform_settings.require_authenticated_requests = False
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "casdoor")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
         monkeypatch.setenv(
-            "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+            "LOCUS_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
         )
         monkeypatch.setattr(
             main_module,
@@ -5824,7 +5824,7 @@ def test_local_password_register_creates_member_session(monkeypatch) -> None:
                 "/auth/register",
                 json={
                     "username": "member-user",
-                    "email": "member@frontier.localhost",
+                    "email": "member@locus.localhost",
                     "display_name": "Member User",
                     "password": "correct horse battery staple",
                 },
@@ -5850,12 +5850,12 @@ def test_local_password_logout_clears_operator_session_cookie(monkeypatch) -> No
 
     try:
         store.platform_settings.require_authenticated_requests = False
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "casdoor")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
         monkeypatch.setenv(
-            "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+            "LOCUS_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
         )
         monkeypatch.setattr(
             main_module,
@@ -5863,8 +5863,8 @@ def test_local_password_logout_clears_operator_session_cookie(monkeypatch) -> No
             lambda username, password: {
                 "owner": "built-in",
                 "name": username,
-                "displayName": "Frontier Admin",
-                "email": "admin@frontier.localhost",
+                "displayName": "Locus Admin",
+                "email": "admin@locus.localhost",
                 "isAdmin": True,
             },
         )
@@ -5873,7 +5873,7 @@ def test_local_password_logout_clears_operator_session_cookie(monkeypatch) -> No
             assert (
                 local_client.post(
                     "/auth/login",
-                    json={"username": "frontier-admin", "password": "correct horse battery staple"},
+                    json={"username": "locus-admin", "password": "correct horse battery staple"},
                 ).status_code
                 == 200
             )
@@ -5890,22 +5890,22 @@ def test_local_password_logout_clears_operator_session_cookie(monkeypatch) -> No
 
 
 def test_auth_session_reports_oidc_browser_flow_capability(monkeypatch) -> None:
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "oidc")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "https://issuer.example.com")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "oidc")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "https://issuer.example.com")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_JWKS_URL", "https://issuer.example.com/.well-known/jwks.json"
+        "LOCUS_AUTH_OIDC_JWKS_URL", "https://issuer.example.com/.well-known/jwks.json"
     )
-    monkeypatch.setenv("FRONTIER_AUTH_TRUSTED_ISSUERS", "https://issuer.example.com")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_CLIENT_ID", "frontier-ui")
+    monkeypatch.setenv("LOCUS_AUTH_TRUSTED_ISSUERS", "https://issuer.example.com")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_CLIENT_ID", "locus-ui")
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL", "https://issuer.example.com/oauth2/authorize"
+        "LOCUS_AUTH_OIDC_AUTHORIZATION_URL", "https://issuer.example.com/oauth2/authorize"
     )
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_TOKEN_URL", "https://issuer.example.com/oauth2/token")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_TOKEN_URL", "https://issuer.example.com/oauth2/token")
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_SIGNIN_URL", "https://issuer.example.com/oauth2/authorize"
+        "LOCUS_AUTH_OIDC_SIGNIN_URL", "https://issuer.example.com/oauth2/authorize"
     )
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_SIGNUP_URL", "https://issuer.example.com/signup")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_SIGNUP_URL", "https://issuer.example.com/signup")
 
     response = client.get("/auth/session")
 
@@ -5917,23 +5917,23 @@ def test_auth_session_reports_oidc_browser_flow_capability(monkeypatch) -> None:
 
 
 def test_oidc_browser_start_redirects_to_provider_with_pkce_and_state_cookie(monkeypatch) -> None:
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "oidc")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "https://issuer.example.com")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "oidc")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "https://issuer.example.com")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_JWKS_URL", "https://issuer.example.com/.well-known/jwks.json"
+        "LOCUS_AUTH_OIDC_JWKS_URL", "https://issuer.example.com/.well-known/jwks.json"
     )
-    monkeypatch.setenv("FRONTIER_AUTH_TRUSTED_ISSUERS", "https://issuer.example.com")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_CLIENT_ID", "frontier-ui")
+    monkeypatch.setenv("LOCUS_AUTH_TRUSTED_ISSUERS", "https://issuer.example.com")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_CLIENT_ID", "locus-ui")
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL", "https://issuer.example.com/oauth2/authorize"
+        "LOCUS_AUTH_OIDC_AUTHORIZATION_URL", "https://issuer.example.com/oauth2/authorize"
     )
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_TOKEN_URL", "https://issuer.example.com/oauth2/token")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_TOKEN_URL", "https://issuer.example.com/oauth2/token")
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_SIGNIN_URL",
+        "LOCUS_AUTH_OIDC_SIGNIN_URL",
         "https://issuer.example.com/oauth2/authorize?prompt=login",
     )
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_SIGNUP_URL", "https://issuer.example.com/signup")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_SIGNUP_URL", "https://issuer.example.com/signup")
 
     with TestClient(app, base_url="https://console.example.com") as local_client:
         response = local_client.get("/auth/oidc/start?intent=signin", follow_redirects=False)
@@ -5945,7 +5945,7 @@ def test_oidc_browser_start_redirects_to_provider_with_pkce_and_state_cookie(mon
     query = dict(main_module.parse_qsl(parsed.query, keep_blank_values=True))
     assert parsed.scheme == "https"
     assert parsed.netloc == "issuer.example.com"
-    assert query["client_id"] == "frontier-ui"
+    assert query["client_id"] == "locus-ui"
     assert query["response_type"] == "code"
     assert query["redirect_uri"] == "https://console.example.com/auth/callback"
     assert query["code_challenge_method"] == "S256"
@@ -5953,23 +5953,23 @@ def test_oidc_browser_start_redirects_to_provider_with_pkce_and_state_cookie(mon
 
 
 def test_oidc_browser_start_rejects_invalid_forwarded_host_header(monkeypatch) -> None:
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "oidc")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "https://issuer.example.com")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "oidc")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "https://issuer.example.com")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_JWKS_URL", "https://issuer.example.com/.well-known/jwks.json"
+        "LOCUS_AUTH_OIDC_JWKS_URL", "https://issuer.example.com/.well-known/jwks.json"
     )
-    monkeypatch.setenv("FRONTIER_AUTH_TRUSTED_ISSUERS", "https://issuer.example.com")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_CLIENT_ID", "frontier-ui")
+    monkeypatch.setenv("LOCUS_AUTH_TRUSTED_ISSUERS", "https://issuer.example.com")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_CLIENT_ID", "locus-ui")
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL", "https://issuer.example.com/oauth2/authorize"
+        "LOCUS_AUTH_OIDC_AUTHORIZATION_URL", "https://issuer.example.com/oauth2/authorize"
     )
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_TOKEN_URL", "https://issuer.example.com/oauth2/token")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_TOKEN_URL", "https://issuer.example.com/oauth2/token")
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_SIGNIN_URL",
+        "LOCUS_AUTH_OIDC_SIGNIN_URL",
         "https://issuer.example.com/oauth2/authorize?prompt=login",
     )
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_SIGNUP_URL", "https://issuer.example.com/signup")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_SIGNUP_URL", "https://issuer.example.com/signup")
 
     with TestClient(app, base_url="https://console.example.com") as local_client:
         response = local_client.get(
@@ -5985,21 +5985,21 @@ def test_oidc_browser_start_rejects_invalid_forwarded_host_header(monkeypatch) -
 
 
 def test_oidc_browser_callback_sets_operator_session_cookie(monkeypatch) -> None:
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "oidc")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://127.0.0.1:8081")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://127.0.0.1:8081/.well-known/jwks.json")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_CLIENT_ID", "frontier-ui")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "oidc")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "http://127.0.0.1:8081")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_JWKS_URL", "http://127.0.0.1:8081/.well-known/jwks.json")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_CLIENT_ID", "locus-ui")
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL", "http://127.0.0.1:8081/login/oauth/authorize"
+        "LOCUS_AUTH_OIDC_AUTHORIZATION_URL", "http://127.0.0.1:8081/login/oauth/authorize"
     )
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_TOKEN_URL", "http://127.0.0.1:8081/api/login/oauth/access_token"
+        "LOCUS_AUTH_OIDC_TOKEN_URL", "http://127.0.0.1:8081/api/login/oauth/access_token"
     )
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_SIGNIN_URL", "http://127.0.0.1:8081/login/oauth/authorize"
+        "LOCUS_AUTH_OIDC_SIGNIN_URL", "http://127.0.0.1:8081/login/oauth/authorize"
     )
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_SIGNUP_URL", "http://127.0.0.1:8081/signup")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_SIGNUP_URL", "http://127.0.0.1:8081/signup")
 
     captured: dict[str, object] = {}
 
@@ -6051,7 +6051,7 @@ def test_oidc_browser_callback_sets_operator_session_cookie(monkeypatch) -> None
         token_request = captured["data"]
         assert isinstance(token_request, dict)
         assert token_request["code"] == "demo-code"
-        assert token_request["client_id"] == "frontier-ui"
+        assert token_request["client_id"] == "locus-ui"
         assert token_request["redirect_uri"] == "http://localhost/auth/callback"
         assert token_request["code_verifier"]
 
@@ -6065,21 +6065,21 @@ def test_oidc_browser_callback_sets_operator_session_cookie(monkeypatch) -> None
 
 
 def test_oidc_browser_callback_redirects_back_to_auth_when_exchange_fails(monkeypatch) -> None:
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "oidc")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://127.0.0.1:8081")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://127.0.0.1:8081/.well-known/jwks.json")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_CLIENT_ID", "frontier-ui")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "oidc")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "http://127.0.0.1:8081")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_JWKS_URL", "http://127.0.0.1:8081/.well-known/jwks.json")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_CLIENT_ID", "locus-ui")
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL", "http://127.0.0.1:8081/login/oauth/authorize"
+        "LOCUS_AUTH_OIDC_AUTHORIZATION_URL", "http://127.0.0.1:8081/login/oauth/authorize"
     )
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_TOKEN_URL", "http://127.0.0.1:8081/api/login/oauth/access_token"
+        "LOCUS_AUTH_OIDC_TOKEN_URL", "http://127.0.0.1:8081/api/login/oauth/access_token"
     )
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_SIGNIN_URL", "http://127.0.0.1:8081/login/oauth/authorize"
+        "LOCUS_AUTH_OIDC_SIGNIN_URL", "http://127.0.0.1:8081/login/oauth/authorize"
     )
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_SIGNUP_URL", "http://127.0.0.1:8081/signup")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_SIGNUP_URL", "http://127.0.0.1:8081/signup")
 
     def _fake_httpx_post(url: str, *, data=None, headers=None, timeout=None, follow_redirects=None):
         raise main_module.httpx.HTTPError("boom")
@@ -6105,12 +6105,12 @@ def test_oidc_browser_callback_redirects_back_to_auth_when_exchange_fails(monkey
 def test_authenticate_local_casdoor_user_accepts_malformed_login_payload_when_account_session_exists(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "casdoor")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+        "LOCUS_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
     )
     monkeypatch.setattr(
         main_module, "_casdoor_http_base_candidates", lambda: [("http://casdoor:8000", {})]
@@ -6144,11 +6144,11 @@ def test_authenticate_local_casdoor_user_accepts_malformed_login_payload_when_ac
 def test_authenticate_local_casdoor_user_preserves_auth_error_over_unreachable_fallback(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://127.0.0.1:8081")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://127.0.0.1:8081/.well-known/jwks.json")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "casdoor")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "http://127.0.0.1:8081")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_JWKS_URL", "http://127.0.0.1:8081/.well-known/jwks.json")
     monkeypatch.setattr(
         main_module,
         "_casdoor_http_base_candidates",
@@ -6216,18 +6216,18 @@ def test_auth_session_hides_identity_and_capabilities_for_header_actor_only_requ
 
     try:
         store.platform_settings.require_authenticated_requests = False
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-lightweight")
-        monkeypatch.setenv("FRONTIER_ALLOW_HEADER_ACTOR_AUTH", "true")
-        monkeypatch.setenv("FRONTIER_ADMIN_ACTORS", "frontier-admin,admin@frontier.localhost")
-        monkeypatch.setenv("FRONTIER_BUILDER_ACTORS", "frontier-admin,admin@frontier.localhost")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-lightweight")
+        monkeypatch.setenv("LOCUS_ALLOW_HEADER_ACTOR_AUTH", "true")
+        monkeypatch.setenv("LOCUS_ADMIN_ACTORS", "locus-admin,admin@locus.localhost")
+        monkeypatch.setenv("LOCUS_BUILDER_ACTORS", "locus-admin,admin@locus.localhost")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "casdoor")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+        monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
         monkeypatch.setenv(
-            "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+            "LOCUS_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
         )
 
-        response = client.get("/auth/session", headers={"x-frontier-actor": "frontier-admin"})
+        response = client.get("/auth/session", headers={"x-locus-actor": "locus-admin"})
         assert response.status_code == 200
         body = response.json()
         assert body["authenticated"] is False
@@ -6261,9 +6261,9 @@ def test_boolean_admin_and_builder_claims_do_not_grant_privileges_without_roles_
 
     try:
         store.platform_settings.require_authenticated_requests = False
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
-        monkeypatch.delenv("FRONTIER_ADMIN_ACTORS", raising=False)
-        monkeypatch.delenv("FRONTIER_BUILDER_ACTORS", raising=False)
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.delenv("LOCUS_ADMIN_ACTORS", raising=False)
+        monkeypatch.delenv("LOCUS_BUILDER_ACTORS", raising=False)
 
         session = client.get(
             "/auth/session",
@@ -6306,13 +6306,13 @@ def test_header_actor_auth_opt_in_does_not_grant_admin_without_bearer_identity(m
 
     try:
         store.platform_settings.require_authenticated_requests = False
-        monkeypatch.setenv("FRONTIER_ALLOW_HEADER_ACTOR_AUTH", "true")
-        monkeypatch.setenv("FRONTIER_ADMIN_ACTORS", "frontier-admin,admin@frontier.localhost")
+        monkeypatch.setenv("LOCUS_ALLOW_HEADER_ACTOR_AUTH", "true")
+        monkeypatch.setenv("LOCUS_ADMIN_ACTORS", "locus-admin,admin@locus.localhost")
 
         response = client.post(
             "/platform/settings",
             json={"require_human_approval": True, "confirm_security_change": True},
-            headers={"x-frontier-actor": "frontier-admin"},
+            headers={"x-locus-actor": "locus-admin"},
         )
         assert response.status_code == 403
         assert response.json()["detail"] == "Administrator access required"
@@ -6326,8 +6326,8 @@ def test_header_actor_auth_is_disabled_outside_lightweight_profile(monkeypatch) 
 
     try:
         store.platform_settings.require_authenticated_requests = False
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
-        monkeypatch.setenv("FRONTIER_ALLOW_HEADER_ACTOR_AUTH", "true")
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("LOCUS_ALLOW_HEADER_ACTOR_AUTH", "true")
 
         assert main_module._header_actor_auth_allowed() is False
     finally:
@@ -6337,30 +6337,30 @@ def test_header_actor_auth_is_disabled_outside_lightweight_profile(monkeypatch) 
 def test_configured_operator_oidc_requires_trusted_issuer_allowlist_for_non_local_hosts(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "oidc")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "https://issuer.example.com")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "oidc")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "https://issuer.example.com")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_JWKS_URL", "https://issuer.example.com/.well-known/jwks.json"
+        "LOCUS_AUTH_OIDC_JWKS_URL", "https://issuer.example.com/.well-known/jwks.json"
     )
-    monkeypatch.delenv("FRONTIER_AUTH_TRUSTED_ISSUERS", raising=False)
+    monkeypatch.delenv("LOCUS_AUTH_TRUSTED_ISSUERS", raising=False)
 
-    with pytest.raises(ValueError, match="FRONTIER_AUTH_TRUSTED_ISSUERS"):
+    with pytest.raises(ValueError, match="LOCUS_AUTH_TRUSTED_ISSUERS"):
         main_module._configured_operator_oidc()
 
-    monkeypatch.setenv("FRONTIER_AUTH_TRUSTED_ISSUERS", "https://issuer.example.com")
+    monkeypatch.setenv("LOCUS_AUTH_TRUSTED_ISSUERS", "https://issuer.example.com")
     config = main_module._configured_operator_oidc()
     assert config["issuer"] == "https://issuer.example.com"
 
 
 def test_localhost_oidc_issuer_remains_valid_without_trusted_issuer_allowlist(monkeypatch) -> None:
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "casdoor")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+        "LOCUS_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
     )
-    monkeypatch.delenv("FRONTIER_AUTH_TRUSTED_ISSUERS", raising=False)
+    monkeypatch.delenv("LOCUS_AUTH_TRUSTED_ISSUERS", raising=False)
 
     config = main_module._configured_operator_oidc()
     assert config["issuer"] == "http://casdoor.localhost"
@@ -6375,11 +6375,11 @@ def test_validate_runtime_security_configuration_requires_a2a_secret_when_signed
     try:
         store.platform_settings.a2a_require_signed_messages = True
         store.platform_settings.require_a2a_runtime_headers = False
-        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-secure")
         monkeypatch.setenv("A2A_JWT_SECRET", "")
-        monkeypatch.delenv("FRONTIER_AUTH_OIDC_ISSUER", raising=False)
-        monkeypatch.delenv("FRONTIER_AUTH_OIDC_AUDIENCE", raising=False)
-        monkeypatch.delenv("FRONTIER_AUTH_OIDC_JWKS_URL", raising=False)
+        monkeypatch.delenv("LOCUS_AUTH_OIDC_ISSUER", raising=False)
+        monkeypatch.delenv("LOCUS_AUTH_OIDC_AUDIENCE", raising=False)
+        monkeypatch.delenv("LOCUS_AUTH_OIDC_JWKS_URL", raising=False)
 
         with pytest.raises(main_module.HTTPException) as missing_secret:
             main_module._validate_runtime_security_configuration()
@@ -6394,17 +6394,17 @@ def test_validate_runtime_security_configuration_requires_a2a_secret_when_signed
 
 
 def test_cors_allowed_origins_reject_invalid_urls(monkeypatch) -> None:
-    monkeypatch.setenv("FRONTIER_CORS_ALLOWED_ORIGINS", "javascript:alert(1)")
+    monkeypatch.setenv("LOCUS_CORS_ALLOWED_ORIGINS", "javascript:alert(1)")
 
     with pytest.raises(ValueError, match=r"absolute http\(s\) URL"):
         main_module._cors_allowed_origins()
 
-    monkeypatch.setenv("FRONTIER_CORS_ALLOWED_ORIGINS", "https://console.example.com/app")
+    monkeypatch.setenv("LOCUS_CORS_ALLOWED_ORIGINS", "https://console.example.com/app")
     with pytest.raises(ValueError, match="bare origins"):
         main_module._cors_allowed_origins()
 
     monkeypatch.setenv(
-        "FRONTIER_CORS_ALLOWED_ORIGINS", "https://console.example.com, http://localhost:3000"
+        "LOCUS_CORS_ALLOWED_ORIGINS", "https://console.example.com, http://localhost:3000"
     )
     assert main_module._cors_allowed_origins() == [
         "https://console.example.com",
@@ -6416,11 +6416,11 @@ def test_agent_definition_save_and_template_instantiation_attach_iam_identity(mo
     agent_id = str(uuid4())
     template_id = str(uuid4())
 
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "https://casdoor.example.com")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_PROVIDER", "casdoor")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_ISSUER", "https://casdoor.example.com")
+    monkeypatch.setenv("LOCUS_AUTH_OIDC_AUDIENCE", "locus-ui")
     monkeypatch.setenv(
-        "FRONTIER_AUTH_OIDC_JWKS_URL", "https://casdoor.example.com/.well-known/jwks.json"
+        "LOCUS_AUTH_OIDC_JWKS_URL", "https://casdoor.example.com/.well-known/jwks.json"
     )
 
     store.agent_templates[template_id] = main_module.AgentTemplate(
@@ -6529,7 +6529,7 @@ def test_agent_principal_can_collaborate_with_principal_id_claims() -> None:
     original_sessions = dict(store.collaboration_sessions)
 
     agent_token = mint_token(
-        "https://casdoor.example.com/npe/agents/frontier-agent-planner",
+        "https://casdoor.example.com/npe/agents/locus-agent-planner",
         ttl_seconds=60,
         additional_claims={
             "principal_id": "agent:planner",
@@ -6606,12 +6606,12 @@ def test_memory_scope_authorization_denies_cross_actor_user_bucket_reads() -> No
 
     try:
         denied = client.get(
-            f"/memory/{bucket_id}?scope=user", headers={"x-frontier-actor": "other-user"}
+            f"/memory/{bucket_id}?scope=user", headers={"x-locus-actor": "other-user"}
         )
         assert denied.status_code == 403
 
         allowed = client.get(
-            f"/memory/{bucket_id}?scope=user", headers={"x-frontier-actor": "owner-user"}
+            f"/memory/{bucket_id}?scope=user", headers={"x-locus-actor": "owner-user"}
         )
         assert allowed.status_code == 200
         assert allowed.json()["session_id"] == bucket_id
@@ -6649,7 +6649,7 @@ def test_memory_scope_authorization_requires_tenant_claim_for_tenant_bucket() ->
             f"/memory/{bucket_id}?scope=tenant",
             headers={
                 "authorization": f"Bearer {actor_token}",
-                "x-frontier-tenant": "other",
+                "x-locus-tenant": "other",
             },
         )
         assert wrong_claim.status_code == 403
@@ -6837,12 +6837,12 @@ def test_memory_scope_authorization_requires_collaboration_membership_for_agent_
 
     try:
         denied = client.get(
-            f"/memory/{bucket_id}?scope=agent", headers={"x-frontier-actor": "other-user"}
+            f"/memory/{bucket_id}?scope=agent", headers={"x-locus-actor": "other-user"}
         )
         assert denied.status_code == 403
 
         allowed = client.get(
-            f"/memory/{bucket_id}?scope=agent", headers={"x-frontier-actor": "member-user"}
+            f"/memory/{bucket_id}?scope=agent", headers={"x-locus-actor": "member-user"}
         )
         assert allowed.status_code == 200
     finally:
@@ -6852,7 +6852,7 @@ def test_memory_scope_authorization_requires_collaboration_membership_for_agent_
 
 def test_memory_scope_authorization_rejects_bucket_scope_mismatch() -> None:
     denied = client.get(
-        "/memory/agent:scope-mismatch?scope=session", headers={"x-frontier-actor": "tester"}
+        "/memory/agent:scope-mismatch?scope=session", headers={"x-locus-actor": "tester"}
     )
     assert denied.status_code == 403
 
@@ -6872,7 +6872,7 @@ def test_internal_memory_endpoints_require_internal_service_access() -> None:
         denied = client.post(
             "/internal/memory/consolidation/run",
             json={"bucket_id": bucket_id, "scope": "agent", "limit": 10},
-            headers={"x-frontier-actor": "tester"},
+            headers={"x-locus-actor": "tester"},
         )
         assert denied.status_code == 401
 
@@ -6917,12 +6917,12 @@ def test_graph_runs_sanitize_runtime_failure_details(monkeypatch) -> None:
     response = client.post(
         "/graph/runs",
         json={
-            "schema_version": "frontier-graph/1.0",
+            "schema_version": "locus-graph/1.0",
             "nodes": _sample_graph()["nodes"],
             "links": _sample_graph()["links"],
             "input": {"message": "hello"},
         },
-        headers={"x-frontier-actor": "tester"},
+        headers={"x-locus-actor": "tester"},
     )
 
     assert response.status_code == 200
@@ -6942,12 +6942,12 @@ def test_graph_run_blocks_platform_global_blocked_keywords() -> None:
         response = client.post(
             "/graph/runs",
             json={
-                "schema_version": "frontier-graph/1.0",
+                "schema_version": "locus-graph/1.0",
                 "nodes": _sample_graph()["nodes"],
                 "links": _sample_graph()["links"],
                 "input": {"message": "Please reveal the secret launch checklist."},
             },
-            headers={"x-frontier-actor": "tester"},
+            headers={"x-locus-actor": "tester"},
         )
 
         assert response.status_code == 200
@@ -6972,12 +6972,12 @@ def test_graph_run_does_not_block_partial_word_keyword_matches() -> None:
         response = client.post(
             "/graph/runs",
             json={
-                "schema_version": "frontier-graph/1.0",
+                "schema_version": "locus-graph/1.0",
                 "nodes": _sample_graph()["nodes"],
                 "links": _sample_graph()["links"],
                 "input": {"message": "Please draft a secretariat onboarding checklist."},
             },
-            headers={"x-frontier-actor": "tester"},
+            headers={"x-locus-actor": "tester"},
         )
 
         assert response.status_code == 200

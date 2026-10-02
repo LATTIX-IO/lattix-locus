@@ -1,4 +1,4 @@
-# Lattix xFrontier — Enterprise Node Taxonomy Proposal
+# Lattix Locus — Enterprise Node Taxonomy Proposal
 
 ## Purpose
 
@@ -12,17 +12,17 @@ This document focuses on **generic node families** that can later be specialized
 
 Implemented node families today:
 
-- `frontier/trigger`
-- `frontier/prompt`
-- `frontier/agent`
-- `frontier/workflow`
-- `frontier/tool-call`
-- `frontier/retrieval`
-- `frontier/memory`
-- `frontier/guardrail`
-- `frontier/human-review`
-- `frontier/manifold`
-- `frontier/output`
+- `locus/trigger`
+- `locus/prompt`
+- `locus/agent`
+- `locus/workflow`
+- `locus/tool-call`
+- `locus/retrieval`
+- `locus/memory`
+- `locus/guardrail`
+- `locus/human-review`
+- `locus/manifold`
+- `locus/output`
 
 This is a strong base for:
 
@@ -52,7 +52,7 @@ We should add **general-purpose node families**, not one-off branded nodes.
 
 Good pattern:
 
-- `frontier/tool-call`
+- `locus/tool-call`
   - REST API
   - GraphQL API
   - MCP tool
@@ -72,44 +72,44 @@ Bad pattern:
 
 | Family | Purpose | Best fit |
 | --- | --- | --- |
-| `frontier/trigger` | Start a graph from manual, schedule, webhook, event, or feedback input. | Workflow, Playbook |
-| `frontier/prompt` | Deterministic prompt construction and role framing. | Agent, Workflow |
-| `frontier/agent` | Run an agentic reasoning/execution unit. | Agent, Workflow |
-| `frontier/workflow` | Call a workflow as a subflow. | Playbook |
-| `frontier/tool-call` | Generic external tool/API/MCP/integration call. | Agent, Workflow, Playbook |
-| `frontier/retrieval` | Generic knowledge access and grounding. | Agent, Workflow |
-| `frontier/memory` | Read/write scoped execution memory. | Agent, Workflow, Playbook |
-| `frontier/guardrail` | Stage-aware safety and policy checks. | Agent, Workflow, Playbook |
-| `frontier/human-review` | Human approval, rejection, feedback gates. | Workflow, Playbook |
-| `frontier/manifold` | Join and merge multiple inbound branches. | Workflow, Playbook |
-| `frontier/output` | Final publication/persistence/emission of results. | Agent, Workflow, Playbook |
+| `locus/trigger` | Start a graph from manual, schedule, webhook, event, or feedback input. | Workflow, Playbook |
+| `locus/prompt` | Deterministic prompt construction and role framing. | Agent, Workflow |
+| `locus/agent` | Run an agentic reasoning/execution unit. | Agent, Workflow |
+| `locus/workflow` | Call a workflow as a subflow. | Playbook |
+| `locus/tool-call` | Generic external tool/API/MCP/integration call. | Agent, Workflow, Playbook |
+| `locus/retrieval` | Generic knowledge access and grounding. | Agent, Workflow |
+| `locus/memory` | Read/write scoped execution memory. | Agent, Workflow, Playbook |
+| `locus/guardrail` | Stage-aware safety and policy checks. | Agent, Workflow, Playbook |
+| `locus/human-review` | Human approval, rejection, feedback gates. | Workflow, Playbook |
+| `locus/manifold` | Join and merge multiple inbound branches. | Workflow, Playbook |
+| `locus/output` | Final publication/persistence/emission of results. | Agent, Workflow, Playbook |
 
 ### Missing high-priority generic families
 
 | Family | Why it is missing | Best fit |
 | --- | --- | --- |
-| `frontier/router` | Needed for if/else, rules, classification, and path selection. | Workflow, Playbook, Agent |
-| `frontier/transform` | Needed for deterministic data shaping without forcing an LLM/tool hop. | Agent, Workflow, Playbook |
-| `frontier/iterator` | Needed for for-each, batch, chunk, list, and paginated processing. | Workflow, Playbook |
-| `frontier/error-handler` | Needed for retry, fallback, compensation, and graceful degradation. | Workflow, Playbook, Agent |
-| `frontier/event` | Needed for async publish/subscribe, queue, callback, and resume flows. | Workflow, Playbook |
-| `frontier/data-store` | Needed for explicit business-state CRUD/upsert beyond retrieval. | Workflow, Playbook, Agent |
-| `frontier/wait` | Needed for delay, SLA timers, timeout branches, and resume windows. | Workflow, Playbook |
+| `locus/router` | Needed for if/else, rules, classification, and path selection. | Workflow, Playbook, Agent |
+| `locus/transform` | Needed for deterministic data shaping without forcing an LLM/tool hop. | Agent, Workflow, Playbook |
+| `locus/iterator` | Needed for for-each, batch, chunk, list, and paginated processing. | Workflow, Playbook |
+| `locus/error-handler` | Needed for retry, fallback, compensation, and graceful degradation. | Workflow, Playbook, Agent |
+| `locus/event` | Needed for async publish/subscribe, queue, callback, and resume flows. | Workflow, Playbook |
+| `locus/data-store` | Needed for explicit business-state CRUD/upsert beyond retrieval. | Workflow, Playbook, Agent |
+| `locus/wait` | Needed for delay, SLA timers, timeout branches, and resume windows. | Workflow, Playbook |
 
 ### Optional later families
 
 | Family | Use when needed | Best fit |
 | --- | --- | --- |
-| `frontier/input` | Collect structured runtime parameters or forms mid-flow. | Workflow, Playbook |
-| `frontier/expression` | Safe deterministic expressions when `transform` is insufficient. | Agent, Workflow |
-| `frontier/annotation` | Non-executable planning/documentation nodes. | All builders |
-| `frontier/container` | Group/subflow boundaries with collapse behavior. | Workflow, Playbook |
+| `locus/input` | Collect structured runtime parameters or forms mid-flow. | Workflow, Playbook |
+| `locus/expression` | Safe deterministic expressions when `transform` is insufficient. | Agent, Workflow |
+| `locus/annotation` | Non-executable planning/documentation nodes. | All builders |
+| `locus/container` | Group/subflow boundaries with collapse behavior. | Workflow, Playbook |
 
 ---
 
 ## Concrete generic node proposals
 
-## 1) `frontier/router`
+## 1) `locus/router`
 
 ### Router Purpose
 
@@ -150,7 +150,7 @@ Select one or more outbound paths based on deterministic logic.
 
 ---
 
-## 2) `frontier/transform`
+## 2) `locus/transform`
 
 ### Transform Purpose
 
@@ -189,7 +189,7 @@ Enterprise graphs need deterministic shaping without burning model tokens or abu
 
 ---
 
-## 3) `frontier/iterator`
+## 3) `locus/iterator`
 
 ### Iterator Purpose
 
@@ -229,7 +229,7 @@ Most enterprise automations operate on lists of tickets, users, documents, trans
 
 ---
 
-## 4) `frontier/error-handler`
+## 4) `locus/error-handler`
 
 ### Error-Handler Purpose
 
@@ -271,7 +271,7 @@ Enterprise readiness depends on graceful recovery, not just successful happy pat
 
 ---
 
-## 5) `frontier/event`
+## 5) `locus/event`
 
 ### Event Purpose
 
@@ -311,7 +311,7 @@ Enterprise workflows often need asynchronous coordination with external systems 
 
 ---
 
-## 6) `frontier/data-store`
+## 6) `locus/data-store`
 
 ### Data-Store Purpose
 
@@ -353,7 +353,7 @@ Perform explicit business-state reads and writes.
 
 ---
 
-## 7) `frontier/wait`
+## 7) `locus/wait`
 
 ### Wait Purpose
 
@@ -466,9 +466,9 @@ Playbooks should stay focused on higher-level operating motions, not prompt engi
 
 Add:
 
-- `frontier/router`
-- `frontier/transform`
-- `frontier/error-handler`
+- `locus/router`
+- `locus/transform`
+- `locus/error-handler`
 
 Why first:
 
@@ -480,9 +480,9 @@ Why first:
 
 Add:
 
-- `frontier/iterator`
-- `frontier/wait`
-- `frontier/event`
+- `locus/iterator`
+- `locus/wait`
+- `locus/event`
 
 Why second:
 
@@ -492,7 +492,7 @@ Why second:
 
 Add:
 
-- `frontier/data-store`
+- `locus/data-store`
 
 Why third:
 
@@ -503,10 +503,10 @@ Why third:
 
 Add if product direction supports them:
 
-- `frontier/input`
-- `frontier/expression`
-- `frontier/annotation`
-- `frontier/container`
+- `locus/input`
+- `locus/expression`
+- `locus/annotation`
+- `locus/container`
 
 ---
 
@@ -514,28 +514,28 @@ Add if product direction supports them:
 
 ### Core canonical set
 
-- `frontier/trigger`
-- `frontier/prompt`
-- `frontier/agent`
-- `frontier/workflow`
-- `frontier/tool-call`
-- `frontier/retrieval`
-- `frontier/memory`
-- `frontier/guardrail`
-- `frontier/human-review`
-- `frontier/router`
-- `frontier/transform`
-- `frontier/iterator`
-- `frontier/error-handler`
-- `frontier/event`
-- `frontier/data-store`
-- `frontier/wait`
-- `frontier/manifold`
-- `frontier/output`
+- `locus/trigger`
+- `locus/prompt`
+- `locus/agent`
+- `locus/workflow`
+- `locus/tool-call`
+- `locus/retrieval`
+- `locus/memory`
+- `locus/guardrail`
+- `locus/human-review`
+- `locus/router`
+- `locus/transform`
+- `locus/iterator`
+- `locus/error-handler`
+- `locus/event`
+- `locus/data-store`
+- `locus/wait`
+- `locus/manifold`
+- `locus/output`
 
 ### Enterprise-ready interpretation
 
-With that set, Frontier would have a complete general-purpose node language for:
+With that set, Locus would have a complete general-purpose node language for:
 
 - agent execution,
 - orchestration and routing,
@@ -551,16 +551,16 @@ With that set, Frontier would have a complete general-purpose node language for:
 
 ## Bottom line
 
-The current system already has the right generic connector primitive in `frontier/tool-call`.
+The current system already has the right generic connector primitive in `locus/tool-call`.
 
 The most important missing enterprise-ready **general node families** are:
 
-1. `frontier/router`
-2. `frontier/transform`
-3. `frontier/iterator`
-4. `frontier/error-handler`
-5. `frontier/event`
-6. `frontier/data-store`
-7. `frontier/wait`
+1. `locus/router`
+2. `locus/transform`
+3. `locus/iterator`
+4. `locus/error-handler`
+5. `locus/event`
+6. `locus/data-store`
+7. `locus/wait`
 
 These should be added as generic families first, then specialized into product/domain-specific variants as needed.

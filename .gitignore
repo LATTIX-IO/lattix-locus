@@ -34,7 +34,7 @@ MANIFEST
 *.manifest
 *.spec
 # …except our committed PyInstaller spec for the desktop backend sidecar.
-!packaging/frontier-backend.spec
+!packaging/locus-backend.spec
 
 # Installer logs
 pip-log.txt
@@ -144,7 +144,7 @@ celerybeat.pid
 .envrc
 .desloppify/
 .installer/
-.frontier/
+.locus/
 .tools/
 .venv
 node_modules/

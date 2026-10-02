@@ -9,7 +9,7 @@ import {
   saveMcpConnection,
   validateMcpConnection,
 } from "@/lib/api";
-import type { MCPConnectionDefinition, MCPStarterTemplate } from "@/types/frontier";
+import type { MCPConnectionDefinition, MCPStarterTemplate } from "@/types/locus";
 
 function parseLineList(value: string): string[] {
   return value

@@ -1,13 +1,13 @@
 #!/usr/bin/env sh
 set -eu
 
-BOOTSTRAP_DIR="${TMPDIR:-/tmp}/frontier-install"
-INSTALLER_URL="https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/frontier-installer.py"
-LOCAL_INSTALLER="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/frontier-installer.py"
+BOOTSTRAP_DIR="${TMPDIR:-/tmp}/locus-install"
+INSTALLER_URL="https://raw.githubusercontent.com/LATTIX-IO/lattix-locus/main/install/locus-installer.py"
+LOCAL_INSTALLER="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/locus-installer.py"
 MIN_PYTHON_MAJOR=3
 MIN_PYTHON_MINOR=12
 
-echo "==> Lattix xFrontier bootstrap"
+echo "==> Lattix Locus bootstrap"
 echo "==> Preparing installer workspace"
 mkdir -p "$BOOTSTRAP_DIR"
 
@@ -216,16 +216,16 @@ if [ -f "$LOCAL_INSTALLER" ]; then
   INSTALLER_PATH="$LOCAL_INSTALLER"
 elif command -v curl >/dev/null 2>&1; then
   echo "==> Downloading installer"
-  curl -fsSL "$INSTALLER_URL" -o "$BOOTSTRAP_DIR/frontier-installer.py"
-  INSTALLER_PATH="$BOOTSTRAP_DIR/frontier-installer.py"
+  curl -fsSL "$INSTALLER_URL" -o "$BOOTSTRAP_DIR/locus-installer.py"
+  INSTALLER_PATH="$BOOTSTRAP_DIR/locus-installer.py"
 else
   echo "curl is required to download the installer."
   exit 1
 fi
 
 echo "==> Launching interactive installer"
-if [ -z "${FRONTIER_INSTALLER_OUTPUT:-}" ] && [ -t 0 ] && [ -t 1 ]; then
-  export FRONTIER_INSTALLER_OUTPUT=tui
+if [ -z "${LOCUS_INSTALLER_OUTPUT:-}" ] && [ -t 0 ] && [ -t 1 ]; then
+  export LOCUS_INSTALLER_OUTPUT=tui
 fi
 if "$PYTHON_BIN" "$INSTALLER_PATH"; then
   :

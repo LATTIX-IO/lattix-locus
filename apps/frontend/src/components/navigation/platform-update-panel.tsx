@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import type { PlatformVersionStatus } from "@/types/frontier";
+import type { PlatformVersionStatus } from "@/types/locus";
 
 /**
  * Bottom-of-sidebar platform version + update control.
@@ -78,7 +78,7 @@ export function PlatformUpdatePanel({
     if (!tauri?.core?.invoke) return;
     if (
       !window.confirm(
-        `Update Lattix xFrontier to v${version}?\n\n` +
+        `Update Lattix Locus to v${version}?\n\n` +
           `The app will close, install the update, and restart automatically.\n` +
           `Your workflows, agents, and settings stay intact.`,
       )
@@ -134,7 +134,7 @@ export function PlatformUpdatePanel({
   return (
     <div className="flex items-center justify-between gap-2 px-1.5 py-1">
       <span className="truncate text-[11px] text-[var(--fx-muted)]">
-        {backendUpdate ? `Update v${backendUpdate.latest_version} available` : "Lattix xFrontier"}
+        {backendUpdate ? `Update v${backendUpdate.latest_version} available` : "Lattix Locus"}
       </span>
       <span
         className="shrink-0 rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[var(--foreground)]"

@@ -215,19 +215,19 @@ describe("ReactFlowCanvas", () => {
 
   function renderCanvas(onGraphChange = vi.fn()) {
     const nodes: GraphNode[] = [
-      { id: "router", title: "Priority Router", type: "frontier/router", x: 0, y: 0, config: {} },
-      { id: "branch-a", title: "Branch A", type: "frontier/transform", x: 300, y: 0, config: {} },
-      { id: "branch-b", title: "Branch B", type: "frontier/transform", x: 300, y: 100, config: {} },
-      { id: "branch-default", title: "Branch Default", type: "frontier/transform", x: 300, y: 200, config: {} },
-      { id: "iterator", title: "Iterator", type: "frontier/iterator", x: 0, y: 320, config: {} },
-      { id: "iter-loop", title: "Iterate", type: "frontier/transform", x: 300, y: 320, config: {} },
-      { id: "iter-done", title: "Done", type: "frontier/output", x: 300, y: 420, config: {} },
-      { id: "wait", title: "Wait", type: "frontier/wait", x: 0, y: 540, config: {} },
-      { id: "wait-resume", title: "Resume Branch", type: "frontier/transform", x: 300, y: 540, config: {} },
-      { id: "wait-timeout", title: "Timeout Branch", type: "frontier/error-handler", x: 300, y: 640, config: {} },
-      { id: "event", title: "Event", type: "frontier/event", x: 0, y: 760, config: {} },
-      { id: "event-resume", title: "Event Resume", type: "frontier/transform", x: 300, y: 760, config: {} },
-      { id: "event-idle", title: "Event Idle", type: "frontier/error-handler", x: 300, y: 860, config: {} },
+      { id: "router", title: "Priority Router", type: "locus/router", x: 0, y: 0, config: {} },
+      { id: "branch-a", title: "Branch A", type: "locus/transform", x: 300, y: 0, config: {} },
+      { id: "branch-b", title: "Branch B", type: "locus/transform", x: 300, y: 100, config: {} },
+      { id: "branch-default", title: "Branch Default", type: "locus/transform", x: 300, y: 200, config: {} },
+      { id: "iterator", title: "Iterator", type: "locus/iterator", x: 0, y: 320, config: {} },
+      { id: "iter-loop", title: "Iterate", type: "locus/transform", x: 300, y: 320, config: {} },
+      { id: "iter-done", title: "Done", type: "locus/output", x: 300, y: 420, config: {} },
+      { id: "wait", title: "Wait", type: "locus/wait", x: 0, y: 540, config: {} },
+      { id: "wait-resume", title: "Resume Branch", type: "locus/transform", x: 300, y: 540, config: {} },
+      { id: "wait-timeout", title: "Timeout Branch", type: "locus/error-handler", x: 300, y: 640, config: {} },
+      { id: "event", title: "Event", type: "locus/event", x: 0, y: 760, config: {} },
+      { id: "event-resume", title: "Event Resume", type: "locus/transform", x: 300, y: 760, config: {} },
+      { id: "event-idle", title: "Event Idle", type: "locus/error-handler", x: 300, y: 860, config: {} },
     ];
     const links: GraphLink[] = [];
 
@@ -335,7 +335,7 @@ describe("ReactFlowCanvas", () => {
   it("serializes agent skills as a structured string array", async () => {
     const onGraphChange = vi.fn();
     const nodes: GraphNode[] = [
-      { id: "agent-1", title: "Agent", type: "frontier/agent", x: 120, y: 90, config: { agent_id: "agent-1", system_prompt: "Respond precisely." } },
+      { id: "agent-1", title: "Agent", type: "locus/agent", x: 120, y: 90, config: { agent_id: "agent-1", system_prompt: "Respond precisely." } },
     ];
 
     render(
@@ -366,12 +366,12 @@ describe("ReactFlowCanvas", () => {
 
   it("updates rendered nodes when read-only graph props change", async () => {
     const initialNodes: GraphNode[] = [
-      { id: "run-trigger", title: "Run Trigger", type: "frontier/trigger", x: 80, y: 120 },
+      { id: "run-trigger", title: "Run Trigger", type: "locus/trigger", x: 80, y: 120 },
     ];
     const nextNodes: GraphNode[] = [
-      { id: "run-trigger", title: "Run Trigger", type: "frontier/trigger", x: 80, y: 120 },
-      { id: "run-agent", title: "Agent", type: "frontier/agent", x: 360, y: 120 },
-      { id: "run-output", title: "Output", type: "frontier/output", x: 680, y: 120 },
+      { id: "run-trigger", title: "Run Trigger", type: "locus/trigger", x: 80, y: 120 },
+      { id: "run-agent", title: "Agent", type: "locus/agent", x: 360, y: 120 },
+      { id: "run-output", title: "Output", type: "locus/output", x: 680, y: 120 },
     ];
     const nextLinks: GraphLink[] = [
       { from: "run-trigger", to: "run-agent", from_port: "out", to_port: "in" },
@@ -400,8 +400,8 @@ describe("ReactFlowCanvas", () => {
 
   it("preserves read-only selection changes in the rendered graph state", async () => {
     const readOnlyNodes: GraphNode[] = [
-      { id: "run-trigger", title: "Run Trigger", type: "frontier/trigger", x: 80, y: 120 },
-      { id: "run-agent", title: "Agent", type: "frontier/agent", x: 360, y: 120 },
+      { id: "run-trigger", title: "Run Trigger", type: "locus/trigger", x: 80, y: 120 },
+      { id: "run-agent", title: "Agent", type: "locus/agent", x: 360, y: 120 },
     ];
     const readOnlyLinks: GraphLink[] = [
       { from: "run-trigger", to: "run-agent", from_port: "out", to_port: "in" },

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from frontier_runtime.conversation import ConversationManager
+from locus_runtime.conversation import ConversationManager
 
 
 class TestReasoningPreservation:

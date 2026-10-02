@@ -24,11 +24,11 @@ def main() -> None:
     if not client.is_authenticated():
         raise SystemExit("Vault is not authenticated. Set VAULT_ADDR and VAULT_TOKEN.")
     client.secrets.kv.v2.create_or_update_secret(
-        path="dev/frontier",
+        path="dev/locus",
         secret=_seed_payload(),
         mount_point="secret",
     )
-    print({"available": True, "seeded": "secret/data/dev/frontier", "vault_addr": url})  # noqa: T201
+    print({"available": True, "seeded": "secret/data/dev/locus", "vault_addr": url})  # noqa: T201
 
 
 if __name__ == "__main__":

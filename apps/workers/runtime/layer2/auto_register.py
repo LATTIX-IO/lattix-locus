@@ -18,14 +18,14 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 def _runtime_profile() -> str:
-    value = str(os.getenv("FRONTIER_RUNTIME_PROFILE", "local-lightweight") or "").strip().lower()
+    value = str(os.getenv("LOCUS_RUNTIME_PROFILE", "local-lightweight") or "").strip().lower()
     return value or "local-lightweight"
 
 
 def _placeholder_auto_registration_allowed() -> bool:
     if _runtime_profile() in {"local-secure", "hosted"}:
         return False
-    if _env_flag("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", False):
+    if _env_flag("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", False):
         return False
     return True
 

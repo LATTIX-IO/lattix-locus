@@ -1,4 +1,4 @@
-# Production Harness Plan — xFrontier Coding & Multi-Agent Platform
+# Production Harness Plan — Locus Coding & Multi-Agent Platform
 
 > Date: 2026-06-12 · Companion to `docs/competitive-gap-analysis-2026-06.md`
 > Goal: a stable, production-ready harness running locally hosted models (gpt-oss et al.)
@@ -36,26 +36,26 @@ Findings from code verification that change the work, vs. what the gap analysis 
 
 | # | Finding | Consequence |
 |---|---|---|
-| V1 | `ToolJailService`/`SandboxManager` only **plan** execution (`frontier_runtime/sandbox.py:518–530` returns `executed=False`); nothing in `frontier_runtime/` or `apps/backend/` calls `subprocess` | The execution layer must be **built**, not reused (M2/S1) |
-| V2 | `OPAClient` (`frontier_runtime/security.py:386–711`) never makes HTTP calls — it is an in-process evaluator mirroring the real Rego in `policies/*.rego` | "Local-eval fallback" already exists and is the only path; wire it into the gate + add optional HTTP OPA with Rego parity tests |
+| V1 | `ToolJailService`/`SandboxManager` only **plan** execution (`locus_runtime/sandbox.py:518–530` returns `executed=False`); nothing in `locus_runtime/` or `apps/backend/` calls `subprocess` | The execution layer must be **built**, not reused (M2/S1) |
+| V2 | `OPAClient` (`locus_runtime/security.py:386–711`) never makes HTTP calls — it is an in-process evaluator mirroring the real Rego in `policies/*.rego` | "Local-eval fallback" already exists and is the only path; wire it into the gate + add optional HTTP OPA with Rego parity tests |
 | V3 | Capability tokens are **HMAC-SHA256 JSON**, not Biscuit (no attenuation/caveats) | Adequate for per-run scoping; true Biscuit deferred to sub-agent delegation work; fix marketing language |
 | V4 | The actual tool gate is a substring blacklist applied at tool-*gathering* time (`_gather_mcp_run_tools`, `main.py:13486–13555`), silently dropping tools | Replace silent drop with gate decisions incl. `requires_approval` |
 | V5 | Collaboration turns (`main.py:13963`) and follow-up `_respond` (`main.py:14926`) run **without tools** | Gate wiring must add tools to these paths, per-agent tokens |
 | V6 | Each loop iteration **rebuilds a synthetic prompt** with only the last 4 interim notes (`main.py:13781–13786`); the in-call tool conversation is discarded | Lossless trajectories are a build; iterations must continue on one append-only message list |
-| V7 | `ConversationManager.compact()` mutates old turns and emits the summary **before** the system message (`frontier_runtime/conversation.py:93–210`) | Confirmed cache-destroying; fork-mode redesign (M6) |
+| V7 | `ConversationManager.compact()` mutates old turns and emits the summary **before** the system message (`locus_runtime/conversation.py:93–210`) | Confirmed cache-destroying; fork-mode redesign (M6) |
 | V8 | Provider plumbing is already general (`_PROVIDER_REGISTRY` `main.py:2746` + `ai_providers` settings) | vLLM/llama.cpp/LM Studio are registry entries, not architecture |
 | V9 | Malformed tool-call JSON is silently coerced to `{}` (`main.py:4543–4547`) | Exact hook point for validation + bounded re-ask |
 | V10 | `langgraph-checkpoint-postgres` declared (`pyproject.toml:23`), unused; backend store persists to Postgres JSONB via `PostgresStateStore` (`platform_services.py:109`); append-only `PostgresAuditLog` (`:203`) is the pattern to copy for trajectories | Checkpointing integrates with existing persistence idioms |
 | V11 | `main.py` = 19,427 lines / 127 routes / 496 functions; tests monkeypatch `app.main` module globals | Decomposition must keep `app.main` a re-exporting facade |
 | V12 | Sandbox `ALWAYS_READONLY_SUBPATHS` force-remounts `.git` read-only in writable mounts (`sandbox.py:38–47`) | Git operations are host-side (`WorkspaceManager`); agent never commits; `submit` diffs host-side |
-| V13 | A run CLI stub exists: `lattix workflow run` (`frontier_tooling/cli.py:249`), fire-and-forget; console script is `lattix` | `exec` extends it; add `frontier` script alias (naming sign-off needed) |
+| V13 | A run CLI stub exists: `lattix workflow run` (`locus_tooling/cli.py:249`), fire-and-forget; console script is `lattix` | `exec` extends it; add `locus` script alias (naming sign-off needed) |
 | V14 | `require_authenticated_requests` defaults `False` (`main.py:374`); webhook trigger tokens plaintext at rest and in URLs (`main.py:15363, 15406`); non-constant-time token compare (`main.py:9499`) | M0/M7 hardening items |
 
 ---
 
 ## 2. Consolidated architecture decisions
 
-- **D1 — Coding tools are native frontier tools, not MCP tools.** A `CodingToolset` produces
+- **D1 — Coding tools are native locus tools, not MCP tools.** A `CodingToolset` produces
   OpenAI-function schemas + a dispatch callable merged with MCP dispatch. In-process binding to
   workspace, sandbox, telemetry; no HTTP hop. Registered through `agent_tools.py` so the
   ToolGate covers them by construction.
@@ -79,7 +79,7 @@ Findings from code verification that change the work, vs. what the gap analysis 
   so every present/future call site is gated by construction; `_run_openai_chat` refuses
   ungated executors in enforcement mode (defense in depth).
 - **D7 — Policy evaluation**: in-process evaluator default (microseconds, logic exists),
-  optional `HttpOpaEvaluator` when `FRONTIER_OPA_URL` set, fail-closed fallback, CI-only
+  optional `HttpOpaEvaluator` when `LOCUS_OPA_URL` set, fail-closed fallback, CI-only
   Rego parity tests (`opa eval` vs Python over shared fixtures).
 - **D8 — Harmony sits beside `_run_openai_chat`**, dispatched by model capability profile;
   never round-trips through Chat Completions templating; raw `/completions` endpoint.
@@ -103,7 +103,7 @@ Sizing: S < 1 day · M = 1–3 days · L = 1–2 weeks (single engineer, focused
 |---|---|---|
 | M0.1 | **Decomposition P1**: extract `models.py` (main.py:88–608), `runtime_config.py` (:611–763), `store.py` (`InMemoryStore` + `get_store()`; main keeps rebindable `store` alias for test monkeypatching). Verbatim moves, facade re-exports. | M |
 | M0.2 | **Monolith guard** `test_monolith_guard.py`: line-count ratchet (start 19,500), route-decorator count ≤127 in main.py (new endpoints must use routers), no-cycle assertions for new modules. | S |
-| M0.3 | **Policy evaluator extraction**: `frontier_runtime/policy.py` — `PermissionTier`, `GateDecision`, `LocalPolicyEvaluator` (sync extraction of `OPAClient.evaluate_request` body; existing async tests keep passing), `HttpOpaEvaluator` w/ fail-closed fallback, `build_policy_evaluator()`. | M |
+| M0.3 | **Policy evaluator extraction**: `locus_runtime/policy.py` — `PermissionTier`, `GateDecision`, `LocalPolicyEvaluator` (sync extraction of `OPAClient.evaluate_request` body; existing async tests keep passing), `HttpOpaEvaluator` w/ fail-closed fallback, `build_policy_evaluator()`. | M |
 | M0.4 | **Quick hardening**: constant-time compare at main.py:9499 (`hmac.compare_digest`); flip `require_authenticated_requests` default to `True` with `local-lightweight` profile as explicit opt-out; startup refusal when auth off × non-loopback bind. | S |
 
 **Gate to proceed**: full existing test suite green after each PR; `import app.main` smoke; ratchet in place.
@@ -114,7 +114,7 @@ Sizing: S < 1 day · M = 1–3 days · L = 1–2 weeks (single engineer, focused
 |---|---|---|
 | M1.1 | **Loop extraction** → `apps/backend/app/agent_loop.py`: `LoopState` (JSON-serializable, append-only `messages`), `LoopBudgets`, `LoopOutcome` (`SUBMITTED / BUDGET_EXHAUSTED / PROVIDER_UNAVAILABLE / ERROR`), `run_agent_loop(state, *, chat_fn, tools, tool_executor, budgets, emit_progress, recorder, checkpointer, legacy_markers)`. `_run_agent_iterations` becomes a thin wrapper resolving `chat_fn` from module globals at call time (keeps `test_agent_collaboration.py` monkeypatch pattern working). Add `on_message` tap to `_run_openai_chat` (main.py:4419) — the lossless hook for messages + usage. | M |
 | M1.2 | **Tool surface extraction + gate** → `apps/backend/app/agent_tools.py`: move `_gather_mcp_run_tools` et al. (main.py:13443–13555); add `RunCapabilityContext`, `resolve_permission_tier` (most-restrictive-wins: payload/agent/platform), `mint_run_capability` (per-run HMAC token scoped to workspace root, tier-filtered tools, max_tool_calls, TTL), `ToolGate.authorize` (token verify → counter → path classification → policy eval → tier overlay → audit EVERY decision), `build_gated_tool_executor` (deny → structured `[POLICY DENIED: reason]` tool result + `policy_rejected` event). High-risk pattern match becomes `requires_approval`, not silent drop (V4). | L |
-| M1.3 | **Wiring at all four call sites**: `_execute_run` (main.py:14359, replace raw `_execute_mcp_tool`), `_run_agent_collaboration` (:13963, per-agent tokens), `_respond` (:14926), graph `frontier/tool` handler (:7111–7126). Record `permission_tier` + capability metadata in `run_details[run_id]["access"]`; expose tier in agent security-policy endpoint (:18262) and run detail (:15024). Ungated-executor guard in `_run_openai_chat`. | M |
+| M1.3 | **Wiring at all four call sites**: `_execute_run` (main.py:14359, replace raw `_execute_mcp_tool`), `_run_agent_collaboration` (:13963, per-agent tokens), `_respond` (:14926), graph `locus/tool` handler (:7111–7126). Record `permission_tier` + capability metadata in `run_details[run_id]["access"]`; expose tier in agent security-policy endpoint (:18262) and run detail (:15024). Ungated-executor guard in `_run_openai_chat`. | M |
 
 **Gate**: `test_tool_gate.py` matrix green (bad sig/expired/wrong agent/tool-not-allowed/counter exhaustion/tier matrix/approval path); gate latency <1 ms without OPA server; every decision audited.
 
@@ -126,11 +126,11 @@ Sizing: S < 1 day · M = 1–3 days · L = 1–2 weeks (single engineer, focused
 | M2.2 | `coding/workspace.py`: `WorkspaceSpec`/`Workspace`/`WorkspaceManager` (clone `--depth=50` / worktree-for-local-path / empty; host-side `diff()`; `cleanup()` + `sweep_expired(retention_hours)`; run_id path-injection rejection; egress-allowlist check on clone). | M |
 | M2.3 | `coding/truncation.py` (50 KB / 2,000-line head-60/tail-40 elision) + `coding/telemetry.py` (`CodingTelemetry`: tool_calls_total/malformed, edits attempted/well_formed/applied, reasks, downgrades; emitted as a final `telemetry` run event + merged into model_meta). | S |
 | M2.4 | `coding/toolset.py`: fixed R2E-Gym-shaped toolset — `execute_bash`, `search` (rg via sandbox, python fallback), `str_replace_editor` (in-process; exact-once `old_str` with not-found/ambiguous hints; workspace-root confinement incl. symlink resolution), `run_tests` (verbatim output, truncation caps only), `submit` (host-side diff → artifact). Schemas stable/frozen ordering (cache discipline). | L |
-| M2.5 | **Run wiring**: `_gather_coding_run_tools` (activation: agent tool type `frontier-coding` or payload `workspace` block); merge schemas before MCP (frozen prefix); compose dispatcher; cleanup honoring `workspace_retention_hours`. New `PlatformSettings` (all default-off). Contract: `agent.config.schema.json` gains `workspace` block + `frontier-coding` tool type (NB top-level `additionalProperties:false` — schema must change before configs use it). Coding dispatch goes through M1's gated executor. | M |
+| M2.5 | **Run wiring**: `_gather_coding_run_tools` (activation: agent tool type `locus-coding` or payload `workspace` block); merge schemas before MCP (frozen prefix); compose dispatcher; cleanup honoring `workspace_retention_hours`. New `PlatformSettings` (all default-off). Contract: `agent.config.schema.json` gains `workspace` block + `locus-coding` tool type (NB top-level `additionalProperties:false` — schema must change before configs use it). Coding dispatch goes through M1's gated executor. | M |
 | M2.6 | **Structured termination**: synthetic `submit` tool in every loop (D5); iterations continue on the same append-only `messages` list (delete the synthetic-prompt rebuild, V6); coding runs enrich submission with workspace diff; `legacy_markers` flag for compat. | M |
 | M2.7 | **Budgets + bounded self-repair**: step/time/context budgets (estimator from `conversation.py`, real `usage` when present); ≤2 verbatim-error retries per step then forced-submit turn (`tool_choice` pinned to `submit`); breach ⇒ `BUDGET_EXHAUSTED`, zero credit (DeepSWE compact filtering). Budget resolution: payload > agent config > platform ceiling. | M |
 
-**Gate**: monkeypatched end-to-end test — agent declares `frontier-coding`, payload points at a tmp git repo, fake chat emits edit + submit → tool events present, diff artifact exists, telemetry event present, workspace cleaned; no schema leak when disabled; no run can loop unboundedly.
+**Gate**: monkeypatched end-to-end test — agent declares `locus-coding`, payload points at a tmp git repo, fake chat emits edit + submit → tool events present, diff artifact exists, telemetry event present, workspace cleaned; no schema leak when disabled; no run can loop unboundedly.
 
 ### M3 — Local-model fidelity
 
@@ -147,9 +147,9 @@ Sizing: S < 1 day · M = 1–3 days · L = 1–2 weeks (single engineer, focused
 
 | Step | Content | Size |
 |---|---|---|
-| M4.1 | **Trajectories**: `frontier_runtime/trajectory.py` — versioned JSONL schema (meta header w/ model/sampler/budgets/system-prompt hash/task incl. eval instance_id+seed; verbatim `message` lines w/ usage; `annotation` lines for repairs; `outcome` line w/ submission + budgets used). `PostgresTrajectoryStore` (append-only `frontier_trajectory_records(run_id, seq, payload JSONB)`, copying `PostgresAuditLog` pattern) + `FileTrajectoryStore` (`.frontier/trajectories/{run_id}.jsonl`). `GET /workflow-runs/{id}/trajectory` (NDJSON, `_enforce_run_access`). Feature flag `FRONTIER_TRAJECTORIES_ENABLED`. | M |
-| M4.2 | **Checkpointing + resume**: `frontier_runtime/checkpoints.py` — `RunCheckpointStore` protocol; `LangGraphPostgresCheckpointStore` (sync `PostgresSaver`, `thread_id=run_id`, channel `{"loop_state": ...}`); `FileCheckpointStore` fallback (no new dep — decision over `langgraph-checkpoint-sqlite`). Cadence: every step boundary + outcome. `RunExecutionContext` (pydantic) replaces the captured closure so runs are resumable; startup recovery for orphaned `Running` runs; `POST /workflow-runs/{id}/resume`; `resume_epoch` fence against racing threads. | L |
-| M4.3 | **`lattix exec`** (+ `frontier` script alias): POST `/workflow-runs` → SSE follow with `?after=` reconnect across the 300 s window (fallback to plain event polling on connection failure) → `--output text|json|stream-json`, `--trajectory-out`, `--best-of`. Exit codes: 0 done · 1 failed · 2 blocked · 3 budget-exhausted · 4 timeout · 5 connection/auth. stdout machine-clean, diagnostics to stderr. | M |
+| M4.1 | **Trajectories**: `locus_runtime/trajectory.py` — versioned JSONL schema (meta header w/ model/sampler/budgets/system-prompt hash/task incl. eval instance_id+seed; verbatim `message` lines w/ usage; `annotation` lines for repairs; `outcome` line w/ submission + budgets used). `PostgresTrajectoryStore` (append-only `locus_trajectory_records(run_id, seq, payload JSONB)`, copying `PostgresAuditLog` pattern) + `FileTrajectoryStore` (`.locus/trajectories/{run_id}.jsonl`). `GET /workflow-runs/{id}/trajectory` (NDJSON, `_enforce_run_access`). Feature flag `LOCUS_TRAJECTORIES_ENABLED`. | M |
+| M4.2 | **Checkpointing + resume**: `locus_runtime/checkpoints.py` — `RunCheckpointStore` protocol; `LangGraphPostgresCheckpointStore` (sync `PostgresSaver`, `thread_id=run_id`, channel `{"loop_state": ...}`); `FileCheckpointStore` fallback (no new dep — decision over `langgraph-checkpoint-sqlite`). Cadence: every step boundary + outcome. `RunExecutionContext` (pydantic) replaces the captured closure so runs are resumable; startup recovery for orphaned `Running` runs; `POST /workflow-runs/{id}/resume`; `resume_epoch` fence against racing threads. | L |
+| M4.3 | **`lattix exec`** (+ `locus` script alias): POST `/workflow-runs` → SSE follow with `?after=` reconnect across the 300 s window (fallback to plain event polling on connection failure) → `--output text|json|stream-json`, `--trajectory-out`, `--best-of`. Exit codes: 0 done · 1 failed · 2 blocked · 3 budget-exhausted · 4 timeout · 5 connection/auth. stdout machine-clean, diagnostics to stderr. | M |
 
 **Gate**: kill-mid-step → restore → identical message prefix → completes; orphaned runs never silently stuck; `lattix exec "task" --output json; echo $?` scriptable; trajectory replays byte-identical to provider I/O.
 
@@ -157,7 +157,7 @@ Sizing: S < 1 day · M = 1–3 days · L = 1–2 weeks (single engineer, focused
 
 | Step | Content | Size |
 |---|---|---|
-| M5.1 | `apps/evals` package (`frontier-evals`; deps httpx/click/pydantic/datasets/swebench; not in backend image): `instances.py` (pinned SWE-bench Verified subsets vendored in `configs/`), `runner.py` (per instance×seed: provision env → `lattix exec` → collect submission+trajectory), `docker_env.py` (official SWE-bench instance images via remote `DOCKER_HOST`), `grading.py` (predictions.jsonl → `swebench.harness.run_evaluation`; **test execution is the only verdict**), `stats.py` (per-seed resolve rates, mean ± SEM), `report.py`. Results layout: `results/{eval_id}/instances/{id}/seed-{k}/{trajectory.jsonl,result.json}` + `summary.json`. | L |
+| M5.1 | `apps/evals` package (`locus-evals`; deps httpx/click/pydantic/datasets/swebench; not in backend image): `instances.py` (pinned SWE-bench Verified subsets vendored in `configs/`), `runner.py` (per instance×seed: provision env → `lattix exec` → collect submission+trajectory), `docker_env.py` (official SWE-bench instance images via remote `DOCKER_HOST`), `grading.py` (predictions.jsonl → `swebench.harness.run_evaluation`; **test execution is the only verdict**), `stats.py` (per-seed resolve rates, mean ± SEM), `report.py`. Results layout: `results/{eval_id}/instances/{id}/seed-{k}/{trajectory.jsonl,result.json}` + `summary.json`. | L |
 | M5.2 | **Resource guardrail**: refuse non-smoke configs when API URL or DOCKER_HOST resolve to localhost unless `--allow-local` (encodes memory `resource-constrained-local-testing` as code). | S |
 | M5.3 | **Smoke evals**: `--mode plumbing` (3–5 instances, fake exec backend + golden patches, <2 min, CI on PRs touching evals/loop) and `--mode live` (1 seed, real backend, nightly on runner). | M |
 
@@ -168,7 +168,7 @@ Sizing: S < 1 day · M = 1–3 days · L = 1–2 weeks (single engineer, focused
 | Step | Content | Size |
 |---|---|---|
 | M6.1 | **Best-of-N + hybrid verification**: `apps/backend/app/rollouts.py` — N independent rollouts (own workspace clone, own trajectory `run_id-r{k}`, own checkpoint; `_RUN_EXECUTOR` w/ `best_of_n_max_parallel` cap); `submit` gains optional `regression_tests`; `execution_verify` (agent regression tests + workspace test command), `judge_patches` (seeded read-only `patch-judge` AgentDefinition, order-randomized, 0–1 normalized), deterministic `select` (D10). Default **off**; `payload.best_of` / `--best-of N`. Parent-run events per rollout/verification; selected candidate is the final `agent_message`. | L |
-| M6.2 | **Cache-safe compaction**: `ConversationManager` v2 `fork` mode (env `FRONTIER_CONVERSATION_COMPACTION_MODE`, default `legacy` first) — `set_prefix(system, tool_defs)` (frozen, idempotent; also fixes the duplicate-system-turn bug at main.py:6838), append-only segments, compaction closes a segment and opens a new one with summary + last-K turns deep-copied; v1→v2 serialization migration. Flip default to `fork` only after one local-model soak run. | M |
+| M6.2 | **Cache-safe compaction**: `ConversationManager` v2 `fork` mode (env `LOCUS_CONVERSATION_COMPACTION_MODE`, default `legacy` first) — `set_prefix(system, tool_defs)` (frozen, idempotent; also fixes the duplicate-system-turn bug at main.py:6838), append-only segments, compaction closes a segment and opens a new one with summary + last-K turns deep-copied; v1→v2 serialization migration. Flip default to `fork` only after one local-model soak run. | M |
 
 **Gate**: `--best-of 4` ≥ single-rollout resolve rate on smoke set; N=1 byte-identical to normal run; 100-turn fork-mode simulation shows zero retroactive message mutations (hash assertion).
 
@@ -176,7 +176,7 @@ Sizing: S < 1 day · M = 1–3 days · L = 1–2 weeks (single engineer, focused
 
 | Step | Content | Size |
 |---|---|---|
-| M7.1 | Webhook trigger tokens: re-key store by `sha256(token)` (startup migration), header transport `X-Frontier-Trigger-Token` + new canonical route, legacy path deprecation audit event. | S |
+| M7.1 | Webhook trigger tokens: re-key store by `sha256(token)` (startup migration), header transport `X-Locus-Trigger-Token` + new canonical route, legacy path deprecation audit event. | S |
 | M7.2 | Per-action approval records (`store.approval_requests`: id/run_id/tool/args_digest/status/decided_by); ToolGate `requires_approval` creates one; `submit_approval` accepts `approval_id`; inbox links. v1 semantics: approve-then-resend (gate honors decided approval for matching `(run_id, tool, args_digest)` within TTL); pause/resume-on-approve lands on top of M4.2 checkpoints later. | M |
 | M7.3 | Token-bucket rate limit on `PUBLIC_MINIMAL` routes (login/register/webhook), env-tunable, default 30/min. | S |
 
@@ -230,7 +230,7 @@ discipline: no harness change is "better" without ≥5-seed mean±SEM evidence.
 | # | Decision | Recommendation |
 |---|---|---|
 | O1 | **DLP vs verbatim tool output**: coding tool outputs bypass DLP redaction inside the loop (workspace trust boundary); event summaries keep masking | Accept — needs explicit security-posture statement |
-| O2 | **`frontier` vs `lattix` CLI naming** | Add `frontier` as script alias; pick canonical name before docs |
+| O2 | **`locus` vs `lattix` CLI naming** | Add `locus` as script alias; pick canonical name before docs |
 | O3 | **`apply_patch` handling in harmony mode** | First-class host-side tool (not conversion to editor ops) — lower risk, in-distribution for gpt-oss |
 | O4 | **Checkpoint fallback store** | File-based (zero new deps) over `langgraph-checkpoint-sqlite`; Postgres saver is the production path |
 | O5 | **True Biscuit adoption** (attenuable delegation tokens) | Defer to sub-agent-spawning workstream; HMAC suffices for per-run scoping |

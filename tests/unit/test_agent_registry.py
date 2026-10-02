@@ -1,4 +1,4 @@
-from frontier_runtime.agents import build_default_registry
+from locus_runtime.agents import build_default_registry
 
 
 def test_agent_registry_lists_builtin_agents() -> None:

@@ -1,6 +1,6 @@
-"""Automated DeepSWE / SWE-bench evaluation of the xFrontier SWE agent.
+"""Automated DeepSWE / SWE-bench evaluation of the Locus SWE agent.
 
-This is the headline gate. It drives ``frontier_runtime.harness.SweAgent``
+This is the headline gate. It drives ``locus_runtime.harness.SweAgent``
 through the full eval pipeline (materialize repo -> agent loop -> execution
 grading -> mean/SEM stats -> report) and asserts the resolve rate meets the
 acceptance threshold (default 30%).
@@ -11,9 +11,9 @@ Two modes, selected by environment:
   reference solver — proves the harness + grading + stats pipeline is correct
   and that a competent scaffold clears the bar end to end. No GPU/Docker.
 
-* live: set ``FRONTIER_EVALS_MODE=live``, ``FRONTIER_EVALS_API_BASE_URL`` (a
-  vLLM/llama.cpp endpoint serving gpt-oss-20b), ``FRONTIER_EVALS_MODEL``, and
-  for SWE-bench ``FRONTIER_EVALS_DATASET=swe-bench`` + ``DOCKER_HOST`` on a
+* live: set ``LOCUS_EVALS_MODE=live``, ``LOCUS_EVALS_API_BASE_URL`` (a
+  vLLM/llama.cpp endpoint serving gpt-oss-20b), ``LOCUS_EVALS_MODEL``, and
+  for SWE-bench ``LOCUS_EVALS_DATASET=swe-bench`` + ``DOCKER_HOST`` on a
   remote runner. The SAME assertion then enforces gpt-oss-20b >= 30% on
   DeepSWE/SWE-bench.
 """
@@ -35,8 +35,8 @@ requires_git = pytest.mark.skipif(
 @requires_bash
 @requires_git
 def test_swe_agent_meets_deepswe_threshold(tmp_path):
-    from frontier_evals.config import EvalConfig
-    from frontier_evals.runner import run_eval
+    from locus_evals.config import EvalConfig
+    from locus_evals.runner import run_eval
 
     config = EvalConfig.from_env()
     # Default to the plumbing pipeline check when no live endpoint is configured.
@@ -67,8 +67,8 @@ def test_swe_agent_meets_deepswe_threshold(tmp_path):
 @requires_bash
 @requires_git
 def test_reference_solver_resolves_all_synthetic(tmp_path):
-    from frontier_evals.config import EvalConfig
-    from frontier_evals.runner import run_eval
+    from locus_evals.config import EvalConfig
+    from locus_evals.runner import run_eval
 
     config = EvalConfig(mode="plumbing", dataset="synthetic-mini", seeds=[0, 1, 2])
     run = run_eval(config, output_dir=tmp_path / "out")
@@ -83,9 +83,9 @@ def test_reference_solver_resolves_all_synthetic(tmp_path):
 @requires_bash
 @requires_git
 def test_noop_solver_resolves_nothing(tmp_path):
-    from frontier_evals.config import EvalConfig
-    from frontier_evals.model_client import build_noop_solver
-    from frontier_evals.runner import run_eval
+    from locus_evals.config import EvalConfig
+    from locus_evals.model_client import build_noop_solver
+    from locus_evals.runner import run_eval
 
     config = EvalConfig(mode="plumbing", dataset="synthetic-mini", seeds=[0])
     run = run_eval(
@@ -96,7 +96,7 @@ def test_noop_solver_resolves_nothing(tmp_path):
 
 
 def test_remote_guardrail_blocks_local_live_fleet():
-    from frontier_evals.config import EvalConfig
+    from locus_evals.config import EvalConfig
 
     config = EvalConfig(
         mode="live", api_base_url="http://localhost:8000/v1", docker_host="", allow_local=False
@@ -111,7 +111,7 @@ def test_remote_guardrail_blocks_local_live_fleet():
 
 
 def test_stats_sem_math():
-    from frontier_evals.stats import SeedSummary, summarize
+    from locus_evals.stats import SeedSummary, summarize
 
     seeds = [SeedSummary(0, 1, 3), SeedSummary(1, 3, 3)]  # rates 1/3 and 1.0
     summary = summarize(seeds, {"a": 1, "b": 2, "c": 1})

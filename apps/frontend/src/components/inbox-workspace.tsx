@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { TaskKickoffComposer } from "@/components/task-kickoff-composer";
 import { getOperatorSession, getWorkflowRuns } from "@/lib/api";
-import type { RunKind, WorkflowRunSummary } from "@/types/frontier";
+import type { RunKind, WorkflowRunSummary } from "@/types/locus";
 import { normalizeRunKind } from "@/lib/run-kind";
 
 const KIND_LABEL: Record<RunKind, string> = {
@@ -74,8 +74,8 @@ export function InboxWorkspace() {
         /* anonymous — fall back to a neutral greeting */
       });
     const onChanged = () => void refreshRuns();
-    window.addEventListener("frontier:runs-changed", onChanged);
-    return () => window.removeEventListener("frontier:runs-changed", onChanged);
+    window.addEventListener("locus:runs-changed", onChanged);
+    return () => window.removeEventListener("locus:runs-changed", onChanged);
   }, [refreshRuns]);
 
   const recentRuns = useMemo(() => runs.slice(0, 6), [runs]);

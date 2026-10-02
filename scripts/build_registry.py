@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from frontier_tooling.common import discover_agent_records
+from locus_tooling.common import discover_agent_records
 
 
 def main() -> None:

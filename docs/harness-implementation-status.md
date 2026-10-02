@@ -7,7 +7,7 @@ local models (gpt-oss-20b) on long-horizon multi-agent dev workflows, gated at
 
 ## Landed this iteration (new, tested, isolated from the monolith)
 
-`frontier_runtime/harness/` — a self-contained, model-agnostic SWE agent scaffold
+`locus_runtime/harness/` — a self-contained, model-agnostic SWE agent scaffold
 (mini-SWE-agent + R2E-Gym/DeepSWE + Aider lineage). Does **not** import the
 FastAPI monolith, so it runs headless in CI and on remote benchmark runners.
 
@@ -23,12 +23,12 @@ FastAPI monolith, so it runs headless in CI and on remote benchmark runners.
 | `trajectory.py` (lossless replayable JSONL; SFT/RL-ready) | M4.1 | ✅ |
 | `swe_agent.py` (SweAgent.solve → unified-diff prediction) | M2 | ✅ |
 
-`apps/evals/` (`frontier-evals`) — the benchmark harness:
+`apps/evals/` (`locus-evals`) — the benchmark harness:
 * `synthetic-mini` plumbing dataset (real git repos) + `swe-bench` live dataset.
 * execution-only grading (`grade_synthetic`; live defers to official `swebench.harness`).
 * per-seed mean ± SEM stats (SWE-rebench protocol), summary.json + report.md.
 * remote-runner guardrail (refuses local fleets; `resource-constrained-local-testing`).
-* `frontier-evals smoke|run` CLI.
+* `locus-evals smoke|run` CLI.
 
 ### Tests (all green on this machine; 20 passing, stable across repeated runs)
 * `tests/harness/test_harness_core.py` — trajectory, profiles, truncation, telemetry, enforcement.
@@ -42,7 +42,7 @@ FastAPI monolith, so it runs headless in CI and on remote benchmark runners.
   CLI. The 30 % gate passes in plumbing mode (reference solver).
 * **Gated on a runner box (GPU + Docker), NOT runnable here:** serving gpt-oss-20b
   via vLLM and running real SWE-bench Docker fleets. The live path is wired and
-  one command (`frontier-evals run --mode live …`); the measured gpt-oss-20b
+  one command (`locus-evals run --mode live …`); the measured gpt-oss-20b
   number must be produced there. This box (32 GB, WSL-only shell python) cannot
   serve the model or host instance containers, by hardware and by policy.
 
@@ -65,10 +65,10 @@ FastAPI monolith, so it runs headless in CI and on remote benchmark runners.
 
 A full-stack Software Development Engineer in Test agent ships with the platform —
 loaded by the backend's `_load_seeded_agents_from_repo()` as a **published** agent
-(verified: appears in the seeded set, status=published, system prompt + `frontier-coding`
+(verified: appears in the seeded set, status=published, system prompt + `locus-coding`
 toolset + `local-32b-class` profile intact through canonicalization), so it shows in the
 agent modeler. The *same* definition drives the benchmark via
-`frontier_runtime.harness.agent_library.load_agent_spec` →
+`locus_runtime.harness.agent_library.load_agent_spec` →
 `SweAgent(system_prompt_override=spec.system_prompt, profile=spec.profile())`, so the
 agent we ship is the agent we score. Select it in the eval with `--agent sdet-swe-agent`.
 
@@ -108,14 +108,14 @@ Well past the 30% gate. This is the *synthetic* suite (real git repos + real tes
 The SWE-bench live path is fully wired and the riskiest piece is now proven on real Docker:
 `tests/harness/test_docker_executor.py` validates `DockerContainerExecutor` (run_shell,
 read/write file, exists, exec-imported-module, failing-command exit code) against a real
-`python:3.12-slim` container. `frontier-evals list-instances` pulls real Verified ids; the
+`python:3.12-slim` container. `locus-evals list-instances` pulls real Verified ids; the
 official `swebench.harness` grader is hooked up. Setup + commands in
 `docs/swe-bench-runner-setup.md`. **Blocked only on a runner endpoint** (model URL +
 provider/model + Docker host).
 
 ## Known issue: SDET agent not visible in Agent Studio (frontend auth, NOT seeding)
 
-The agent is correctly published in the backend store (confirmed in `frontier_state_store`
+The agent is correctly published in the backend store (confirmed in `locus_state_store`
 `section:agent_definitions`, and `GET /agent-definitions` returns all definitions unfiltered).
 The UI shows three *mock* agents (`apps/frontend/src/lib/mock-data.ts:150-152`:
 Orchestration v5 / Market Intelligence v4 / Outreach Critic v2) because the frontend's `/api`
@@ -129,10 +129,10 @@ not a harness/seeding problem.
 ```bash
 # plumbing gate (here / CI)
 python -m pytest tests/harness tests/evals -q
-python -c "import sys; sys.path.insert(0,'apps/evals'); from frontier_evals.cli import cli; cli()" smoke
+python -c "import sys; sys.path.insert(0,'apps/evals'); from locus_evals.cli import cli; cli()" smoke
 
 # live gpt-oss-20b on a runner (GPU + Docker)
-frontier-evals run --mode live --dataset swe-bench \
+locus-evals run --mode live --dataset swe-bench \
   --api-base-url http://runner:8000/v1 --model openai/gpt-oss-20b \
   --provider vllm --docker-host tcp://runner:2376 \
   --seeds 0,1,2,3,4 --threshold 0.30

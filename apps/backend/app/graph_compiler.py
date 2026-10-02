@@ -1,7 +1,7 @@
 """Compile a reactflow ``graph_json`` into a real, runnable LangGraph multi-agent system.
 
 The Workflow Studio canvas saves a graph of ``nodes`` + ``links`` (see
-``frontier-graph/1.0``). Historically that graph was cosmetic at run time — the
+``locus-graph/1.0``). Historically that graph was cosmetic at run time — the
 backend executed a hardcoded single-agent loop and ignored the canvas. This
 module turns the canvas into the actual execution engine:
 
@@ -12,7 +12,7 @@ module turns the canvas into the actual execution engine:
   with ``agreed`` vs ``continue_discussion``) becomes a *conditional edge* whose
   router reads the node's ``route`` decision and enforces a bounded-loop guard so
   back-edges (consensus→facilitate, gate→build) provably terminate;
-* ``frontier/agent`` nodes resolve their ``config.agent_id`` to the studio
+* ``locus/agent`` nodes resolve their ``config.agent_id`` to the studio
   agent's real system prompt + model (gpt-oss:20b on local Ollama) and either
   answer in one shot (``chat``), run the harness coding loop for real file edits
   + tests (``code`` → ``SweAgent``), or run the full collaborative team
@@ -140,8 +140,8 @@ class CompiledGraph:
 def _norm_type(node_type: str) -> str:
     candidate = str(node_type or "").strip()
     if not candidate:
-        return "frontier/unknown"
-    return candidate if candidate.startswith("frontier/") else f"frontier/{candidate}"
+        return "locus/unknown"
+    return candidate if candidate.startswith("locus/") else f"locus/{candidate}"
 
 
 def _port(edge: Any) -> str:
@@ -165,11 +165,11 @@ def _classify(nodes: list[Any], links: list[Any]) -> dict[str, Any]:
             routing_nodes[nid] = ports
 
     entry = next(
-        (n.id for n in nodes if _norm_type(n.type) == "frontier/trigger" or not in_links[n.id]),
+        (n.id for n in nodes if _norm_type(n.type) == "locus/trigger" or not in_links[n.id]),
         nodes[0].id if nodes else "",
     )
     terminals = [
-        n.id for n in nodes if not out_links[n.id] or _norm_type(n.type) == "frontier/output"
+        n.id for n in nodes if not out_links[n.id] or _norm_type(n.type) == "locus/output"
     ]
 
     # ancestors via reverse reachability (used to find the loop's forward port)
@@ -451,8 +451,8 @@ def _delegate_to_swe_agent(
         # arbitrary/over-broad tree. Safe default.
         return _plan_only_fallback(node, r, user_prompt, deps, reason="no_workspace_bound")
     try:
-        from frontier_runtime.harness.model_profiles import resolve_profile
-        from frontier_runtime.harness.swe_agent import SweAgent, SweTask
+        from locus_runtime.harness.model_profiles import resolve_profile
+        from locus_runtime.harness.swe_agent import SweAgent, SweTask
 
         profile = None
         try:
@@ -504,13 +504,13 @@ def _delegate_to_codex_agent(
     node: Any, r: AgentResolution, user_prompt: str, deps: CompilerDeps
 ) -> dict[str, Any]:
     """Run the build via the Codex subprocess backend in the bound worktree.
-    xFrontier still owns memory (prompt), workspace, diff capture, and events.
+    Locus still owns memory (prompt), workspace, diff capture, and events.
     Degrades to the native SweAgent if the codex binary is unavailable."""
     prov = deps.provisioned
     if prov is None:
         return _plan_only_fallback(node, r, user_prompt, deps, reason="no_workspace_bound")
     try:
-        from frontier_runtime.harness import codex_backend as cb
+        from locus_runtime.harness import codex_backend as cb
 
         binding = prov.binding
         cwd = prov.workspace.executor.workdir()
@@ -589,8 +589,8 @@ def _delegate_to_analyzer_agent(
     if prov is None:
         return _plan_only_fallback(node, r, user_prompt, deps, reason="no_workspace_bound")
     try:
-        from frontier_runtime.harness.model_profiles import resolve_profile
-        from frontier_runtime.harness.swe_agent import SweAgent, SweTask
+        from locus_runtime.harness.model_profiles import resolve_profile
+        from locus_runtime.harness.swe_agent import SweAgent, SweTask
 
         try:
             profile = resolve_profile(
@@ -659,8 +659,8 @@ def _delegate_to_collaborative_team(
     if prov is None:
         return _plan_only_fallback(node, r, user_prompt, deps, reason="no_workspace_bound")
     try:
-        from frontier_runtime.harness.collaboration import build_collaborative_team
-        from frontier_runtime.harness.swe_agent import SweTask
+        from locus_runtime.harness.collaboration import build_collaborative_team
+        from locus_runtime.harness.swe_agent import SweTask
 
         team = build_collaborative_team(
             client_for=lambda role: deps.make_chat_client(r),
@@ -760,7 +760,7 @@ def _make_node_runner(node: Any, deps: CompilerDeps, topo: dict[str, Any]):
         incoming, incoming_by_port = _gather_incoming(node_id, in_links, node_outputs)
         deps._emit("node_started", node_id=node_id, type=ntype)
         try:
-            if ntype.startswith("frontier/agent"):
+            if ntype.startswith("locus/agent"):
                 res = _run_agent_node(node, incoming, out_ports, state, deps)
             else:
                 res = deps.execute_native(node, incoming, incoming_by_port)
@@ -787,7 +787,7 @@ def _make_node_runner(node: Any, deps: CompilerDeps, topo: dict[str, Any]):
             node_id=node_id,
             node_type=ntype,
             title=getattr(node, "title", node_id),
-            agent_id=rd.get("agent_id") if ntype.startswith("frontier/agent") else None,
+            agent_id=rd.get("agent_id") if ntype.startswith("locus/agent") else None,
             response=str(rd.get("response") or rd.get("message") or ""),
             reasoning=str(rd.get("reasoning") or ""),
             route=str(rd.get("route", "")),
@@ -817,7 +817,7 @@ def _make_node_runner(node: Any, deps: CompilerDeps, topo: dict[str, Any]):
 # --------------------------------------------------------------------------- #
 # Compile + run
 # --------------------------------------------------------------------------- #
-def compile_frontier_graph(nodes: list[Any], links: list[Any], deps: CompilerDeps) -> CompiledGraph:
+def compile_locus_graph(nodes: list[Any], links: list[Any], deps: CompilerDeps) -> CompiledGraph:
     if not LANGGRAPH_AVAILABLE:
         raise RuntimeError("langgraph is not installed; cannot compile the workflow graph.")
     if not nodes:
@@ -858,7 +858,7 @@ def compile_frontier_graph(nodes: list[Any], links: list[Any], deps: CompilerDep
         entry=entry,
         terminals=terminals,
         has_cycle=topo["has_cycle"],
-        agent_node_ids=[n.id for n in nodes if _norm_type(n.type).startswith("frontier/agent")],
+        agent_node_ids=[n.id for n in nodes if _norm_type(n.type).startswith("locus/agent")],
         routing_nodes=routing_nodes,
         node_count=len(nodes),
     )
@@ -873,7 +873,7 @@ def run_compiled_graph(
     cleanup = None
     if needs_workspace:
         try:
-            from frontier_runtime.harness.workspace_binding import (
+            from locus_runtime.harness.workspace_binding import (
                 WorkspaceBinding,
                 WorkspaceManager,
             )

@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { publishGuardrailRuleset, saveGuardrailRuleset } from "@/lib/api";
-import type { GuardrailRuleSet } from "@/types/frontier";
+import type { GuardrailRuleSet } from "@/types/locus";
 
 type ControlGroup = "All controls" | "Jailbreak" | "Content safety" | "Protected materials";
 

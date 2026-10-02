@@ -10,7 +10,7 @@ import {
   getPublishedWorkflows,
   type ComposerOptions,
 } from "@/lib/api";
-import type { AgentDefinition, PlaybookDefinition, WorkflowDefinition } from "@/types/frontier";
+import type { AgentDefinition, PlaybookDefinition, WorkflowDefinition } from "@/types/locus";
 import { ComposerControls } from "@/components/composer-controls";
 
 type TokenKind = "data" | "tag" | "workflow" | "agent" | "playbook";
@@ -337,7 +337,7 @@ export function TaskKickoffComposer({
       setSubmitInfo(`Task started. Opening run ${result.id}...`);
       setDraft("");
       // Tell the nav chat tree (and any listeners) to refetch the run list.
-      window.dispatchEvent(new CustomEvent("frontier:runs-changed"));
+      window.dispatchEvent(new CustomEvent("locus:runs-changed"));
       router.push(`/inbox?session=${encodeURIComponent(result.id)}`);
       router.refresh();
     } catch (error) {

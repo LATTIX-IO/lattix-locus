@@ -1,6 +1,6 @@
 # Security
 
-See `THREAT-MODEL.md` for the canonical current-state vs target-state security expectations, trust boundaries, deployment-mode assumptions, the historical migration record for the removed `lattix_frontier/` package, and known failure modes.
+See `THREAT-MODEL.md` for the canonical current-state vs target-state security expectations, trust boundaries, deployment-mode assumptions, the historical migration record for the removed `lattix_locus/` package, and known failure modes.
 
 ## Capability tokens
 
@@ -72,9 +72,9 @@ The cortical assembly runtime uses the same zero-trust posture as the rest of th
 | Control | Required behavior | Primary evidence |
 | --- | --- | --- |
 | Signed cognitive messages | Column messages must include tenant, assembly, source column, target column, nonce, timestamp, and trusted subject metadata, then pass A2A signature checks before mutation | `/internal/cognition/messages/admit`, `tests/unit/test_cognitive_transport.py`, `apps/backend/tests/test_cortical_assembly_endpoint.py` |
-| Replay and idempotency | Request nonces and semantic cognitive replay markers block duplicate column-message mutation, while completed assembly replays return the original outcome | `frontier_runtime/events.py`, `frontier_runtime/persistence.py`, cortical endpoint replay tests |
-| Column least privilege | Column kinds have bounded capabilities, and unknown kinds deny by default | `frontier_runtime/cognition.py`, `tests/unit/test_cognition.py` |
-| Assembly admission | Assembly definitions are checked for bounds, required columns, tenant/provider/model/tool policy, and budget limits before runtime execution | `frontier_runtime/assembly_runner.py`, `tests/unit/test_assembly_runner.py` |
+| Replay and idempotency | Request nonces and semantic cognitive replay markers block duplicate column-message mutation, while completed assembly replays return the original outcome | `locus_runtime/events.py`, `locus_runtime/persistence.py`, cortical endpoint replay tests |
+| Column least privilege | Column kinds have bounded capabilities, and unknown kinds deny by default | `locus_runtime/cognition.py`, `tests/unit/test_cognition.py` |
+| Assembly admission | Assembly definitions are checked for bounds, required columns, tenant/provider/model/tool policy, and budget limits before runtime execution | `locus_runtime/assembly_runner.py`, `tests/unit/test_assembly_runner.py` |
 | Runtime policy gate | Every column step checks auth context, tenant ownership, capability, provider/model/tool/retrieval/network allowlists, budget counters, and audit emission | `admit_column_runtime_step(...)`, cortical endpoint runtime-gate tests |
 | Commitment gate | Ready outcomes require evidence/evaluation participation, no unresolved veto/blocker, confidence threshold satisfaction, high-risk human approval where configured, and an audited trail | commitment-gate tests in `tests/unit/test_cognition.py` and `tests/unit/test_assembly_runner.py` |
 | Projection safety | Causal graph projection is tenant-authorized, size-bounded, idempotent by assembly ID, and non-corrupting on unavailable/write-failed graph services | projection safety tests in `apps/backend/tests/test_generated_artifacts.py` and cortical endpoint tests |
@@ -86,7 +86,7 @@ The cortical assembly runtime uses the same zero-trust posture as the rest of th
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `local-lightweight` | Optional for local development | Optional | Recommended where used | Enabled by default controls where configured | Enabled by default but can be relaxed for local development | Local server required by default | Remains usable for local development |
 | `local-secure` | Required through profile/effective controls | Not globally required | Required for internal secure paths | Required | Required | Required unless explicitly confirmed | Reports degraded health/settings when required controls are disabled |
-| `hosted` | Required | Required | Required | Required | Required | Required unless `FRONTIER_CONFIRM_REMOTE_MCP_SERVERS=true` | Fails closed or reports blocked status |
+| `hosted` | Required | Required | Required | Required | Required | Required unless `LOCUS_CONFIRM_REMOTE_MCP_SERVERS=true` | Fails closed or reports blocked status |
 
 Hosted or secure-profile operators should check `/platform/settings` and authenticated `/healthz/details` for `secure_profile.status`, `secure_profile.failures`, and the effective immutable controls. Public `/healthz` remains minimal and may report `blocked` without exposing detailed failures.
 
@@ -118,7 +118,7 @@ Run the focused zero-trust suite before merging or promoting a behavior-changing
 python -m pytest tests/unit/test_cognition.py tests/unit/test_assembly_runner.py tests/unit/test_causal_state_persistence.py tests/unit/test_cognitive_transport.py
 python -m pytest apps/backend/tests/test_cortical_assembly_endpoint.py
 python -m pytest apps/backend/tests/test_generated_artifacts.py -k "secure_profile or runtime_profile or projection or tenant_allowed_runtime or tenant_denied_runtime"
-python -m py_compile apps/backend/app/main.py apps/backend/app/request_security.py frontier_runtime/cognition.py frontier_runtime/assembly_runner.py frontier_runtime/events.py frontier_runtime/envelope.py frontier_runtime/persistence.py
+python -m py_compile apps/backend/app/main.py apps/backend/app/request_security.py locus_runtime/cognition.py locus_runtime/assembly_runner.py locus_runtime/events.py locus_runtime/envelope.py locus_runtime/persistence.py
 ```
 
 For deployment evidence, also run the repo-level policy and chart checks when the required tools are available:

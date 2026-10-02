@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { getAgentDefinitions, publishWorkflowDefinition, saveWorkflowDefinition } from "@/lib/api";
 import { SecurityScopeEditor } from "@/components/security-scope-editor";
 import type { GraphLink, GraphNode } from "@/components/reactflow-canvas";
-import type { AgentDefinition, GeneratedCodeArtifact, SecurityScopeConfig } from "@/types/frontier";
+import type { AgentDefinition, GeneratedCodeArtifact, SecurityScopeConfig } from "@/types/locus";
 
 const StudioFullCanvas = dynamic(
   () => import("@/components/studio-full-canvas").then((m) => m.StudioFullCanvas),
@@ -102,7 +102,7 @@ export function WorkflowStudioClient({ workflowId, workflowName, initialGraph, i
               <p className="text-sm font-semibold text-[var(--foreground)]">{selectedNode.title}</p>
               <p className="text-[0.72rem] text-[var(--fx-muted)]">{selectedNode.type}</p>
             </div>
-            {selectedNode.type === "agent" || selectedNode.type === "frontier/agent" ? (
+            {selectedNode.type === "agent" || selectedNode.type === "locus/agent" ? (
               <div className="space-y-2">
                 <div className="rounded border border-[var(--fx-border)] bg-[var(--fx-surface)] p-2 text-[0.78rem]">
                   <p className="text-[0.68rem] uppercase tracking-[0.1em] text-[var(--fx-muted)]">Bound Agent</p>

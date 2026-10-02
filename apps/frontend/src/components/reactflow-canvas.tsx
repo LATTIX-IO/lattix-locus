@@ -20,14 +20,14 @@ import {
   type NodeProps,
   type ReactFlowInstance,
 } from "reactflow";
-import { frontierCanvasNodes } from "@/lib/frontier-node-catalog";
+import { locusCanvasNodes } from "@/lib/locus-node-catalog";
 import {
   getNodeDefaultConfig,
   getNodePorts,
   getNodeWidgets,
   normalizeNodeTypeForSchema,
   resolveNodePortAlias,
-} from "@/lib/frontier-node-schema";
+} from "@/lib/locus-node-schema";
 import "reactflow/dist/style.css";
 
 type NodeType = string;
@@ -55,7 +55,7 @@ type Props = {
   className?: string;
   readOnly?: boolean;
   extraNodeDefinitions?: Array<{
-    key: `frontier/${string}`;
+    key: `locus/${string}`;
     title: string;
     color?: string;
     description?: string;
@@ -94,14 +94,14 @@ type PortSpec = {
 type PortDirection = "input" | "output";
 
 type NodeDefinition = {
-  key: `frontier/${string}`;
+  key: `locus/${string}`;
   type: string;
   title: string;
   color: string;
   description?: string;
 };
 
-type FrontierNodeData = {
+type LocusNodeData = {
   title: string;
   color: string;
   type: string;
@@ -155,13 +155,13 @@ function parseListWidgetValue(value: unknown): string[] {
   return normalized;
 }
 
-function resolveInputPortType(node: Node<FrontierNodeData>, handleId: string | null | undefined): string | null {
+function resolveInputPortType(node: Node<LocusNodeData>, handleId: string | null | undefined): string | null {
   const normalizedHandle = resolveNodePortAlias(node.data.type, "input", handleId);
   const port = normalizedHandle ? node.data.inputs.find((input) => input.name === normalizedHandle) : node.data.inputs[0];
   return port?.type ?? null;
 }
 
-function resolveOutputPortType(node: Node<FrontierNodeData>, handleId: string | null | undefined): string | null {
+function resolveOutputPortType(node: Node<LocusNodeData>, handleId: string | null | undefined): string | null {
   const normalizedHandle = resolveNodePortAlias(node.data.type, "output", handleId);
   const port = normalizedHandle ? node.data.outputs.find((output) => output.name === normalizedHandle) : node.data.outputs[0];
   return port?.type ?? null;
@@ -218,7 +218,7 @@ const AUTO_LAYOUT_BASE_Y = 120;
 const AUTO_LAYOUT_X_GAP = 440;
 const AUTO_LAYOUT_Y_GAP = 64;
 
-function estimateNodeHeight(node: Node<FrontierNodeData>): number {
+function estimateNodeHeight(node: Node<LocusNodeData>): number {
   const measuredHeight = typeof node.height === "number" && Number.isFinite(node.height) ? node.height : null;
   const portRows = Math.max(node.data.inputs.length, node.data.outputs.length, 1);
   const multilineWidgets = node.data.widgets.filter((widget) => widget.multiline).length;
@@ -242,7 +242,7 @@ function estimateNodeHeight(node: Node<FrontierNodeData>): number {
 }
 
 const defaultNodeColorByType: Record<string, string> = Object.fromEntries(
-  frontierCanvasNodes.map((definition) => [definition.type, definition.color]),
+  locusCanvasNodes.map((definition) => [definition.type, definition.color]),
 );
 
 function ensureReadableHeaderColor(color: string): string {
@@ -301,11 +301,11 @@ function widgetSpecsForNodeType(type: string, widgetOptionOverrides?: Record<str
   });
 }
 
-function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
+function LocusNodeView({ id, data }: NodeProps<LocusNodeData>) {
   const titleColor = headerTitleTextColor(data.color);
   const portRows = Math.max(data.inputs.length, data.outputs.length, 1);
   const boundAgentId = typeof data.config.agent_id === "string" ? data.config.agent_id.trim() : "";
-  const canEditAgent = (data.type === "agent" || data.type === "frontier/agent") && Boolean(boundAgentId) && Boolean(data.onEditAgent);
+  const canEditAgent = (data.type === "agent" || data.type === "locus/agent") && Boolean(boundAgentId) && Boolean(data.onEditAgent);
 
   return (
     <div className="min-w-[300px] overflow-hidden rounded-[1.2rem] border border-[var(--fx-border)] bg-[var(--fx-surface)] text-[var(--foreground)] shadow-[0_16px_36px_rgba(15,23,42,0.08)]">
@@ -528,7 +528,7 @@ function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
   );
 }
 
-const nodeTypes = { frontierNode: FrontierNodeView };
+const nodeTypes = { locusNode: LocusNodeView };
 
 function ReactFlowCanvasImpl({
   nodes,
@@ -552,12 +552,12 @@ function ReactFlowCanvasImpl({
   const definitions = useMemo<NodeDefinition[]>(() => {
     const extraDefinitions = (extraNodeDefinitions ?? []).map((item) => ({
       key: item.key,
-      type: item.key.replace("frontier/", ""),
+      type: item.key.replace("locus/", ""),
       title: item.title,
       color: item.color ?? "#54d499",
       description: item.description,
     }));
-    const source = [...frontierCanvasNodes, ...extraDefinitions];
+    const source = [...locusCanvasNodes, ...extraDefinitions];
 
     return source.reduce<NodeDefinition[]>((acc, item) => {
       if (!acc.some((existing) => existing.key === item.key)) {
@@ -585,7 +585,7 @@ function ReactFlowCanvasImpl({
   }, [normalizedEdgeType]);
 
   const toCanvasNode = useCallback(
-    (graphNode: GraphNode): Node<FrontierNodeData> => {
+    (graphNode: GraphNode): Node<LocusNodeData> => {
       const definition = definitionByType.get(graphNode.type);
       const config = {
         ...defaultConfigForNodeType(graphNode.type),
@@ -594,7 +594,7 @@ function ReactFlowCanvasImpl({
 
       return {
         id: graphNode.id,
-        type: "frontierNode",
+        type: "locusNode",
         position: { x: graphNode.x, y: graphNode.y },
         data: {
           title: graphNode.title,
@@ -614,7 +614,7 @@ function ReactFlowCanvasImpl({
     [definitionByType, onEditAgent, readOnly, widgetOptionOverrides],
   );
 
-  const buildCanvasEdges = useCallback((graphNodes: Node<FrontierNodeData>[], graphLinks: GraphLink[]): Edge[] => {
+  const buildCanvasEdges = useCallback((graphNodes: Node<LocusNodeData>[], graphLinks: GraphLink[]): Edge[] => {
     const byId = new Map(graphNodes.map((node) => [node.id, node]));
 
     return graphLinks.reduce<Edge[]>((acc, link, index) => {
@@ -651,7 +651,7 @@ function ReactFlowCanvasImpl({
   const readonlyNodes = useMemo(() => nodes.map(toCanvasNode), [nodes, toCanvasNode]);
   const readonlyEdges = useMemo(() => buildCanvasEdges(readonlyNodes, links), [buildCanvasEdges, links, readonlyNodes]);
 
-  const [rfNodes, setRfNodes] = useState<Node<FrontierNodeData>[]>(() => nodes.map(toCanvasNode));
+  const [rfNodes, setRfNodes] = useState<Node<LocusNodeData>[]>(() => nodes.map(toCanvasNode));
   const [rfEdges, setRfEdges] = useState<Edge[]>(() => buildCanvasEdges(nodes.map(toCanvasNode), links));
   const [readonlySelectedNodeIds, setReadonlySelectedNodeIds] = useState<string[]>([]);
   const [readonlySelectedEdgeIds, setReadonlySelectedEdgeIds] = useState<string[]>([]);
@@ -1020,9 +1020,9 @@ function ReactFlowCanvasImpl({
         ? (flowRef.current.screenToFlowPosition({ x, y }) as { x: number; y: number })
         : { x: 220, y: 140 };
 
-      const newNode: Node<FrontierNodeData> = {
+      const newNode: Node<LocusNodeData> = {
         id,
-        type: "frontierNode",
+        type: "locusNode",
         position,
         data: {
           title: title ?? definition?.title ?? type,
@@ -1133,7 +1133,7 @@ function ReactFlowCanvasImpl({
           className="fx-panel absolute z-40 max-h-80 w-72 overflow-auto rounded-[1.25rem] p-2 shadow-[0_24px_60px_rgba(15,23,42,0.12)]"
           style={{ left: menu.x, top: menu.y }}
         >
-          <div className="mb-2 px-1 text-[10px] font-medium fx-muted">Add Node • frontier</div>
+          <div className="mb-2 px-1 text-[10px] font-medium fx-muted">Add Node • locus</div>
           {definitions.map((definition) => (
             <button
               key={definition.key}

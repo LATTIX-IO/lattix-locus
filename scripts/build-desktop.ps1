@@ -1,7 +1,7 @@
 #requires -version 5
 <#
 .SYNOPSIS
-  Build the Lattix xFrontier desktop installer locally on Windows (unsigned —
+  Build the Lattix Locus desktop installer locally on Windows (unsigned —
   fine for testing the install/first-run UX). Produces an .msi + .exe under
   apps/desktop-tauri/src-tauri/target/<triple>/release/bundle/.
 
@@ -61,11 +61,11 @@ if ($LASTEXITCODE -ne 0) {
 $triple = (& rustc -vV | Select-String "^host:").ToString().Split(":")[1].Trim()
 Write-Host "== target triple: $triple =="
 
-# 1) Backend sidecar (PyInstaller) -> bin/frontier-backend-<triple>.exe
+# 1) Backend sidecar (PyInstaller) -> bin/locus-backend-<triple>.exe
 Write-Host "== building backend sidecar (PyInstaller) =="
-& $Py -m PyInstaller --noconfirm (Join-Path $root "packaging/frontier-backend.spec")
+& $Py -m PyInstaller --noconfirm (Join-Path $root "packaging/locus-backend.spec")
 CheckExit "PyInstaller backend build"
-Copy-Item (Join-Path $root "dist/frontier-backend.exe") (Join-Path $bin "frontier-backend-$triple.exe") -Force
+Copy-Item (Join-Path $root "dist/locus-backend.exe") (Join-Path $bin "locus-backend-$triple.exe") -Force
 
 # 2) Frontend standalone + vendored Node
 Write-Host "== building frontend (Next.js standalone) =="

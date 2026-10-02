@@ -9,7 +9,7 @@ import {
 import { ComposerDefaultsSettings } from "@/components/composer-defaults-settings";
 import { SettingsRailCard, SettingsShell } from "@/components/settings-shell";
 import { getAtfAlignmentReport, getPlatformSettings, getUserSkills, savePlatformSettings, saveUserSkills } from "@/lib/api";
-import type { AtfAlignmentReport } from "@/types/frontier";
+import type { AtfAlignmentReport } from "@/types/locus";
 
 function normalizeHexColor(value: string, fallback: string): string {
   const trimmed = value.trim();
@@ -61,8 +61,8 @@ export default function SettingsPage() {
   const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null);
   const [atfReport, setAtfReport] = useState<AtfAlignmentReport | null>(null);
   const [atfLoading, setAtfLoading] = useState(true);
-  const [orgName, setOrgName] = useState("Lattix xFrontier");
-  const [orgSlug, setOrgSlug] = useState("lattix-frontier");
+  const [orgName, setOrgName] = useState("Lattix Locus");
+  const [orgSlug, setOrgSlug] = useState("lattix-locus");
   const [supportEmail, setSupportEmail] = useState("support@lattix.io");
   const [website, setWebsite] = useState("https://lattix.io");
   const [classificationBannerEnabled, setClassificationBannerEnabled] = useState(true);

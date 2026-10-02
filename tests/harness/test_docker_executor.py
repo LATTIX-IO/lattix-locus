@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from frontier_runtime.harness.executor import DockerContainerExecutor
+from locus_runtime.harness.executor import DockerContainerExecutor
 
 _IMAGE = "python:3.12-slim"
 

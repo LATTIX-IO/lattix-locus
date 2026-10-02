@@ -17,7 +17,7 @@ if str(_BACKEND) not in sys.path:
 
 main = pytest.importorskip("app.main", reason="backend not importable")
 gc = pytest.importorskip("app.graph_compiler")
-from frontier_runtime.harness.llm import ChatResponse, OpenAIChatClient  # noqa: E402
+from locus_runtime.harness.llm import ChatResponse, OpenAIChatClient  # noqa: E402
 
 
 # --- user settings + composer options normalization --------------------------
@@ -128,7 +128,7 @@ def test_reasoning_effort_in_request_body(monkeypatch):
 def test_plan_mode_forces_chat_not_code():
     class _Node:
         id = "build"
-        type = "frontier/agent"
+        type = "locus/agent"
         title = "Build"
         config = {"agent_id": "sdet", "phase": "build"}
 

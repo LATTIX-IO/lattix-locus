@@ -30,8 +30,8 @@ import {
   RunKind,
   WorkflowRunKind,
   WorkflowRunSummary,
-} from "@/types/frontier";
-export type { ObservabilityRunTrace } from "@/types/frontier";
+} from "@/types/locus";
+export type { ObservabilityRunTrace } from "@/types/locus";
 
 /* ------------------------------------------------------------------ */
 /*  Configuration helpers                                              */
@@ -46,10 +46,10 @@ function getApiBase(): string {
 }
 
 function getRequestIdentityHeaders(): Record<string, string> {
-  const actor = (process.env.NEXT_PUBLIC_FRONTIER_ACTOR ?? "").trim();
+  const actor = (process.env.NEXT_PUBLIC_LOCUS_ACTOR ?? "").trim();
   const headers: Record<string, string> = {};
   if (actor) {
-    headers["x-frontier-actor"] = actor;
+    headers["x-locus-actor"] = actor;
   }
   return headers;
 }
@@ -146,8 +146,8 @@ const EMPTY_WORKFLOWS: WorkflowDefinition[] = [];
 const EMPTY_ARTIFACTS: ArtifactSummary[] = [];
 const EMPTY_AGENTS: AgentDefinition[] = [];
 const EMPTY_GUARDRAILS: GuardrailRuleSet[] = [];
-export const PLATFORM_SETTINGS_UPDATED_EVENT = "frontier:platform-settings-updated";
-export const WORKFLOW_RUN_UPDATED_EVENT = "frontier:workflow-run-updated";
+export const PLATFORM_SETTINGS_UPDATED_EVENT = "locus:platform-settings-updated";
+export const WORKFLOW_RUN_UPDATED_EVENT = "locus:workflow-run-updated";
 
 function readCachedValue<T>(cacheKey: string): T | null {
   const cached = responseCache.get(cacheKey);
@@ -203,7 +203,7 @@ function publishPlatformSettingsUpdate(settings: PlatformSettings): void {
   window.dispatchEvent(new CustomEvent<PlatformSettings>(PLATFORM_SETTINGS_UPDATED_EVENT, { detail: settings }));
 }
 
-const FRONTIER_GRAPH_SCHEMA_VERSION = "frontier-graph/1.0";
+const LOCUS_GRAPH_SCHEMA_VERSION = "locus-graph/1.0";
 
 export type GraphCanvasPayload = {
   schema_version?: string;
@@ -215,7 +215,7 @@ export type GraphCanvasPayload = {
 function withGraphSchemaVersion(payload: GraphCanvasPayload): GraphCanvasPayload {
   return {
     ...payload,
-    schema_version: payload.schema_version ?? FRONTIER_GRAPH_SCHEMA_VERSION,
+    schema_version: payload.schema_version ?? LOCUS_GRAPH_SCHEMA_VERSION,
   };
 }
 
@@ -1507,22 +1507,22 @@ export type NodeDefinitionResponse = {
 export async function getNodeDefinitions(options?: { includeInternal?: boolean }): Promise<NodeDefinitionResponse[]> {
   const suffix = options?.includeInternal ? "?include_internal=true" : "";
   return safeFetch(`/node-definitions${suffix}`, [
-    { type_key: "frontier/trigger", title: "Trigger", description: "Workflow trigger/intake node", category: "Core", color: "#6ca0ff" },
-    { type_key: "frontier/agent", title: "Agent", description: "Delegates to a selected agent definition", category: "Agent", color: "#1f7f53" },
-    { type_key: "frontier/prompt", title: "Prompt", description: "Compose reusable system prompt instructions and pass them to agent nodes", category: "Agent", color: "#5f4bb6" },
-    { type_key: "frontier/tool-call", title: "Tool / API Call", description: "Invokes external API or tool", category: "Integration", color: "#6fd3ff" },
-    { type_key: "frontier/retrieval", title: "Retrieval", description: "Retrieves ranked context", category: "Knowledge", color: "#8a6717" },
-    { type_key: "frontier/guardrail", title: "Guardrail", description: "Checks content against guardrail rules", category: "Control", color: "#9f3550" },
-    { type_key: "frontier/human-review", title: "Human Review", description: "Requires human approval before next step", category: "Control", color: "#8d5c1a" },
-    { type_key: "frontier/manifold", title: "Manifold", description: "Consolidates multiple inbound flows via AND/OR logic", category: "Logic", color: "#7863d3" },
-    { type_key: "frontier/router", title: "Router", description: "Makes deterministic routing decisions from rules, thresholds, or keyword classifiers", category: "Logic", color: "#3158a4" },
-    { type_key: "frontier/iterator", title: "Iterator", description: "Processes lists, batches, and paginated payloads with loop and done branches", category: "Logic", color: "#5670d9" },
-    { type_key: "frontier/transform", title: "Transform", description: "Deterministically shapes payloads without an LLM or external tool hop", category: "Logic", color: "#1e8a72" },
-    { type_key: "frontier/event", title: "Event", description: "Publishes or consumes workflow events with structured envelopes and receipts", category: "Integration", color: "#0f8c8c" },
-    { type_key: "frontier/data-store", title: "Data Store", description: "Creates, reads, updates, appends, or deletes business records inside a scoped data store", category: "Integration", color: "#6e7c2d" },
-    { type_key: "frontier/error-handler", title: "Error Handler", description: "Normalizes failures and emits fallback payloads and recovery status", category: "Control", color: "#aa5a2f" },
-    { type_key: "frontier/wait", title: "Wait", description: "Delays, times out, or resumes execution windows with explicit branches", category: "Control", color: "#8c6a13" },
-    { type_key: "frontier/output", title: "Output", description: "Final output emission", category: "Core", color: "#69a3ff" },
+    { type_key: "locus/trigger", title: "Trigger", description: "Workflow trigger/intake node", category: "Core", color: "#6ca0ff" },
+    { type_key: "locus/agent", title: "Agent", description: "Delegates to a selected agent definition", category: "Agent", color: "#1f7f53" },
+    { type_key: "locus/prompt", title: "Prompt", description: "Compose reusable system prompt instructions and pass them to agent nodes", category: "Agent", color: "#5f4bb6" },
+    { type_key: "locus/tool-call", title: "Tool / API Call", description: "Invokes external API or tool", category: "Integration", color: "#6fd3ff" },
+    { type_key: "locus/retrieval", title: "Retrieval", description: "Retrieves ranked context", category: "Knowledge", color: "#8a6717" },
+    { type_key: "locus/guardrail", title: "Guardrail", description: "Checks content against guardrail rules", category: "Control", color: "#9f3550" },
+    { type_key: "locus/human-review", title: "Human Review", description: "Requires human approval before next step", category: "Control", color: "#8d5c1a" },
+    { type_key: "locus/manifold", title: "Manifold", description: "Consolidates multiple inbound flows via AND/OR logic", category: "Logic", color: "#7863d3" },
+    { type_key: "locus/router", title: "Router", description: "Makes deterministic routing decisions from rules, thresholds, or keyword classifiers", category: "Logic", color: "#3158a4" },
+    { type_key: "locus/iterator", title: "Iterator", description: "Processes lists, batches, and paginated payloads with loop and done branches", category: "Logic", color: "#5670d9" },
+    { type_key: "locus/transform", title: "Transform", description: "Deterministically shapes payloads without an LLM or external tool hop", category: "Logic", color: "#1e8a72" },
+    { type_key: "locus/event", title: "Event", description: "Publishes or consumes workflow events with structured envelopes and receipts", category: "Integration", color: "#0f8c8c" },
+    { type_key: "locus/data-store", title: "Data Store", description: "Creates, reads, updates, appends, or deletes business records inside a scoped data store", category: "Integration", color: "#6e7c2d" },
+    { type_key: "locus/error-handler", title: "Error Handler", description: "Normalizes failures and emits fallback payloads and recovery status", category: "Control", color: "#aa5a2f" },
+    { type_key: "locus/wait", title: "Wait", description: "Delays, times out, or resumes execution windows with explicit branches", category: "Control", color: "#8c6a13" },
+    { type_key: "locus/output", title: "Output", description: "Final output emission", category: "Core", color: "#69a3ff" },
   ]);
 }
 
@@ -1678,8 +1678,8 @@ export async function getPlatformSettings(): Promise<PlatformSettings> {
     return cached;
   }
   const value = await safeFetch<PlatformSettings>("/platform/settings", {
-    org_name: "Lattix xFrontier",
-    org_slug: "lattix-frontier",
+    org_name: "Lattix Locus",
+    org_slug: "lattix-locus",
     support_email: "support@lattix.io",
     website: "https://lattix.io",
     console_classification_banner_enabled: true,

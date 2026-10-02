@@ -65,10 +65,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip pyinstaller
           python -m pip install -e .
-          pyinstaller packaging/frontier-backend.spec
+          pyinstaller packaging/locus-backend.spec
           mkdir -p apps/desktop-tauri/src-tauri/bin
-          cp "dist/frontier-backend${{ matrix.ext }}" \
-             "apps/desktop-tauri/src-tauri/bin/frontier-backend-${{ matrix.triple }}${{ matrix.ext }}"
+          cp "dist/locus-backend${{ matrix.ext }}" \
+             "apps/desktop-tauri/src-tauri/bin/locus-backend-${{ matrix.triple }}${{ matrix.ext }}"
 
       - uses: actions/setup-node@v4
         with:
@@ -121,7 +121,7 @@ jobs:
           # the in-app one-click updater reads from
           # github.com/.../releases/latest/download/latest.json.
           tagName: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
-          releaseName: "Lattix xFrontier ${{ github.event.inputs.version || github.ref_name }}"
+          releaseName: "Lattix Locus ${{ github.event.inputs.version || github.ref_name }}"
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.triple }}

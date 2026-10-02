@@ -76,7 +76,7 @@ describe("safeFetch", () => {
 
 describe("required core fetches", () => {
   it("creates workflow runs with auth-aware headers and same-origin credentials", async () => {
-    vi.stubEnv("NEXT_PUBLIC_FRONTIER_ACTOR", "frontend-user");
+    vi.stubEnv("NEXT_PUBLIC_LOCUS_ACTOR", "frontend-user");
     fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ id: "run-1", status: "Running" }),
@@ -93,14 +93,14 @@ describe("required core fetches", () => {
         credentials: "include",
         headers: expect.objectContaining({
           "Content-Type": "application/json",
-          "x-frontier-actor": "frontend-user",
+          "x-locus-actor": "frontend-user",
         }),
       }),
     );
   });
 
   it("opens run streams with auth-aware headers and same-origin credentials", async () => {
-    vi.stubEnv("NEXT_PUBLIC_FRONTIER_ACTOR", "frontend-user");
+    vi.stubEnv("NEXT_PUBLIC_LOCUS_ACTOR", "frontend-user");
     fetchMock.mockResolvedValue({ ok: false, body: null });
 
     const { streamWorkflowRun } = await import("@/lib/api");
@@ -113,7 +113,7 @@ describe("required core fetches", () => {
         method: "GET",
         credentials: "include",
         headers: expect.objectContaining({
-          "x-frontier-actor": "frontend-user",
+          "x-locus-actor": "frontend-user",
         }),
       }),
     );
@@ -201,7 +201,7 @@ describe("required core fetches", () => {
     await expect(getRuntimeProviders()).rejects.toThrow(/503/);
   });
 
-  it("posts graph validation requests with the frontier schema version", async () => {
+  it("posts graph validation requests with the locus schema version", async () => {
     fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ valid: true, issues: [] }),
@@ -214,7 +214,7 @@ describe("required core fetches", () => {
     const callBody = fetchMock.mock.calls[0]?.[1]?.body;
     expect(typeof callBody).toBe("string");
     expect(JSON.parse(callBody as string)).toEqual({
-      schema_version: "frontier-graph/1.0",
+      schema_version: "locus-graph/1.0",
       nodes: [],
       links: [],
     });
@@ -270,7 +270,7 @@ describe("required core fetches", () => {
         conflict: true,
         message: "version conflict",
         version: 3,
-        graph_json: { nodes: [{ id: "n1", title: "Node 1", type: "frontier/trigger", x: 0, y: 0 }], links: [] },
+        graph_json: { nodes: [{ id: "n1", title: "Node 1", type: "locus/trigger", x: 0, y: 0 }], links: [] },
         updated_at: "2026-04-06T00:00:00Z",
       }),
     });
@@ -278,7 +278,7 @@ describe("required core fetches", () => {
     const { syncCollaborationSession } = await import("@/lib/api");
     const result = await syncCollaborationSession("playbook:pb-1", {
       base_version: 2,
-      graph_json: { nodes: [{ id: "n1", title: "Node 1", type: "frontier/trigger", x: 0, y: 0 }], links: [] },
+      graph_json: { nodes: [{ id: "n1", title: "Node 1", type: "locus/trigger", x: 0, y: 0 }], links: [] },
     });
 
     expect(result.conflict).toBe(true);
@@ -348,7 +348,7 @@ describe("strictFetch", () => {
 
     const { deleteNodeDefinition } = await import("@/lib/api");
 
-    await expect(deleteNodeDefinition("frontier/router")).rejects.toThrow(/501/);
+    await expect(deleteNodeDefinition("locus/router")).rejects.toThrow(/501/);
   });
 
   it("invalidates a cached anonymous operator session after successful login", async () => {
@@ -462,25 +462,25 @@ describe("onApiStatusChange", () => {
 });
 
 describe("identity headers", () => {
-  it("omits x-frontier-actor when no actor is configured", async () => {
+  it("omits x-locus-actor when no actor is configured", async () => {
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => [] });
 
     const { getPublishedWorkflows } = await import("@/lib/api");
     await getPublishedWorkflows();
 
     const callHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
-    expect(callHeaders["x-frontier-actor"]).toBeUndefined();
+    expect(callHeaders["x-locus-actor"]).toBeUndefined();
   });
 
-  it("includes x-frontier-actor only when explicitly configured", async () => {
-    vi.stubEnv("NEXT_PUBLIC_FRONTIER_ACTOR", "frontend-user");
+  it("includes x-locus-actor only when explicitly configured", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LOCUS_ACTOR", "frontend-user");
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => [] });
 
     const { getPublishedWorkflows } = await import("@/lib/api");
     await getPublishedWorkflows();
 
     const callHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
-    expect(callHeaders["x-frontier-actor"]).toBe("frontend-user");
+    expect(callHeaders["x-locus-actor"]).toBe("frontend-user");
   });
 
   it("never includes Authorization from browser env", async () => {
@@ -496,7 +496,7 @@ describe("identity headers", () => {
   it("forwards incoming cookie headers during server-side protected fetches", async () => {
     vi.resetModules();
     vi.doMock("next/headers", () => ({
-      headers: async () => new Headers({ cookie: "frontier_operator_session=test-cookie" }),
+      headers: async () => new Headers({ cookie: "locus_operator_session=test-cookie" }),
     }));
 
     const originalWindow = globalThis.window;
@@ -513,7 +513,7 @@ describe("identity headers", () => {
       await getInbox();
 
       const callHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
-      expect(callHeaders.cookie).toBe("frontier_operator_session=test-cookie");
+      expect(callHeaders.cookie).toBe("locus_operator_session=test-cookie");
     } finally {
       Object.defineProperty(globalThis, "window", {
         value: originalWindow,

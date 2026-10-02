@@ -19,7 +19,7 @@
   "tools": [
     {
       "name": "repo-read",
-      "type": "frontier-coding",
+      "type": "locus-coding",
       "config": { "toolset": ["execute_bash", "search", "str_replace_editor"], "mode": "read-only" }
     }
   ]

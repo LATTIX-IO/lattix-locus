@@ -1,6 +1,0 @@
-apiVersion: v2
-name: lattix-frontier
-description: Helm chart for the Lattix xFrontier multi-agent platform
-type: application
-version: 0.1.0
-appVersion: 0.1.0

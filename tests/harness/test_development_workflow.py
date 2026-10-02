@@ -9,14 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from frontier_runtime.harness.development import DevelopmentWorkflow, build_development_workflow
-from frontier_runtime.harness.executor import LocalDirectExecutor
-from frontier_runtime.harness.integrations import Spec
-from frontier_runtime.harness.llm import ChatResponse, ScriptedChatClient, ToolCall
-from frontier_runtime.harness.loop import LoopBudgets
-from frontier_runtime.harness.model_profiles import resolve_profile
-from frontier_runtime.harness.swe_agent import SweTask
-from frontier_runtime.harness.team import TEAM_ROLE_AGENTS, TeamFlow
+from locus_runtime.harness.development import DevelopmentWorkflow, build_development_workflow
+from locus_runtime.harness.executor import LocalDirectExecutor
+from locus_runtime.harness.integrations import Spec
+from locus_runtime.harness.llm import ChatResponse, ScriptedChatClient, ToolCall
+from locus_runtime.harness.loop import LoopBudgets
+from locus_runtime.harness.model_profiles import resolve_profile
+from locus_runtime.harness.swe_agent import SweTask
+from locus_runtime.harness.team import TEAM_ROLE_AGENTS, TeamFlow
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 requires_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="no bash")

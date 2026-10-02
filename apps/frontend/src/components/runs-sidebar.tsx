@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { getWorkflowRuns } from "@/lib/api";
 import { StatusChip } from "@/components/status-chip";
-import type { WorkflowRunSummary } from "@/types/frontier";
+import type { WorkflowRunSummary } from "@/types/locus";
 
 export async function RunsSidebar() {
   let runs: WorkflowRunSummary[] = [];

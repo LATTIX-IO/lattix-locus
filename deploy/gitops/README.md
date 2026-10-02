@@ -1,6 +1,6 @@
-# lattix-frontier-gitops
+# lattix-locus-gitops
 
-GitOps control plane for deploying and promoting Lattix xFrontier Microsoft AI Foundry configuration.
+GitOps control plane for deploying and promoting Lattix Locus Microsoft AI Foundry configuration.
 
 ## Scope
 
@@ -20,7 +20,7 @@ GitOps control plane for deploying and promoting Lattix xFrontier Microsoft AI F
 
 ## Pipeline Expectations
 
-1. Validate against `lattix-frontier-contracts`.
+1. Validate against `lattix-locus-contracts`.
 2. Build a release bundle containing packaged chart, installer assets, promotion plan, and rollback manifest.
 3. Plan and diff against target environment.
 4. Apply infra/config changes.

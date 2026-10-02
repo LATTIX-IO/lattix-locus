@@ -1,7 +1,7 @@
 """Minimal Model Context Protocol client (streamable HTTP transport).
 
 Patterned after Open WebUI's MIT-licensed MCP integration, implemented
-independently for the xFrontier runtime. Supports the initialize handshake,
+independently for the Locus runtime. Supports the initialize handshake,
 tools/list, and tools/call over JSON-RPC 2.0. Responses may arrive as plain
 JSON or as a server-sent-event stream; both are handled.
 
@@ -16,7 +16,7 @@ import urllib.request
 from typing import Any
 
 _PROTOCOL_VERSION = "2025-03-26"
-_CLIENT_INFO = {"name": "lattix-xfrontier", "version": "0.1.0"}
+_CLIENT_INFO = {"name": "lattix-locus", "version": "0.1.0"}
 
 
 class McpError(RuntimeError):

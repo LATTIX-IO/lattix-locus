@@ -1,4 +1,4 @@
-from frontier_runtime.orchestrator import OrchestratorState
+from locus_runtime.orchestrator import OrchestratorState
 
 
 def test_state_defaults() -> None:

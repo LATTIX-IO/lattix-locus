@@ -84,7 +84,7 @@ describe("RunConversationConsole", () => {
     artifacts: [{ id: "artifact-1", name: "Decision Memo", status: "Draft" as const, version: 1 }],
     status: "Running",
     graph: {
-      nodes: [{ id: "node-1", title: "Agent", type: "frontier/agent", x: 100, y: 120, config: {} }],
+      nodes: [{ id: "node-1", title: "Agent", type: "locus/agent", x: 100, y: 120, config: {} }],
       links: [],
     },
     agent_traces: [],

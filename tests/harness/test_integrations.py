@@ -9,16 +9,16 @@ from pathlib import Path
 
 import pytest
 
-from frontier_runtime.harness.executor import LocalDirectExecutor
-from frontier_runtime.harness.integrations import (
+from locus_runtime.harness.executor import LocalDirectExecutor
+from locus_runtime.harness.integrations import (
     DeliveryPolicy,
     FileSpecSource,
     GitHubDelivery,
     InlineSpecSource,
     LinearSpecSource,
 )
-from frontier_runtime.harness.swe_agent import SweTask
-from frontier_runtime.harness.team import ModeratorVerdict, RoundResult, TeamResult
+from locus_runtime.harness.swe_agent import SweTask
+from locus_runtime.harness.team import ModeratorVerdict, RoundResult, TeamResult
 
 requires_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="no bash")
 requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="no git")
@@ -124,7 +124,7 @@ def test_github_delivery_opens_pr_on_approve(tmp_path):
     gh = FakeGitHub()
     delivery = GitHubDelivery(github=gh)
     task = SweTask(instance_id="FRONT-123", problem_statement="x", executor=ex)
-    from frontier_runtime.harness.integrations import Spec
+    from locus_runtime.harness.integrations import Spec
 
     res = delivery.deliver(
         task,
@@ -133,12 +133,12 @@ def test_github_delivery_opens_pr_on_approve(tmp_path):
         DeliveryPolicy(),
     )
     assert res.action == "opened_pr"
-    assert res.branch == "frontier/FRONT-123"
+    assert res.branch == "locus/FRONT-123"
     assert res.pr_url.endswith("/pull/1")
     assert res.ci_status == "all checks passed"
     # it actually created the branch + commit locally
     branches = ex.run_shell("git branch --format='%(refname:short)'").stdout
-    assert "frontier/FRONT-123" in branches
+    assert "locus/FRONT-123" in branches
     assert any(c.startswith("open:") for c in gh.calls)
 
 
@@ -147,9 +147,9 @@ def test_github_delivery_opens_pr_on_approve(tmp_path):
 def test_github_delivery_merges_open_pr_on_reapprove(tmp_path):
     _git_repo(tmp_path)
     ex = LocalDirectExecutor(tmp_path)
-    from frontier_runtime.harness.integrations import Spec
+    from locus_runtime.harness.integrations import Spec
 
-    gh = FakeGitHub(open_pr_for={"frontier/FRONT-9": {"number": 7, "url": "u", "state": "open"}})
+    gh = FakeGitHub(open_pr_for={"locus/FRONT-9": {"number": 7, "url": "u", "state": "open"}})
     delivery = GitHubDelivery(github=gh)
     task = SweTask(instance_id="FRONT-9", problem_statement="x", executor=ex)
     policy = DeliveryPolicy(auto_merge_on_reapprove=True, merge_method="squash")
@@ -161,7 +161,7 @@ def test_github_delivery_merges_open_pr_on_reapprove(tmp_path):
     assert "merge:7:squash" in gh.calls
 
     # with auto-merge disabled, it waits
-    gh2 = FakeGitHub(open_pr_for={"frontier/FRONT-9": {"number": 7, "url": "u", "state": "open"}})
+    gh2 = FakeGitHub(open_pr_for={"locus/FRONT-9": {"number": 7, "url": "u", "state": "open"}})
     res2 = GitHubDelivery(github=gh2).deliver(
         task,
         Spec(id="FRONT-9", title="t", body="b"),
@@ -179,11 +179,11 @@ def test_devflow_spec_to_team_to_delivery(tmp_path):
     approved result opens a PR."""
     import json as _json
 
-    from frontier_runtime.harness.integrations import DevFlow
-    from frontier_runtime.harness.llm import ChatResponse, ScriptedChatClient, ToolCall
-    from frontier_runtime.harness.loop import LoopBudgets
-    from frontier_runtime.harness.model_profiles import resolve_profile
-    from frontier_runtime.harness.team import TEAM_ROLE_AGENTS, TeamFlow
+    from locus_runtime.harness.integrations import DevFlow
+    from locus_runtime.harness.llm import ChatResponse, ScriptedChatClient, ToolCall
+    from locus_runtime.harness.loop import LoopBudgets
+    from locus_runtime.harness.model_profiles import resolve_profile
+    from locus_runtime.harness.team import TEAM_ROLE_AGENTS, TeamFlow
 
     # repo with a fixable bug
     (tmp_path / "mathlib").mkdir()
@@ -274,4 +274,4 @@ def test_devflow_spec_to_team_to_delivery(tmp_path):
     assert result.spec.source == "linear" and result.spec.id == "FRONT-1"
     assert result.approved is True
     assert result.delivery.action == "opened_pr"
-    assert result.delivery.branch == "frontier/FRONT-1"
+    assert result.delivery.branch == "locus/FRONT-1"

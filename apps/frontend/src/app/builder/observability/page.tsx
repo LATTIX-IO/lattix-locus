@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { getObservabilityDashboard, getObservabilityRunTrace } from "@/lib/api";
-import type { ObservabilityRunTrace } from "@/types/frontier";
+import type { ObservabilityRunTrace } from "@/types/locus";
 
 type DashboardSummary = {
   total_runs: number;

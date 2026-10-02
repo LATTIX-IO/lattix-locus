@@ -1,14 +1,14 @@
-# Lattix xFrontier — Desktop Shell (Tauri v2)
+# Lattix Locus — Desktop Shell (Tauri v2)
 
 A thin, auditable desktop wrapper. It spawns **one** backend sidecar — the
 packaged native supervisor — which brings up every local service (Postgres +
 pgvector, **Neo4j world models**, NATS, Ollama, the confined agents, the FastAPI
 backend, and the Next.js frontend) with **no Docker**, then opens a webview at
-the local UI. The heavy lifting stays in Python (`frontier_tooling`), so the Rust
+the local UI. The heavy lifting stays in Python (`locus_tooling`), so the Rust
 layer is just a window + lifecycle manager.
 
 ```
-Tauri shell  ──spawns──▶  frontier-backend (PyInstaller)  ──native_launcher──▶  Postgres / Neo4j / NATS / Ollama / agents / backend / frontend
+Tauri shell  ──spawns──▶  locus-backend (PyInstaller)  ──native_launcher──▶  Postgres / Neo4j / NATS / Ollama / agents / backend / frontend
      │                                                                                          │
      └───────────────── webview navigates to http://127.0.0.1:3000 once /healthz is green ──────┘
 ```
@@ -21,8 +21,8 @@ Tauri shell  ──spawns──▶  frontier-backend (PyInstaller)  ──native
 | `src-tauri/src/main.rs` | Spawn the sidecar, wait for `/healthz`, navigate to the UI |
 | `src-tauri/capabilities/default.json` | v2 permissions (spawn sidecar, navigate, updater) |
 | `src-tauri/loading/index.html` | Splash shown while services start |
-| `../../packaging/frontier-backend.spec` | PyInstaller spec for the backend sidecar |
-| `frontier_tooling/desktop_main.py` | The sidecar entrypoint (runs the supervisor in the foreground) |
+| `../../packaging/locus-backend.spec` | PyInstaller spec for the backend sidecar |
+| `locus_tooling/desktop_main.py` | The sidecar entrypoint (runs the supervisor in the foreground) |
 
 ## Prerequisites (not installable on the dev box used so far)
 
@@ -35,15 +35,15 @@ Tauri shell  ──spawns──▶  frontier-backend (PyInstaller)  ──native
 ## Build
 
 ```bash
-# 1. Backend sidecar  →  dist/frontier-backend(.exe)
-pyinstaller packaging/frontier-backend.spec
+# 1. Backend sidecar  →  dist/locus-backend(.exe)
+pyinstaller packaging/locus-backend.spec
 
 # 2. Place it where Tauri expects externalBin, with the target-triple suffix:
-#    e.g. apps/desktop-tauri/src-tauri/bin/frontier-backend-x86_64-pc-windows-msvc.exe
+#    e.g. apps/desktop-tauri/src-tauri/bin/locus-backend-x86_64-pc-windows-msvc.exe
 #    (Tauri appends the triple; copy/rename accordingly per target.)
 
 # 3. Vendor the sidecar binaries the supervisor needs (nats/caddy/ollama/...):
-python -m frontier_tooling.cli native-fetch        # → app-home/bin (dev)
+python -m locus_tooling.cli native-fetch        # → app-home/bin (dev)
 #    For a self-contained bundle, copy these into src-tauri/bin/ as resources.
 
 # 4. Build the desktop app
@@ -130,7 +130,7 @@ The installers are produced by `.github/workflows/desktop-release.yml` — they 
 
 ## Status / what's environment-gated
 
-The Python integration layer (`frontier_tooling/desktop.py`, `desktop_main.py`,
+The Python integration layer (`locus_tooling/desktop.py`, `desktop_main.py`,
 the supervisor `serve()` loop, and the `native-serve` CLI) is implemented and
 unit-tested. The Rust shell, PyInstaller build, icon assets, code-signing, and
 notarization require the toolchains/certs above and a per-OS CI matrix — they are

@@ -20,7 +20,7 @@ import type {
   DefinitionRevisionSummary,
   GuardrailRuleSet,
   WorkflowDefinition,
-} from "@/types/frontier";
+} from "@/types/locus";
 
 type ReleaseEntityType = "workflow" | "agent" | "guardrail";
 

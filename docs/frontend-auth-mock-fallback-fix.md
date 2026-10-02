@@ -10,16 +10,16 @@ Those three are **mock data** (`apps/frontend/src/lib/mock-data.ts:150-152`). Th
 falls back to mock data when its backend API call fails — and it is failing with **401**.
 
 - The backend requires authentication (`require_authenticated_requests` is true) and grants
-  builder access from an **operator session token**, read from the `frontier_operator_session`
+  builder access from an **operator session token**, read from the `locus_operator_session`
   cookie (`_request_operator_session_token`, `main.py:1133`).
-- The frontend API client (`apps/frontend/src/lib/api.ts`) only attaches an `x-frontier-actor`
-  header (and only when `NEXT_PUBLIC_FRONTIER_ACTOR` is set — it is empty). It never forwards
+- The frontend API client (`apps/frontend/src/lib/api.ts`) only attaches an `x-locus-actor`
+  header (and only when `NEXT_PUBLIC_LOCUS_ACTOR` is set — it is empty). It never forwards
   the casdoor operator session cookie or an `Authorization` bearer to `backend:8000`.
 - Result: every server-side call to the backend is anonymous → `GET /agent-definitions` → 401
   → UI shows mock agents.
 
 Confirmed: the backend store holds 5 published `graph` agents incl. `Full-Stack SDET Agent`
-(`frontier_state_store` → `section:agent_definitions`); `GET /agent-definitions` returns all
+(`locus_state_store` → `section:agent_definitions`); `GET /agent-definitions` returns all
 definitions unfiltered. So this is purely a frontend→backend auth-forwarding gap.
 
 ## Fix (recommended): forward the operator session to the backend
@@ -34,7 +34,7 @@ import { cookies } from "next/headers";
 
 function getAuthHeaders(): Record<string, string> {
   if (typeof window !== "undefined") return {};            // never from the browser
-  const token = cookies().get("frontier_operator_session")?.value;
+  const token = cookies().get("locus_operator_session")?.value;
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 ```
@@ -57,8 +57,8 @@ docker compose build frontend && docker compose up -d frontend
 ```
 
 ## Alternatives (local dev only)
-- **Static bearer**: set `FRONTIER_API_BEARER_TOKEN=<dev-token>` on the backend and have the
-  server-side `api.ts` attach `Authorization: Bearer ${process.env.FRONTIER_API_BEARER_TOKEN}`.
+- **Static bearer**: set `LOCUS_API_BEARER_TOKEN=<dev-token>` on the backend and have the
+  server-side `api.ts` attach `Authorization: Bearer ${process.env.LOCUS_API_BEARER_TOKEN}`.
   Simpler, but introduces a shared dev secret (keep it out of committed files). Still needs a
   frontend rebuild.
 - **Header-actor auth**: only works when auth is *not* required and the profile is
@@ -69,5 +69,5 @@ docker compose build frontend && docker compose up -d frontend
 ```bash
 # backend log should show 200 (not 401) for /agent-definitions, and the UI shows
 # Full-Stack SDET Agent (graph, published, v1) as the 4th agent.
-docker logs --tail 20 lattix-xfrontier-backend-1 | grep agent-definitions
+docker logs --tail 20 lattix-locus-backend-1 | grep agent-definitions
 ```

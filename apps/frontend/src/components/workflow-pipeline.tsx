@@ -10,7 +10,7 @@ import {
   FxStatusBadge,
   type FxStatus,
 } from "@/components/fx-ui";
-import type { WorkflowDefinition } from "@/types/frontier";
+import type { WorkflowDefinition } from "@/types/locus";
 
 type Step = {
   id: string;

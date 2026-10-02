@@ -1,6 +1,6 @@
-# Lattix xFrontier Reliability
+# Lattix Locus Reliability
 
-xFrontier reliability depends on three things: control-plane state surviving restart, runtime isolation never degrading silently, and long-running graph execution remaining observable and replayable.
+Locus reliability depends on three things: control-plane state surviving restart, runtime isolation never degrading silently, and long-running graph execution remaining observable and replayable.
 
 ## Dependencies
 
@@ -15,13 +15,13 @@ xFrontier reliability depends on three things: control-plane state surviving res
 | Envoy + local gateway | Ingress and `/api/*` proxying in the secure stack | Full stack only; the lightweight stack talks to the backend directly |
 | Sandbox egress gateway | Controlled outbound path for sandboxed tools | Full stack only |
 | Jaeger / OTel | Tracing | Optional; absence must not change request behavior |
-| OpenAI (or configured provider) | Model execution for `frontier/agent` and framework engines | Provider readiness is reported through `/runtime/providers`; missing key degrades to a reported-unavailable state, not a crash |
+| OpenAI (or configured provider) | Model execution for `locus/agent` and framework engines | Provider readiness is reported through `/runtime/providers`; missing key degrades to a reported-unavailable state, not a crash |
 
 ## Failure modes
 
 - **Control-plane state loss on restart.** `_persist_store_state()` catches and discards every exception. With `POSTGRES_DSN` unset or Postgres unreachable, the platform runs normally and loses all workflow, agent, and guardrail definitions on restart, with no log line. This is the highest-severity known reliability gap.
 - **Replay-state unavailability.** Correctly handled: the A2A nonce path raises `503 A2A replay state persistence unavailable` rather than accepting unverifiable traffic.
-- **Silent isolation downgrade.** A host where the intended strategy is unavailable must not fall back to a weaker tier without an explicit, logged, opt-in control. `restricted-process` is gated behind `FRONTIER_ALLOW_RESTRICTED_PROCESS_SANDBOX`, and Windows AppContainer confinement is fail-closed rather than downgrading to a bare Job Object.
+- **Silent isolation downgrade.** A host where the intended strategy is unavailable must not fall back to a weaker tier without an explicit, logged, opt-in control. `restricted-process` is gated behind `LOCUS_ALLOW_RESTRICTED_PROCESS_SANDBOX`, and Windows AppContainer confinement is fail-closed rather than downgrading to a bare Job Object.
 - **Unimplemented Kubernetes isolation.** `k8s-gvisor` and `k8s-kata` exist as `IsolationStrategy` values with no implementing strategy. Selecting them must not resolve to something weaker.
 - **Stream interruption.** Run progress streams over SSE (`text/event-stream`). A dropped stream must not be indistinguishable from a completed run; clients need an explicit terminal event or a reconnect path.
 - **Non-native engine absence.** LangGraph, LangChain, Semantic Kernel, and AutoGen are optional imports. A missing module must produce a clear provider-status result, not a partially executed graph.
@@ -36,13 +36,13 @@ xFrontier reliability depends on three things: control-plane state surviving res
 - Persistence failures on the control-plane path must be surfaced — logged at minimum, and returned to the caller when the write was part of the request contract.
 - Isolation strategy selection is explicit and logged per execution. Never downgrade tiers implicitly.
 - Feature flags default to the safe value. Enabling a memory or engine flag is an operator decision, not a runtime inference.
-- Runs are replayable from persisted events. The hash-chained event log (`frontier_runtime/events.py`) is the audit spine — do not bypass it.
+- Runs are replayable from persisted events. The hash-chained event log (`locus_runtime/events.py`) is the audit spine — do not bypass it.
 
 ## Runtime profiles and posture
 
 | Profile | Auth required | Signed A2A headers | Intended use |
 | --- | --- | --- | --- |
-| `local-lightweight` | no | no | Quick local iteration only. **This is the default when `FRONTIER_RUNTIME_PROFILE` is unset.** |
+| `local-lightweight` | no | no | Quick local iteration only. **This is the default when `LOCUS_RUNTIME_PROFILE` is unset.** |
 | `local-secure` | yes | no | Secure local/full stack; pinned by `docker-compose.yml` |
 | `hosted` | yes | yes | Non-local deployment; pinned by the Helm chart |
 

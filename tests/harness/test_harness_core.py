@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from frontier_runtime.harness.enforcement import (
+from locus_runtime.harness.enforcement import (
     ReaskPolicy,
     constraint_kwargs,
     schema_by_name,
     validate_tool_call,
 )
-from frontier_runtime.harness.model_profiles import BUILTIN_PROFILES, resolve_profile
-from frontier_runtime.harness.tools import CodingTelemetry, tool_schemas, truncate_output
-from frontier_runtime.harness.trajectory import TrajectoryRecorder
+from locus_runtime.harness.model_profiles import BUILTIN_PROFILES, resolve_profile
+from locus_runtime.harness.tools import CodingTelemetry, tool_schemas, truncate_output
+from locus_runtime.harness.trajectory import TrajectoryRecorder
 
 
 # -- trajectory -------------------------------------------------------------
@@ -53,7 +53,7 @@ def test_profile_pattern_resolution():
     assert resolve_profile("vllm", "gpt-oss-20b").profile_id == "gpt-oss-harmony"
     assert resolve_profile("vllm", "qwen3-coder").profile_id == "local-32b-class"
     assert resolve_profile("ollama", "llama3").profile_id == "local-weak"
-    assert resolve_profile("anthropic", "claude").profile_id == "frontier-default"
+    assert resolve_profile("anthropic", "claude").profile_id == "locus-default"
 
 
 def test_profile_forced_and_overrides():
@@ -116,7 +116,7 @@ def test_validate_coerces_stringified_int():
 
 
 def test_constraint_kwargs_by_backend():
-    from frontier_runtime.harness.model_profiles import ModelCapabilityProfile
+    from locus_runtime.harness.model_profiles import ModelCapabilityProfile
 
     tools = tool_schemas()
     xg = ModelCapabilityProfile(structured_output="xgrammar")

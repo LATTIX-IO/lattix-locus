@@ -1,4 +1,4 @@
-# Resource Efficiency Plan — Lattix xFrontier
+# Resource Efficiency Plan — Lattix Locus
 
 Status: PHASE 0–1 IMPLEMENTED (except 1.2 agent-container collapse and 1.5 module split) · 2.2 SSE BRIDGE IMPLEMENTED · 2.1 BOUNDED IN-PROCESS POOL IMPLEMENTED (external worker pending 2.3) · remaining Phase 2–3 PROPOSED · 2026-06-10
 Driver: local-first deployments must run comfortably on a 32 GB developer/operator machine while keeping the full security guardrail posture (PII scanning, policy enforcement, signed A2A, audit). A full local test run recently exhausted 32 GB of RAM; this plan removes that entire class of failure.
@@ -32,7 +32,7 @@ Driver: local-first deployments must run comfortably on a 32 GB developer/operat
 
 ## Phase 1 — Quick wins in the current stack (1–2 weeks, no rewrites)
 
-> Implementation status (2026-06-10): 1.1 ✅ (sectioned change-detecting persistence + append-only `frontier_audit_events` table), 1.2 ✅ for Neo4j-off-by-default (`graph` profile; agent-container collapse pending), 1.3 ✅ (Presidio import + engine fully lazy), 1.4 ✅ (`make frontend-serve`), 1.5 partial (audit moved to append-only table; `main.py` module split pending).
+> Implementation status (2026-06-10): 1.1 ✅ (sectioned change-detecting persistence + append-only `locus_audit_events` table), 1.2 ✅ for Neo4j-off-by-default (`graph` profile; agent-container collapse pending), 1.3 ✅ (Presidio import + engine fully lazy), 1.4 ✅ (`make frontend-serve`), 1.5 partial (audit moved to append-only table; `main.py` module split pending).
 
 **1.1 Fix per-mutation full-store persistence (highest impact).**
 `_persist_store_state()` serializes every definition, revision, run, and event into one JSON blob and upserts a single Postgres row on *every* mutation (`apps/backend/app/main.py:10319`, `platform_services.py:137`). Replace with:
@@ -55,18 +55,18 @@ Make the deterministic tier (keyword/regex/Luhn/entropy detectors) the default l
 **1.5 Micro-fixes in the API process.**
 - `store.audit_events.insert(0, …)` and `inbox.insert(0, …)` are O(n) memmoves on every event → switch to `deque(maxlen=…)` / append + reversed reads.
 - Split `main.py` (15.8k lines) into routers/modules — import cost, memory locality, and it unblocks every later extraction.
-- Run-event lists already cap at 5000 in `frontier_runtime`; apply the same cap in the backend store.
+- Run-event lists already cap at 5000 in `locus_runtime`; apply the same cap in the backend store.
 
 ## Phase 2 — Architectural efficiency (2–6 weeks)
 
 **2.1 Single worker queue instead of in-request execution.** — 🟡 in-process half done 2026-06-10
-Run execution now goes through a dedicated bounded `ThreadPoolExecutor` (`FRONTIER_WORKER_CONCURRENCY`, default 2, clamped 1–16; clean shutdown via app shutdown hook) instead of FastAPI `BackgroundTasks`, so run bursts queue instead of consuming the API server's shared request threadpool. Remaining: extract this seam into an external NATS-consuming worker process — which requires the SQL-canonical store (2.3) so worker and API share state.
+Run execution now goes through a dedicated bounded `ThreadPoolExecutor` (`LOCUS_WORKER_CONCURRENCY`, default 2, clamped 1–16; clean shutdown via app shutdown hook) instead of FastAPI `BackgroundTasks`, so run bursts queue instead of consuming the API server's shared request threadpool. Remaining: extract this seam into an external NATS-consuming worker process — which requires the SQL-canonical store (2.3) so worker and API share state.
 
 **2.2 SSE event bridge.** — ✅ done 2026-06-10
 `GET /workflow-runs/{run_id}/events/stream` (async generator — no worker thread held while idle; terminal self-close; 5-min rotation with `?after=` cursor reconnect). The run console streams via fetch-based SSE (fetch carries the identity headers EventSource cannot) and automatically downgrades to the interval-polling path on any transport failure. One idle connection per open console instead of 2 requests/3 s.
 
 **2.3 Canonical store = SQL, memory = cache.** — 🟡 SQLite backend done 2026-06-10
-`SQLiteStateStore` + `SQLiteAuditLog` (stdlib sqlite3, WAL, lock-guarded shared connection) implement the same sectioned-store and audit interfaces as the Postgres classes. Opt in by leaving `POSTGRES_DSN` unset and setting `FRONTIER_SQLITE_STATE_PATH=.frontier/state.db` — the backend then persists durably with **zero containers**. Remaining: invert `InMemoryStore` into a read-through cache over row-level CRUD (prerequisite for the external worker in 2.1).
+`SQLiteStateStore` + `SQLiteAuditLog` (stdlib sqlite3, WAL, lock-guarded shared connection) implement the same sectioned-store and audit interfaces as the Postgres classes. Opt in by leaving `POSTGRES_DSN` unset and setting `LOCUS_SQLITE_STATE_PATH=.locus/state.db` — the backend then persists durably with **zero containers**. Remaining: invert `InMemoryStore` into a read-through cache over row-level CRUD (prerequisite for the external worker in 2.1).
 
 **2.4 Embedded policy evaluation.**
 Evaluate [regorus](https://github.com/microsoft/regorus) (Rust Rego engine, Python bindings) embedded in the backend for local mode, eliminating the OPA sidecar + network hop. Keep OPA sidecar for cluster deployments; identical `.rego` files, shared `make policy-test`.
@@ -77,7 +77,7 @@ Decision matrix — a component qualifies for Rust only if it is **(a)** CPU-bou
 
 | Candidate | Verdict | Rationale |
 |---|---|---|
-| **Guardrail/PII scan engine** | ✅ **#1 — do it** | Runs on every input/output. Rust crate (`aho-corasick`, `regex-automata`, deterministic detectors: Luhn, entropy, format validators) shipped as a **PyO3/maturin wheel** (`frontier-guard`). Expected: ≥10× throughput, ~10 MB RSS vs ~1 GB Presidio path. Presidio remains the optional deep-scan tier. |
+| **Guardrail/PII scan engine** | ✅ **#1 — do it** | Runs on every input/output. Rust crate (`aho-corasick`, `regex-automata`, deterministic detectors: Luhn, entropy, format validators) shipped as a **PyO3/maturin wheel** (`locus-guard`). Expected: ≥10× throughput, ~10 MB RSS vs ~1 GB Presidio path. Presidio remains the optional deep-scan tier. |
 | **Local gateway (egress allowlist + A2A signature/nonce verification)** | ✅ **#2** | Consolidates `local-gateway` + `sandbox-egress-gateway` + local Envoy duty into one small Rust proxy (hyper/tower). One ~15 MB static binary replaces 2–3 containers; also the natural Windows-sandbox egress chokepoint (FRONT-13). |
 | **Worker runtime / event bus daemon** | 🟡 later | Right shape for Rust (long-running, concurrency, budget enforcement), but only after Phase 2.1 stabilizes the contract. Re-evaluate with profiles. |
 | **Policy engine** | 🟡 via regorus | Don't write our own — embed the existing Rust Rego engine (Phase 2.4). |
@@ -88,7 +88,7 @@ Decision matrix — a component qualifies for Rust only if it is **(a)** CPU-bou
 **Delivery pattern for each Rust component**
 1. Freeze the contract with a golden test corpus generated from the Python implementation.
 2. Build the crate + PyO3 bindings; CI builds wheels for win/mac/linux (feeds the FRONT-35 installer).
-3. Ship behind `FRONTIER_NATIVE_GUARD=1` (etc.) with automatic fallback to Python on import failure.
+3. Ship behind `LOCUS_NATIVE_GUARD=1` (etc.) with automatic fallback to Python on import failure.
 4. Run both engines in shadow mode for one release (Rust result authoritative, Python result compared and logged on divergence).
 5. Remove the flag; keep the Python path as the documented fallback for exotic platforms.
 

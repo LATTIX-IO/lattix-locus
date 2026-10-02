@@ -1,6 +1,6 @@
 project:
   environment: dev
-  name: lattix-frontier-dev
+  name: lattix-locus-dev
   endpoint: https://jpbooth-7441-resource.services.ai.azure.com/api/projects/jpbooth-7441
   region: eastus2
   auth:

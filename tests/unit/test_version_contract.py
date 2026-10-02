@@ -16,7 +16,7 @@ def _read(relative_path: str) -> str:
 def _chart_value(field: str) -> str:
     match = re.search(
         rf"^{re.escape(field)}:\s*([^\n]+)$",
-        _read("helm/lattix-frontier/Chart.yaml"),
+        _read("helm/lattix-locus/Chart.yaml"),
         flags=re.MULTILINE,
     )
     assert match is not None, f"{field} missing from Chart.yaml"

@@ -1,8 +1,8 @@
 import asyncio
 
-from frontier_runtime.envelope import Envelope
-from frontier_runtime.guardrails import FilterContext, default_filter_chain
-from frontier_runtime.security import CapabilityMinter, build_default_keypair
+from locus_runtime.envelope import Envelope
+from locus_runtime.guardrails import FilterContext, default_filter_chain
+from locus_runtime.security import CapabilityMinter, build_default_keypair
 
 
 def test_filter_chain_allows_valid_envelope() -> None:

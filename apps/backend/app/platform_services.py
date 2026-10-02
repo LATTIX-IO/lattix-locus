@@ -11,7 +11,47 @@ from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
-LOGGER = logging.getLogger(__name__)
+from locus_runtime.legacy import LEGACY_TABLES, normalize_legacy_identifiers
+
+LOGGER = logging.getLogger(__name__)
+
+def _legacy_table_name(current: str) -> str | None:
+    for legacy, name in LEGACY_TABLES.items():
+        if name == current:
+            return legacy
+    return None
+
+
+def _rename_legacy_tables_postgres(cursor: Any, tables: tuple[str, ...]) -> None:
+    """Rename pre-Locus tables in place so existing data carries over."""
+    for current in tables:
+        legacy = _legacy_table_name(current)
+        if legacy is None:
+            continue
+        cursor.execute("SELECT to_regclass(%s), to_regclass(%s)", (legacy, current))
+        row = cursor.fetchone()
+        if row and row[0] and not row[1]:
+            # Both names come from the LEGACY_TABLES constant, never from input.
+            cursor.execute(f"ALTER TABLE {legacy} RENAME TO {current}")
+            LOGGER.info("renamed legacy table %s to %s", legacy, current)
+
+
+def _rename_legacy_tables_sqlite(connection: Any, tables: tuple[str, ...]) -> None:
+    for current in tables:
+        legacy = _legacy_table_name(current)
+        if legacy is None:
+            continue
+        names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?)",
+                (legacy, current),
+            ).fetchall()
+        }
+        if legacy in names and current not in names:
+            connection.execute(f"ALTER TABLE {legacy} RENAME TO {current}")
+            LOGGER.info("renamed legacy table %s to %s", legacy, current)
+
 PSYCOPG_IMPORT_ERROR: str | None = None
 
 try:
@@ -79,7 +119,7 @@ def _vector_type_sql(dimensions: int) -> Any:
 def _embedding_column_statement(dimensions: int) -> str:
     validated_dimensions = _validated_embedding_dimensions(dimensions)
     return (
-        "ALTER TABLE frontier_long_term_memory "
+        "ALTER TABLE locus_long_term_memory "
         f"ADD COLUMN IF NOT EXISTS embedding vector({validated_dimensions})"
     )
 
@@ -129,9 +169,10 @@ class PostgresStateStore(_BasePostgresService):
             return
         with self._connect() as connection:
             with connection.cursor() as cursor:
+                _rename_legacy_tables_postgres(cursor, ("locus_state_store",))
                 cursor.execute(
                     """
-					CREATE TABLE IF NOT EXISTS frontier_state_store (
+					CREATE TABLE IF NOT EXISTS locus_state_store (
 						state_key TEXT PRIMARY KEY,
 						payload JSONB NOT NULL,
 						updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
@@ -146,14 +187,14 @@ class PostgresStateStore(_BasePostgresService):
         self.initialize()
         with self._connect() as connection:
             with connection.cursor() as cursor:
-                cursor.execute("SELECT state_key, payload FROM frontier_state_store")
+                cursor.execute("SELECT state_key, payload FROM locus_state_store")
                 rows = cursor.fetchall()
         if not rows:
             return None
         legacy: dict[str, Any] = {}
         sections: dict[str, Any] = {}
         for state_key, raw_payload in rows:
-            value = _safe_json_loads(raw_payload)
+            value = normalize_legacy_identifiers(_safe_json_loads(raw_payload))
             key = str(state_key)
             if key == "global" and isinstance(value, dict):
                 legacy = value
@@ -176,7 +217,7 @@ class PostgresStateStore(_BasePostgresService):
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-					INSERT INTO frontier_state_store (state_key, payload, updated_at)
+					INSERT INTO locus_state_store (state_key, payload, updated_at)
 					VALUES (%s, %s::jsonb, timezone('utc', now()))
 					ON CONFLICT (state_key)
 					DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
@@ -201,7 +242,7 @@ class PostgresStateStore(_BasePostgresService):
                 for section, encoded in encoded_sections.items():
                     cursor.execute(
                         """
-						INSERT INTO frontier_state_store (state_key, payload, updated_at)
+						INSERT INTO locus_state_store (state_key, payload, updated_at)
 						VALUES (%s, %s::jsonb, timezone('utc', now()))
 						ON CONFLICT (state_key)
 						DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
@@ -210,7 +251,7 @@ class PostgresStateStore(_BasePostgresService):
                     )
                 if replace_all:
                     cursor.execute(
-                        "DELETE FROM frontier_state_store WHERE state_key = %s",
+                        "DELETE FROM locus_state_store WHERE state_key = %s",
                         ("global",),
                     )
 
@@ -228,9 +269,10 @@ class PostgresAuditLog(_BasePostgresService):
             return
         with self._connect() as connection:
             with connection.cursor() as cursor:
+                _rename_legacy_tables_postgres(cursor, ("locus_audit_events",))
                 cursor.execute(
                     """
-					CREATE TABLE IF NOT EXISTS frontier_audit_events (
+					CREATE TABLE IF NOT EXISTS locus_audit_events (
 						id TEXT PRIMARY KEY,
 						action TEXT NOT NULL,
 						actor TEXT NOT NULL,
@@ -251,7 +293,7 @@ class PostgresAuditLog(_BasePostgresService):
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-					INSERT INTO frontier_audit_events
+					INSERT INTO locus_audit_events
 						(id, action, actor, outcome, created_at, metadata)
 					VALUES (%s, %s, %s, %s, %s, %s::jsonb)
 					ON CONFLICT (id) DO NOTHING
@@ -275,7 +317,7 @@ class PostgresAuditLog(_BasePostgresService):
                 cursor.execute(
                     """
 					SELECT id, action, actor, outcome, created_at, metadata
-					FROM frontier_audit_events
+					FROM locus_audit_events
 					ORDER BY inserted_at DESC
 					LIMIT %s
 					""",
@@ -343,9 +385,10 @@ class SQLiteStateStore(_BaseSQLiteService):
         if not self.enabled or self._initialized:
             return
         with self._lock:
+            _rename_legacy_tables_sqlite(self._connect(), ("locus_state_store",))
             self._connect().execute(
                 """
-				CREATE TABLE IF NOT EXISTS frontier_state_store (
+				CREATE TABLE IF NOT EXISTS locus_state_store (
 					state_key TEXT PRIMARY KEY,
 					payload TEXT NOT NULL,
 					updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -362,7 +405,7 @@ class SQLiteStateStore(_BaseSQLiteService):
         with self._lock:
             rows = (
                 self._connect()
-                .execute("SELECT state_key, payload FROM frontier_state_store")
+                .execute("SELECT state_key, payload FROM locus_state_store")
                 .fetchall()
             )
         if not rows:
@@ -370,7 +413,7 @@ class SQLiteStateStore(_BaseSQLiteService):
         legacy: dict[str, Any] = {}
         sections: dict[str, Any] = {}
         for state_key, raw_payload in rows:
-            value = _safe_json_loads(raw_payload)
+            value = normalize_legacy_identifiers(_safe_json_loads(raw_payload))
             key = str(state_key)
             if key == "global" and isinstance(value, dict):
                 legacy = value
@@ -390,7 +433,7 @@ class SQLiteStateStore(_BaseSQLiteService):
         with self._lock:
             connection = self._connect()
             connection.execute(
-                "INSERT OR REPLACE INTO frontier_state_store (state_key, payload, updated_at) "
+                "INSERT OR REPLACE INTO locus_state_store (state_key, payload, updated_at) "
                 "VALUES (?, ?, datetime('now'))",
                 ("global", encoded_payload),
             )
@@ -406,13 +449,13 @@ class SQLiteStateStore(_BaseSQLiteService):
             connection = self._connect()
             for section, encoded in encoded_sections.items():
                 connection.execute(
-                    "INSERT OR REPLACE INTO frontier_state_store (state_key, payload, updated_at) "
+                    "INSERT OR REPLACE INTO locus_state_store (state_key, payload, updated_at) "
                     "VALUES (?, ?, datetime('now'))",
                     (f"{self.SECTION_KEY_PREFIX}{section}", encoded),
                 )
             if replace_all:
                 connection.execute(
-                    "DELETE FROM frontier_state_store WHERE state_key = ?", ("global",)
+                    "DELETE FROM locus_state_store WHERE state_key = ?", ("global",)
                 )
             connection.commit()
 
@@ -424,9 +467,10 @@ class SQLiteAuditLog(_BaseSQLiteService):
         if not self.enabled or self._initialized:
             return
         with self._lock:
+            _rename_legacy_tables_sqlite(self._connect(), ("locus_audit_events",))
             self._connect().execute(
                 """
-				CREATE TABLE IF NOT EXISTS frontier_audit_events (
+				CREATE TABLE IF NOT EXISTS locus_audit_events (
 					id TEXT PRIMARY KEY,
 					action TEXT NOT NULL,
 					actor TEXT NOT NULL,
@@ -446,7 +490,7 @@ class SQLiteAuditLog(_BaseSQLiteService):
         with self._lock:
             connection = self._connect()
             connection.execute(
-                "INSERT OR IGNORE INTO frontier_audit_events "
+                "INSERT OR IGNORE INTO locus_audit_events "
                 "(id, action, actor, outcome, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     str(event.get("id") or ""),
@@ -468,7 +512,7 @@ class SQLiteAuditLog(_BaseSQLiteService):
                 self._connect()
                 .execute(
                     "SELECT id, action, actor, outcome, created_at, metadata "
-                    "FROM frontier_audit_events ORDER BY rowid DESC LIMIT ?",
+                    "FROM locus_audit_events ORDER BY rowid DESC LIMIT ?",
                     (max(1, int(limit)),),
                 )
                 .fetchall()
@@ -494,19 +538,19 @@ class RedisMemoryStore:
         self.url = str(url or "").strip()
         self.enabled = bool(self.url) and redis is not None
         self._client = redis.from_url(self.url, decode_responses=True) if self.enabled else None
-        self.max_entries = max(10, int(os.getenv("FRONTIER_SHORT_TERM_MEMORY_MAX", "200")))
-        self.wal_enabled = os.getenv("FRONTIER_MEMORY_WAL_ENABLED", "").strip().lower() in {
+        self.max_entries = max(10, int(os.getenv("LOCUS_SHORT_TERM_MEMORY_MAX", "200")))
+        self.wal_enabled = os.getenv("LOCUS_MEMORY_WAL_ENABLED", "").strip().lower() in {
             "1",
             "true",
             "yes",
         }
-        self.wal_dir = Path(os.getenv("FRONTIER_MEMORY_WAL_DIR", ".frontier/memory-wal"))
+        self.wal_dir = Path(os.getenv("LOCUS_MEMORY_WAL_DIR", ".locus/memory-wal"))
 
     def _key(self, session_id: str) -> str:
-        return f"frontier:memory:short:{session_id}"
+        return f"locus:memory:short:{session_id}"
 
     def _nonce_key(self, nonce: str) -> str:
-        return f"frontier:a2a:nonce:{nonce}"
+        return f"locus:a2a:nonce:{nonce}"
 
     def healthcheck(self) -> bool:
         if not self.enabled or self._client is None:
@@ -633,7 +677,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
         super().__init__(dsn)
         self.vector_enabled = False
         self.embedding_dimensions = _validated_embedding_dimensions(
-            int(os.getenv("FRONTIER_MEMORY_EMBEDDING_DIMENSIONS", "1536"))
+            int(os.getenv("LOCUS_MEMORY_EMBEDDING_DIMENSIONS", "1536"))
         )
         self.embedding_model = str(
             os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
@@ -661,9 +705,10 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                 except Exception:  # noqa: BLE001
                     self.vector_enabled = False
 
+                _rename_legacy_tables_postgres(cursor, ("locus_long_term_memory",))
                 cursor.execute(
                     """
-					CREATE TABLE IF NOT EXISTS frontier_long_term_memory (
+					CREATE TABLE IF NOT EXISTS locus_long_term_memory (
 						id TEXT PRIMARY KEY,
 						bucket_id TEXT NOT NULL,
 						session_id TEXT NOT NULL,
@@ -683,17 +728,18 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                     # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
                     cursor.execute(_embedding_column_statement(self.embedding_dimensions))
                 cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS frontier_long_term_memory_bucket_idx ON frontier_long_term_memory (bucket_id, created_at DESC)"
+                    "CREATE INDEX IF NOT EXISTS locus_long_term_memory_bucket_idx ON locus_long_term_memory (bucket_id, created_at DESC)"
                 )
                 cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS frontier_long_term_memory_session_idx ON frontier_long_term_memory (session_id, created_at DESC)"
+                    "CREATE INDEX IF NOT EXISTS locus_long_term_memory_session_idx ON locus_long_term_memory (session_id, created_at DESC)"
                 )
                 cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS frontier_long_term_memory_scope_idx ON frontier_long_term_memory (memory_scope, created_at DESC)"
+                    "CREATE INDEX IF NOT EXISTS locus_long_term_memory_scope_idx ON locus_long_term_memory (memory_scope, created_at DESC)"
                 )
+                _rename_legacy_tables_postgres(cursor, ("locus_memory_consolidation_queue",))
                 cursor.execute(
                     """
-					CREATE TABLE IF NOT EXISTS frontier_memory_consolidation_queue (
+					CREATE TABLE IF NOT EXISTS locus_memory_consolidation_queue (
 						id TEXT PRIMARY KEY,
 						entry_id TEXT NOT NULL UNIQUE,
 						bucket_id TEXT NOT NULL,
@@ -711,18 +757,18 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 					"""
                 )
                 cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS frontier_memory_consolidation_queue_status_idx ON frontier_memory_consolidation_queue (status, created_at DESC)"
+                    "CREATE INDEX IF NOT EXISTS locus_memory_consolidation_queue_status_idx ON locus_memory_consolidation_queue (status, created_at DESC)"
                 )
                 cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS frontier_memory_consolidation_queue_bucket_idx ON frontier_memory_consolidation_queue (bucket_id, created_at DESC)"
+                    "CREATE INDEX IF NOT EXISTS locus_memory_consolidation_queue_bucket_idx ON locus_memory_consolidation_queue (bucket_id, created_at DESC)"
                 )
                 cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS frontier_memory_consolidation_queue_scope_idx ON frontier_memory_consolidation_queue (memory_scope, created_at DESC)"
+                    "CREATE INDEX IF NOT EXISTS locus_memory_consolidation_queue_scope_idx ON locus_memory_consolidation_queue (memory_scope, created_at DESC)"
                 )
                 if self.vector_enabled:
                     try:
                         cursor.execute(
-                            "CREATE INDEX IF NOT EXISTS frontier_long_term_memory_embedding_idx ON frontier_long_term_memory USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)"
+                            "CREATE INDEX IF NOT EXISTS locus_long_term_memory_embedding_idx ON locus_long_term_memory USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)"
                         )
                     except Exception:  # noqa: BLE001
                         pass
@@ -819,7 +865,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                 cursor.execute(
                     """
 					SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at
-					FROM frontier_long_term_memory
+					FROM locus_long_term_memory
 					WHERE (%s IS NULL OR bucket_id = %s)
 					AND (%s IS NULL OR session_id = %s)
 					AND (%s IS NULL OR memory_scope = %s)
@@ -864,7 +910,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                     cursor.execute(
                         """
 						SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at
-						FROM frontier_long_term_memory
+						FROM locus_long_term_memory
 						WHERE (%s::text IS NULL OR bucket_id = %s::text)
 						AND (%s::text IS NULL OR session_id = %s::text)
 						AND (%s::text IS NULL OR memory_scope = %s::text)
@@ -900,7 +946,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                     cursor.execute(
                         f"""
 						SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at
-						FROM frontier_long_term_memory
+						FROM locus_long_term_memory
 						WHERE (%s::text IS NULL OR bucket_id = %s::text)
 						AND (%s::text IS NULL OR session_id = %s::text)
 						AND (%s::text IS NULL OR memory_scope = %s::text)
@@ -948,7 +994,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                 if self.vector_enabled and vector:
                     cursor.execute(
                         """
-						INSERT INTO frontier_long_term_memory (
+						INSERT INTO locus_long_term_memory (
 							id, bucket_id, session_id, memory_scope, source, task_id, content,
 							metadata, embedding_model, embedding_json, embedding, created_at, updated_at
 						)
@@ -987,7 +1033,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                 else:
                     cursor.execute(
                         """
-						INSERT INTO frontier_long_term_memory (
+						INSERT INTO locus_long_term_memory (
 							id, bucket_id, session_id, memory_scope, source, task_id, content,
 							metadata, embedding_model, embedding_json, created_at, updated_at
 						)
@@ -1048,7 +1094,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-					INSERT INTO frontier_memory_consolidation_queue (
+					INSERT INTO locus_memory_consolidation_queue (
 						id, entry_id, bucket_id, session_id, memory_scope, source, task_id,
 						candidate_kind, status, content, metadata, created_at, updated_at
 					)
@@ -1101,7 +1147,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                     """
 					SELECT id, entry_id, bucket_id, session_id, memory_scope, source, task_id,
 					candidate_kind, status, created_at, updated_at, content, metadata
-					FROM frontier_memory_consolidation_queue
+					FROM locus_memory_consolidation_queue
 					WHERE (%s IS NULL OR bucket_id = %s)
 					AND (%s IS NULL OR memory_scope = %s)
 					AND (%s IS NULL OR status = %s)
@@ -1137,7 +1183,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                 if isinstance(extra_metadata, dict) and extra_metadata:
                     cursor.execute(
                         """
-						UPDATE frontier_memory_consolidation_queue
+						UPDATE locus_memory_consolidation_queue
 						SET status = %s,
 						metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
 						updated_at = timezone('utc', now())
@@ -1152,7 +1198,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                 else:
                     cursor.execute(
                         """
-						UPDATE frontier_memory_consolidation_queue
+						UPDATE locus_memory_consolidation_queue
 						SET status = %s,
 						updated_at = timezone('utc', now())
 						WHERE id = %s
@@ -1176,7 +1222,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-					DELETE FROM frontier_long_term_memory
+					DELETE FROM locus_long_term_memory
 					WHERE (%s IS NULL OR bucket_id = %s)
 					AND (%s IS NULL OR session_id = %s)
 					AND (%s IS NULL OR memory_scope = %s)
@@ -1215,7 +1261,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                     """
 					SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at,
 						1 - (embedding <=> %s::vector) AS similarity
-					FROM frontier_long_term_memory
+					FROM locus_long_term_memory
 					WHERE embedding IS NOT NULL
 					AND (%s IS NULL OR bucket_id = %s)
 					AND (%s IS NULL OR memory_scope = %s)
@@ -1249,7 +1295,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
         with self._connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT COUNT(*) FROM frontier_memory_consolidation_queue WHERE status = %s",
+                    "SELECT COUNT(*) FROM locus_memory_consolidation_queue WHERE status = %s",
                     (str(status or "pending"),),
                 )
                 row = cursor.fetchone()
@@ -1753,7 +1799,7 @@ class PostgresWorldGraph(_BasePostgresService):
     """World-model graph hosted in the bundled Postgres (no Java / no Neo4j).
 
     Drop-in for :class:`Neo4jRunGraph` — same methods + return shapes — backed by
-    two relational tables (``frontier_kg_nodes`` / ``frontier_kg_edges``) queried
+    two relational tables (``locus_kg_nodes`` / ``locus_kg_edges``) queried
     with plain SQL. Node labels and edge relation names mirror the Cypher model
     (KnowledgeOwner / KnowledgeMemory / KnowledgeTopic / MemoryEvidence /
     WorkflowRun / Agent / Workflow; OWNS_MEMORY / DERIVED_FROM / MENTIONS_TOPIC /
@@ -1765,9 +1811,10 @@ class PostgresWorldGraph(_BasePostgresService):
         if self._initialized or not self.enabled:
             return
         with self._connect() as connection, connection.cursor() as cursor:
+            _rename_legacy_tables_postgres(cursor, ("locus_kg_nodes",))
             cursor.execute(
                 """
-                CREATE TABLE IF NOT EXISTS frontier_kg_nodes (
+                CREATE TABLE IF NOT EXISTS locus_kg_nodes (
                     id TEXT PRIMARY KEY,
                     label TEXT NOT NULL,
                     memory_scope TEXT NOT NULL DEFAULT '',
@@ -1776,9 +1823,10 @@ class PostgresWorldGraph(_BasePostgresService):
                 )
                 """
             )
+            _rename_legacy_tables_postgres(cursor, ("locus_kg_edges",))
             cursor.execute(
                 """
-                CREATE TABLE IF NOT EXISTS frontier_kg_edges (
+                CREATE TABLE IF NOT EXISTS locus_kg_edges (
                     src TEXT NOT NULL,
                     dst TEXT NOT NULL,
                     rel TEXT NOT NULL,
@@ -1789,12 +1837,12 @@ class PostgresWorldGraph(_BasePostgresService):
                 """
             )
             cursor.execute(
-                "CREATE INDEX IF NOT EXISTS frontier_kg_nodes_label_scope "
-                "ON frontier_kg_nodes(label, memory_scope)"
+                "CREATE INDEX IF NOT EXISTS locus_kg_nodes_label_scope "
+                "ON locus_kg_nodes(label, memory_scope)"
             )
             cursor.execute(
-                "CREATE INDEX IF NOT EXISTS frontier_kg_edges_src_rel "
-                "ON frontier_kg_edges(src, rel)"
+                "CREATE INDEX IF NOT EXISTS locus_kg_edges_src_rel "
+                "ON locus_kg_edges(src, rel)"
             )
         self._initialized = True
 
@@ -1811,12 +1859,12 @@ class PostgresWorldGraph(_BasePostgresService):
             return
         cursor.execute(
             """
-            INSERT INTO frontier_kg_nodes (id, label, memory_scope, props)
+            INSERT INTO locus_kg_nodes (id, label, memory_scope, props)
             VALUES (%s, %s, %s, %s::jsonb)
             ON CONFLICT (id) DO UPDATE SET
                 label = EXCLUDED.label,
                 memory_scope = EXCLUDED.memory_scope,
-                props = frontier_kg_nodes.props || EXCLUDED.props,
+                props = locus_kg_nodes.props || EXCLUDED.props,
                 updated_at = now()
             """,
             (node_id, label, memory_scope, json.dumps(props, default=_json_default)),
@@ -1829,10 +1877,10 @@ class PostgresWorldGraph(_BasePostgresService):
             return
         cursor.execute(
             """
-            INSERT INTO frontier_kg_edges (src, dst, rel, props)
+            INSERT INTO locus_kg_edges (src, dst, rel, props)
             VALUES (%s, %s, %s, %s::jsonb)
             ON CONFLICT (src, dst, rel) DO UPDATE SET
-                props = frontier_kg_edges.props || EXCLUDED.props,
+                props = locus_kg_edges.props || EXCLUDED.props,
                 updated_at = now()
             """,
             (src, dst, rel, json.dumps(props or {}, default=_json_default)),
@@ -1995,19 +2043,19 @@ class PostgresWorldGraph(_BasePostgresService):
             with self._connect() as connection, connection.transaction(), connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    DELETE FROM frontier_kg_edges
+                    DELETE FROM locus_kg_edges
                     WHERE src IN (
-                        SELECT id FROM frontier_kg_nodes
+                        SELECT id FROM locus_kg_nodes
                         WHERE label = ANY(%s) AND props->>'assembly_id' = %s
                     ) OR dst IN (
-                        SELECT id FROM frontier_kg_nodes
+                        SELECT id FROM locus_kg_nodes
                         WHERE label = ANY(%s) AND props->>'assembly_id' = %s
                     )
                     """,
                     (list(self._CAUSAL_LABELS), assembly_id, list(self._CAUSAL_LABELS), assembly_id),
                 )
                 cursor.execute(
-                    "DELETE FROM frontier_kg_nodes WHERE label = ANY(%s) AND props->>'assembly_id' = %s",
+                    "DELETE FROM locus_kg_nodes WHERE label = ANY(%s) AND props->>'assembly_id' = %s",
                     (list(self._CAUSAL_LABELS), assembly_id),
                 )
                 self._merge_node(
@@ -2115,8 +2163,8 @@ class PostgresWorldGraph(_BasePostgresService):
                 cursor.execute(
                     """
                     SELECT n.id, n.props
-                    FROM frontier_kg_edges e
-                    JOIN frontier_kg_nodes n ON n.id = e.dst
+                    FROM locus_kg_edges e
+                    JOIN locus_kg_nodes n ON n.id = e.dst
                     WHERE e.src = %s AND e.rel = 'OWNS_MEMORY'
                       AND n.label = 'KnowledgeMemory'
                       AND n.props->>'memory_scope' = %s
@@ -2144,8 +2192,8 @@ class PostgresWorldGraph(_BasePostgresService):
                 cursor.execute(
                     """
                     SELECT n.id, n.props
-                    FROM frontier_kg_edges e
-                    JOIN frontier_kg_nodes n ON n.id = e.dst
+                    FROM locus_kg_edges e
+                    JOIN locus_kg_nodes n ON n.id = e.dst
                     WHERE e.src = %s AND e.rel = 'RELATES_TO_TOPIC'
                       AND n.label = 'KnowledgeTopic'
                     ORDER BY (n.props->>'weight')::int DESC NULLS LAST, n.props->>'name' ASC

@@ -1,4 +1,4 @@
-# Lattix xFrontier Plans
+# Lattix Locus Plans
 
 Active plan areas and the evidence each must produce before it counts as done. Issues are tracked in Linear under `FRONT-*`; `TODO.md` is the generated sync view.
 
@@ -6,7 +6,7 @@ Active plan areas and the evidence each must produce before it counts as done. I
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Cognitive MVP foundation | Landed | Goal/evidence/assembly/commitment columns in `frontier_runtime/cognitive.py`, wired into the graph executor |
+| Cognitive MVP foundation | Landed | Goal/evidence/assembly/commitment columns in `locus_runtime/cognitive.py`, wired into the graph executor |
 | Restore green gates | **Urgent** | `pytest` does not collect (`tests/` lacks `__init__.py`), `ruff` reports 24 errors including `F821 Undefined name 'platform'` at `main.py:1587`, gated `mypy` reports 38 |
 | Columnar cognitive expansion | Planned | Evaluation, Uncertainty, State, Decomposition, Prediction, Adaptation columns per `docs/COLOUMN_LAYER_IMPLEMENTATION_PLAN.md` |
 | Backend type safety | Planned | Bring `apps/backend/` into `make typecheck`; 491 `mypy --strict` errors across 26 files today |

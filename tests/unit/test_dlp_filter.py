@@ -1,7 +1,7 @@
 import asyncio
 
-from frontier_runtime.envelope import Envelope
-from frontier_runtime.guardrails import DLPFilter, FilterContext
+from locus_runtime.envelope import Envelope
+from locus_runtime.guardrails import DLPFilter, FilterContext
 
 
 def test_dlp_filter_marks_pii() -> None:

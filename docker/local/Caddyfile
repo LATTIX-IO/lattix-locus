@@ -1,4 +1,4 @@
-http://{$LOCAL_STACK_HOST:xfrontier.local} {
+http://{$LOCAL_STACK_HOST:locus.local} {
     log {
         output stdout
         format console

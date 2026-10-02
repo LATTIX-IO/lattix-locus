@@ -12,7 +12,7 @@ import {
   updateInboxGroup,
   type InboxGroup,
 } from "@/lib/api";
-import type { RunKind, WorkflowRunSummary } from "@/types/frontier";
+import type { RunKind, WorkflowRunSummary } from "@/types/locus";
 import { normalizeRunKind } from "@/lib/run-kind";
 
 type GroupBy = "none" | "type" | "status" | "recency";
@@ -114,10 +114,10 @@ export function InboxChatTree() {
       // The run summary is written by the background worker; catch it shortly after.
       window.setTimeout(() => void refresh(), 1200);
     };
-    window.addEventListener("frontier:runs-changed", onChanged);
+    window.addEventListener("locus:runs-changed", onChanged);
     const interval = window.setInterval(() => void refresh(), 6000);
     return () => {
-      window.removeEventListener("frontier:runs-changed", onChanged);
+      window.removeEventListener("locus:runs-changed", onChanged);
       window.clearInterval(interval);
     };
   }, [refresh]);

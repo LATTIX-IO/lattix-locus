@@ -1,6 +1,6 @@
 import asyncio
 
-from frontier_runtime.agents import discover_agents
+from locus_runtime.agents import discover_agents
 
 
 def test_discovery_finds_builtin_agents() -> None:

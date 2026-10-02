@@ -40,7 +40,7 @@ export function DesktopLifecycle() {
           active > 0
             ? window.confirm(
                 `${active} agent run${active === 1 ? "" : "s"} still in progress.\n\n` +
-                  `Quit Lattix xFrontier and stop ${active === 1 ? "it" : "them"}?`,
+                  `Quit Lattix Locus and stop ${active === 1 ? "it" : "them"}?`,
               )
             : true;
         if (!proceed) return;

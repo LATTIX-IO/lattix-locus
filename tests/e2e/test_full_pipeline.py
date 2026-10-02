@@ -20,7 +20,7 @@ def test_cognitive_graph_end_to_end(test_client, auth_headers) -> None:
         "/graph/runs",
         headers=auth_headers,
         json={
-            "schema_version": "frontier-graph/1.0",
+            "schema_version": "locus-graph/1.0",
             "nodes": [
                 {
                     "id": "trigger",

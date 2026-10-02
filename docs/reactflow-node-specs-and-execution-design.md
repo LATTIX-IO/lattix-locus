@@ -1,4 +1,4 @@
-# Lattix xFrontier — React Flow Node Specs & Execution Design
+# Lattix Locus — React Flow Node Specs & Execution Design
 
 ## Purpose
 
@@ -72,7 +72,7 @@ Reference docs used:
 ```json
 {
   "id": "node-uuid",
-  "type": "frontier/agent",
+  "type": "locus/agent",
   "title": "Agent Runtime",
   "x": 580,
   "y": 120,
@@ -99,7 +99,7 @@ Reference docs used:
 
 ```json
 {
-  "schema_version": "frontier-graph/1.0",
+  "schema_version": "locus-graph/1.0",
   "nodes": [],
   "links": [],
   "input": {
@@ -118,7 +118,7 @@ Reference docs used:
 }
 ```
 
-`schema_version` is a required backend contract field for persisted and executed React Flow graphs. The current canonical version is `frontier-graph/1.0`. Backends should default missing values to the canonical version for backward compatibility, but save/publish/run paths must reject unknown or future schema versions unless an explicit migrator has been added.
+`schema_version` is a required backend contract field for persisted and executed React Flow graphs. The current canonical version is `locus-graph/1.0`. Backends should default missing values to the canonical version for backward compatibility, but save/publish/run paths must reject unknown or future schema versions unless an explicit migrator has been added.
 
 ---
 
@@ -131,36 +131,36 @@ Two-plane contract for all nodes:
 
 ### Canonical matrix
 
-- `frontier/workflow`
+- `locus/workflow`
   - inputs: `in`, `payload`
   - outputs: `out`, `result`
-- `frontier/trigger`
+- `locus/trigger`
   - outputs: `out`, `payload`
-- `frontier/prompt`
+- `locus/prompt`
   - inputs: `in`, `context`
   - outputs: `out`, `prompt`
-- `frontier/agent`
+- `locus/agent`
   - inputs: `in`, `prompt`, `context`, `retrieval`, `memory`, `tool_result`, `guardrail`
   - outputs: `out`, `response`, `retrieval_query`, `tool_request`, `state_delta`, `memory`, `guardrail`
-- `frontier/retrieval`
+- `locus/retrieval`
   - inputs: `in`, `query`, `filters`
   - outputs: `out`, `documents`, `grounding_context`
-- `frontier/tool-call`
+- `locus/tool-call`
   - inputs: `in`, `request`, `auth_context`, `context`
   - outputs: `out`, `result`, `status`, `guardrail`
-- `frontier/memory`
+- `locus/memory`
   - inputs: `in`, `read_query`, `write_payload`
   - outputs: `out`, `memory_state`, `context`
-- `frontier/guardrail`
+- `locus/guardrail`
   - inputs: `in`, `candidate_output`, `context`
   - outputs: `out`, `approved_output`, `violations`, `decision`
-- `frontier/human-review`
+- `locus/human-review`
   - inputs: `in`, `candidate`
   - outputs: `out`, `approved`, `feedback`
-- `frontier/manifold`
+- `locus/manifold`
   - inputs: `in_a`, `in_b`, `in_c`, `in_d`
   - outputs: `out`, `data`
-- `frontier/output`
+- `locus/output`
   - inputs: `in`, `result`
   - outputs: `out`
 
@@ -168,13 +168,13 @@ Two-plane contract for all nodes:
 
 The current implemented matrix is a strong baseline, but the target enterprise-ready node language should also add these generic families:
 
-- `frontier/router`
-- `frontier/transform`
-- `frontier/iterator`
-- `frontier/error-handler`
-- `frontier/event`
-- `frontier/data-store`
-- `frontier/wait`
+- `locus/router`
+- `locus/transform`
+- `locus/iterator`
+- `locus/error-handler`
+- `locus/event`
+- `locus/data-store`
+- `locus/wait`
 
 These are intentionally generic families, not vendor-specific node types. See [enterprise-node-taxonomy.md](enterprise-node-taxonomy.md) for the proposed target taxonomy, builder placement, and phased rollout.
 
@@ -191,7 +191,7 @@ Legacy ports (`output`, `data`, `approved`, `tool_output`, etc.) are normalized 
 
 For each node type, this section defines UI contract, handle contract, required config, and runtime behavior.
 
-## 1) `frontier/trigger`
+## 1) `locus/trigger`
 
 - **React Flow node UI**
   - widgets: `trigger_mode`, schedule/webhook/event fields.
@@ -203,7 +203,7 @@ For each node type, this section defines UI contract, handle contract, required 
 - **Runtime**
   - initializes run envelope (`run_id`, timestamps, trigger metadata).
 
-## 2) `frontier/prompt`
+## 2) `locus/prompt`
 
 - **React Flow node UI**
   - widgets: objective/style/audience/safety + `system_prompt_text`.
@@ -215,7 +215,7 @@ For each node type, this section defines UI contract, handle contract, required 
 - **Runtime**
   - composes canonical system prompt payload for downstream agents.
 
-## 3) `frontier/agent`
+## 3) `locus/agent`
 
 - **React Flow node UI**
   - widgets: `agent_id`, `model`, `temperature`, `execution_mode`, `system_prompt`.
@@ -228,7 +228,7 @@ For each node type, this section defines UI contract, handle contract, required 
 - **Runtime**
   - loads prompt/context/retrieval/memory/tool outputs, executes model, emits typed outputs.
 
-## 3b) `frontier/workflow`
+## 3b) `locus/workflow`
 
 - **React Flow node UI**
   - widgets: `workflow_id`, `handoff_mode`, `entry_message`, `output_binding`.
@@ -240,7 +240,7 @@ For each node type, this section defines UI contract, handle contract, required 
 - **Runtime**
   - invokes a saved workflow definition as a child execution unit and returns the bound output downstream.
 
-## 4) `frontier/tool-call`
+## 4) `locus/tool-call`
 
 - **React Flow node UI**
   - widgets: `tool_id`, HTTP method, timeout, retries.
@@ -253,7 +253,7 @@ For each node type, this section defines UI contract, handle contract, required 
 - **Runtime**
   - enforces egress and approval policy, executes tool adapter, validates and emits result.
 
-## 5) `frontier/retrieval`
+## 5) `locus/retrieval`
 
 - **React Flow node UI**
   - widgets: `source_type`, `top_k`, thresholds.
@@ -265,7 +265,7 @@ For each node type, this section defines UI contract, handle contract, required 
 - **Runtime**
   - validates source allowlist, executes retrieval pipeline, returns normalized docs/context.
 
-## 6) `frontier/memory`
+## 6) `locus/memory`
 
 - **React Flow node UI**
   - widgets: `action`, `scope`, `session_id`.
@@ -278,7 +278,7 @@ For each node type, this section defines UI contract, handle contract, required 
 - **Runtime**
   - reads/writes scoped memory store with run/session/user/tenant semantics.
 
-## 7) `frontier/guardrail`
+## 7) `locus/guardrail`
 
 - **React Flow node UI**
   - widgets include `ruleset_id` selectable from **published guardrail rulesets**.
@@ -296,7 +296,7 @@ For each node type, this section defines UI contract, handle contract, required 
     - `reject_content` (emit `reject_message`)
     - `raise_exception` (fail path/run)
 
-## 8) `frontier/human-review`
+## 8) `locus/human-review`
 
 - **React Flow node UI**
   - widgets: reviewer group, approvals/SLA policy.
@@ -307,7 +307,7 @@ For each node type, this section defines UI contract, handle contract, required 
 - **Runtime**
   - emits approval task and blocks/resumes path on decision.
 
-## 9) `frontier/output`
+## 9) `locus/output`
 
 - **React Flow node UI**
   - widgets: destination + format.
@@ -322,19 +322,19 @@ For each node type, this section defines UI contract, handle contract, required 
 
 The following families are part of the target node language but are not yet implemented as first-class builder/runtime nodes:
 
-- `frontier/router`
+- `locus/router`
   - deterministic branching and path selection.
-- `frontier/transform`
+- `locus/transform`
   - deterministic payload shaping, mapping, and templating.
-- `frontier/iterator`
+- `locus/iterator`
   - for-each, batching, chunking, and paginated traversal.
-- `frontier/error-handler`
+- `locus/error-handler`
   - retry, fallback, compensation, and escalation behavior.
-- `frontier/event`
+- `locus/event`
   - async publish/subscribe, callback wait, queue/topic coordination.
-- `frontier/data-store`
+- `locus/data-store`
   - explicit CRUD and state mutation against business systems.
-- `frontier/wait`
+- `locus/wait`
   - delay, timeout, and resume-at-time orchestration.
 
 These should be introduced as generic families first, then specialized into narrower execution profiles later.

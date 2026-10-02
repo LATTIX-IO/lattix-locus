@@ -1,6 +1,6 @@
 import asyncio
 
-from frontier_runtime.orchestrator import get_workflow_catalog
+from locus_runtime.orchestrator import get_workflow_catalog
 
 
 def test_gtm_workflow_runs() -> None:

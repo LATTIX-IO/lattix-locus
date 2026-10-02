@@ -13,13 +13,13 @@ def test_build_release_bundle_copies_artifacts_and_writes_manifests(tmp_path: Pa
 
     chart_dist.mkdir()
     installer_dist.mkdir()
-    (chart_dist / "lattix-frontier-1.2.3.tgz").write_text("chart-bytes", encoding="utf-8")
+    (chart_dist / "lattix-locus-1.2.3.tgz").write_text("chart-bytes", encoding="utf-8")
     (installer_dist / "bootstrap.ps1").write_text("Write-Host ok", encoding="utf-8")
     (installer_dist / "manifest.json").write_text('{"installer": true}', encoding="utf-8")
 
     bundle_dir = build_release_bundle(
         version="v1.2.3",
-        repo="LATTIX-IO/lattix-xfrontier",
+        repo="LATTIX-IO/lattix-locus",
         git_sha="abc123",
         output_root=output_root,
         chart_dist=chart_dist,
@@ -34,17 +34,17 @@ def test_build_release_bundle_copies_artifacts_and_writes_manifests(tmp_path: Pa
 
     assert manifest["version"] == "v1.2.3"
     assert manifest["rollback"]["previous_version"] == "v1.2.2"
-    assert manifest["images"][0]["reference"] == "lattix-frontier/orchestrator:v1.2.3"
+    assert manifest["images"][0]["reference"] == "lattix-locus/orchestrator:v1.2.3"
     assert promotion["environments"][1]["name"] == "stage"
     assert promotion["environments"][1]["requires_approval"] is True
     assert rollback["target_version"] == "v1.2.2"
 
-    copied_chart = bundle_dir / "artifacts" / "chart" / "lattix-frontier-1.2.3.tgz"
+    copied_chart = bundle_dir / "artifacts" / "chart" / "lattix-locus-1.2.3.tgz"
     copied_installer = bundle_dir / "artifacts" / "installer" / "bootstrap.ps1"
     assert copied_chart.exists()
     assert copied_installer.exists()
     assert any(
-        item["path"].endswith("artifacts/chart/lattix-frontier-1.2.3.tgz")
+        item["path"].endswith("artifacts/chart/lattix-locus-1.2.3.tgz")
         for item in manifest["artifacts"]["chart"]
     )
 
@@ -59,7 +59,7 @@ def test_build_release_bundle_requires_artifacts(tmp_path: Path) -> None:
     try:
         build_release_bundle(
             version="v1.2.3",
-            repo="LATTIX-IO/lattix-xfrontier",
+            repo="LATTIX-IO/lattix-locus",
             git_sha="abc123",
             output_root=tmp_path / "release",
             chart_dist=chart_dist,

@@ -13,7 +13,7 @@ if not str(os.environ.get("A2A_JWT_SECRET") or "").strip():
     os.environ["A2A_JWT_SECRET"] = "unit-test-super-secret-value-32bytes"
 
 from app import main as main_module
-from frontier_runtime.cognition import (
+from locus_runtime.cognition import (
     AssemblyDefinition,
     AssemblyState,
     ColumnKind,
@@ -21,21 +21,21 @@ from frontier_runtime.cognition import (
     ColumnState,
     MessageType,
 )
-from frontier_runtime.envelope import (
+from locus_runtime.envelope import (
     Envelope,
     envelope_from_column_message,
     envelope_to_column_message,
     is_cognitive_envelope,
 )
-from frontier_runtime.events import (
+from locus_runtime.events import (
     AgentEvent,
     event_from_column_message,
     event_to_column_message,
     get_event_bus,
     is_cognitive_event,
 )
-from frontier_runtime.persistence import persist_assembly_state, reset_shared_state_backend
-from frontier_runtime.security import verify_event_signature
+from locus_runtime.persistence import persist_assembly_state, reset_shared_state_backend
+from locus_runtime.security import verify_event_signature
 
 
 client = TestClient(main_module.app)
@@ -100,12 +100,12 @@ def _signed_cognitive_admission_request(
     raw = json.dumps(payload).encode("utf-8")
     correlation_id = f"corr-{nonce}"
     headers = {
-        "x-frontier-actor": "tester",
+        "x-locus-actor": "tester",
         "x-correlation-id": correlation_id,
-        "x-frontier-subject": "backend",
-        "x-frontier-nonce": nonce,
-        "x-frontier-timestamp": timestamp,
-        "x-frontier-signature": main_module._build_runtime_signature(
+        "x-locus-subject": "backend",
+        "x-locus-nonce": nonce,
+        "x-locus-timestamp": timestamp,
+        "x-locus-signature": main_module._build_runtime_signature(
             "backend", nonce, correlation_id, raw, timestamp=timestamp
         ),
         "content-type": "application/json",
@@ -232,7 +232,7 @@ def test_signed_cognitive_message_admission_rejects_unsigned_message() -> None:
     response = client.post(
         "/internal/cognition/messages/admit",
         content=raw,
-        headers={"content-type": "application/json", "x-frontier-actor": "tester"},
+        headers={"content-type": "application/json", "x-locus-actor": "tester"},
     )
 
     assert response.status_code == 401

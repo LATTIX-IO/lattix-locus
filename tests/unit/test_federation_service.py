@@ -1,5 +1,5 @@
-from frontier_runtime.config import Settings
-from frontier_runtime.federation import FederationTopologyService
+from locus_runtime.config import Settings
+from locus_runtime.federation import FederationTopologyService
 
 
 def test_federation_service_parses_peers() -> None:

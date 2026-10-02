@@ -14,7 +14,7 @@ dependencies, routing-policies in registry YAMLs), and a review→release lifecy
 with tenant skill packages (`SKILL.md` + `metadata.yaml` + `agents/` + `eval/`)
 living in external Git and indexed into a control-plane DB.
 
-Ported into xFrontier's existing skills (✅ done): `tier`, `maturity`
+Ported into Locus's existing skills (✅ done): `tier`, `maturity`
 (draft→incubating→validated→standard), `owner`, `dependencies`, an `eval_rubric`
 + `eval_dataset`, and `POST /skills/{id}/eval` (runs each case, LLM-judge grades
 vs rubric → averaged score, ≥0.7 passes and earns `validated`) + a promotion-gated
@@ -42,9 +42,9 @@ review/release control-plane workflow.
 |---|---|---|
 | Open WebUI | **MIT** | Port code directly (retain copyright notices) or run as a service. Safest source for direct code lifts. |
 | Langflow (+ `lfx` engine) | **MIT** | Port code directly; `lfx` is a standalone MIT Python package usable as an embedded library. |
-| Dify | **Modified Apache 2.0** | Additional conditions: no multi-tenant offering built on their code without a commercial license, and their `web/` frontend cannot be rebranded. xFrontier has multi-workspace ambitions → **treat Dify as a design reference only; reimplement patterns, copy no code.** Their separate `dify-sandbox` repo is licensed independently (verify before use). |
+| Dify | **Modified Apache 2.0** | Additional conditions: no multi-tenant offering built on their code without a commercial license, and their `web/` frontend cannot be rebranded. Locus has multi-workspace ambitions → **treat Dify as a design reference only; reimplement patterns, copy no code.** Their separate `dify-sandbox` repo is licensed independently (verify before use). |
 
-## Where xFrontier already stands (don't re-buy what we own)
+## Where Locus already stands (don't re-buy what we own)
 
 Multi-provider OpenAI-compatible routing (8 providers incl. NIM + Ollama), local model catalog with managed pulls, skills registry with test bench + usage metrics, integrations catalog (MCP/API metadata), ReactFlow studio for agents/workflows with revisions/publish, SSE run streaming, approval flows, OIDC auth, audit log, sectioned persistence, egress-proxied sandbox topology (squid ≙ Dify's `ssrf_proxy` — independent validation of our design).
 
@@ -60,11 +60,11 @@ Langflow components declare typed inputs as data (`DropdownInput(options=…, re
 
 ### 3. Embedded flow execution engine — evaluate, don't decide yet (source: Langflow)
 `lfx` is Langflow's MIT execution engine as an importable package (graph compile/run, per-node events, caching). Embedding it could replace our bespoke graph executor for complex flows while we keep our own UI/policy layers.
-**Action: time-boxed spike — run one xFrontier workflow graph through embedded `lfx`; measure footprint (resource budgets apply) and policy-hook compatibility before committing.**
+**Action: time-boxed spike — run one Locus workflow graph through embedded `lfx`; measure footprint (resource budgets apply) and policy-hook compatibility before committing.**
 
 ### 4. Knowledge/RAG module (sources: Open WebUI code, Dify design)
 We have pgvector long-term memory but no document-knowledge product surface. Open WebUI's pluggable **vector-DB factory** (`retrieval/vector/factory.py`, 14 backends) and document loaders are MIT and portable nearly as-is. Dify's pipeline staging (`api/core/rag/`: extractor → cleaner → splitter → index_processor → retrieval → rerank → data_post_processor) is the right architecture to mirror.
-**Action: build `frontier_runtime` knowledge module: port Open WebUI's vector factory + 2–3 loaders (PDF/web/markdown), structure stages Dify-style, surface citations in the run console, knowledge collections under builder nav.**
+**Action: build `locus_runtime` knowledge module: port Open WebUI's vector factory + 2–3 loaders (PDF/web/markdown), structure stages Dify-style, surface citations in the run console, knowledge collections under builder nav.**
 
 ### 5. Triggers & workflow-as-API (source: Dify design)
 Dify workflows start from `trigger_webhook` / `trigger_schedule` / `trigger_plugin` nodes; Langflow exposes any flow as an authenticated API endpoint. We have neither — runs start only from the UI.
@@ -89,7 +89,7 @@ Open WebUI's `code_interpreter` (MIT) and Dify's dedicated sandbox container bot
 | **A — Tools become real** | ✅ DONE 2026-06-11 — MCP HTTP/SSE client (`app/mcp_client.py`), tool-call loop in `_run_openai_chat` (max-calls cap, per-call run events), `_gather_mcp_run_tools` (configured-only, locality + high-risk + block-tool-calls gating, env:/Vault secret resolution), provider Test button in settings | done | Open WebUI (port), Dify (design) |
 | **B — Studio component schema** | ✅ PARTIAL 2026-06-11 — `NodeFieldSpec` declarative typed-input schema on node definitions (9 node types populated: dropdown/text/textarea/number/slider/bool/secret/code, with `options_source` for live lists, advanced/required/bounds); generic `NodeFieldForm` renderer surfaced read-only on `/builder/nodes`. Remaining: wire `NodeFieldForm` into the studio canvas inspector (replace hand-coded per-node config) and edge type-checking. | partial | Langflow (pattern) |
 | **C — Knowledge module** | ✅ PARTIAL 2026-06-11 — knowledge collections (create/list/delete), paragraph-aware chunker, document ingestion (embed-on-write) + semantic search reusing the pgvector long-term store; builder Knowledge page with ingest + retrieval test. Secure-stack postgres switched to pgvector image. **Memory layers + RAG-via-integrations (2026-06-11):** `/knowledge/memory-layers` reports honest status+stats for all four tiers (short-term/Redis, long-term/pgvector, world-graph/Neo4j, knowledge); `/knowledge/vector-stores` lists the built-in pgvector backend plus any `type=vector` integration; collections bind to a `vector_store_id` (default `platform`), ingest enforces the binding (501 driverless / 503 store-down); page shows a layers panel + vector-store selector linking to builder/integrations. Remaining: external vector-store drivers (Qdrant/Pinecone/etc.), file/PDF loaders, citation surfacing in the run console, rerank. | partial | Open WebUI (port), Dify (design) |
-| **D — Triggers & run-as-API** | ✅ DONE 2026-06-11 — webhook trigger tokens (create/list/revoke; token shown once; `POST /triggers/webhook/{token}` runs as owner via `request.state` pre-auth) AND cron schedule triggers (dependency-free 5-field matcher in `app/cron.py`; `_scheduler_loop` daemon ticks 30s with minute-key dedupe; CRUD + toggle endpoints; `FRONTIER_SCHEDULER_ENABLED` flag for multi-replica). Both reuse the unchanged `create_workflow_run` (scheduler via a request shim) so guardrails/executor/audit apply. Triggers + schedules manager UI on the workflow detail page. | done | Dify/Langflow (design) |
+| **D — Triggers & run-as-API** | ✅ DONE 2026-06-11 — webhook trigger tokens (create/list/revoke; token shown once; `POST /triggers/webhook/{token}` runs as owner via `request.state` pre-auth) AND cron schedule triggers (dependency-free 5-field matcher in `app/cron.py`; `_scheduler_loop` daemon ticks 30s with minute-key dedupe; CRUD + toggle endpoints; `LOCUS_SCHEDULER_ENABLED` flag for multi-replica). Both reuse the unchanged `create_workflow_run` (scheduler via a request shim) so guardrails/executor/audit apply. Triggers + schedules manager UI on the workflow detail page. | done | Dify/Langflow (design) |
 | **E — Chat depth** | ✅ PARTIAL 2026-06-11 — Regenerate action on the run console (re-runs the original task as a linked run, reusing the resolved agent). Remaining: in-run event-tree branching navigation, artifacts canvas. | partial | Open WebUI (pattern) |
 | **F — Spikes** | Embedded `lfx` executor; dify-sandbox license check + trial | 3–5 days each | Langflow, Dify |
 
@@ -97,6 +97,6 @@ Recommended order: **A → B → C**, then D/E by product priority. Every port f
 
 ## What we deliberately do NOT integrate
 
-- **Running Open WebUI or Dify alongside xFrontier as the chat/builder surface** — they overlap our core product; two UIs would fork the experience.
+- **Running Open WebUI or Dify alongside Locus as the chat/builder surface** — they overlap our core product; two UIs would fork the experience.
 - **Dify code in any form** — license risk for our multi-workspace direction; design reference only.
 - **Langflow as a deployed service** — its builder duplicates ours; the value is the component schema and possibly the embedded `lfx` engine.

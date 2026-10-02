@@ -2,7 +2,7 @@ Understood. I’ll provide the full product spec inline so you don’t depend on
 
 ---
 
-# xFrontier Product Spec
+# Locus Product Spec
 
 ## Gap Closure: Current System → Columnar Cognitive System
 
@@ -10,7 +10,7 @@ Understood. I’ll provide the full product spec inline so you don’t depend on
 
 ## 1. Summary
 
-xFrontier today is a **local-first, multi-agent orchestration platform** with strong:
+Locus today is a **local-first, multi-agent orchestration platform** with strong:
 
 * control plane authority
 * runtime isolation and policy enforcement
@@ -51,7 +51,7 @@ This results in:
 
 ### Target capability
 
-xFrontier must become a system that:
+Locus must become a system that:
 
 * maintains **multiple independent models of a task**
 * fuses them via **explicit consensus**
@@ -661,7 +661,7 @@ Mitigation:
 
 ## 10. End State
 
-xFrontier becomes:
+Locus becomes:
 * a **distributed cognitive system**
 * built on **modular reasoning primitives**
 * coordinated through **assemblies**

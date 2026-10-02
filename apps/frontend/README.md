@@ -1,4 +1,4 @@
-# Frontier MVP Frontend
+# Locus MVP Frontend
 
 Dual-mode Next.js frontend for local-first orchestration operations and workflow building.
 

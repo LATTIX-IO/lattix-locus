@@ -3,9 +3,9 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "lattix-frontier"
+name = "lattix-locus"
 version = "0.1.0"
-description = "Lattix xFrontier open-source orchestration and control plane"
+description = "Lattix Locus open-source orchestration and control plane"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
@@ -55,11 +55,11 @@ maf = [
 ]
 
 [project.scripts]
-lattix = "frontier_tooling.cli:cli"
-frontier-installer = "frontier_tooling.installer:main"
+lattix = "locus_tooling.cli:cli"
+locus-installer = "locus_tooling.installer:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["frontier_tooling", "frontier_runtime"]
+packages = ["locus_tooling", "locus_runtime"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -80,18 +80,18 @@ plugins = []
 
 [[tool.mypy.overrides]]
 module = [
-  "frontier_runtime.harness.codex_backend",
-  "frontier_runtime.harness.enforcement",
-  "frontier_runtime.harness.integrations",
-  "frontier_runtime.harness.team",
-  "frontier_runtime.harness.workspace",
-  "frontier_runtime.harness.workspace_binding",
-  "frontier_runtime.win_sandbox",
-  "frontier_tooling.cli",
-  "frontier_tooling.desktop",
-  "frontier_tooling.desktop_main",
-  "frontier_tooling.native_binaries",
-  "frontier_tooling.native_secrets",
+  "locus_runtime.harness.codex_backend",
+  "locus_runtime.harness.enforcement",
+  "locus_runtime.harness.integrations",
+  "locus_runtime.harness.team",
+  "locus_runtime.harness.workspace",
+  "locus_runtime.harness.workspace_binding",
+  "locus_runtime.win_sandbox",
+  "locus_tooling.cli",
+  "locus_tooling.desktop",
+  "locus_tooling.desktop_main",
+  "locus_tooling.native_binaries",
+  "locus_tooling.native_secrets",
 ]
 ignore_errors = true
 

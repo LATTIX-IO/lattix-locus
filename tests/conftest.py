@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for Frontier tests."""
+"""Shared pytest fixtures for Locus tests."""
 
 from __future__ import annotations
 
@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from frontier_runtime.events import reset_event_bus
-from frontier_runtime.orchestrator import reset_approval_store
-from frontier_runtime.persistence import reset_shared_state_backend
-from frontier_runtime.security import reset_token_caches
+from locus_runtime.events import reset_event_bus
+from locus_runtime.orchestrator import reset_approval_store
+from locus_runtime.persistence import reset_shared_state_backend
+from locus_runtime.security import reset_token_caches
 
 
 def _backend_main_module():
@@ -21,12 +21,12 @@ def _backend_main_module():
 @pytest.fixture(autouse=True)
 def security_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
-    monkeypatch.setenv("FRONTIER_API_BEARER_TOKEN", "unit-test-bearer")
+    monkeypatch.setenv("LOCUS_API_BEARER_TOKEN", "unit-test-bearer")
     monkeypatch.setenv("FEDERATION_ENABLED", "true")
     monkeypatch.setenv("FEDERATION_CLUSTER_NAME", "cluster-a")
     monkeypatch.setenv("FEDERATION_REGION", "us-east")
     monkeypatch.setenv("FEDERATION_PEERS", "https://peer-a.example.com,https://peer-b.example.com")
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "frontier-state.json"))
+    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "locus-state.json"))
     backend_store = _backend_main_module().store
     previous_authn = backend_store.platform_settings.require_authenticated_requests
     backend_store.platform_settings.require_authenticated_requests = True
@@ -51,5 +51,5 @@ def test_client() -> TestClient:
 def auth_headers() -> dict[str, str]:
     return {
         "Authorization": "Bearer unit-test-bearer",
-        "x-frontier-actor": "test-admin",
+        "x-locus-actor": "test-admin",
     }

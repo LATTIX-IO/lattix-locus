@@ -62,7 +62,8 @@ from app.platform_services import (
     PostgresWorldGraph,
     RedisMemoryStore,
 )
-from frontier_runtime.cognitive import (
+from locus_runtime.legacy import normalize_legacy_identifiers
+from locus_runtime.cognitive import (
     ColumnState,
     ConsensusEngine,
     EvidenceColumn,
@@ -81,12 +82,12 @@ from app.request_security import (
     classify_route_access,
     validate_route_inventory,
 )
-from frontier_runtime.assembly_runner import (
+from locus_runtime.assembly_runner import (
     AssemblyRunner,
     AssemblyRunRequest,
     ColumnRuntimeGateError,
 )
-from frontier_runtime.cognition import (
+from locus_runtime.cognition import (
     AssemblyAdmissionPolicy,
     AssemblyBudget,
     AssemblyDefinition,
@@ -97,8 +98,8 @@ from frontier_runtime.cognition import (
     MessageType,
     require_column_capability,
 )
-from frontier_runtime.events import AgentEvent, event_to_column_message, is_cognitive_event
-from frontier_runtime.persistence import (
+from locus_runtime.events import AgentEvent, event_to_column_message, is_cognitive_event
+from locus_runtime.persistence import (
     load_assembly_causal_state,
     load_causal_state,
     record_cognitive_message_replay_marker,
@@ -106,9 +107,9 @@ from frontier_runtime.persistence import (
     redact_sensitive_ref,
 )
 from app.security_headers import apply_security_headers
-from frontier_runtime.security import decode_token as decode_runtime_token
-from frontier_runtime.security import mint_token as mint_runtime_token
-from frontier_runtime.security import token_identity_from_claims
+from locus_runtime.security import decode_token as decode_runtime_token
+from locus_runtime.security import mint_token as mint_runtime_token
+from locus_runtime.security import token_identity_from_claims
 
 try:
     import jwt
@@ -466,8 +467,8 @@ class AgentSecurityConfig(SecurityScopeConfig):
 
 
 class PlatformSettings(BaseModel):
-    org_name: str = "Lattix xFrontier"
-    org_slug: str = "lattix-frontier"
+    org_name: str = "Lattix Locus"
+    org_slug: str = "lattix-locus"
     support_email: str = "support@lattix.io"
     website: str = "https://lattix.io"
     console_classification_banner_enabled: bool = True
@@ -802,7 +803,7 @@ class GraphEdge(BaseModel):
 
 
 class GraphPayload(BaseModel):
-    schema_version: str = "frontier-graph/1.0"
+    schema_version: str = "locus-graph/1.0"
     nodes: list[GraphNode] = Field(default_factory=list)
     links: list[GraphEdge] = Field(default_factory=list)
     input: dict[str, Any] = Field(default_factory=dict)
@@ -993,16 +994,16 @@ def _normalize_runtime_profile_name(raw: str | None) -> str:
         return ""
     profile_name = _RUNTIME_PROFILE_ALIASES.get(normalized)
     if not profile_name:
-        raise ValueError(f"Unsupported FRONTIER_RUNTIME_PROFILE '{raw}'")
+        raise ValueError(f"Unsupported LOCUS_RUNTIME_PROFILE '{raw}'")
     return profile_name
 
 
 def _legacy_secure_local_mode_enabled() -> bool:
-    return _env_flag("FRONTIER_SECURE_LOCAL_MODE", False)
+    return _env_flag("LOCUS_SECURE_LOCAL_MODE", False)
 
 
 def _runtime_profile_source() -> str:
-    if os.getenv("FRONTIER_RUNTIME_PROFILE") is not None:
+    if os.getenv("LOCUS_RUNTIME_PROFILE") is not None:
         return "env"
     if _legacy_secure_local_mode_enabled():
         return "legacy-secure-local"
@@ -1010,7 +1011,7 @@ def _runtime_profile_source() -> str:
 
 
 def _active_runtime_profile() -> RuntimeProfile:
-    explicit_profile = _normalize_runtime_profile_name(os.getenv("FRONTIER_RUNTIME_PROFILE"))
+    explicit_profile = _normalize_runtime_profile_name(os.getenv("LOCUS_RUNTIME_PROFILE"))
     if explicit_profile:
         return _RUNTIME_PROFILES[explicit_profile]
     if _legacy_secure_local_mode_enabled():
@@ -1023,11 +1024,11 @@ def _secure_local_mode_enabled() -> bool:
 
 
 def _effective_require_authenticated_requests() -> bool:
-    if os.getenv("FRONTIER_RUNTIME_PROFILE") is not None:
+    if os.getenv("LOCUS_RUNTIME_PROFILE") is not None:
         return _active_runtime_profile().require_authenticated_requests
-    if os.getenv("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS") is not None:
+    if os.getenv("LOCUS_REQUIRE_AUTHENTICATED_REQUESTS") is not None:
         return _env_flag(
-            "FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS",
+            "LOCUS_REQUIRE_AUTHENTICATED_REQUESTS",
             store.platform_settings.require_authenticated_requests,
         )
     if _legacy_secure_local_mode_enabled():
@@ -1036,18 +1037,18 @@ def _effective_require_authenticated_requests() -> bool:
 
 
 def _effective_require_a2a_runtime_headers() -> bool:
-    if os.getenv("FRONTIER_RUNTIME_PROFILE") is not None:
+    if os.getenv("LOCUS_RUNTIME_PROFILE") is not None:
         return _active_runtime_profile().require_a2a_runtime_headers
-    if os.getenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS") is not None:
+    if os.getenv("LOCUS_REQUIRE_A2A_RUNTIME_HEADERS") is not None:
         return _env_flag(
-            "FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS",
+            "LOCUS_REQUIRE_A2A_RUNTIME_HEADERS",
             store.platform_settings.require_a2a_runtime_headers,
         )
     return store.platform_settings.require_a2a_runtime_headers
 
 
 def _mcp_remote_server_policy_explicitly_confirmed() -> bool:
-    return _env_flag("FRONTIER_CONFIRM_REMOTE_MCP_SERVERS", False)
+    return _env_flag("LOCUS_CONFIRM_REMOTE_MCP_SERVERS", False)
 
 
 def _secure_profile_deployment_report(
@@ -1128,10 +1129,10 @@ def _is_uuid(value: str) -> bool:
 def _normalize_node_type(node_type: str) -> str:
     candidate = node_type.strip()
     if not candidate:
-        return "frontier/unknown"
-    if candidate.startswith("frontier/"):
+        return "locus/unknown"
+    if candidate.startswith("locus/"):
         return candidate
-    return f"frontier/{candidate}"
+    return f"locus/{candidate}"
 
 
 _SUPPORTED_RUNTIME_ENGINES = {
@@ -1160,29 +1161,29 @@ _SIGNAL_ENFORCEMENT_RANK = {
 _SUPPORTED_PRINCIPAL_TYPES = {"user", "agent", "service", "npe"}
 
 _L3_DELEGATED_NODE_TYPES = {
-    "frontier/agent",
-    "frontier/retrieval",
-    "frontier/tool-call",
-    "frontier/memory",
-    "frontier/data-store",
-    "frontier/guardrail",
-    "frontier/manifold",
-    "frontier/human-review",
+    "locus/agent",
+    "locus/retrieval",
+    "locus/tool-call",
+    "locus/memory",
+    "locus/data-store",
+    "locus/guardrail",
+    "locus/manifold",
+    "locus/human-review",
 }
 _L3_NATIVE_CONTROL_PLANE_NODE_TYPES = {
-    "frontier/trigger",
-    "frontier/prompt",
-    "frontier/router",
-    "frontier/iterator",
-    "frontier/transform",
-    "frontier/event",
-    "frontier/error-handler",
-    "frontier/wait",
-    "frontier/output",
+    "locus/trigger",
+    "locus/prompt",
+    "locus/router",
+    "locus/iterator",
+    "locus/transform",
+    "locus/event",
+    "locus/error-handler",
+    "locus/wait",
+    "locus/output",
 }
 
-_CANONICAL_AGENT_SCHEMA_VERSION = "frontier-agent-definition/1.0"
-_CANONICAL_GRAPH_SCHEMA_VERSION = "frontier-graph/1.0"
+_CANONICAL_AGENT_SCHEMA_VERSION = "locus-agent-definition/1.0"
+_CANONICAL_GRAPH_SCHEMA_VERSION = "locus-graph/1.0"
 _SUPPORTED_GRAPH_SCHEMA_VERSIONS = {_CANONICAL_GRAPH_SCHEMA_VERSION}
 
 
@@ -1190,7 +1191,7 @@ def _default_agent_graph(
     *, source_agent_id: str, agent_name: str, system_prompt: str, model: str
 ) -> dict[str, Any]:
     safe_prompt = system_prompt.strip() or (
-        f"You are the {agent_name} in the Frontier platform. "
+        f"You are the {agent_name} in the Locus platform. "
         "Provide safe, policy-aligned, actionable outputs with concise reasoning summaries."
     )
     return {
@@ -1198,7 +1199,7 @@ def _default_agent_graph(
         "nodes": [
             {
                 "id": "trigger",
-                "type": "frontier/trigger",
+                "type": "locus/trigger",
                 "title": "Trigger",
                 "x": 70,
                 "y": 90,
@@ -1206,7 +1207,7 @@ def _default_agent_graph(
             },
             {
                 "id": "prompt",
-                "type": "frontier/prompt",
+                "type": "locus/prompt",
                 "title": "Prompt",
                 "x": 330,
                 "y": 90,
@@ -1214,7 +1215,7 @@ def _default_agent_graph(
             },
             {
                 "id": "agent",
-                "type": "frontier/agent",
+                "type": "locus/agent",
                 "title": "Agent Runtime",
                 "x": 610,
                 "y": 90,
@@ -1226,7 +1227,7 @@ def _default_agent_graph(
             },
             {
                 "id": "output",
-                "type": "frontier/output",
+                "type": "locus/output",
                 "title": "Output",
                 "x": 900,
                 "y": 90,
@@ -1341,7 +1342,7 @@ def _graph_skill_validation_issues(graph_json: dict[str, Any]) -> list[GraphVali
     for index, node in enumerate(nodes):
         if not isinstance(node, dict):
             continue
-        if not _normalize_node_type(str(node.get("type") or "")).startswith("frontier/agent"):
+        if not _normalize_node_type(str(node.get("type") or "")).startswith("locus/agent"):
             continue
         config = node.get("config") if isinstance(node.get("config"), dict) else {}
         if "skills" not in config:
@@ -1370,7 +1371,7 @@ def _normalize_graph_agent_skills(
     for index, node in enumerate(nodes):
         if not isinstance(node, dict):
             continue
-        if not _normalize_node_type(str(node.get("type") or "")).startswith("frontier/agent"):
+        if not _normalize_node_type(str(node.get("type") or "")).startswith("locus/agent"):
             continue
         config = node.get("config") if isinstance(node.get("config"), dict) else {}
         if "skills" not in config:
@@ -1543,23 +1544,23 @@ def _default_framework_profiles() -> dict[str, dict[str, Any]]:
 
 
 def _bootstrap_configured_iam_provider() -> tuple[str, str]:
-    provider = str(os.getenv("FRONTIER_AUTH_OIDC_PROVIDER") or "").strip().lower()
-    issuer = str(os.getenv("FRONTIER_AUTH_OIDC_ISSUER") or "").strip()
+    provider = str(os.getenv("LOCUS_AUTH_OIDC_PROVIDER") or "").strip().lower()
+    issuer = str(os.getenv("LOCUS_AUTH_OIDC_ISSUER") or "").strip()
     if provider or issuer:
         return provider or "oidc", issuer
-    return "frontier-runtime", ""
+    return "locus-runtime", ""
 
 
 def _operator_session_cookie_name() -> str:
     value = str(
-        os.getenv("FRONTIER_OPERATOR_SESSION_COOKIE") or "frontier_operator_session"
+        os.getenv("LOCUS_OPERATOR_SESSION_COOKIE") or "locus_operator_session"
     ).strip()
-    return value or "frontier_operator_session"
+    return value or "locus_operator_session"
 
 
 def _operator_session_ttl_seconds() -> int:
     return _env_int(
-        "FRONTIER_OPERATOR_SESSION_TTL_SECONDS", 60 * 60 * 8, minimum=300, maximum=60 * 60 * 24
+        "LOCUS_OPERATOR_SESSION_TTL_SECONDS", 60 * 60 * 8, minimum=300, maximum=60 * 60 * 24
     )
 
 
@@ -1605,13 +1606,13 @@ def _request_operator_session_token(request: Request | None) -> str:
 
 
 def _oidc_browser_flow_cookie_name() -> str:
-    value = str(os.getenv("FRONTIER_OIDC_BROWSER_FLOW_COOKIE") or "frontier_oidc_browser").strip()
-    return value or "frontier_oidc_browser"
+    value = str(os.getenv("LOCUS_OIDC_BROWSER_FLOW_COOKIE") or "locus_oidc_browser").strip()
+    return value or "locus_oidc_browser"
 
 
 def _oidc_browser_flow_ttl_seconds() -> int:
     return _env_int(
-        "FRONTIER_OIDC_BROWSER_FLOW_TTL_SECONDS",
+        "LOCUS_OIDC_BROWSER_FLOW_TTL_SECONDS",
         600,
         minimum=60,
         maximum=60 * 30,
@@ -1620,9 +1621,9 @@ def _oidc_browser_flow_ttl_seconds() -> int:
 
 def _oidc_browser_flow_signing_secret() -> bytes:
     for env_name in (
-        "FRONTIER_SECRETS_ENCRYPTION_KEY",
+        "LOCUS_SECRETS_ENCRYPTION_KEY",
         "A2A_JWT_SECRET",
-        "FRONTIER_API_BEARER_TOKEN",
+        "LOCUS_API_BEARER_TOKEN",
     ):
         candidate = str(os.getenv(env_name) or "").strip()
         if candidate:
@@ -1730,45 +1731,45 @@ def _configured_operator_oidc_browser_flow() -> dict[str, Any]:
     if not oidc:
         return {}
 
-    client_id = str(os.getenv("FRONTIER_AUTH_OIDC_CLIENT_ID") or "").strip()
+    client_id = str(os.getenv("LOCUS_AUTH_OIDC_CLIENT_ID") or "").strip()
     authorization_source = (
-        str(os.getenv("FRONTIER_AUTH_OIDC_AUTHORIZATION_URL") or "").strip()
-        or str(os.getenv("FRONTIER_AUTH_OIDC_SIGNIN_URL") or "").strip()
+        str(os.getenv("LOCUS_AUTH_OIDC_AUTHORIZATION_URL") or "").strip()
+        or str(os.getenv("LOCUS_AUTH_OIDC_SIGNIN_URL") or "").strip()
     )
-    token_source = str(os.getenv("FRONTIER_AUTH_OIDC_TOKEN_URL") or "").strip()
+    token_source = str(os.getenv("LOCUS_AUTH_OIDC_TOKEN_URL") or "").strip()
     signin_source = (
-        str(os.getenv("FRONTIER_AUTH_OIDC_SIGNIN_URL") or "").strip() or authorization_source
+        str(os.getenv("LOCUS_AUTH_OIDC_SIGNIN_URL") or "").strip() or authorization_source
     )
     signup_source = (
-        str(os.getenv("FRONTIER_AUTH_OIDC_SIGNUP_URL") or "").strip() or authorization_source
+        str(os.getenv("LOCUS_AUTH_OIDC_SIGNUP_URL") or "").strip() or authorization_source
     )
     scopes = [
         scope.strip()
-        for scope in str(os.getenv("FRONTIER_AUTH_OIDC_SCOPES") or "openid profile email").split()
+        for scope in str(os.getenv("LOCUS_AUTH_OIDC_SCOPES") or "openid profile email").split()
         if scope.strip()
     ]
     if not client_id or not authorization_source or not token_source:
         return {}
 
     authorization_url = _normalize_absolute_http_url_allow_query(
-        authorization_source, setting_name="FRONTIER_AUTH_OIDC_AUTHORIZATION_URL"
+        authorization_source, setting_name="LOCUS_AUTH_OIDC_AUTHORIZATION_URL"
     )
     token_url = _normalize_absolute_http_url_allow_query(
-        token_source, setting_name="FRONTIER_AUTH_OIDC_TOKEN_URL"
+        token_source, setting_name="LOCUS_AUTH_OIDC_TOKEN_URL"
     )
     signin_url = _normalize_absolute_http_url_allow_query(
-        signin_source, setting_name="FRONTIER_AUTH_OIDC_SIGNIN_URL"
+        signin_source, setting_name="LOCUS_AUTH_OIDC_SIGNIN_URL"
     )
     signup_url = _normalize_absolute_http_url_allow_query(
-        signup_source, setting_name="FRONTIER_AUTH_OIDC_SIGNUP_URL"
+        signup_source, setting_name="LOCUS_AUTH_OIDC_SIGNUP_URL"
     )
 
     issuer_host = str(urlsplit(oidc["issuer"]).hostname or "").strip().lower()
     for setting_name, value in (
-        ("FRONTIER_AUTH_OIDC_AUTHORIZATION_URL", authorization_url),
-        ("FRONTIER_AUTH_OIDC_TOKEN_URL", token_url),
-        ("FRONTIER_AUTH_OIDC_SIGNIN_URL", signin_url),
-        ("FRONTIER_AUTH_OIDC_SIGNUP_URL", signup_url),
+        ("LOCUS_AUTH_OIDC_AUTHORIZATION_URL", authorization_url),
+        ("LOCUS_AUTH_OIDC_TOKEN_URL", token_url),
+        ("LOCUS_AUTH_OIDC_SIGNIN_URL", signin_url),
+        ("LOCUS_AUTH_OIDC_SIGNUP_URL", signup_url),
     ):
         parsed = urlsplit(value)
         candidate_host = str(parsed.hostname or "").strip().lower()
@@ -1776,7 +1777,7 @@ def _configured_operator_oidc_browser_flow() -> dict[str, Any]:
             raise ValueError(f"{setting_name} must use https outside localhost development")
         if issuer_host and candidate_host and issuer_host != candidate_host:
             raise ValueError(
-                f"{setting_name} must resolve to the same host as FRONTIER_AUTH_OIDC_ISSUER"
+                f"{setting_name} must resolve to the same host as LOCUS_AUTH_OIDC_ISSUER"
             )
 
     return {
@@ -2308,10 +2309,10 @@ def _native_password_auth_enabled() -> bool:
 
 
 def _native_app_home() -> Path:
-    explicit = str(os.getenv("FRONTIER_APP_HOME") or "").strip()
+    explicit = str(os.getenv("LOCUS_APP_HOME") or "").strip()
     if explicit:
         return Path(explicit)
-    sqlite_path = str(os.getenv("FRONTIER_SQLITE_STATE_PATH") or "").strip()
+    sqlite_path = str(os.getenv("LOCUS_SQLITE_STATE_PATH") or "").strip()
     if sqlite_path:
         try:
             return Path(sqlite_path).resolve().parents[2]  # <home>/data/state/state.db -> <home>
@@ -2321,10 +2322,10 @@ def _native_app_home() -> Path:
     system = platform.system().lower()
     if system == "windows":
         base = Path(os.getenv("LOCALAPPDATA") or (home / "AppData" / "Local"))
-        return base / "Lattix" / "xFrontier"
+        return base / "Lattix" / "Locus"
     if system == "darwin":
-        return home / "Library" / "Application Support" / "Lattix" / "xFrontier"
-    return home / ".local" / "share" / "lattix" / "xfrontier"
+        return home / "Library" / "Application Support" / "Lattix" / "Locus"
+    return home / ".local" / "share" / "lattix" / "locus"
 
 
 def _native_account_file() -> Path:
@@ -2384,8 +2385,8 @@ def _bootstrap_default_agent_service_account_id(
     candidate = _slugify(current_value or agent_name or agent_id)
     if not candidate:
         candidate = _slugify(agent_id) or "agent"
-    if not candidate.startswith("frontier-agent-"):
-        candidate = f"frontier-agent-{candidate}"
+    if not candidate.startswith("locus-agent-"):
+        candidate = f"locus-agent-{candidate}"
     return candidate[:96]
 
 
@@ -2395,7 +2396,7 @@ def _bootstrap_build_agent_identity_subject(
     normalized_issuer = str(issuer or "").strip().rstrip("/")
     if normalized_issuer:
         return f"{normalized_issuer}/npe/agents/{service_account_id}"
-    return f"frontier://agents/{agent_id}"
+    return f"locus://agents/{agent_id}"
 
 
 def _canonicalize_agent_iam_identity(
@@ -2430,14 +2431,14 @@ def _canonicalize_agent_iam_identity(
         source.get("roles") if isinstance(source.get("roles"), list) else ["agent", "npe"]
     )
     groups_source = (
-        source.get("groups") if isinstance(source.get("groups"), list) else ["frontier-agents"]
+        source.get("groups") if isinstance(source.get("groups"), list) else ["locus-agents"]
     )
     roles = [str(item).strip() for item in roles_source if str(item or "").strip()] or [
         "agent",
         "npe",
     ]
     groups = [str(item).strip() for item in groups_source if str(item or "").strip()] or [
-        "frontier-agents"
+        "locus-agents"
     ]
 
     return {
@@ -2834,7 +2835,7 @@ def _normalize_runtime_engine(value: Any) -> str:
     aliases = {
         "": "native",
         "default": "native",
-        "frontier": "native",
+        "locus": "native",
         "semantic_kernel": "semantic-kernel",
         "semantickernel": "semantic-kernel",
         "sk": "semantic-kernel",
@@ -3243,7 +3244,7 @@ def _resolve_engine_execution(selected_engine: str) -> dict[str, Any]:
             "note": "",
         }
 
-    if not _env_flag("FRONTIER_ENABLE_NON_NATIVE_ENGINES", False):
+    if not _env_flag("LOCUS_ENABLE_NON_NATIVE_ENGINES", False):
         raise HTTPException(
             status_code=403,
             detail={
@@ -3253,7 +3254,7 @@ def _resolve_engine_execution(selected_engine: str) -> dict[str, Any]:
         )
 
     runtime_probe = _framework_runtime_probe(selected)
-    allow_compat_fallback = _env_flag("FRONTIER_NON_NATIVE_ENGINE_FALLBACK_TO_COMPAT", True)
+    allow_compat_fallback = _env_flag("LOCUS_NON_NATIVE_ENGINE_FALLBACK_TO_COMPAT", True)
     if runtime_probe.get("available"):
         return {
             "selected_engine": selected,
@@ -3285,85 +3286,85 @@ def _resolve_engine_execution(selected_engine: str) -> dict[str, Any]:
 def _framework_adapter_mapping(engine: str) -> dict[str, str]:
     if engine == "native":
         return {
-            "frontier/trigger": "native.trigger",
-            "frontier/prompt": "native.prompt",
-            "frontier/agent": "native.agent",
-            "frontier/tool-call": "native.tool_call",
-            "frontier/retrieval": "native.retrieval",
-            "frontier/memory": "native.memory",
-            "frontier/data-store": "native.data_store",
-            "frontier/guardrail": "native.guardrail",
-            "frontier/human-review": "native.human_review",
-            "frontier/manifold": "native.manifold",
-            "frontier/router": "native.router",
-            "frontier/iterator": "native.iterator",
-            "frontier/transform": "native.transform",
-            "frontier/event": "native.event",
-            "frontier/error-handler": "native.error_handler",
-            "frontier/wait": "native.wait",
-            "frontier/output": "native.output",
+            "locus/trigger": "native.trigger",
+            "locus/prompt": "native.prompt",
+            "locus/agent": "native.agent",
+            "locus/tool-call": "native.tool_call",
+            "locus/retrieval": "native.retrieval",
+            "locus/memory": "native.memory",
+            "locus/data-store": "native.data_store",
+            "locus/guardrail": "native.guardrail",
+            "locus/human-review": "native.human_review",
+            "locus/manifold": "native.manifold",
+            "locus/router": "native.router",
+            "locus/iterator": "native.iterator",
+            "locus/transform": "native.transform",
+            "locus/event": "native.event",
+            "locus/error-handler": "native.error_handler",
+            "locus/wait": "native.wait",
+            "locus/output": "native.output",
         }
 
     if engine in {"langgraph", "langchain"}:
         return {
-            "frontier/trigger": "framework.entrypoint",
-            "frontier/prompt": "framework.prompt_template",
-            "frontier/agent": "framework.llm_node",
-            "frontier/tool-call": "framework.tool_node",
-            "frontier/retrieval": "framework.retriever_node",
-            "frontier/memory": "framework.checkpoint_or_memory",
-            "frontier/data-store": "framework.state_store",
-            "frontier/guardrail": "framework.policy_node",
-            "frontier/human-review": "framework.human_gate",
-            "frontier/manifold": "framework.router_or_join",
-            "frontier/router": "framework.router_or_selector",
-            "frontier/iterator": "framework.iterator_or_batch",
-            "frontier/transform": "framework.map_or_assign",
-            "frontier/event": "framework.event_bridge",
-            "frontier/error-handler": "framework.retry_or_fallback",
-            "frontier/wait": "framework.delay_or_timeout",
-            "frontier/output": "framework.sink",
+            "locus/trigger": "framework.entrypoint",
+            "locus/prompt": "framework.prompt_template",
+            "locus/agent": "framework.llm_node",
+            "locus/tool-call": "framework.tool_node",
+            "locus/retrieval": "framework.retriever_node",
+            "locus/memory": "framework.checkpoint_or_memory",
+            "locus/data-store": "framework.state_store",
+            "locus/guardrail": "framework.policy_node",
+            "locus/human-review": "framework.human_gate",
+            "locus/manifold": "framework.router_or_join",
+            "locus/router": "framework.router_or_selector",
+            "locus/iterator": "framework.iterator_or_batch",
+            "locus/transform": "framework.map_or_assign",
+            "locus/event": "framework.event_bridge",
+            "locus/error-handler": "framework.retry_or_fallback",
+            "locus/wait": "framework.delay_or_timeout",
+            "locus/output": "framework.sink",
         }
 
     if engine == "semantic-kernel":
         return {
-            "frontier/trigger": "sk.entry",
-            "frontier/prompt": "sk.prompt_function",
-            "frontier/agent": "sk.chat_or_planner",
-            "frontier/tool-call": "sk.plugin_function",
-            "frontier/retrieval": "sk.memory_search",
-            "frontier/memory": "sk.memory_store",
-            "frontier/data-store": "sk.state_store",
-            "frontier/guardrail": "sk.filter_or_policy",
-            "frontier/human-review": "sk.approval_step",
-            "frontier/manifold": "sk.branch_join",
-            "frontier/router": "sk.router",
-            "frontier/iterator": "sk.iterator",
-            "frontier/transform": "sk.transformer",
-            "frontier/event": "sk.event_bridge",
-            "frontier/error-handler": "sk.error_policy",
-            "frontier/wait": "sk.wait_step",
-            "frontier/output": "sk.output_formatter",
+            "locus/trigger": "sk.entry",
+            "locus/prompt": "sk.prompt_function",
+            "locus/agent": "sk.chat_or_planner",
+            "locus/tool-call": "sk.plugin_function",
+            "locus/retrieval": "sk.memory_search",
+            "locus/memory": "sk.memory_store",
+            "locus/data-store": "sk.state_store",
+            "locus/guardrail": "sk.filter_or_policy",
+            "locus/human-review": "sk.approval_step",
+            "locus/manifold": "sk.branch_join",
+            "locus/router": "sk.router",
+            "locus/iterator": "sk.iterator",
+            "locus/transform": "sk.transformer",
+            "locus/event": "sk.event_bridge",
+            "locus/error-handler": "sk.error_policy",
+            "locus/wait": "sk.wait_step",
+            "locus/output": "sk.output_formatter",
         }
 
     return {
-        "frontier/trigger": "autogen.entry",
-        "frontier/prompt": "autogen.system_message",
-        "frontier/agent": "autogen.assistant_agent",
-        "frontier/tool-call": "autogen.tool_executor",
-        "frontier/retrieval": "autogen.retrieval_agent",
-        "frontier/memory": "autogen.state_store",
-        "frontier/data-store": "autogen.state_store",
-        "frontier/guardrail": "autogen.policy_gate",
-        "frontier/human-review": "autogen.user_proxy_gate",
-        "frontier/manifold": "autogen.selector",
-        "frontier/router": "autogen.selector",
-        "frontier/iterator": "autogen.loop_agent",
-        "frontier/transform": "autogen.transformer",
-        "frontier/event": "autogen.event_bridge",
-        "frontier/error-handler": "autogen.fallback_gate",
-        "frontier/wait": "autogen.wait_gate",
-        "frontier/output": "autogen.result_sink",
+        "locus/trigger": "autogen.entry",
+        "locus/prompt": "autogen.system_message",
+        "locus/agent": "autogen.assistant_agent",
+        "locus/tool-call": "autogen.tool_executor",
+        "locus/retrieval": "autogen.retrieval_agent",
+        "locus/memory": "autogen.state_store",
+        "locus/data-store": "autogen.state_store",
+        "locus/guardrail": "autogen.policy_gate",
+        "locus/human-review": "autogen.user_proxy_gate",
+        "locus/manifold": "autogen.selector",
+        "locus/router": "autogen.selector",
+        "locus/iterator": "autogen.loop_agent",
+        "locus/transform": "autogen.transformer",
+        "locus/event": "autogen.event_bridge",
+        "locus/error-handler": "autogen.fallback_gate",
+        "locus/wait": "autogen.wait_gate",
+        "locus/output": "autogen.result_sink",
     }
 
 
@@ -3554,7 +3555,7 @@ def _infer_graph_node_runtime_role(
     if role_hint in _HYBRID_RUNTIME_ROLES:
         return role_hint
 
-    if node_type.startswith("frontier/agent"):
+    if node_type.startswith("locus/agent"):
         prior_agent_outputs = (
             execution_state.get("agent_outputs")
             if isinstance(execution_state.get("agent_outputs"), list)
@@ -3566,26 +3567,26 @@ def _infer_graph_node_runtime_role(
             prior_agent_outputs=prior_agent_outputs,
         )
 
-    if node_type == "frontier/retrieval":
+    if node_type == "locus/retrieval":
         return "retrieval"
-    if node_type == "frontier/tool-call":
+    if node_type == "locus/tool-call":
         return "tooling"
-    if node_type in {"frontier/memory", "frontier/data-store"}:
+    if node_type in {"locus/memory", "locus/data-store"}:
         return "collaboration"
 
     if node_type in {
-        "frontier/trigger",
-        "frontier/prompt",
-        "frontier/manifold",
-        "frontier/router",
-        "frontier/iterator",
-        "frontier/transform",
-        "frontier/event",
-        "frontier/error-handler",
-        "frontier/guardrail",
-        "frontier/human-review",
-        "frontier/wait",
-        "frontier/output",
+        "locus/trigger",
+        "locus/prompt",
+        "locus/manifold",
+        "locus/router",
+        "locus/iterator",
+        "locus/transform",
+        "locus/event",
+        "locus/error-handler",
+        "locus/guardrail",
+        "locus/human-review",
+        "locus/wait",
+        "locus/output",
     }:
         return "orchestration"
 
@@ -4284,14 +4285,14 @@ AnalyzerEngine: Any | None = None
 def _build_state_backends() -> tuple[Any, Any | None]:
     """Select the state/audit persistence backend.
 
-    POSTGRES_DSN wins when set. Otherwise FRONTIER_SQLITE_STATE_PATH opts into
+    POSTGRES_DSN wins when set. Otherwise LOCUS_SQLITE_STATE_PATH opts into
     the zero-container SQLite backend (resource plan 2.3). Classes are resolved
     via getattr so injected/fake platform_services modules without the newer
     classes fall back to legacy snapshot behavior.
     """
     services = importlib.import_module("app.platform_services")
     dsn = os.getenv("POSTGRES_DSN", "").strip()
-    sqlite_path = os.getenv("FRONTIER_SQLITE_STATE_PATH", "").strip()
+    sqlite_path = os.getenv("LOCUS_SQLITE_STATE_PATH", "").strip()
     if not dsn and sqlite_path:
         sqlite_state_cls = getattr(services, "SQLiteStateStore", None)
         sqlite_audit_cls = getattr(services, "SQLiteAuditLog", None)
@@ -4615,7 +4616,7 @@ def _run_semantic_kernel_chat(
         OpenAIChatCompletion = getattr(semantic_kernel_openai, "OpenAIChatCompletion")
 
         kernel = Kernel()
-        service_id = "frontier-chat"
+        service_id = "locus-chat"
         kernel.add_service(
             OpenAIChatCompletion(service_id=service_id, ai_model_id=model, api_key=key)
         )
@@ -4698,7 +4699,7 @@ def _run_autogen_chat(
 
         model_client = OpenAIChatCompletionClient(model=model, api_key=key, temperature=temperature)
         assistant = AssistantAgent(
-            name="frontier_assistant",
+            name="locus_assistant",
             model_client=model_client,
             system_message=system_prompt or "You are a helpful assistant.",
         )
@@ -4733,12 +4734,12 @@ def _run_autogen_chat(
             "config_list": [{"model": model, "api_key": key, "temperature": temperature}],
         }
         assistant = autogen.AssistantAgent(
-            name="frontier_assistant",
+            name="locus_assistant",
             system_message=system_prompt or "You are a helpful assistant.",
             llm_config=llm_config,
         )
         user_proxy = autogen.UserProxyAgent(
-            name="frontier_user_proxy",
+            name="locus_user_proxy",
             human_input_mode="NEVER",
             code_execution_config=False,
         )
@@ -5566,9 +5567,9 @@ def _run_framework_tool_call(
             StructuredTool = getattr(langchain_tools, "StructuredTool")
             tool = StructuredTool.from_function(
                 func=lambda payload=None, context=None: _simulate(),
-                name="frontier_tool_call",
+                name="locus_tool_call",
                 description=(
-                    "Frontier framework delegated tool call"
+                    "Locus framework delegated tool call"
                     + (f" with active skills: {', '.join(skill_hints)}" if skill_hints else "")
                 ),
             )
@@ -6095,7 +6096,7 @@ def _get_presidio_analyzer() -> Any | None:
     global _PRESIDIO_ANALYZER, _PRESIDIO_UNAVAILABLE, AnalyzerEngine  # noqa: PLW0603
     # NER-grade PII scanning is opt-in: the deterministic keyword/regex tier
     # always applies, and the analyzer costs hundreds of MB of RSS.
-    if not _env_flag("FRONTIER_ENABLE_PRESIDIO_PII_ANALYZER", False):
+    if not _env_flag("LOCUS_ENABLE_PRESIDIO_PII_ANALYZER", False):
         return None
     if _PRESIDIO_ANALYZER is not None or _PRESIDIO_UNAVAILABLE:
         return _PRESIDIO_ANALYZER
@@ -6954,7 +6955,7 @@ def _run_openai_chat(
 
 
 def _configured_agent_assets_root(repo_root: Path) -> Path | None:
-    configured = str(os.getenv("FRONTIER_AGENT_ASSETS_ROOT") or "").strip()
+    configured = str(os.getenv("LOCUS_AGENT_ASSETS_ROOT") or "").strip()
     if not configured:
         return None
 
@@ -7080,7 +7081,7 @@ def _load_seeded_agents_from_repo() -> dict[str, AgentDefinition]:
         agent_id = (
             source_agent_id
             if _is_uuid(source_agent_id)
-            else str(uuid5(NAMESPACE_URL, f"frontier-agent:{source_agent_id}"))
+            else str(uuid5(NAMESPACE_URL, f"locus-agent:{source_agent_id}"))
         )
         agent_name = str(config.get("name") or _slug_to_name(agent_dir.name))
         prompt_path = agent_dir / "system-prompt.md"
@@ -7151,7 +7152,7 @@ def _load_seeded_workflows_from_repo() -> dict[str, "WorkflowDefinition"]:
         wf_id = (
             source_id
             if _is_uuid(source_id)
-            else str(uuid5(NAMESPACE_URL, f"frontier-workflow:{source_id}"))
+            else str(uuid5(NAMESPACE_URL, f"locus-workflow:{source_id}"))
         )
         graph = config.get("graph") if isinstance(config.get("graph"), dict) else {}
         seeded[wf_id] = WorkflowDefinition(
@@ -7173,12 +7174,12 @@ _DEFAULT_CHAT_AGENT_OWNERS = ["oss-maintainers"]
 
 
 def _default_chat_agent_id() -> str:
-    return str(uuid5(NAMESPACE_URL, f"frontier-agent:{_DEFAULT_CHAT_AGENT_SOURCE_ID}"))
+    return str(uuid5(NAMESPACE_URL, f"locus-agent:{_DEFAULT_CHAT_AGENT_SOURCE_ID}"))
 
 
 def _default_chat_agent_system_prompt() -> str:
     return (
-        "You are the Default Chat Agent for the public Lattix xFrontier installation.\n\n"
+        "You are the Default Chat Agent for the public Lattix Locus installation.\n\n"
         "Responsibilities:\n"
         "- handle general-purpose user requests safely and clearly\n"
         "- produce actionable drafts, plans, summaries, and follow-up responses\n"
@@ -7516,7 +7517,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                 )
             )
 
-        if normalized_type == "frontier/trigger":
+        if normalized_type == "locus/trigger":
             trigger_count += 1
             mode = str(node.config.get("trigger_mode") or "manual")
             schedule_cron = str(node.config.get("schedule_cron") or "").strip()
@@ -7562,7 +7563,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/guardrail":
+        if normalized_type == "locus/guardrail":
             stage = str(node.config.get("stage") or "output")
             if stage not in {"input", "output", "tool_input", "tool_output"}:
                 issues.append(
@@ -7589,7 +7590,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
         issues.append(
             GraphValidationIssue(
                 code="TRIGGER_REQUIRED",
-                message="At least one frontier/trigger node is required.",
+                message="At least one locus/trigger node is required.",
                 path="nodes",
             )
         )
@@ -7610,7 +7611,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
         normalized_type = _normalize_node_type(node.type)
         node_path = f"nodes[{node_ids.index(node_id)}]"
 
-        if normalized_type == "frontier/prompt":
+        if normalized_type == "locus/prompt":
             if not str(node.config.get("system_prompt_text") or "").strip():
                 issues.append(
                     GraphValidationIssue(
@@ -7620,7 +7621,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/goal":
+        if normalized_type == "locus/goal":
             if not str(node.config.get("intent") or "").strip():
                 issues.append(
                     GraphValidationIssue(
@@ -7630,7 +7631,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/evidence":
+        if normalized_type == "locus/evidence":
             required_evidence = node.config.get("required_evidence")
             if required_evidence is not None and not isinstance(required_evidence, list):
                 issues.append(
@@ -7641,7 +7642,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/assembly":
+        if normalized_type == "locus/assembly":
             if len(_incoming_to_port(node_id, "goal")) == 0:
                 issues.append(
                     GraphValidationIssue(
@@ -7672,7 +7673,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/commitment":
+        if normalized_type == "locus/commitment":
             if len(_incoming_to_port(node_id, "commitment")) == 0:
                 issues.append(
                     GraphValidationIssue(
@@ -7682,7 +7683,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type.startswith("frontier/agent"):
+        if normalized_type.startswith("locus/agent"):
             if "skills" in node.config:
                 _normalized_skills, skill_issues = _validate_graph_skill_paths(
                     node.config.get("skills"), path=f"{node_path}.config.skills"
@@ -7732,7 +7733,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/tool-call":
+        if normalized_type == "locus/tool-call":
             if not str(node.config.get("tool_id") or "").strip():
                 issues.append(
                     GraphValidationIssue(
@@ -7762,7 +7763,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/retrieval":
+        if normalized_type == "locus/retrieval":
             if not str(node.config.get("source_type") or "").strip():
                 issues.append(
                     GraphValidationIssue(
@@ -7785,7 +7786,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/router":
+        if normalized_type == "locus/router":
             if not str(node.config.get("router_mode") or "").strip():
                 issues.append(
                     GraphValidationIssue(
@@ -7816,7 +7817,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/transform":
+        if normalized_type == "locus/transform":
             if not str(node.config.get("transform_mode") or "").strip():
                 issues.append(
                     GraphValidationIssue(
@@ -7847,7 +7848,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/iterator":
+        if normalized_type == "locus/iterator":
             if not str(node.config.get("iteration_mode") or "").strip():
                 issues.append(
                     GraphValidationIssue(
@@ -7878,7 +7879,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/error-handler":
+        if normalized_type == "locus/error-handler":
             if not str(node.config.get("handler_mode") or "").strip():
                 issues.append(
                     GraphValidationIssue(
@@ -7909,7 +7910,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/event":
+        if normalized_type == "locus/event":
             if not str(node.config.get("event_mode") or "").strip():
                 issues.append(
                     GraphValidationIssue(
@@ -7940,7 +7941,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/data-store":
+        if normalized_type == "locus/data-store":
             if not str(node.config.get("operation") or "").strip():
                 issues.append(
                     GraphValidationIssue(
@@ -7972,7 +7973,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/wait":
+        if normalized_type == "locus/wait":
             if not str(node.config.get("wait_mode") or "").strip():
                 issues.append(
                     GraphValidationIssue(
@@ -7990,7 +7991,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/memory":
+        if normalized_type == "locus/memory":
             if not str(node.config.get("action") or "").strip():
                 issues.append(
                     GraphValidationIssue(
@@ -8008,7 +8009,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/guardrail":
+        if normalized_type == "locus/guardrail":
             if not str(node.config.get("tripwire_action") or "").strip():
                 issues.append(
                     GraphValidationIssue(
@@ -8029,7 +8030,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                         )
                     )
 
-        if normalized_type == "frontier/human-review":
+        if normalized_type == "locus/human-review":
             if not str(node.config.get("reviewer_group") or "").strip():
                 issues.append(
                     GraphValidationIssue(
@@ -8039,7 +8040,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
-        if normalized_type == "frontier/output":
+        if normalized_type == "locus/output":
             if not str(node.config.get("destination") or "").strip():
                 issues.append(
                     GraphValidationIssue(
@@ -8129,7 +8130,7 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
 
 
 # Cognitive column state carried alongside a port projection so that a
-# cognitive consumer (e.g. frontier/assembly) still receives the upstream
+# cognitive consumer (e.g. locus/assembly) still receives the upstream
 # column state when the edge selects a specific output port such as "out".
 _COGNITIVE_STATE_RESULT_KEYS = ("goal_state", "evidence_state", "synthesis_state")
 
@@ -8631,7 +8632,7 @@ def _execute_event_node(
 ) -> dict[str, Any]:
     config = node.config if isinstance(node.config, dict) else {}
     event_mode = str(config.get("event_mode") or "publish").strip().lower()
-    topic = str(config.get("topic") or "frontier.events.default").strip()
+    topic = str(config.get("topic") or "locus.events.default").strip()
     event_name = str(config.get("event_name") or "event.workflow.step").strip()
     correlation_key = str(config.get("correlation_key") or "runId").strip()
     durable = bool(config.get("durable", False))
@@ -8858,7 +8859,7 @@ def _is_active_outgoing_edge(
     source_type = _normalize_node_type(source_node.type)
     from_port = str(edge.from_port or "out").strip() or "out"
 
-    if source_type == "frontier/router":
+    if source_type == "locus/router":
         decision = (
             source_result.get("decision") if isinstance(source_result.get("decision"), dict) else {}
         )
@@ -8881,7 +8882,7 @@ def _is_active_outgoing_edge(
             return selected_route == default_route
         return selected_route == from_port or from_port in matched_routes
 
-    if source_type == "frontier/iterator":
+    if source_type == "locus/iterator":
         emitted_branch = str(
             (source_result.get("iteration") or {}).get("emitted_branch")
             if isinstance(source_result.get("iteration"), dict)
@@ -8891,7 +8892,7 @@ def _is_active_outgoing_edge(
             return True
         return from_port == emitted_branch
 
-    if source_type == "frontier/wait":
+    if source_type == "locus/wait":
         branch = str(
             (source_result.get("wait") or {}).get("branch")
             if isinstance(source_result.get("wait"), dict)
@@ -8901,7 +8902,7 @@ def _is_active_outgoing_edge(
             return True
         return from_port == branch
 
-    if source_type == "frontier/event":
+    if source_type == "locus/event":
         branch = str((source_result.get("out") or {}).get("branch") or "resume")
         if from_port in {"out", "event", "receipt"}:
             return True
@@ -8935,7 +8936,7 @@ def _should_skip_node_execution(
     active_edges: list[GraphEdge],
 ) -> bool:
     node_type = _normalize_node_type(node.type)
-    if node_type in {"frontier/trigger", "frontier/prompt"}:
+    if node_type in {"locus/trigger", "locus/prompt"}:
         return False
 
     flow_edges = [edge for edge in incoming_edges if _is_flow_port_name(str(edge.to_port or "in"))]
@@ -9159,15 +9160,15 @@ def _resolve_secret_ref_value(secret_ref: str) -> str:
 
 
 def _provider_key_seed() -> bytes:
-    explicit = str(os.getenv("FRONTIER_SECRETS_ENCRYPTION_KEY") or "").strip()
+    explicit = str(os.getenv("LOCUS_SECRETS_ENCRYPTION_KEY") or "").strip()
     if explicit:
         return explicit.encode("utf-8")
-    fallback = str(os.getenv("A2A_JWT_SECRET") or os.getenv("FRONTIER_APP_SECRET") or "").strip()
+    fallback = str(os.getenv("A2A_JWT_SECRET") or os.getenv("LOCUS_APP_SECRET") or "").strip()
     if fallback:
         return fallback.encode("utf-8")
     raise HTTPException(
         status_code=500,
-        detail="FRONTIER_SECRETS_ENCRYPTION_KEY or A2A_JWT_SECRET is required for encrypted provider credentials",
+        detail="LOCUS_SECRETS_ENCRYPTION_KEY or A2A_JWT_SECRET is required for encrypted provider credentials",
     )
 
 
@@ -9524,7 +9525,7 @@ def _validate_builder_graph_models(
     for index, node in enumerate(nodes):
         if not isinstance(node, dict):
             continue
-        if not _normalize_node_type(str(node.get("type") or "")).startswith("frontier/agent"):
+        if not _normalize_node_type(str(node.get("type") or "")).startswith("locus/agent"):
             continue
         config = node.get("config") if isinstance(node.get("config"), dict) else {}
         provider = str(config.get("provider") or "").strip()
@@ -10743,7 +10744,7 @@ def _execute_node(
     session_id = str(execution_state.get("session_id") or "session/default")
     message = str(run_input.get("message") or "")
 
-    if node_type == "frontier/trigger":
+    if node_type == "locus/trigger":
         trigger_mode = str(node.config.get("trigger_mode") or "manual")
         effective_schedule_cron = (
             _resolve_trigger_cron(node.config if isinstance(node.config, dict) else {})
@@ -10772,7 +10773,7 @@ def _execute_node(
             "message": message or "Workflow triggered.",
         }
 
-    if node_type == "frontier/prompt":
+    if node_type == "locus/prompt":
         objective = str(node.config.get("objective") or "general_assistant")
         style = str(node.config.get("style") or "concise")
         audience = str(node.config.get("audience") or "technical")
@@ -10806,7 +10807,7 @@ def _execute_node(
             },
         }
 
-    if node_type == "frontier/goal":
+    if node_type == "locus/goal":
         goal_column = GoalColumn()
         goal_state = goal_column.observe(
             assembly_id=node.id,
@@ -10822,7 +10823,7 @@ def _execute_node(
             "out": goal_state.belief_set,
         }
 
-    if node_type == "frontier/evidence":
+    if node_type == "locus/evidence":
         evidence_column = EvidenceColumn()
         evidence_state = evidence_column.observe(
             assembly_id=node.id,
@@ -10839,7 +10840,7 @@ def _execute_node(
             "out": evidence_state.belief_set.get("evidence", []),
         }
 
-    if node_type == "frontier/assembly":
+    if node_type == "locus/assembly":
         by_port = incoming_by_port or {}
         goal_inputs = _port_values(by_port, "goal")
         evidence_inputs = _port_values(by_port, "evidence")
@@ -10890,7 +10891,7 @@ def _execute_node(
             "out": commitment.model_dump(),
         }
 
-    if node_type == "frontier/commitment":
+    if node_type == "locus/commitment":
         by_port = incoming_by_port or {}
         commitment_inputs = _port_values(by_port, "commitment")
         commitment_payload = commitment_inputs[-1] if commitment_inputs else {}
@@ -10928,7 +10929,7 @@ def _execute_node(
             "out": published_commitment,
         }
 
-    if node_type == "frontier/manifold":
+    if node_type == "locus/manifold":
         runtime_info = (
             execution_state.get("runtime_info")
             if isinstance(execution_state.get("runtime_info"), dict)
@@ -10978,7 +10979,7 @@ def _execute_node(
         manifold_result["framework_meta"] = manifold_meta
         return manifold_result
 
-    if node_type == "frontier/router":
+    if node_type == "locus/router":
         by_port = incoming_by_port or {}
         candidate_inputs = _port_values(by_port, "candidate", "data", "payload")
         context_inputs = _port_values(by_port, "context")
@@ -10988,7 +10989,7 @@ def _execute_node(
         context_payload = context_inputs[-1] if context_inputs else {}
         return _execute_router_node(node, candidate_payload, context_payload)
 
-    if node_type == "frontier/iterator":
+    if node_type == "locus/iterator":
         by_port = incoming_by_port or {}
         items_inputs = _port_values(by_port, "items", "data", "payload")
         context_inputs = _port_values(by_port, "context")
@@ -10996,7 +10997,7 @@ def _execute_node(
         context_payload = context_inputs[-1] if context_inputs else {}
         return _execute_iterator_node(node, items_payload, context_payload)
 
-    if node_type == "frontier/transform":
+    if node_type == "locus/transform":
         by_port = incoming_by_port or {}
         source_inputs = _port_values(by_port, "source", "data", "payload")
         context_inputs = _port_values(by_port, "context")
@@ -11006,7 +11007,7 @@ def _execute_node(
         context_payload = context_inputs[-1] if context_inputs else {}
         return _execute_transform_node(node, source_payload, context_payload)
 
-    if node_type == "frontier/event":
+    if node_type == "locus/event":
         by_port = incoming_by_port or {}
         payload_inputs = _port_values(by_port, "payload", "data", "result")
         context_inputs = _port_values(by_port, "context")
@@ -11016,7 +11017,7 @@ def _execute_node(
         context_payload = context_inputs[-1] if context_inputs else {}
         return _execute_event_node(node, payload_value, context_payload, execution_state, run_input)
 
-    if node_type == "frontier/data-store":
+    if node_type == "locus/data-store":
         by_port = incoming_by_port or {}
         record_inputs = _port_values(by_port, "record", "data", "payload", "result")
         context_inputs = _port_values(by_port, "context")
@@ -11024,7 +11025,7 @@ def _execute_node(
         context_payload = context_inputs[-1] if context_inputs else {}
         return _execute_data_store_node(node, record_payload, context_payload, execution_state)
 
-    if node_type.startswith("frontier/agent"):
+    if node_type.startswith("locus/agent"):
         by_port = incoming_by_port or {}
         prompt_inputs = _port_values(by_port, "prompt")
         memory_inputs = _port_values(by_port, "memory", "memory_state")
@@ -11154,7 +11155,7 @@ def _execute_node(
         )
         # WS2: Include session notes from prior turns
         session_notes_context = ""
-        if _env_flag("FRONTIER_SESSION_NOTES_ENABLED", False):
+        if _env_flag("LOCUS_SESSION_NOTES_ENABLED", False):
             prior_notes = execution_state.get("session_notes", [])
             if isinstance(prior_notes, list) and prior_notes:
                 session_notes_context = "\n".join(f"- {note}" for note in prior_notes)
@@ -11191,15 +11192,15 @@ def _execute_node(
         # WS1: Conversation history support
         conversation_messages: list[dict[str, str]] | None = None
         _conversation_manager = None
-        if _env_flag("FRONTIER_CONVERSATION_ENABLED", False):
-            from frontier_runtime.conversation import ConversationManager
+        if _env_flag("LOCUS_CONVERSATION_ENABLED", False):
+            from locus_runtime.conversation import ConversationManager
 
             conv_max_tokens = _env_int(
-                "FRONTIER_CONVERSATION_MAX_TOKENS", 8000, minimum=500, maximum=32000
+                "LOCUS_CONVERSATION_MAX_TOKENS", 8000, minimum=500, maximum=32000
             )
-            conv_threshold = float(os.getenv("FRONTIER_CONVERSATION_COMPACTION_THRESHOLD", "0.75"))
+            conv_threshold = float(os.getenv("LOCUS_CONVERSATION_COMPACTION_THRESHOLD", "0.75"))
             conv_redis_key = (
-                f"frontier:conversation:{session_id}:{execution_state.get('run_id', 'default')}"
+                f"locus:conversation:{session_id}:{execution_state.get('run_id', 'default')}"
             )
             _conversation_manager = None
             if _REDIS_MEMORY.enabled and _REDIS_MEMORY._client is not None:
@@ -11271,8 +11272,8 @@ def _execute_node(
         prior_agent_outputs.append(f"{node.title}: {response_text[:240]}")
 
         # WS2: Session auto-notes
-        if _env_flag("FRONTIER_SESSION_NOTES_ENABLED", False):
-            from frontier_runtime.session_notes import generate_session_note
+        if _env_flag("LOCUS_SESSION_NOTES_ENABLED", False):
+            from locus_runtime.session_notes import generate_session_note
 
             session_note = generate_session_note(
                 node_title=node.title,
@@ -11300,7 +11301,7 @@ def _execute_node(
             )
             # Inject last N session notes into execution state for subsequent nodes
             session_notes_list = execution_state.setdefault("session_notes", [])
-            max_inject = _env_int("FRONTIER_SESSION_NOTES_MAX_INJECT", 3, minimum=1, maximum=10)
+            max_inject = _env_int("LOCUS_SESSION_NOTES_MAX_INJECT", 3, minimum=1, maximum=10)
             session_notes_list.append(session_note.to_context_string())
             execution_state["session_notes"] = session_notes_list[-max_inject:]
         runtime_dispatches = execution_state.setdefault("runtime_dispatches", [])
@@ -11361,7 +11362,7 @@ def _execute_node(
             "session_id": session_id,
         }
 
-    if node_type == "frontier/tool-call":
+    if node_type == "locus/tool-call":
         tool_config = node.config if isinstance(node.config, dict) else {}
         platform = store.platform_settings
         if platform.emergency_read_only_mode or platform.block_tool_calls:
@@ -11774,7 +11775,7 @@ def _execute_node(
 
         return result
 
-    if node_type == "frontier/retrieval":
+    if node_type == "locus/retrieval":
         platform = store.platform_settings
         if platform.emergency_read_only_mode or platform.block_retrieval_calls:
             return {
@@ -11917,7 +11918,7 @@ def _execute_node(
             },
         }
 
-    if node_type == "frontier/memory":
+    if node_type == "locus/memory":
         runtime_info = (
             execution_state.get("runtime_info")
             if isinstance(execution_state.get("runtime_info"), dict)
@@ -11976,7 +11977,7 @@ def _execute_node(
         memory_result["framework_meta"] = memory_meta
         return memory_result
 
-    if node_type == "frontier/guardrail":
+    if node_type == "locus/guardrail":
         runtime_info = (
             execution_state.get("runtime_info")
             if isinstance(execution_state.get("runtime_info"), dict)
@@ -12064,7 +12065,7 @@ def _execute_node(
             "out": {"state": "completed"},
         }
 
-    if node_type == "frontier/human-review":
+    if node_type == "locus/human-review":
         runtime_info = (
             execution_state.get("runtime_info")
             if isinstance(execution_state.get("runtime_info"), dict)
@@ -12115,7 +12116,7 @@ def _execute_node(
         review_result["framework_meta"] = review_meta
         return review_result
 
-    if node_type == "frontier/error-handler":
+    if node_type == "locus/error-handler":
         by_port = incoming_by_port or {}
         error_inputs = _port_values(by_port, "error", "data", "result")
         context_inputs = _port_values(by_port, "context")
@@ -12123,7 +12124,7 @@ def _execute_node(
         context_payload = context_inputs[-1] if context_inputs else {}
         return _execute_error_handler_node(node, error_payload, context_payload)
 
-    if node_type == "frontier/wait":
+    if node_type == "locus/wait":
         by_port = incoming_by_port or {}
         resume_inputs = _port_values(by_port, "resume_payload", "data", "payload")
         resume_payload = (
@@ -12131,7 +12132,7 @@ def _execute_node(
         )
         return _execute_wait_node(node, resume_payload)
 
-    if node_type == "frontier/output":
+    if node_type == "locus/output":
         by_port = incoming_by_port or {}
         result_inputs = _port_values(
             by_port, "result", "data", "approved", "approved_output", "payload"
@@ -12427,7 +12428,7 @@ class InMemoryStore:
                 name="Default Webhook Endpoint",
                 type="http",
                 status="draft",
-                base_url="http://localhost:9000/webhooks/frontier",
+                base_url="http://localhost:9000/webhooks/locus",
                 auth_type="none",
                 secret_ref="",
                 metadata_json={"purpose": "workflow notifications"},
@@ -12437,9 +12438,9 @@ class InMemoryStore:
                 name="PostgreSQL Operational DB",
                 type="database",
                 status="configured",
-                base_url="postgresql://frontier@postgres:5432/frontier",
+                base_url="postgresql://locus@postgres:5432/locus",
                 auth_type="basic",
-                secret_ref="secret/postgres/frontier",
+                secret_ref="secret/postgres/locus",
                 metadata_json={"schema": "public"},
             ),
         }
@@ -13157,7 +13158,7 @@ class InMemoryStore:
 
 
 store = InMemoryStore()
-app = FastAPI(title="Lattix xFrontier Backend", version="0.1.0")
+app = FastAPI(title="Lattix Locus Backend", version="0.1.0")
 
 
 def _hostname_is_local(hostname: str) -> bool:
@@ -13207,13 +13208,13 @@ def _normalize_absolute_http_url_allow_query(value: str, *, setting_name: str) -
 
 def _configured_trusted_oidc_issuers() -> set[str]:
     trusted: set[str] = set()
-    raw = str(os.getenv("FRONTIER_AUTH_TRUSTED_ISSUERS") or "").strip()
+    raw = str(os.getenv("LOCUS_AUTH_TRUSTED_ISSUERS") or "").strip()
     for item in raw.split(","):
         candidate = str(item or "").strip()
         if not candidate:
             continue
         trusted.add(
-            _normalize_absolute_http_url(candidate, setting_name="FRONTIER_AUTH_TRUSTED_ISSUERS")
+            _normalize_absolute_http_url(candidate, setting_name="LOCUS_AUTH_TRUSTED_ISSUERS")
         )
     return trusted
 
@@ -13221,12 +13222,12 @@ def _configured_trusted_oidc_issuers() -> set[str]:
 def _cors_allowed_origins() -> list[str]:
     configured = [
         str(item).strip()
-        for item in str(os.getenv("FRONTIER_CORS_ALLOWED_ORIGINS") or "").split(",")
+        for item in str(os.getenv("LOCUS_CORS_ALLOWED_ORIGINS") or "").split(",")
         if str(item).strip()
     ]
     if configured:
         return [
-            _normalize_origin_url(item, setting_name="FRONTIER_CORS_ALLOWED_ORIGINS")
+            _normalize_origin_url(item, setting_name="LOCUS_CORS_ALLOWED_ORIGINS")
             for item in configured
         ]
     return ["http://localhost:3000", "http://127.0.0.1:3000"]
@@ -13241,13 +13242,13 @@ def _cors_allowed_headers() -> list[str]:
         "authorization",
         "content-type",
         "x-correlation-id",
-        "x-frontier-actor",
-        "x-frontier-tenant",
+        "x-locus-actor",
+        "x-locus-tenant",
         "x-user-id",
-        "x-frontier-subject",
-        "x-frontier-signature",
-        "x-frontier-nonce",
-        "x-frontier-timestamp",
+        "x-locus-subject",
+        "x-locus-signature",
+        "x-locus-nonce",
+        "x-locus-timestamp",
     ]
 
 
@@ -13262,7 +13263,7 @@ app.add_middleware(
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next: Any) -> Any:
-    request.state.frontier_raw_body = await request.body()
+    request.state.locus_raw_body = await request.body()
     response = await call_next(request)
     return apply_security_headers(response)
 
@@ -13281,7 +13282,7 @@ def _route_requires_authenticated_request(rule: RouteAccessRule) -> bool:
 def _request_has_internal_access(request: Request | None) -> bool:
     if request is None:
         return False
-    auth_context = getattr(request.state, "frontier_auth_context", None)
+    auth_context = getattr(request.state, "locus_auth_context", None)
     if not isinstance(auth_context, dict):
         return False
     if auth_context.get("bearer_auth_kind") == "static":
@@ -13292,23 +13293,23 @@ def _request_has_internal_access(request: Request | None) -> bool:
 
 
 def _configured_admin_actors() -> set[str]:
-    raw = str(os.getenv("FRONTIER_ADMIN_ACTORS") or "").strip()
+    raw = str(os.getenv("LOCUS_ADMIN_ACTORS") or "").strip()
     values = [item.strip().lower() for item in raw.split(",") if item.strip()]
     if values:
         return set(values)
 
     bootstrap_defaults = {
-        str(os.getenv("FRONTIER_BOOTSTRAP_ADMIN_USERNAME") or "frontier-admin").strip().lower(),
-        str(os.getenv("FRONTIER_BOOTSTRAP_ADMIN_EMAIL") or "admin@frontier.localhost")
+        str(os.getenv("LOCUS_BOOTSTRAP_ADMIN_USERNAME") or "locus-admin").strip().lower(),
+        str(os.getenv("LOCUS_BOOTSTRAP_ADMIN_EMAIL") or "admin@locus.localhost")
         .strip()
         .lower(),
-        str(os.getenv("FRONTIER_BOOTSTRAP_ADMIN_SUBJECT") or "frontier-admin").strip().lower(),
+        str(os.getenv("LOCUS_BOOTSTRAP_ADMIN_SUBJECT") or "locus-admin").strip().lower(),
     }
     return {value for value in bootstrap_defaults if value}
 
 
 def _configured_builder_actors() -> set[str]:
-    raw = str(os.getenv("FRONTIER_BUILDER_ACTORS") or "").strip()
+    raw = str(os.getenv("LOCUS_BUILDER_ACTORS") or "").strip()
     values = [item.strip().lower() for item in raw.split(",") if item.strip()]
     if values:
         return set(values)
@@ -13316,13 +13317,13 @@ def _configured_builder_actors() -> set[str]:
 
 
 def _local_authenticated_operator_bootstrap_enabled() -> bool:
-    return _env_flag("FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR", False)
+    return _env_flag("LOCUS_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR", False)
 
 
 def _request_uses_local_operator_oidc(request: Request | None) -> bool:
     if request is None:
         return False
-    auth_context = getattr(request.state, "frontier_auth_context", None)
+    auth_context = getattr(request.state, "locus_auth_context", None)
     if not isinstance(auth_context, dict) or not auth_context.get("used_bearer_token"):
         return False
     if auth_context.get("bearer_auth_kind") == "static":
@@ -13344,13 +13345,13 @@ def _request_uses_local_operator_oidc(request: Request | None) -> bool:
 
 
 def _configured_static_bearer_token() -> str:
-    return str(os.getenv("FRONTIER_API_BEARER_TOKEN") or "").strip()
+    return str(os.getenv("LOCUS_API_BEARER_TOKEN") or "").strip()
 
 
 def _header_actor_auth_allowed() -> bool:
-    if os.getenv("FRONTIER_ALLOW_HEADER_ACTOR_AUTH") is None:
+    if os.getenv("LOCUS_ALLOW_HEADER_ACTOR_AUTH") is None:
         return False
-    if not _env_flag("FRONTIER_ALLOW_HEADER_ACTOR_AUTH", False):
+    if not _env_flag("LOCUS_ALLOW_HEADER_ACTOR_AUTH", False):
         return False
     if _active_runtime_profile().name != "local-lightweight":
         return False
@@ -13360,16 +13361,16 @@ def _header_actor_auth_allowed() -> bool:
 
 
 def _configured_operator_oidc() -> dict[str, str]:
-    issuer = str(os.getenv("FRONTIER_AUTH_OIDC_ISSUER") or "").strip()
-    audience = str(os.getenv("FRONTIER_AUTH_OIDC_AUDIENCE") or "").strip()
-    jwks_url = str(os.getenv("FRONTIER_AUTH_OIDC_JWKS_URL") or "").strip()
-    provider = str(os.getenv("FRONTIER_AUTH_OIDC_PROVIDER") or "").strip().lower()
+    issuer = str(os.getenv("LOCUS_AUTH_OIDC_ISSUER") or "").strip()
+    audience = str(os.getenv("LOCUS_AUTH_OIDC_AUDIENCE") or "").strip()
+    jwks_url = str(os.getenv("LOCUS_AUTH_OIDC_JWKS_URL") or "").strip()
+    provider = str(os.getenv("LOCUS_AUTH_OIDC_PROVIDER") or "").strip().lower()
     if issuer and audience and jwks_url:
         normalized_issuer = _normalize_absolute_http_url(
-            issuer, setting_name="FRONTIER_AUTH_OIDC_ISSUER"
+            issuer, setting_name="LOCUS_AUTH_OIDC_ISSUER"
         )
         normalized_jwks_url = _normalize_absolute_http_url(
-            jwks_url, setting_name="FRONTIER_AUTH_OIDC_JWKS_URL"
+            jwks_url, setting_name="LOCUS_AUTH_OIDC_JWKS_URL"
         )
         issuer_parts = urlsplit(normalized_issuer)
         jwks_parts = urlsplit(normalized_jwks_url)
@@ -13379,29 +13380,29 @@ def _configured_operator_oidc() -> dict[str, str]:
         jwks_is_local = _hostname_is_local(jwks_host)
         if issuer_parts.scheme != "https" and not issuer_is_local:
             raise ValueError(
-                "FRONTIER_AUTH_OIDC_ISSUER must use https outside localhost development"
+                "LOCUS_AUTH_OIDC_ISSUER must use https outside localhost development"
             )
         if jwks_parts.scheme != "https" and not jwks_is_local:
             raise ValueError(
-                "FRONTIER_AUTH_OIDC_JWKS_URL must use https outside localhost development"
+                "LOCUS_AUTH_OIDC_JWKS_URL must use https outside localhost development"
             )
         if issuer_host and jwks_host and issuer_host != jwks_host:
             raise ValueError(
-                "FRONTIER_AUTH_OIDC_JWKS_URL must resolve to the same host as FRONTIER_AUTH_OIDC_ISSUER"
+                "LOCUS_AUTH_OIDC_JWKS_URL must resolve to the same host as LOCUS_AUTH_OIDC_ISSUER"
             )
         trusted_issuers = _configured_trusted_oidc_issuers()
         if not issuer_is_local:
             if not trusted_issuers:
                 raise ValueError(
-                    "FRONTIER_AUTH_TRUSTED_ISSUERS must include the configured OIDC issuer outside localhost development"
+                    "LOCUS_AUTH_TRUSTED_ISSUERS must include the configured OIDC issuer outside localhost development"
                 )
             if normalized_issuer not in trusted_issuers:
                 raise ValueError(
-                    "FRONTIER_AUTH_OIDC_ISSUER is not present in FRONTIER_AUTH_TRUSTED_ISSUERS"
+                    "LOCUS_AUTH_OIDC_ISSUER is not present in LOCUS_AUTH_TRUSTED_ISSUERS"
                 )
         elif trusted_issuers and normalized_issuer not in trusted_issuers:
             raise ValueError(
-                "FRONTIER_AUTH_OIDC_ISSUER is not present in FRONTIER_AUTH_TRUSTED_ISSUERS"
+                "LOCUS_AUTH_OIDC_ISSUER is not present in LOCUS_AUTH_TRUSTED_ISSUERS"
             )
         return {
             "issuer": normalized_issuer,
@@ -13487,7 +13488,7 @@ def _a2a_request_body_bytes(request: Request | None, payload: Any | None = None)
             return json.dumps(payload).encode("utf-8")
         except Exception:
             return b""
-    raw = getattr(request.state, "frontier_raw_body", b"")
+    raw = getattr(request.state, "locus_raw_body", b"")
     if isinstance(raw, bytes):
         if not raw and payload is not None and _a2a_request_requires_raw_body(request, payload):
             raise HTTPException(
@@ -13539,7 +13540,7 @@ def _verify_runtime_signature(
     request: Request, *, subject: str, nonce: str, signature: str, payload: Any | None = None
 ) -> str:
     correlation_id = str(request.headers.get("x-correlation-id") or "").strip()
-    timestamp = str(request.headers.get("x-frontier-timestamp") or "").strip()
+    timestamp = str(request.headers.get("x-locus-timestamp") or "").strip()
     if not correlation_id:
         raise HTTPException(
             status_code=401, detail="Missing correlation id header for signed A2A request"
@@ -13672,7 +13673,7 @@ def _resolve_auth_context_principal(
     actor: str,
 ) -> dict[str, Any]:
     auth_context = (
-        getattr(request.state, "frontier_auth_context", None) if request is not None else None
+        getattr(request.state, "locus_auth_context", None) if request is not None else None
     )
     if not isinstance(auth_context, dict):
         principal_id = str(actor or "anonymous").strip() or "anonymous"
@@ -13793,7 +13794,7 @@ def _find_collaboration_participant_by_reference(
 def _request_has_admin_access(request: Request | None) -> bool:
     if request is None:
         return False
-    auth_context = getattr(request.state, "frontier_auth_context", None)
+    auth_context = getattr(request.state, "locus_auth_context", None)
     if not isinstance(auth_context, dict):
         return False
     roles = _auth_context_access_claims(auth_context)
@@ -13814,7 +13815,7 @@ def _request_has_builder_access(request: Request | None) -> bool:
         return False
     if _request_has_admin_access(request):
         return True
-    auth_context = getattr(request.state, "frontier_auth_context", None)
+    auth_context = getattr(request.state, "locus_auth_context", None)
     if not isinstance(auth_context, dict):
         return False
     roles = _auth_context_access_claims(auth_context)
@@ -13826,7 +13827,7 @@ def _request_has_builder_access(request: Request | None) -> bool:
             "admin",
             "owner",
             "builder:access",
-            "frontier:builder",
+            "locus:builder",
         }
     ):
         return True
@@ -13870,13 +13871,13 @@ def _enforce_builder_access(
 @app.middleware("http")
 async def enforce_route_access_policy(request: Request, call_next: Any) -> Any:
     rule = classify_route_access(request.method, request.url.path)
-    request.state.frontier_route_access = rule
+    request.state.locus_route_access = rule
     if rule is not None and _route_requires_authenticated_request(rule):
         auth_payload: dict[str, Any] | None = None
-        raw_body = getattr(request.state, "frontier_raw_body", None)
+        raw_body = getattr(request.state, "locus_raw_body", None)
         if not isinstance(raw_body, bytes):
             raw_body = await request.body()
-            request.state.frontier_raw_body = raw_body
+            request.state.locus_raw_body = raw_body
         content_type = str(request.headers.get("content-type") or "").lower()
         if raw_body and "application/json" in content_type:
             try:
@@ -13934,7 +13935,7 @@ def _parse_iso_datetime(value: str) -> datetime | None:
 
 
 def _a2a_nonce_ttl_seconds() -> int:
-    raw = str(os.getenv("FRONTIER_A2A_NONCE_TTL_SECONDS") or "").strip()
+    raw = str(os.getenv("LOCUS_A2A_NONCE_TTL_SECONDS") or "").strip()
     try:
         ttl = int(raw) if raw else 600
     except ValueError:
@@ -14010,13 +14011,13 @@ def _extract_actor_from_request(
     payload = payload if isinstance(payload, dict) else {}
     headers = request.headers if request is not None else {}
     if request is not None:
-        auth_context = getattr(request.state, "frontier_auth_context", None)
+        auth_context = getattr(request.state, "locus_auth_context", None)
         if isinstance(auth_context, dict):
             cached_actor = str(auth_context.get("actor") or "").strip()
             if cached_actor:
                 return cached_actor
     actor = (
-        str(headers.get("x-frontier-actor") or "").strip()
+        str(headers.get("x-locus-actor") or "").strip()
         or str(headers.get("x-user-id") or "").strip()
         or str(payload.get("actor_user_id") or "").strip()
         or str(payload.get("user_id") or "").strip()
@@ -14138,7 +14139,7 @@ def _enforce_request_authn(
 
     cached_auth_context = None
     if request is not None:
-        cached_auth_context = getattr(request.state, "frontier_auth_context", None)
+        cached_auth_context = getattr(request.state, "locus_auth_context", None)
         if (
             isinstance(cached_auth_context, dict)
             and cached_auth_context.get("authenticated") is True
@@ -14159,13 +14160,13 @@ def _enforce_request_authn(
         )
 
     header_actor = (
-        str(request.headers.get("x-frontier-actor") or "").strip()
+        str(request.headers.get("x-locus-actor") or "").strip()
         or str(request.headers.get("x-user-id") or "").strip()
     )
 
-    configured_token = str(os.getenv("FRONTIER_API_BEARER_TOKEN", "")).strip()
+    configured_token = str(os.getenv("LOCUS_API_BEARER_TOKEN", "")).strip()
     auth_header = str(request.headers.get("authorization") or "").strip()
-    route_rule = getattr(request.state, "frontier_route_access", None)
+    route_rule = getattr(request.state, "locus_route_access", None)
     internal_route = (
         isinstance(route_rule, RouteAccessRule)
         and route_rule.category == RouteAccessCategory.INTERNAL_ONLY
@@ -14270,9 +14271,9 @@ def _enforce_request_authn(
         internal_route or _effective_require_a2a_runtime_headers()
     )
     if require_signed_a2a:
-        subject = str(request.headers.get("x-frontier-subject") or "").strip() or subject
-        signature = str(request.headers.get("x-frontier-signature") or "").strip()
-        nonce = str(request.headers.get("x-frontier-nonce") or "").strip()
+        subject = str(request.headers.get("x-locus-subject") or "").strip() or subject
+        signature = str(request.headers.get("x-locus-signature") or "").strip()
+        nonce = str(request.headers.get("x-locus-nonce") or "").strip()
 
         if not subject or subject not in platform.a2a_trusted_subjects:
             _append_audit_event(
@@ -14324,9 +14325,9 @@ def _enforce_request_authn(
                 raise exc
         trusted_subject_authenticated = True
     else:
-        header_subject = str(request.headers.get("x-frontier-subject") or "").strip()
-        signature = str(request.headers.get("x-frontier-signature") or "").strip()
-        nonce = str(request.headers.get("x-frontier-nonce") or "").strip()
+        header_subject = str(request.headers.get("x-locus-subject") or "").strip()
+        signature = str(request.headers.get("x-locus-signature") or "").strip()
+        nonce = str(request.headers.get("x-locus-nonce") or "").strip()
         correlation_id = str(request.headers.get("x-correlation-id") or "").strip()
         trusted_subject_authenticated = False
         if any([header_subject, signature, nonce, correlation_id]):
@@ -14379,7 +14380,7 @@ def _enforce_request_authn(
         used_bearer_token or header_actor_authenticated or trusted_subject_authenticated
     )
 
-    request.state.frontier_auth_context = {
+    request.state.locus_auth_context = {
         "authenticated": is_authenticated,
         "actor": resolved_actor,
         "subject": subject,
@@ -14458,7 +14459,7 @@ def _resolve_authenticated_payload_identity(
 
 def _authenticated_tenant(request: Request | None) -> str:
     auth_context = (
-        getattr(request.state, "frontier_auth_context", None) if request is not None else None
+        getattr(request.state, "locus_auth_context", None) if request is not None else None
     )
     if not isinstance(auth_context, dict):
         return ""
@@ -14477,7 +14478,7 @@ def _request_has_privileged_control_plane_access(request: Request | None) -> boo
     if _request_has_builder_access(request):
         return True
     auth_context = (
-        getattr(request.state, "frontier_auth_context", None) if request is not None else None
+        getattr(request.state, "locus_auth_context", None) if request is not None else None
     )
     if not isinstance(auth_context, dict):
         return False
@@ -14688,7 +14689,7 @@ def _extract_memory_tenant_claim(
     request: Request | None, payload: dict[str, Any] | None = None
 ) -> str:
     auth_context = (
-        getattr(request.state, "frontier_auth_context", None) if request is not None else None
+        getattr(request.state, "locus_auth_context", None) if request is not None else None
     )
     tenant_from_auth = ""
     if isinstance(auth_context, dict):
@@ -14880,7 +14881,7 @@ def _validate_platform_settings_update(
         and not _mcp_remote_server_policy_explicitly_confirmed()
     ):
         immutable_violations.append(
-            "mcp_require_local_server requires FRONTIER_CONFIRM_REMOTE_MCP_SERVERS=true before it can be disabled in hosted runtime profiles"
+            "mcp_require_local_server requires LOCUS_CONFIRM_REMOTE_MCP_SERVERS=true before it can be disabled in hosted runtime profiles"
         )
     if candidate.a2a_require_signed_messages and not candidate.a2a_trusted_subjects:
         immutable_violations.append(
@@ -16338,8 +16339,8 @@ def _startup_initialize_state() -> None:
 
     _merge_missing_bootstrap_content()
 
-    sync_repo_agents = _env_flag("FRONTIER_SYNC_REPO_AGENTS", True)
-    sync_repo_updates_existing = _env_flag("FRONTIER_REPO_AGENTS_UPDATE_EXISTING", False)
+    sync_repo_agents = _env_flag("LOCUS_SYNC_REPO_AGENTS", True)
+    sync_repo_updates_existing = _env_flag("LOCUS_REPO_AGENTS_UPDATE_EXISTING", False)
     if sync_repo_agents:
         _sync_repo_agents_into_store(update_existing=sync_repo_updates_existing)
         _sync_repo_workflows_into_store(update_existing=sync_repo_updates_existing)
@@ -16352,16 +16353,16 @@ def _startup_initialize_state() -> None:
 
     # Pre-warm the (lazy) Presidio analyzer off the request path: first-call
     # engine construction can take minutes and must never block a run create.
-    if _env_flag("FRONTIER_PREWARM_PII_ANALYZER", True):
+    if _env_flag("LOCUS_PREWARM_PII_ANALYZER", True):
         threading.Thread(
-            target=_get_presidio_analyzer, name="frontier-pii-prewarm", daemon=True
+            target=_get_presidio_analyzer, name="locus-pii-prewarm", daemon=True
         ).start()
 
     # Cron schedule trigger loop (resource plan Phase D). Disable with
-    # FRONTIER_SCHEDULER_ENABLED=0 (e.g. for multi-replica deployments where a
+    # LOCUS_SCHEDULER_ENABLED=0 (e.g. for multi-replica deployments where a
     # single leader should own scheduling).
-    if _env_flag("FRONTIER_SCHEDULER_ENABLED", True):
-        threading.Thread(target=_scheduler_loop, name="frontier-scheduler", daemon=True).start()
+    if _env_flag("LOCUS_SCHEDULER_ENABLED", True):
+        threading.Thread(target=_scheduler_loop, name="locus-scheduler", daemon=True).start()
 
     _persist_store_state()
 
@@ -16399,7 +16400,7 @@ def _memory_load_long_term_entries(
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     bucket_id, memory_scope = _validate_memory_bucket_scope_pair(bucket_id, memory_scope)
-    if not _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True):
+    if not _env_flag("LOCUS_MEMORY_ENABLE_LONG_TERM", True):
         return []
     if not _POSTGRES_MEMORY.enabled or not _POSTGRES_MEMORY.healthcheck():
         return []
@@ -16429,7 +16430,7 @@ def _memory_load_world_graph_entries(
     limit: int = 10,
 ) -> dict[str, Any]:
     bucket_id, memory_scope = _validate_memory_bucket_scope_pair(bucket_id, memory_scope)
-    if not _env_flag("FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED", True):
+    if not _env_flag("LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED", True):
         return {"memories": [], "topics": [], "relations": []}
     if not _NEO4J_GRAPH.enabled or not _NEO4J_GRAPH.healthcheck():
         return {"memories": [], "topics": [], "relations": []}
@@ -16506,9 +16507,9 @@ def _rank_hybrid_memory_entries(
     query_text: str,
     runtime_role: str,
 ) -> list[dict[str, Any]]:
-    decay_enabled = _env_flag("FRONTIER_MEMORY_DECAY_ENABLED", False)
+    decay_enabled = _env_flag("LOCUS_MEMORY_DECAY_ENABLED", False)
     decay_half_life = float(
-        _env_int("FRONTIER_MEMORY_DECAY_HALF_LIFE_DAYS", 30, minimum=1, maximum=365)
+        _env_int("LOCUS_MEMORY_DECAY_HALF_LIFE_DAYS", 30, minimum=1, maximum=365)
     )
     tier_base = {
         "short-term": 90,
@@ -16617,7 +16618,7 @@ def _memory_get_hybrid_context(
     runtime_role: str = "",
 ) -> dict[str, Any]:
     session_id, memory_scope = _validate_memory_bucket_scope_pair(session_id, memory_scope)
-    if not _env_flag("FRONTIER_MEMORY_HYBRID_RETRIEVAL_ENABLED", True):
+    if not _env_flag("LOCUS_MEMORY_HYBRID_RETRIEVAL_ENABLED", True):
         entries = _memory_get_entries(
             session_id,
             limit=limit,
@@ -16673,16 +16674,16 @@ def _memory_get_hybrid_context(
     merged = _merge_memory_entries(
         short_term_rankable, long_term_rankable, graph_memories, limit=limit * 3
     )
-    if _env_flag("FRONTIER_MEMORY_FILE_DEDUP_ENABLED", False):
-        from frontier_runtime.context_dedup import dedup_file_operations
+    if _env_flag("LOCUS_MEMORY_FILE_DEDUP_ENABLED", False):
+        from locus_runtime.context_dedup import dedup_file_operations
 
         merged = dedup_file_operations(merged)
     ranked = _rank_hybrid_memory_entries(merged, query_text=query_text, runtime_role=runtime_role)
-    token_budget = _env_int("FRONTIER_MEMORY_HYBRID_MAX_TOKENS", 1200, minimum=100, maximum=12000)
+    token_budget = _env_int("LOCUS_MEMORY_HYBRID_MAX_TOKENS", 1200, minimum=100, maximum=12000)
     entries = _apply_memory_token_budget(ranked[: max(1, limit * 2)], max_tokens=token_budget)[
         :limit
     ]
-    topic_limit = _env_int("FRONTIER_MEMORY_HYBRID_MAX_TOPICS", 8, minimum=1, maximum=50)
+    topic_limit = _env_int("LOCUS_MEMORY_HYBRID_MAX_TOPICS", 8, minimum=1, maximum=50)
     topics = world_graph.get("topics") if isinstance(world_graph.get("topics"), list) else []
     ranked_topics = sorted(
         [item for item in topics if isinstance(item, dict)],
@@ -16709,7 +16710,7 @@ def _memory_clear_entries(
     store.memory_by_session[session_id] = []
     if (
         clear_long_term
-        and _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True)
+        and _env_flag("LOCUS_MEMORY_ENABLE_LONG_TERM", True)
         and _POSTGRES_MEMORY.enabled
         and _POSTGRES_MEMORY.healthcheck()
     ):
@@ -16736,7 +16737,7 @@ def _memory_append_entry(
     store.memory_by_session.setdefault(session_id, []).append(entry)
     if (
         persist_long_term
-        and _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True)
+        and _env_flag("LOCUS_MEMORY_ENABLE_LONG_TERM", True)
         and _POSTGRES_MEMORY.enabled
         and _POSTGRES_MEMORY.healthcheck()
     ):
@@ -16761,12 +16762,12 @@ def _memory_append_entry(
 
 def _maybe_trigger_inline_consolidation(bucket_id: str, *, memory_scope: str = "session") -> None:
     """WS4: Trigger inline consolidation when pending candidates exceed threshold."""
-    if not _env_flag("FRONTIER_MEMORY_INLINE_CONSOLIDATION_ENABLED", False):
+    if not _env_flag("LOCUS_MEMORY_INLINE_CONSOLIDATION_ENABLED", False):
         return
     if not _POSTGRES_MEMORY.enabled or not _POSTGRES_MEMORY.healthcheck():
         return
     threshold = _env_int(
-        "FRONTIER_MEMORY_INLINE_CONSOLIDATION_THRESHOLD", 10, minimum=2, maximum=100
+        "LOCUS_MEMORY_INLINE_CONSOLIDATION_THRESHOLD", 10, minimum=2, maximum=100
     )
     pending_count = _POSTGRES_MEMORY.count_consolidation_candidates(status="pending")
     if pending_count < threshold:
@@ -16788,9 +16789,9 @@ def _maybe_trigger_inline_consolidation(bucket_id: str, *, memory_scope: str = "
 def _memory_should_schedule_consolidation(
     entry: dict[str, Any], *, memory_scope: str, source: str
 ) -> bool:
-    if not _env_flag("FRONTIER_MEMORY_CONSOLIDATION_ENABLED", True):
+    if not _env_flag("LOCUS_MEMORY_CONSOLIDATION_ENABLED", True):
         return False
-    if not _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True):
+    if not _env_flag("LOCUS_MEMORY_ENABLE_LONG_TERM", True):
         return False
     if not _POSTGRES_MEMORY.enabled or not _POSTGRES_MEMORY.healthcheck():
         return False
@@ -16855,9 +16856,9 @@ def _record_task_learning(
     requested_workflows: list[str],
     requested_tags: list[str],
 ) -> None:
-    if not _env_flag("FRONTIER_MEMORY_LEARNING_ENABLED", True):
+    if not _env_flag("LOCUS_MEMORY_LEARNING_ENABLED", True):
         return
-    if not _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True):
+    if not _env_flag("LOCUS_MEMORY_ENABLE_LONG_TERM", True):
         return
     if not _POSTGRES_MEMORY.enabled or not _POSTGRES_MEMORY.healthcheck():
         return
@@ -16937,8 +16938,8 @@ def _memory_consolidation_summary_points(
 def _memory_consolidation_min_candidates(candidate_kind: str) -> int:
     normalized_kind = str(candidate_kind or "promotion").strip().lower() or "promotion"
     if normalized_kind == "task-learning":
-        return _env_int("FRONTIER_MEMORY_TASK_LEARNING_MIN_CANDIDATES", 1, minimum=1, maximum=20)
-    return _env_int("FRONTIER_MEMORY_CONSOLIDATION_MIN_CANDIDATES", 2, minimum=1, maximum=20)
+        return _env_int("LOCUS_MEMORY_TASK_LEARNING_MIN_CANDIDATES", 1, minimum=1, maximum=20)
+    return _env_int("LOCUS_MEMORY_CONSOLIDATION_MIN_CANDIDATES", 2, minimum=1, maximum=20)
 
 
 def _memory_consolidation_token_set(text: str) -> set[str]:
@@ -17024,9 +17025,9 @@ def _memory_graph_owner_entity(bucket_id: str, memory_scope: str) -> dict[str, A
 
 
 def _memory_graph_extract_topics(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    max_topics = _env_int("FRONTIER_MEMORY_GRAPH_MAX_TOPICS", 5, minimum=1, maximum=20)
+    max_topics = _env_int("LOCUS_MEMORY_GRAPH_MAX_TOPICS", 5, minimum=1, maximum=20)
     min_occurrences = _env_int(
-        "FRONTIER_MEMORY_GRAPH_TOPIC_MIN_OCCURRENCES", 2, minimum=1, maximum=10
+        "LOCUS_MEMORY_GRAPH_TOPIC_MIN_OCCURRENCES", 2, minimum=1, maximum=10
     )
     phrase_counts: Counter[str] = Counter()
     token_counts: Counter[str] = Counter()
@@ -17121,7 +17122,7 @@ def _build_memory_world_graph_projection(
 def _project_memory_world_graph(
     consolidated_entry: dict[str, Any], candidates: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
-    if not _env_flag("FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED", True):
+    if not _env_flag("LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED", True):
         return None
     if not _NEO4J_GRAPH.enabled or not _NEO4J_GRAPH.healthcheck():
         return None
@@ -17202,10 +17203,10 @@ def _enforce_causal_projection_size_limits(
         "outcomes": len([item for item in outcomes if isinstance(item, dict)]),
     }
     limits = {
-        "columns": _causal_projection_limit("FRONTIER_CAUSAL_GRAPH_MAX_COLUMNS", 128),
-        "beliefs": _causal_projection_limit("FRONTIER_CAUSAL_GRAPH_MAX_BELIEFS", 1_024),
-        "histories": _causal_projection_limit("FRONTIER_CAUSAL_GRAPH_MAX_HISTORIES", 2_048),
-        "outcomes": _causal_projection_limit("FRONTIER_CAUSAL_GRAPH_MAX_OUTCOMES", 256),
+        "columns": _causal_projection_limit("LOCUS_CAUSAL_GRAPH_MAX_COLUMNS", 128),
+        "beliefs": _causal_projection_limit("LOCUS_CAUSAL_GRAPH_MAX_BELIEFS", 1_024),
+        "histories": _causal_projection_limit("LOCUS_CAUSAL_GRAPH_MAX_HISTORIES", 2_048),
+        "outcomes": _causal_projection_limit("LOCUS_CAUSAL_GRAPH_MAX_OUTCOMES", 256),
     }
     for key, count in counts.items():
         limit = limits[key]
@@ -17473,7 +17474,7 @@ def _build_causal_assembly_graph_projection(
 def _project_causal_assembly_graph(
     assembly_id: str, assembly_state: dict[str, Any]
 ) -> dict[str, Any] | None:
-    if not _env_flag("FRONTIER_CAUSAL_GRAPH_PROJECTION_ENABLED", True):
+    if not _env_flag("LOCUS_CAUSAL_GRAPH_PROJECTION_ENABLED", True):
         return None
     if not _NEO4J_GRAPH.enabled or not _NEO4J_GRAPH.healthcheck():
         return None
@@ -17492,7 +17493,7 @@ def _run_causal_assembly_graph_projection(
 ) -> dict[str, Any]:
     bounded_limit = max(1, min(200, int(limit)))
     normalized_assembly_id = str(assembly_id or "").strip() or None
-    if not _env_flag("FRONTIER_CAUSAL_GRAPH_PROJECTION_ENABLED", True):
+    if not _env_flag("LOCUS_CAUSAL_GRAPH_PROJECTION_ENABLED", True):
         result = {
             "ok": True,
             "status": "disabled",
@@ -18076,7 +18077,7 @@ def _admit_signed_cognitive_message(
     *,
     actor: str,
 ) -> dict[str, Any]:
-    auth_context = getattr(request.state, "frontier_auth_context", None)
+    auth_context = getattr(request.state, "locus_auth_context", None)
     if (
         not isinstance(auth_context, dict)
         or auth_context.get("trusted_subject_authenticated") is not True
@@ -18092,8 +18093,8 @@ def _admit_signed_cognitive_message(
 
     event, message = _coerce_cognitive_event(payload)
     event_payload = event.payload
-    header_nonce = str(request.headers.get("x-frontier-nonce") or "").strip()
-    header_timestamp = str(request.headers.get("x-frontier-timestamp") or "").strip()
+    header_nonce = str(request.headers.get("x-locus-nonce") or "").strip()
+    header_timestamp = str(request.headers.get("x-locus-timestamp") or "").strip()
     trusted_subject = str(auth_context.get("subject") or "").strip()
 
     tenant_id = _require_matching_cognitive_field(event_payload, "tenant_id", "")
@@ -18539,7 +18540,7 @@ def _run_memory_world_graph_projection(
     if bucket_id is not None and memory_scope is not None:
         bucket_id, memory_scope = _validate_memory_bucket_scope_pair(bucket_id, memory_scope)
     bounded_limit = max(1, min(200, int(limit)))
-    if not _env_flag("FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED", True):
+    if not _env_flag("LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED", True):
         result = {"ok": True, "status": "disabled", "projected": 0, "projections": []}
         _append_audit_event("memory.world_graph.project", actor, "allowed", result)
         return result
@@ -18608,11 +18609,11 @@ def _find_duplicate_memory_consolidation(
 
     # WS8: Try vector similarity first when enabled
     if (
-        _env_flag("FRONTIER_MEMORY_VECTOR_DEDUP_ENABLED", False)
+        _env_flag("LOCUS_MEMORY_VECTOR_DEDUP_ENABLED", False)
         and _POSTGRES_MEMORY.enabled
         and _POSTGRES_MEMORY.vector_enabled
     ):
-        vector_threshold = float(os.getenv("FRONTIER_MEMORY_VECTOR_DEDUP_THRESHOLD", "0.92"))
+        vector_threshold = float(os.getenv("LOCUS_MEMORY_VECTOR_DEDUP_THRESHOLD", "0.92"))
         similar = _POSTGRES_MEMORY.find_similar_entries(
             consolidated_content,
             bucket_id=bucket_id,
@@ -18631,10 +18632,10 @@ def _find_duplicate_memory_consolidation(
 
     # Fall back to token overlap
     overlap_threshold = _env_int(
-        "FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP", 80, minimum=1, maximum=100
+        "LOCUS_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP", 80, minimum=1, maximum=100
     )
     history_limit = _env_int(
-        "FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_HISTORY_LIMIT", 25, minimum=1, maximum=200
+        "LOCUS_MEMORY_CONSOLIDATION_DUPLICATE_HISTORY_LIMIT", 25, minimum=1, maximum=200
     )
     existing_entries = _POSTGRES_MEMORY.get_entries(
         bucket_id=bucket_id, memory_scope=memory_scope, limit=history_limit
@@ -18660,7 +18661,7 @@ def _build_memory_consolidation_entry(
 ) -> dict[str, Any] | None:
     summary_points = _memory_consolidation_summary_points(
         candidates,
-        max_points=_env_int("FRONTIER_MEMORY_CONSOLIDATION_MAX_POINTS", 5, minimum=1, maximum=20),
+        max_points=_env_int("LOCUS_MEMORY_CONSOLIDATION_MAX_POINTS", 5, minimum=1, maximum=20),
     )
     if not summary_points:
         return None
@@ -18698,7 +18699,7 @@ def _run_memory_consolidation(
     if bucket_id is not None and memory_scope is not None:
         bucket_id, memory_scope = _validate_memory_bucket_scope_pair(bucket_id, memory_scope)
     bounded_limit = max(1, min(200, int(limit)))
-    if not _env_flag("FRONTIER_MEMORY_CONSOLIDATION_ENABLED", True):
+    if not _env_flag("LOCUS_MEMORY_CONSOLIDATION_ENABLED", True):
         result = {
             "ok": True,
             "status": "disabled",
@@ -18708,7 +18709,7 @@ def _run_memory_consolidation(
         _append_audit_event("memory.consolidation.run", actor, "allowed", result)
         return result
     if (
-        not _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True)
+        not _env_flag("LOCUS_MEMORY_ENABLE_LONG_TERM", True)
         or not _POSTGRES_MEMORY.enabled
         or not _POSTGRES_MEMORY.healthcheck()
     ):
@@ -18966,7 +18967,7 @@ def _metadata_repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-_PLATFORM_DISTRIBUTION_NAMES = ("lattix-frontier", "lattix_frontier")
+_PLATFORM_DISTRIBUTION_NAMES = ("lattix-locus", "lattix_locus")
 _REMOTE_RELEASE_MANIFEST_CACHE_LOCK = Lock()
 _REMOTE_RELEASE_MANIFEST_CACHE: dict[str, Any] = {
     "manifest_url": "",
@@ -18987,7 +18988,7 @@ def _installed_platform_version() -> str | None:
 
 
 def _platform_version() -> str:
-    override = str(os.getenv("FRONTIER_APP_VERSION") or "").strip()
+    override = str(os.getenv("LOCUS_APP_VERSION") or "").strip()
     if override:
         return override
 
@@ -19090,12 +19091,12 @@ def _version_is_newer(candidate: str, current: str) -> bool:
 
 
 def _default_update_manifest_url() -> str:
-    override = str(os.getenv("FRONTIER_UPDATE_MANIFEST_URL") or "").strip()
+    override = str(os.getenv("LOCUS_UPDATE_MANIFEST_URL") or "").strip()
     if override:
         return override
 
     public_repo = (
-        str(os.getenv("INSTALLER_PUBLIC_REPO") or "https://github.com/LATTIX-IO/lattix-xfrontier")
+        str(os.getenv("INSTALLER_PUBLIC_REPO") or "https://github.com/LATTIX-IO/lattix-locus")
         .strip()
         .rstrip("/")
     )
@@ -19123,7 +19124,7 @@ def _validated_update_manifest_url(url: str) -> str:
 
 
 def _platform_version_manifest_cache_ttl_seconds() -> int:
-    raw_value = str(os.getenv("FRONTIER_UPDATE_MANIFEST_CACHE_TTL_SECONDS") or "300").strip()
+    raw_value = str(os.getenv("LOCUS_UPDATE_MANIFEST_CACHE_TTL_SECONDS") or "300").strip()
     try:
         parsed_value = int(raw_value)
     except ValueError:
@@ -19140,7 +19141,7 @@ def _fetch_remote_release_manifest_from_url(manifest_url: str) -> dict[str, Any]
             _validated_update_manifest_url(manifest_url),
             headers={
                 "Accept": "application/json",
-                "User-Agent": "lattix-xfrontier-version-check/1.0",
+                "User-Agent": "lattix-locus-version-check/1.0",
             },
             timeout=3.0,
             follow_redirects=False,
@@ -19233,7 +19234,7 @@ def get_platform_version() -> dict[str, Any]:
 @app.get("/auth/session")
 def get_auth_session(request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="auth.session.read", required=False)
-    auth_context = getattr(request.state, "frontier_auth_context", None)
+    auth_context = getattr(request.state, "locus_auth_context", None)
     auth_context = auth_context if isinstance(auth_context, dict) else {}
     claims = (
         auth_context.get("runtime_token_claims")
@@ -19244,7 +19245,7 @@ def get_auth_session(request: Request) -> dict[str, Any]:
     if (
         not bearer_authenticated
         and _effective_require_authenticated_requests()
-        and str(os.getenv("FRONTIER_AUTH_MODE") or "shared-token").strip().lower() != "oidc"
+        and str(os.getenv("LOCUS_AUTH_MODE") or "shared-token").strip().lower() != "oidc"
     ):
         raise HTTPException(status_code=401, detail="Authentication required")
     capabilities = {
@@ -19282,7 +19283,7 @@ def get_auth_session(request: Request) -> dict[str, Any]:
 
     session_auth_mode = str(auth_context.get("bearer_auth_kind") or "").strip().lower()
     if session_auth_mode in {"", "none"}:
-        session_auth_mode = str(os.getenv("FRONTIER_AUTH_MODE") or "shared-token").strip()
+        session_auth_mode = str(os.getenv("LOCUS_AUTH_MODE") or "shared-token").strip()
     if not session_auth_mode:
         session_auth_mode = "shared-token"
 
@@ -19305,7 +19306,7 @@ def get_auth_session(request: Request) -> dict[str, Any]:
         else "",
         "auth_mode": session_auth_mode,
         "provider": str(
-            configured_oidc.get("provider") or os.getenv("FRONTIER_AUTH_OIDC_PROVIDER") or ""
+            configured_oidc.get("provider") or os.getenv("LOCUS_AUTH_OIDC_PROVIDER") or ""
         ).strip(),
         "roles": sorted(_auth_context_access_claims(auth_context)) if bearer_authenticated else [],
         "capabilities": capabilities,
@@ -19545,7 +19546,7 @@ def system_shutdown(request: Request) -> JSONResponse:
     ):
         raise HTTPException(status_code=404, detail="Not found")
     try:
-        from frontier_tooling.desktop import shutdown_supervisors
+        from locus_tooling.desktop import shutdown_supervisors
 
         shutdown_supervisors()
     except Exception:  # noqa: BLE001
@@ -19611,8 +19612,10 @@ def _import_request_document(payload: dict[str, Any]) -> Any:
         and isinstance(payload.get("content"), str)
         and ("format" in payload or set(payload.keys()) <= {"content", "format"})
     ):
-        return _parse_definition_document(payload["content"], str(payload.get("format") or "auto"))
-    return payload
+        return normalize_legacy_identifiers(
+            _parse_definition_document(payload["content"], str(payload.get("format") or "auto"))
+        )
+    return normalize_legacy_identifiers(payload)
 
 
 def _agent_id_for_reference(token: str) -> str | None:
@@ -19852,7 +19855,7 @@ def import_playbook(
 def export_bundle(request: Request, format: str = "json") -> Response:
     _enforce_request_authn(request, action="bundle.export")
     bundle = {
-        "schema": "frontier-bundle/1.0",
+        "schema": "locus-bundle/1.0",
         "exported_at": _now_iso(),
         "agents": [a.model_dump() for a in store.agent_definitions.values()],
         "workflows": [w.model_dump() for w in store.workflow_definitions.values()],
@@ -19933,13 +19936,13 @@ def _build_health_payload() -> dict[str, Any]:
         "redis": "connected" if redis_ok else "disabled",
         "long_term_memory": long_term_status,
         "memory_consolidation": "enabled"
-        if long_term_ok and _env_flag("FRONTIER_MEMORY_CONSOLIDATION_ENABLED", True)
+        if long_term_ok and _env_flag("LOCUS_MEMORY_CONSOLIDATION_ENABLED", True)
         else "disabled",
         "memory_hybrid_retrieval": "enabled"
-        if long_term_ok and _env_flag("FRONTIER_MEMORY_HYBRID_RETRIEVAL_ENABLED", True)
+        if long_term_ok and _env_flag("LOCUS_MEMORY_HYBRID_RETRIEVAL_ENABLED", True)
         else "disabled",
         "memory_world_graph": "enabled"
-        if neo4j_ok and _env_flag("FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED", True)
+        if neo4j_ok and _env_flag("LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED", True)
         else "disabled",
         "neo4j": "connected" if neo4j_ok else "disabled",
         "secure_profile": secure_profile,
@@ -20285,7 +20288,7 @@ def save_user_settings(
 # Mounted host projects root (bind-mounted into the backend + agent containers via
 # docker-compose). User "working folders" are subpaths confined to this root so the
 # agents can actually read/edit them from inside the container.
-_PROJECTS_ROOT = os.getenv("FRONTIER_PROJECTS_ROOT", "/projects")
+_PROJECTS_ROOT = os.getenv("LOCUS_PROJECTS_ROOT", "/projects")
 
 
 def _projects_root_path() -> Path:
@@ -20767,7 +20770,7 @@ def run_cortical_assembly(
         task=task,
         assembly_id=assembly_id,
         tenant_id=tenant_id,
-        auth_context=getattr(request.state, "frontier_auth_context", None),
+        auth_context=getattr(request.state, "locus_auth_context", None),
         require_tenant_context=_coerce_request_bool(
             payload.get("require_tenant_context"),
             default=False,
@@ -20829,8 +20832,8 @@ def get_active_workflows() -> list[dict[str, Any]]:
 
 
 def _sync_run_execution_enabled() -> bool:
-    """Escape hatch (FRONTIER_SYNC_RUN_EXECUTION) to execute runs inline in the request."""
-    return str(os.getenv("FRONTIER_SYNC_RUN_EXECUTION", "")).strip().lower() in {
+    """Escape hatch (LOCUS_SYNC_RUN_EXECUTION) to execute runs inline in the request."""
+    return str(os.getenv("LOCUS_SYNC_RUN_EXECUTION", "")).strip().lower() in {
         "1",
         "true",
         "yes",
@@ -20851,7 +20854,7 @@ def _resolve_integration_bearer(integration: IntegrationDefinition) -> str:
         return str(os.getenv(ref[4:].strip()) or "").strip()
     if ref.startswith("secret/"):
         try:
-            from frontier_runtime.security import VaultClient
+            from locus_runtime.security import VaultClient
 
             data = VaultClient().read_secret(ref)
             for key in ("token", "api_key", "bearer", "value", "password"):
@@ -21262,7 +21265,7 @@ def _run_agent_iterations(
 
 def _workflow_member_agents(graph_json: dict[str, Any]) -> list[dict[str, str]]:
     """Resolve the distinct agents a workflow/playbook graph employs (its
-    ``frontier/agent`` nodes), mapped to canonical published definitions."""
+    ``locus/agent`` nodes), mapped to canonical published definitions."""
     members: list[dict[str, str]] = []
     seen: set[str] = set()
     try:
@@ -21270,7 +21273,7 @@ def _workflow_member_agents(graph_json: dict[str, Any]) -> list[dict[str, str]]:
     except Exception:  # noqa: BLE001
         return members
     for node in payload.nodes:
-        if not _normalize_node_type(node.type).startswith("frontier/agent"):
+        if not _normalize_node_type(node.type).startswith("locus/agent"):
             continue
         cfg = node.config if isinstance(node.config, dict) else {}
         token = str(cfg.get("agent_id") or "").strip()
@@ -21586,7 +21589,7 @@ def _run_agent_collaboration(
 
 def _run_worker_concurrency() -> int:
     try:
-        configured = int(os.getenv("FRONTIER_WORKER_CONCURRENCY", "2"))
+        configured = int(os.getenv("LOCUS_WORKER_CONCURRENCY", "2"))
     except ValueError:
         configured = 2
     return max(1, min(16, configured))
@@ -21597,7 +21600,7 @@ def _run_worker_concurrency() -> int:
 # seam the future external worker (resource plan 2.1) replaces.
 def _new_run_executor() -> ThreadPoolExecutor:
     return ThreadPoolExecutor(
-        max_workers=_run_worker_concurrency(), thread_name_prefix="frontier-run"
+        max_workers=_run_worker_concurrency(), thread_name_prefix="locus-run"
     )
 
 
@@ -22745,7 +22748,7 @@ def _dispatch_graph_target_in_chat(
                 )
             )
 
-    _node_results, _events, changed_files = _compile_and_run_frontier_graph(
+    _node_results, _events, changed_files = _compile_and_run_locus_graph(
         gp, run_id=run_id, on_event=_chat_sink
     )
     _merge_changed_files(run_id, changed_files)
@@ -23446,7 +23449,7 @@ def fire_workflow_trigger(
     actor = meta.get("actor") or "system/webhook-trigger"
     # Pre-authorize as the trigger owner so create_workflow_run's auth check
     # passes without an operator session (honored via request.state).
-    request.state.frontier_auth_context = {"authenticated": True, "actor": actor}
+    request.state.locus_auth_context = {"authenticated": True, "actor": actor}
 
     prompt = str(payload.get("prompt") or "").strip() or "Run triggered via webhook."
     _append_audit_event("workflow.trigger.fire", actor, "allowed", {"workflow_id": workflow.id})
@@ -23468,7 +23471,7 @@ class _TriggerRequestShim:
     """
 
     def __init__(self, actor: str) -> None:
-        self.state = SimpleNamespace(frontier_auth_context={"authenticated": True, "actor": actor})
+        self.state = SimpleNamespace(locus_auth_context={"authenticated": True, "actor": actor})
         self.headers: dict[str, str] = {}
 
 
@@ -24071,7 +24074,7 @@ def run_skill_eval(
     model = str(payload.get("model") or "").strip() or _default_openai_model()
 
     skill_system_prompt = (
-        "You are an agent on the Lattix xFrontier platform. Follow this operating "
+        "You are an agent on the Lattix Locus platform. Follow this operating "
         f"procedure exactly when handling the task:\n\n### Skill: {skill.name}\n{skill.content.strip()}"
     )
     case_results: list[dict[str, Any]] = []
@@ -24230,7 +24233,7 @@ def _fetch_remote_skill(url: str) -> tuple[str, str]:
         safe_url,
         headers={
             "Accept": "text/markdown, text/plain, */*",
-            "User-Agent": "lattix-xfrontier-skill-import/1.0",
+            "User-Agent": "lattix-locus-skill-import/1.0",
         },
         timeout=10.0,
         follow_redirects=False,
@@ -24280,7 +24283,7 @@ def _run_skill_blast_chamber(skill: SkillDefinition) -> SkillSecurityScan:
     dry_run_mode = "skipped"
     if static_passed and skill.content.strip():
         system_prompt = (
-            "You are an agent on the Lattix xFrontier platform. Follow this operating "
+            "You are an agent on the Lattix Locus platform. Follow this operating "
             f"procedure exactly when handling the task:\n\n### Skill: {skill.name}\n"
             f"{skill.content.strip()}"
         )
@@ -24435,7 +24438,7 @@ def test_skill(
     model = str(payload.get("model") or "").strip() or _default_openai_model()
 
     system_prompt = (
-        "You are an agent on the Lattix xFrontier platform. Follow this operating "
+        "You are an agent on the Lattix Locus platform. Follow this operating "
         "procedure exactly when handling the task:\n\n"
         f"### Skill: {skill.name}\n{skill.content.strip()}"
     )
@@ -27474,7 +27477,7 @@ def activate_agent_definition(
 
 
 _NODE_INPUT_SCHEMAS: dict[str, list[NodeFieldSpec]] = {
-    "frontier/trigger": [
+    "locus/trigger": [
         NodeFieldSpec(
             name="trigger_type",
             label="Trigger type",
@@ -27492,7 +27495,7 @@ _NODE_INPUT_SCHEMAS: dict[str, list[NodeFieldSpec]] = {
             description="Cron expression when trigger type is schedule.",
         ),
     ],
-    "frontier/agent": [
+    "locus/agent": [
         NodeFieldSpec(
             name="agent_id",
             label="Agent",
@@ -27527,7 +27530,7 @@ _NODE_INPUT_SCHEMAS: dict[str, list[NodeFieldSpec]] = {
             description="What this agent node should accomplish.",
         ),
     ],
-    "frontier/prompt": [
+    "locus/prompt": [
         NodeFieldSpec(
             name="system_prompt",
             label="System prompt",
@@ -27536,7 +27539,7 @@ _NODE_INPUT_SCHEMAS: dict[str, list[NodeFieldSpec]] = {
             description="Reusable system instructions passed to downstream agent nodes.",
         ),
     ],
-    "frontier/tool-call": [
+    "locus/tool-call": [
         NodeFieldSpec(
             name="integration_id",
             label="Integration",
@@ -27559,7 +27562,7 @@ _NODE_INPUT_SCHEMAS: dict[str, list[NodeFieldSpec]] = {
             placeholder='{"query": "..."}',
         ),
     ],
-    "frontier/retrieval": [
+    "locus/retrieval": [
         NodeFieldSpec(
             name="source",
             label="Knowledge source",
@@ -27584,7 +27587,7 @@ _NODE_INPUT_SCHEMAS: dict[str, list[NodeFieldSpec]] = {
             advanced=True,
         ),
     ],
-    "frontier/guardrail": [
+    "locus/guardrail": [
         NodeFieldSpec(
             name="ruleset_id",
             label="Guardrail ruleset",
@@ -27600,7 +27603,7 @@ _NODE_INPUT_SCHEMAS: dict[str, list[NodeFieldSpec]] = {
             default="both",
         ),
     ],
-    "frontier/commitment": [
+    "locus/commitment": [
         NodeFieldSpec(
             name="confidence_threshold",
             label="Confidence threshold",
@@ -27619,7 +27622,7 @@ _NODE_INPUT_SCHEMAS: dict[str, list[NodeFieldSpec]] = {
             placeholder="human-review",
         ),
     ],
-    "frontier/human-review": [
+    "locus/human-review": [
         NodeFieldSpec(
             name="reviewers",
             label="Reviewers",
@@ -27634,7 +27637,7 @@ _NODE_INPUT_SCHEMAS: dict[str, list[NodeFieldSpec]] = {
             advanced=True,
         ),
     ],
-    "frontier/manifold": [
+    "locus/manifold": [
         NodeFieldSpec(
             name="logic",
             label="Join logic",
@@ -27652,140 +27655,140 @@ def get_node_definitions(request: Request, include_internal: bool = False) -> li
     _enforce_builder_access(request, action="node.definition.list")
     base_nodes: list[NodeDefinition] = [
         NodeDefinition(
-            type_key="frontier/trigger",
+            type_key="locus/trigger",
             title="Trigger",
             description="Workflow entrypoint for user kickoff, schedule, or external event.",
             category="Core",
             color="#6ca0ff",
         ),
         NodeDefinition(
-            type_key="frontier/goal",
+            type_key="locus/goal",
             title="Goal",
             description="Define intent, success criteria, constraints, priorities, and output contract.",
             category="Cognition",
             color="#2962ff",
         ),
         NodeDefinition(
-            type_key="frontier/evidence",
+            type_key="locus/evidence",
             title="Evidence",
             description="Capture and validate evidence claims before synthesis and commitment.",
             category="Cognition",
             color="#00796b",
         ),
         NodeDefinition(
-            type_key="frontier/assembly",
+            type_key="locus/assembly",
             title="Assembly",
             description="Fuse goal and evidence signals into a bounded cognitive commitment proposal.",
             category="Cognition",
             color="#6a1b9a",
         ),
         NodeDefinition(
-            type_key="frontier/commitment",
+            type_key="locus/commitment",
             title="Commitment",
             description="Finalize or escalate a bounded commitment using explicit confidence thresholds.",
             category="Cognition",
             color="#ef6c00",
         ),
         NodeDefinition(
-            type_key="frontier/agent",
+            type_key="locus/agent",
             title="Agent",
             description="Execute a delegated objective with a selected specialist agent.",
             category="Agent",
             color="#1f7f53",
         ),
         NodeDefinition(
-            type_key="frontier/prompt",
+            type_key="locus/prompt",
             title="Prompt",
             description="Compose reusable system prompt instructions and pass them to agent nodes.",
             category="Agent",
             color="#5f4bb6",
         ),
         NodeDefinition(
-            type_key="frontier/tool-call",
+            type_key="locus/tool-call",
             title="Tool / API Call",
             description="Invoke external APIs or internal tools with schema-validated IO.",
             category="Integration",
             color="#6fd3ff",
         ),
         NodeDefinition(
-            type_key="frontier/retrieval",
+            type_key="locus/retrieval",
             title="Retrieval",
             description="Retrieve and rank context from vector DB, docs, or KB sources.",
             category="Knowledge",
             color="#8a6717",
         ),
         NodeDefinition(
-            type_key="frontier/guardrail",
+            type_key="locus/guardrail",
             title="Guardrail",
             description="Apply safety, policy, and quality controls to input/output content.",
             category="Control",
             color="#9f3550",
         ),
         NodeDefinition(
-            type_key="frontier/human-review",
+            type_key="locus/human-review",
             title="Human Review",
             description="Approval or clarification gate with feedback loop and audit trail.",
             category="Control",
             color="#8d5c1a",
         ),
         NodeDefinition(
-            type_key="frontier/manifold",
+            type_key="locus/manifold",
             title="Manifold",
             description="Consolidate multiple inbound flows using AND/OR logic into a single output.",
             category="Logic",
             color="#7863d3",
         ),
         NodeDefinition(
-            type_key="frontier/router",
+            type_key="locus/router",
             title="Router",
             description="Make deterministic routing decisions from rules, thresholds, or keyword classifiers.",
             category="Logic",
             color="#3158a4",
         ),
         NodeDefinition(
-            type_key="frontier/iterator",
+            type_key="locus/iterator",
             title="Iterator",
             description="Process lists, batches, and paginated payloads with loop and done branches.",
             category="Logic",
             color="#5670d9",
         ),
         NodeDefinition(
-            type_key="frontier/transform",
+            type_key="locus/transform",
             title="Transform",
             description="Shape payloads deterministically through mapping, templating, extraction, redaction, or merge operations.",
             category="Logic",
             color="#1e8a72",
         ),
         NodeDefinition(
-            type_key="frontier/event",
+            type_key="locus/event",
             title="Event",
             description="Publish or consume workflow events with structured envelopes and receipts.",
             category="Integration",
             color="#0f8c8c",
         ),
         NodeDefinition(
-            type_key="frontier/data-store",
+            type_key="locus/data-store",
             title="Data Store",
             description="Create, read, update, append, or delete business records inside a scoped data store.",
             category="Integration",
             color="#6e7c2d",
         ),
         NodeDefinition(
-            type_key="frontier/error-handler",
+            type_key="locus/error-handler",
             title="Error Handler",
             description="Normalize failures, apply fallback payloads, and emit structured recovery status for downstream steps.",
             category="Control",
             color="#aa5a2f",
         ),
         NodeDefinition(
-            type_key="frontier/wait",
+            type_key="locus/wait",
             title="Wait",
             description="Delay, timeout, or resume execution windows with explicit resume and timeout branches.",
             category="Control",
             color="#8c6a13",
         ),
         NodeDefinition(
-            type_key="frontier/output",
+            type_key="locus/output",
             title="Output",
             description="Finalize artifacts, emit events, and publish run outcomes.",
             category="Core",
@@ -27796,7 +27799,7 @@ def get_node_definitions(request: Request, include_internal: bool = False) -> li
         base_nodes.insert(
             5,
             NodeDefinition(
-                type_key="frontier/memory",
+                type_key="locus/memory",
                 title="Memory",
                 description="Read/write short-term or long-term memory scoped to tenant/run.",
                 category="Knowledge",
@@ -28127,7 +28130,7 @@ def _augment_node_system_prompt(base: str, node_instructions: str) -> str:
 
 
 def _agent_resolution_for_node(config: dict[str, Any]) -> Any:
-    """Resolve a ``frontier/agent`` node's ``config`` to the studio agent's real
+    """Resolve a ``locus/agent`` node's ``config`` to the studio agent's real
     system prompt + model (gpt-oss:20b on local Ollama) for the graph compiler.
 
     The node's ``agent_id`` selects the agent and its full config (prompt, model,
@@ -28155,7 +28158,7 @@ def _agent_resolution_for_node(config: dict[str, Any]) -> Any:
     # Coding backend for code nodes: native SweAgent (default) or the Codex
     # subprocess backend. Node config wins, else the platform env default.
     backend = (
-        str(cfg.get("harness_backend") or os.getenv("FRONTIER_HARNESS_BACKEND") or "native")
+        str(cfg.get("harness_backend") or os.getenv("LOCUS_HARNESS_BACKEND") or "native")
         .strip()
         .lower()
     )
@@ -28215,7 +28218,7 @@ def _make_harness_chat_client(resolution: Any) -> Any:
     """Build the harness OpenAI-compatible client pointed at the local model
     endpoint (Ollama by default). One client type serves chat, code (SweAgent)
     and team (CollaborativeTeam) nodes."""
-    from frontier_runtime.harness.llm import OpenAIChatClient
+    from locus_runtime.harness.llm import OpenAIChatClient
 
     base = resolution.base_url or local_models.ollama_openai_base_url()
     return OpenAIChatClient(
@@ -28234,12 +28237,12 @@ def _should_use_compiler(payload: GraphPayload) -> bool:
     native path (and its runtime-engine metadata) unchanged."""
     has_cycle = _topological_order([node.id for node in payload.nodes], payload.links) is None
     agent_nodes = sum(
-        1 for node in payload.nodes if _normalize_node_type(node.type).startswith("frontier/agent")
+        1 for node in payload.nodes if _normalize_node_type(node.type).startswith("locus/agent")
     )
     return has_cycle or agent_nodes >= 2
 
 
-def _compile_and_run_frontier_graph(
+def _compile_and_run_locus_graph(
     payload: GraphPayload,
     *,
     run_id: str,
@@ -28379,7 +28382,7 @@ def _compile_and_run_frontier_graph(
         mode=run_mode,
     )
 
-    compiled = gc.compile_frontier_graph(list(payload.nodes), list(payload.links), deps)
+    compiled = gc.compile_locus_graph(list(payload.nodes), list(payload.links), deps)
     result = gc.run_compiled_graph(compiled, run_input, deps)
     node_results = result.get("node_results", {})
     if not isinstance(node_results, dict):
@@ -28467,7 +28470,7 @@ def _run_compiled_workflow_run(
     )
 
     try:
-        node_results, compiled_events, changed_files = _compile_and_run_frontier_graph(
+        node_results, compiled_events, changed_files = _compile_and_run_locus_graph(
             gp, run_id=run_id
         )
     except Exception as exc:  # noqa: BLE001
@@ -28629,7 +28632,7 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
     collaborating_agents = [
         node
         for node in payload.nodes
-        if _normalize_node_type(node.type).startswith("frontier/agent")
+        if _normalize_node_type(node.type).startswith("locus/agent")
     ]
     if len(collaborating_agents) > max_collaborators:
         raise HTTPException(
@@ -28646,7 +28649,7 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
     # below cannot run cycles and ignores per-agent prompts/models.
     if _should_use_compiler(payload):
         try:
-            compiled_results, compiled_events, compiled_changed = _compile_and_run_frontier_graph(
+            compiled_results, compiled_events, compiled_changed = _compile_and_run_locus_graph(
                 payload, run_id=run_id
             )
             _merge_changed_files(run_id, compiled_changed)
@@ -28655,7 +28658,7 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
                 "executed_engine": "langgraph",
                 "mode": "native",
                 "strategy": "single",
-                "engine": "frontier-graph-compiler",
+                "engine": "locus-graph-compiler",
             }
             result = GraphRunResult(
                 run_id=run_id,
@@ -28690,7 +28693,7 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
                     )
                 ],
                 validation=validation,
-                runtime={"engine": "frontier-graph-compiler"},
+                runtime={"engine": "locus-graph-compiler"},
             )
             _append_audit_event(
                 "graph.run", actor, "error", {"run_id": run_id, "status": result.status}
@@ -28704,7 +28707,7 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
     runtime = payload.input.get("runtime") if isinstance(payload.input, dict) else {}
     if not isinstance(runtime, dict):
         runtime = {}
-    if any(_normalize_node_type(node.type).startswith("frontier/agent") for node in payload.nodes):
+    if any(_normalize_node_type(node.type).startswith("locus/agent") for node in payload.nodes):
         resolved_runtime = _resolve_request_chat_runtime(
             request=request,
             actor=actor,

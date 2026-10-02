@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { NodeFieldForm } from "@/components/node-field-form";
 import { getNodeDefinitions, type NodeFieldSpec } from "@/lib/api";
-import { frontierNodeTemplates, type FrontierNodeTemplate } from "@/lib/frontier-node-catalog";
+import { locusNodeTemplates, type LocusNodeTemplate } from "@/lib/locus-node-catalog";
 import { useEffect, useMemo, useState } from "react";
 
 type CustomPort = {
@@ -18,9 +18,9 @@ type CustomField = {
   defaultValue: string;
 };
 
-const emptyTemplate: FrontierNodeTemplate = {
+const emptyTemplate: LocusNodeTemplate = {
   id: "",
-  key: "frontier/trigger",
+  key: "locus/trigger",
   name: "",
   category: "Core",
   description: "",
@@ -28,8 +28,8 @@ const emptyTemplate: FrontierNodeTemplate = {
 };
 
 export default function NodeLibraryPage() {
-  const [nodeTemplates, setNodeTemplates] = useState<FrontierNodeTemplate[]>(frontierNodeTemplates);
-  const [selectedNode, setSelectedNode] = useState<string>(frontierNodeTemplates[0]?.id ?? "");
+  const [nodeTemplates, setNodeTemplates] = useState<LocusNodeTemplate[]>(locusNodeTemplates);
+  const [selectedNode, setSelectedNode] = useState<string>(locusNodeTemplates[0]?.id ?? "");
   const [nodeInputs, setNodeInputs] = useState<Record<string, NodeFieldSpec[]>>({});
 
   useEffect(() => {
@@ -41,15 +41,15 @@ export default function NodeLibraryPage() {
         return;
       }
 
-      const mapped: FrontierNodeTemplate[] = response
-        .filter((node) => node.type_key.startsWith("frontier/"))
+      const mapped: LocusNodeTemplate[] = response
+        .filter((node) => node.type_key.startsWith("locus/"))
         .map((node) => {
-          const fallback = frontierNodeTemplates.find((template) => template.key === node.type_key);
+          const fallback = locusNodeTemplates.find((template) => template.key === node.type_key);
           return {
             id: node.type_key,
-            key: node.type_key as `frontier/${string}`,
-            name: node.title ?? fallback?.name ?? node.type_key.replace("frontier/", ""),
-            category: (node.category as FrontierNodeTemplate["category"]) ?? fallback?.category ?? "Core",
+            key: node.type_key as `locus/${string}`,
+            name: node.title ?? fallback?.name ?? node.type_key.replace("locus/", ""),
+            category: (node.category as LocusNodeTemplate["category"]) ?? fallback?.category ?? "Core",
             description: node.description,
             color: node.color ?? fallback?.color ?? "#6ca0ff",
           };
@@ -133,13 +133,13 @@ export default function NodeLibraryPage() {
       <header>
         <h1 className="text-2xl font-semibold">Node Library</h1>
         <p className="fx-muted">
-          Curated Frontier node kit only — no default legacy nodes — with reusable templates for agents and workflows.
+          Curated Locus node kit only — no default legacy nodes — with reusable templates for agents and workflows.
         </p>
       </header>
 
       <div className="grid min-h-0 gap-4 xl:flex-1 xl:grid-cols-[360px_1fr]">
         <aside className="fx-panel flex min-h-[calc(100vh-14rem)] flex-col p-4 xl:min-h-0">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide">Frontier Node Kit</h2>
+          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide">Locus Node Kit</h2>
           <div
             aria-label="Available node templates"
             className="min-h-0 flex-1 overflow-y-auto border border-[var(--fx-border)]"
@@ -177,7 +177,7 @@ export default function NodeLibraryPage() {
               ))}
             </ul>
           </div>
-          <p className="fx-muted mt-2 text-xs">Showing {nodeTemplates.length} reusable node templates in the Frontier kit.</p>
+          <p className="fx-muted mt-2 text-xs">Showing {nodeTemplates.length} reusable node templates in the Locus kit.</p>
           <p className="mt-2 text-xs text-[var(--foreground)]">
             Node definitions are currently read-only. The custom-node publishing workflow stays hidden until secure backend lifecycle support is implemented.
           </p>

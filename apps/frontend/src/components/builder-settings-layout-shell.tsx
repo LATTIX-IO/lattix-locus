@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { getBuilderSettingsNavBadge, getVisibleBuilderSettingsSections } from "@/lib/builder-settings";
 import { getOperatorSession, getPlatformSecurityPolicy, getPlatformSettings } from "@/lib/api";
-import type { OperatorSession, PlatformSettings, SecurityPolicyResponse } from "@/types/frontier";
+import type { OperatorSession, PlatformSettings, SecurityPolicyResponse } from "@/types/locus";
 
 export function BuilderSettingsLayoutShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();

@@ -69,7 +69,7 @@ if (-not $wrapper.Contains("--disable apps")) { throw "Symphony Codex wrapper mu
 if ($LASTEXITCODE -ne 0) { throw "Codex configuration validation failed." }
 
 if ([string]::IsNullOrWhiteSpace($env:LINEAR_API_KEY)) {
-    throw "LINEAR_API_KEY is not set. Symphony cannot poll the xFrontier project."
+    throw "LINEAR_API_KEY is not set. Symphony cannot poll the Locus project."
 }
 $linearQuery = @'
 query SymphonyProjectPreflight($slug: String!) {
@@ -91,10 +91,10 @@ catch {
     throw "Linear rejected the unattended Symphony credential or could not be reached."
 }
 if ($linearResponse.errors -or $linearResponse.data.projects.nodes.Count -ne 1) {
-    throw "The unattended Symphony credential cannot resolve the xFrontier Linear project (3b160e533200)."
+    throw "The unattended Symphony credential cannot resolve the Locus Linear project (3b160e533200)."
 }
 $linearProject = $linearResponse.data.projects.nodes[0]
-if ($linearProject.name -ne "xFrontier" -or $linearProject.slugId -ne "3b160e533200") {
+if ($linearProject.name -ne "Locus" -or $linearProject.slugId -ne "3b160e533200") {
     throw "Linear project preflight returned an unexpected project."
 }
 

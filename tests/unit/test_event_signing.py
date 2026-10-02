@@ -1,7 +1,7 @@
 import asyncio
 
-from frontier_runtime.events import AgentEvent, get_event_bus
-from frontier_runtime.security import verify_event_signature
+from locus_runtime.events import AgentEvent, get_event_bus
+from locus_runtime.security import verify_event_signature
 
 
 def test_event_bus_signs_events() -> None:

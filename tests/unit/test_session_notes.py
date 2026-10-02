@@ -1,8 +1,8 @@
-"""Tests for frontier_runtime.session_notes — Session Auto-Notes."""
+"""Tests for locus_runtime.session_notes — Session Auto-Notes."""
 
 from __future__ import annotations
 
-from frontier_runtime.session_notes import (
+from locus_runtime.session_notes import (
     SessionNote,
     _extract_decisions,
     _extract_files_modified,

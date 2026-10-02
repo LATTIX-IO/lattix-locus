@@ -1,6 +1,6 @@
-# Contributing to Lattix xFrontier
+# Contributing to Lattix Locus
 
-Thanks for helping improve Lattix xFrontier.
+Thanks for helping improve Lattix Locus.
 
 By contributing to this repository, you agree that your contributions are submitted under the repository's **AGPL-3.0-or-later** license unless explicitly stated otherwise in writing by the project maintainers.
 

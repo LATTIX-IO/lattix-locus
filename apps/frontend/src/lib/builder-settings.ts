@@ -1,4 +1,4 @@
-import type { OperatorSession, PlatformSettings, SecurityPolicyResponse } from "@/types/frontier";
+import type { OperatorSession, PlatformSettings, SecurityPolicyResponse } from "@/types/locus";
 
 export type BuilderSettingsSectionKey = "guardrails" | "network" | "runtime" | "governance";
 

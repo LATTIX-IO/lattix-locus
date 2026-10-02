@@ -9,8 +9,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md LICENSE ./
-COPY frontier_tooling ./frontier_tooling
-COPY frontier_runtime ./frontier_runtime
+COPY locus_tooling ./locus_tooling
+COPY locus_runtime ./locus_runtime
 RUN python -m pip install --upgrade pip \
     && python -m pip install --prefix=/install .
 
