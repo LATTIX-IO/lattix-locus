@@ -136,7 +136,7 @@ jobs:
 
       - name: Policy tests
         run: |
-          curl -fsSL -o /usr/local/bin/opa https://openpolicyagent.org/downloads/v0.68.0/opa_linux_amd64_static
+          curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors -o /usr/local/bin/opa https://openpolicyagent.org/downloads/v0.68.0/opa_linux_amd64_static
           chmod +x /usr/local/bin/opa
           python scripts/run_opa.py test policies/ -v
 
