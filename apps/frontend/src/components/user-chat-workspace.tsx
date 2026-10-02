@@ -3,6 +3,7 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { ControlStatusList } from "@/components/control-status";
 import { MarkdownBlock } from "@/components/markdown-block";
 import { ReactFlowCanvas, type GraphLink, type GraphNode } from "@/components/reactflow-canvas";
 import { RunArchiveButton } from "@/components/run-archive-button";
@@ -929,6 +930,7 @@ export function UserChatWorkspace({
                               ))}
                             </div>
                           </DetailMessage>
+                          <ControlStatusList report={atfReport.control_status} showEvidence={false} />
                         </div>
                       ) : (
                         <DetailMessage tone="muted">ATF posture unavailable.</DetailMessage>

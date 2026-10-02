@@ -7,6 +7,7 @@ import {
   useClassificationBanner,
 } from "@/components/classification-banner";
 import { ComposerDefaultsSettings } from "@/components/composer-defaults-settings";
+import { ControlStatusList } from "@/components/control-status";
 import { SettingsRailCard, SettingsShell } from "@/components/settings-shell";
 import { getAtfAlignmentReport, getPlatformSettings, getUserSkills, savePlatformSettings, saveUserSkills } from "@/lib/api";
 import type { AtfAlignmentReport } from "@/types/locus";
@@ -303,6 +304,9 @@ export default function SettingsPage() {
                 ))}
               </ul>
             ) : null}
+            <div className="mt-3">
+              <ControlStatusList report={atfReport?.control_status} showEvidence={false} />
+            </div>
           </SettingsRailCard>
 
           <SettingsRailCard title="Current posture" description="The short version of what new work inherits today.">

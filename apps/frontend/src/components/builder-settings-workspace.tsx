@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { ControlStatusList } from "@/components/control-status";
 import { SettingsRailCard } from "@/components/settings-shell";
 import { useToast } from "@/components/toast";
 import {
@@ -393,10 +394,16 @@ export function BuilderSettingsWorkspace({ view }: BuilderSettingsWorkspaceProps
     } satisfies Record<OverviewCardSectionKey, string>;
   }, [settings]);
 
+  const controlStates = useMemo(
+    () => new Map((policy?.control_status?.controls ?? []).map((control) => [control.id, control.state])),
+    [policy],
+  );
+
   const overviewSignals = useMemo(() => {
     if (!settings) {
       return [] as Array<{ label: string; value: string }>;
     }
+    const egressState = controlStates.get("egress_allowlist");
     return [
       {
         label: "Auth posture",
@@ -408,14 +415,18 @@ export function BuilderSettingsWorkspace({ view }: BuilderSettingsWorkspaceProps
       },
       {
         label: "Network stance",
-        value: settings.enforce_local_network_only ? "Local only" : settings.enforce_egress_allowlist ? "Allowlist enforced" : "Open egress",
+        value: settings.enforce_local_network_only
+          ? "Local only"
+          : settings.enforce_egress_allowlist
+            ? `Allowlist ${egressState ?? "unverified"}`
+            : "Open egress",
       },
       {
         label: "Runtime choice",
         value: settings.allow_runtime_engine_override ? "Builders may narrow engine choice" : "Platform default fixed",
       },
     ];
-  }, [settings]);
+  }, [settings, controlStates]);
 
   const overviewAttentionItems = useMemo(() => {
     if (!settings) {
@@ -444,12 +455,16 @@ export function BuilderSettingsWorkspace({ view }: BuilderSettingsWorkspaceProps
     if (!settings.enable_foss_guardrail_signals) {
       items.push("Platform guardrail signals are disabled, so prompt injection and exfiltration detections will not influence execution.");
     }
+    const notEnforcedCount = [...controlStates.values()].filter((state) => state !== "enforced").length;
+    if (notEnforcedCount > 0) {
+      items.unshift(`${notEnforcedCount} security control${notEnforcedCount === 1 ? " is" : "s are"} not enforced at runtime; see Control status for evidence.`);
+    }
     if (!items.length) {
-      items.push("No elevated platform-wide issues are visible. The current posture is authenticated, constrained, and builder-tunable inside the backend envelope.");
+      items.push("No elevated platform-wide issues are visible in platform settings.");
     }
 
     return items.slice(0, 4);
-  }, [settings]);
+  }, [settings, controlStates]);
 
   async function refreshRuntimeProviders() {
     const [providersResponse, userProviderResponse] = await Promise.all([getRuntimeProviders(), getUserRuntimeProviders()]);
@@ -700,12 +715,8 @@ export function BuilderSettingsWorkspace({ view }: BuilderSettingsWorkspaceProps
               </ul>
             </SettingsRailCard>
 
-            <SettingsRailCard title="Server-owned rails" description="Controls that remain backend-enforced even when builders tune the envelope.">
-              <ul className="space-y-2 text-xs text-[var(--foreground)]">
-                {(policy?.backend_enforced_controls ?? []).map((item) => (
-                  <li key={item} className="rounded-[0.95rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.78)] px-3 py-2.5 break-words">{item.replace(/_/g, " ")}</li>
-                ))}
-              </ul>
+            <SettingsRailCard title="Control status" description="Each security control as the backend observes it at runtime, with the evidence behind the state.">
+              <ControlStatusList report={policy?.control_status} />
             </SettingsRailCard>
           </aside>
         </div>
