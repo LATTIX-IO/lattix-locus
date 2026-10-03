@@ -12,9 +12,13 @@ described as a :class:`GatewayAction` and passed to :meth:`Gateway.authorize`
 2. **Resolve** the action: kind, tool, target, redacted argument summary and a
    deterministic risk class. The gateway recomputes the risk class from the
    action facts and keeps the higher of the two (it never lowers a class).
-3. *(seam)* Grant verification -- Biscuit capability tokens (13 §5) plug in via
-   the ``grants`` argument (:class:`GrantVerifier`). v1 ships no grants:
-   :class:`NoGrants` covers nothing.
+3. Grant verification -- Biscuit capability grants (13 §5, LOCUS-334) plug in via
+   the ``grants`` argument (:class:`GrantVerifier`; the real one is
+   :class:`locus_runtime.grants.BiscuitGrantVerifier`). Grants are looked up
+   server-side for the authenticated principal -- never taken from the action.
+   Without a grant authority key the gateway runs with :class:`NoGrants`, which
+   covers nothing (fail closed: R3 still asks). A grant only ever turns an
+   ``ask`` into ``allow`` at step 6; it never overrides a policy deny or R4.
 4. **Evaluate policy** through :class:`~locus_runtime.policy_engine.PolicyEngine`
    (repository Rego; see "Policy mapping" below). Any deny, any engine error and
    an unavailable engine all deny (fail closed).
@@ -64,8 +68,9 @@ Decision table (tiered autonomy is the default, D-05):
 
 * any policy deny, engine error/unavailable, unauthenticated caller → ``deny``
 * R4 → ``deny`` always (11 §5: "R4 prohibited -- Never"; only the human acts)
-* R3 → ``ask`` unless a grant covers it or the human approved this exact action
-  (single-use, run-scoped :class:`ApprovalLedger` entry)
+* R3 → ``ask`` unless a grant covers it (reasons then carry
+  ``gateway.grant_covers_action`` and ``gateway.grant:<id>``) or the human
+  approved this exact action (single-use, run-scoped :class:`ApprovalLedger` entry)
 * R2 under the ``supervised`` tier → ``ask`` (same approval rule)
 * otherwise → ``allow``
 
@@ -135,6 +140,8 @@ REASON_R4_PROHIBITED = "gateway.risk_r4_prohibited"
 REASON_APPROVAL_REQUIRED = "gateway.approval_required"
 REASON_APPROVED = "gateway.approved_by_human"
 REASON_GRANT = "gateway.grant_covers_action"
+REASON_GRANT_ID_PREFIX = "gateway.grant:"
+REASON_GRANT_ERROR = "gateway.grant_verifier_error"
 
 #: Canonical agent_policy operation per action kind (tool/MCP calls use the tool name).
 CANONICAL_OPERATION: Mapping[str, str] = {
@@ -209,6 +216,117 @@ def summarize_args(args: Mapping[str, Any] | None) -> dict[str, str]:
         text = value if isinstance(value, str) else json.dumps(value, default=str, sort_keys=True)
         summary[key] = redact_text(text)
     return summary
+
+
+# Argument keys a grant pattern does not pin (free text the human approved the
+# *kind* of, not the wording). Recipient and amount keys get their own facets.
+_FREE_TEXT_KEYS = _CONTENT_KEYS | frozenset(
+    {
+        "subject",
+        "title",
+        "message",
+        "msg",
+        "comment",
+        "description",
+        "summary",
+        "note",
+        "notes",
+        "caption",
+    }
+)
+RECIPIENT_KEYS = frozenset(
+    {
+        "to",
+        "cc",
+        "bcc",
+        "recipient",
+        "recipients",
+        "email",
+        "emails",
+        "to_address",
+        "address",
+        "addresses",
+        "attendees",
+        "invitees",
+    }
+)
+AMOUNT_KEYS = frozenset({"amount", "price", "total", "cost", "amount_usd"})
+#: Amount facet for an amount argument that is not a finite number: above any ceiling.
+AMOUNT_UNPARSEABLE = 2**62
+_EMAIL = re.compile(r"^[^@\s]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})$")
+_FACET_VALUE_MAX = 200
+
+
+def _recipient_items(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [item.strip() for item in re.split(r"[,;]", value) if item.strip()]
+    if isinstance(value, Mapping):
+        found = value.get("email") or value.get("address")
+        return _recipient_items(found) if found else [json.dumps(value, sort_keys=True)]
+    if isinstance(value, (list, tuple, set)):
+        out: list[str] = []
+        for item in value:
+            out.extend(_recipient_items(item))
+        return out
+    return [str(value)] if value is not None else []
+
+
+def _amount_cents(value: Any) -> int:
+    if isinstance(value, bool):
+        return AMOUNT_UNPARSEABLE
+    try:
+        number = float(str(value).replace(",", "").strip().lstrip("$\u20ac\u00a3"))
+    except (TypeError, ValueError):
+        return AMOUNT_UNPARSEABLE
+    if number != number or number in (float("inf"), float("-inf")) or number < 0:
+        return AMOUNT_UNPARSEABLE
+    return min(int(round(number * 100)), AMOUNT_UNPARSEABLE)
+
+
+def grant_facets(
+    kind: str, args: Mapping[str, Any] | None, command_summary: str = ""
+) -> dict[str, str]:
+    """Facts a grant pattern is matched against, derived from the real arguments.
+
+    * ``args`` (tool/MCP calls): canonical JSON of the redacted argument summary
+      without free text, recipients and amounts -- a grant pins these exactly.
+    * ``recipients``: sorted ``@domain`` for e-mail addresses, the lower-cased
+      value otherwise -- a grant pins the domain set, not each address.
+    * ``amount_cents``: the largest amount argument -- a grant sets a ceiling.
+    * ``command`` (process_exec): the redacted command line, pinned exactly.
+
+    Computed by :meth:`GatewayAction.create` from the arguments that will run;
+    never supplied by the agent as a separate claim.
+    """
+    facets: dict[str, str] = {}
+    if kind == "process_exec":
+        facets["command"] = command_summary
+        return facets
+    if kind not in {"tool_call", "mcp_tool_call"}:
+        return facets
+    raw = {str(key): value for key, value in args.items()} if isinstance(args, Mapping) else {}
+    lowered = {key.lower(): value for key, value in raw.items()}
+    recipient_values = [lowered[key] for key in sorted(lowered) if key in RECIPIENT_KEYS]
+    if recipient_values:
+        tokens: set[str] = set()
+        for value in recipient_values:
+            for item in _recipient_items(value):
+                match = _EMAIL.match(item)
+                token = f"@{match.group(1).lower()}" if match else item.lower()
+                tokens.add(token[:_FACET_VALUE_MAX])
+        facets["recipients"] = ",".join(sorted(tokens))
+    amounts = [_amount_cents(lowered[key]) for key in lowered if key in AMOUNT_KEYS]
+    if amounts:
+        facets["amount_cents"] = str(max(amounts))
+    summary = summarize_args(
+        {
+            key: value
+            for key, value in raw.items()
+            if key.lower() not in _FREE_TEXT_KEYS | RECIPIENT_KEYS | AMOUNT_KEYS
+        }
+    )
+    facets["args"] = json.dumps(summary, sort_keys=True, separators=(",", ":"))
+    return facets
 
 
 def args_digest(args: Any) -> str:
@@ -565,6 +683,8 @@ class GatewayAction:
     jail: JailFacts | None = None
     egress_host: str = ""
     method: str = ""
+    # Grant-matching facts derived from the real arguments (see grant_facets).
+    facets: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def create(
@@ -606,6 +726,7 @@ class GatewayAction:
             jail=jail,
             egress_host=str(egress_host or "").strip().lower(),
             method=str(method or "").upper(),
+            facets=grant_facets(kind, args, command_text),
         )
 
     @property
@@ -724,13 +845,20 @@ DecisionListener = Callable[[GatewayAction, GatewayDecision], None]
 # --------------------------------------------------------------------------- #
 @runtime_checkable
 class GrantVerifier(Protocol):
-    """Step 3 seam: Biscuit capability grants covering an action pattern (13 §5)."""
+    """Step 3: Biscuit capability grants covering an action pattern (13 §5).
+
+    Implementations may also offer ``match(action, capabilities)`` returning an
+    object with a ``grant_id`` (or ``None``); the gateway then records which
+    grant authorized the action (P11).
+    """
 
     def covers(self, action: GatewayAction, capabilities: Capabilities) -> bool: ...
 
 
 class NoGrants:
-    """v1: no grants exist, so nothing is covered."""
+    """No grant authority is configured, so nothing is covered (fail closed)."""
+
+    ready = False
 
     def covers(self, action: GatewayAction, capabilities: Capabilities) -> bool:  # noqa: ARG002
         return False
@@ -846,6 +974,11 @@ class Gateway:
     @property
     def engine(self) -> PolicyEngine:
         return self._engine
+
+    @property
+    def grants(self) -> GrantVerifier:
+        """The installed grant verifier (:class:`NoGrants` when none is configured)."""
+        return self._grants
 
     @property
     def healthy(self) -> bool:
@@ -980,8 +1113,11 @@ class Gateway:
             action.risk == RiskClass.R2 and caps.autonomy_tier == "supervised"
         )
         if needs_ask:
-            if self._grants.covers(action, caps):
+            grant_id = self._covering_grant(action, caps, reasons)
+            if grant_id is not None:
                 reasons.append(REASON_GRANT)
+                if grant_id:
+                    reasons.append(f"{REASON_GRANT_ID_PREFIX}{grant_id}")
             else:
                 return self._ask_or_approved(action, record, reasons, policy_version, audit_id)
         decision = self._finish(action, record, "allow", tuple(reasons), policy_version, audit_id)
@@ -989,6 +1125,25 @@ class Gateway:
             with self._lock:
                 record.tool_calls_used += 1
         return decision
+
+    def _covering_grant(
+        self, action: GatewayAction, caps: Capabilities, reasons: list[str]
+    ) -> str | None:
+        """The id of a grant covering ``action`` ("" if unnamed), else None.
+
+        Only reached for an action policy already allowed and that is below R4.
+        A verifier error means no grant (fail closed to ``ask``).
+        """
+        try:
+            match = getattr(self._grants, "match", None)
+            if callable(match):
+                found = match(action, caps)
+                return None if found is None else str(getattr(found, "grant_id", "") or "")
+            return "" if self._grants.covers(action, caps) else None
+        except Exception:  # noqa: BLE001 - a broken verifier grants nothing
+            logger.exception("gateway.grant_verifier_error")
+            reasons.append(REASON_GRANT_ERROR)
+            return None
 
     def _ask_or_approved(
         self,
@@ -1186,6 +1341,14 @@ def gateway_enforcing() -> bool:
     """Posture fact: a real :class:`Gateway` with a healthy engine is installed here."""
     gateway = _PROCESS_GATEWAY
     return isinstance(gateway, Gateway) and gateway.healthy
+
+
+def grants_enforcing() -> bool:
+    """Posture fact: the enforcing gateway verifies Biscuit grants with loaded keys."""
+    gateway = _PROCESS_GATEWAY
+    if not (isinstance(gateway, Gateway) and gateway.healthy):
+        return False
+    return getattr(gateway.grants, "ready", False) is True
 
 
 @contextmanager

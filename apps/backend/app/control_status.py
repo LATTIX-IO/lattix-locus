@@ -89,6 +89,9 @@ class PostureFacts:
     # installed in this process (LOCUS-332). CI evidence that every execution entry
     # point calls it: tests/harness/test_gateway_bypass.py.
     gateway_enforcing: bool = False
+    # locus_runtime.gateway.grants_enforcing(): that gateway verifies Biscuit grants
+    # (BiscuitGrantVerifier installed, grant authority keys loaded) -- LOCUS-334.
+    grants_enforcing: bool = False
 
 
 def _policy_engine(facts: PostureFacts) -> ControlStatus:
@@ -122,19 +125,32 @@ def _policy_engine(facts: PostureFacts) -> ControlStatus:
 
 
 def _capability_tokens(facts: PostureFacts) -> ControlStatus:
+    # "enforced" only when the running gateway verifies Biscuit grants with loaded
+    # keys (P9); a loaded library alone proves nothing.
+    if facts.grants_enforcing and facts.gateway_enforcing:
+        return ControlStatus(
+            "capability_tokens_biscuit",
+            "Capability grants (Biscuit)",
+            "enforced",
+            "locus_runtime.grants.BiscuitGrantVerifier is installed in the enforcing gateway "
+            "with Ed25519 grant keys loaded from the secure secret store; R3 actions run "
+            "without asking only under a valid, unrevoked, unexpired covering grant "
+            "(tests/unit/test_gateway_grants.py, tests/policy/test_gateway_opa.py).",
+        )
     if facts.biscuit_loaded:
         return ControlStatus(
             "capability_tokens_biscuit",
             "Capability grants (Biscuit)",
             "unverified",
-            "A Biscuit module is loaded but grant minting still uses HMAC JSON tokens.",
+            "biscuit_auth is loaded, but no gateway in this process verifies grants with a "
+            "loaded grant authority key (LOCUS_GRANT_AUTHORITY_KEY); R3 actions always ask.",
         )
     return ControlStatus(
         "capability_tokens_biscuit",
         "Capability grants (Biscuit)",
         "off",
-        "No Biscuit library is loaded; locus_runtime.security.CapabilityMinter issues "
-        "custom HMAC-signed JSON tokens (shared secret, no attenuation).",
+        "No Biscuit library is loaded; no capability grants are verified and R3 actions "
+        "always ask.",
     )
 
 
@@ -554,6 +570,15 @@ def _gateway_enforcing() -> bool:
         return False
 
 
+def _grants_enforcing() -> bool:
+    try:
+        from locus_runtime.gateway import grants_enforcing
+
+        return bool(grants_enforcing())
+    except Exception:  # noqa: BLE001 - reported as not enforced
+        return False
+
+
 def _detect_secret_storage_mode() -> str | None:
     try:
         from locus_tooling.native_secrets import secret_storage_mode
@@ -598,4 +623,5 @@ def collect_posture_facts(
         nats_loaded=_module_loaded("nats"),
         secret_storage_mode=_detect_secret_storage_mode(),
         gateway_enforcing=_gateway_enforcing(),
+        grants_enforcing=_grants_enforcing(),
     )

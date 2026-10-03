@@ -8,6 +8,11 @@ capabilities come from operator configuration and the run's own definition
 
 If the engine cannot start, the gateway is still installed: every decision is
 then ``deny`` (fail closed) and posture reports the control as not enforced.
+
+Capability grants (LOCUS-334): when the grant authority key resolves from the
+secure secret store, the gateway verifies Biscuit grants held in the backend's
+server-side :class:`~locus_runtime.grants.GrantStore`; otherwise it runs with
+``NoGrants`` (R3 still asks) and posture reports grants as not enforced.
 """
 
 from __future__ import annotations
@@ -26,10 +31,18 @@ from locus_runtime.gateway import (
     DecisionListener,
     Gateway,
     GatewaySession,
+    GrantVerifier,
+    NoGrants,
     default_allowed_executables,
     host_of,
     install_gateway,
     installed_gateway,
+)
+from locus_runtime.grants import (
+    BiscuitGrantVerifier,
+    GrantAuthority,
+    GrantStore,
+    load_grant_authority,
 )
 from locus_runtime.policy_engine import (
     REASON_UNAVAILABLE,
@@ -59,7 +72,31 @@ class UnavailableEngine:
         return None
 
 
-def ensure_backend_gateway(audit_sink: AuditSink) -> Authorizer:
+def build_grant_verifier(
+    grant_store: GrantStore | None,
+    authority_loader: Callable[[], GrantAuthority | None] = load_grant_authority,
+) -> GrantVerifier:
+    """Biscuit verifier when a grant authority key is available, else ``NoGrants``."""
+    if grant_store is None:
+        return NoGrants()
+    try:
+        authority = authority_loader()
+    except Exception:  # noqa: BLE001 - no authority means no grants (fail closed)
+        LOGGER.exception("gateway.grant_authority_error")
+        authority = None
+    if authority is None:
+        LOGGER.warning("gateway.grants_disabled: no grant authority key; R3 actions ask")
+        return NoGrants()
+    LOGGER.info("gateway.grants_enabled", extra={"key_ids": list(authority.accepted_key_ids)})
+    return BiscuitGrantVerifier(authority, grant_store)
+
+
+def ensure_backend_gateway(
+    audit_sink: AuditSink,
+    *,
+    grant_store: GrantStore | None = None,
+    authority_loader: Callable[[], GrantAuthority | None] = load_grant_authority,
+) -> Authorizer:
     """Install the process gateway once (idempotent); return what is installed."""
     with _LOCK:
         existing = installed_gateway()
@@ -76,7 +113,9 @@ def ensure_backend_gateway(audit_sink: AuditSink) -> Authorizer:
                 start()
             except Exception as exc:  # noqa: BLE001 - an engine that is down denies
                 LOGGER.warning("gateway.engine_unavailable: %s", type(exc).__name__)
-        gateway = Gateway(engine, audit_sink)
+        gateway = Gateway(
+            engine, audit_sink, grants=build_grant_verifier(grant_store, authority_loader)
+        )
         install_gateway(gateway)
         LOGGER.info("gateway.installed", extra={"healthy": gateway.healthy})
         return gateway

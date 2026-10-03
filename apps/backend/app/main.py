@@ -48,7 +48,7 @@ try:  # optional — YAML export/import; JSON always works without it
     import yaml as _yaml
 except Exception:  # noqa: BLE001
     _yaml = None
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app import cron as app_cron
 from app import knowledge as app_knowledge
 from app import local_models, mcp_client, policy_gateway, skills_catalog
@@ -76,6 +76,14 @@ from locus_runtime.gateway import (
     authorize_action,
     gateway_message,
     host_of,
+)
+from locus_runtime.grants import (
+    APPROVAL_SCOPES,
+    BiscuitGrantVerifier,
+    GrantError,
+    GrantPattern,
+    GrantStore,
+    tightest_pattern,
 )
 from locus_runtime.legacy import normalize_legacy_identifiers
 from locus_runtime.cognitive import (
@@ -13233,6 +13241,12 @@ class InMemoryStore:
         # repo_path -> [extra_path, ...] merged into the workspace on later runs.
         self.workspace_grants: dict[str, list[str]] = {}
 
+        # Biscuit capability grants (LOCUS-334): grant id -> GrantRecord.to_dict()
+        # (server-side only; the gateway looks them up per principal), and the
+        # revocation ids of every revoked grant (the verifier rejects them).
+        self.capability_grants: dict[str, dict[str, Any]] = {}
+        self.revoked_grant_ids: list[str] = []
+
         self.collaboration_sessions: dict[str, CollaborationSession] = {}
         self.audit_events: list[AuditEvent] = []
         self.a2a_seen_nonces: dict[str, str] = {}
@@ -14166,8 +14180,19 @@ def _gateway_audit_sink(record: GatewayAuditRecord) -> None:
     )
 
 
+# Server-side grant store bound to the persisted backend state (LOCUS-334).
+_GRANT_STORE = GrantStore(
+    records=lambda: store.capability_grants, revoked=lambda: store.revoked_grant_ids
+)
+
+
 def _ensure_gateway() -> Any:
-    return policy_gateway.ensure_backend_gateway(_gateway_audit_sink)
+    return policy_gateway.ensure_backend_gateway(_gateway_audit_sink, grant_store=_GRANT_STORE)
+
+
+def _gateway_grant_verifier() -> BiscuitGrantVerifier | None:
+    verifier = getattr(_ensure_gateway(), "grants", None)
+    return verifier if isinstance(verifier, BiscuitGrantVerifier) else None
 
 
 def _run_principal(run_id: str, fallback: str = "") -> str:
@@ -14207,6 +14232,12 @@ def _gateway_decision_listener(action: GatewayAction, decision: GatewayDecision)
         return
     metadata = {"phase": "gateway", **_gateway_decision_metadata(decision)}
     if decision.outcome == "ask":
+        # The tightest grant pattern, derived here from the gateway's own action
+        # (never from agent text); approving with scope run/standing mints it.
+        try:
+            pattern: dict[str, Any] | None = tightest_pattern(action).to_dict()
+        except GrantError:
+            pattern = None
         details = store.run_details.setdefault(run_id, {})
         escalations = details.get("escalations")
         if not isinstance(escalations, list):
@@ -14235,6 +14266,8 @@ def _gateway_decision_listener(action: GatewayAction, decision: GatewayDecision)
                     "reasons": list(decision.reasons),
                     "audit_id": decision.audit_id,
                     "fingerprint": decision.fingerprint,
+                    "grant_pattern": pattern,
+                    "grant_scopes": list(APPROVAL_SCOPES) if pattern else ["once"],
                 }
             )
         event_type = "approval_required"
@@ -16064,6 +16097,8 @@ def _serialize_store_state() -> dict[str, Any]:
         "inbox_groups": store.inbox_groups,
         "user_settings": store.user_settings,
         "workspace_grants": store.workspace_grants,
+        "capability_grants": store.capability_grants,
+        "revoked_grant_ids": store.revoked_grant_ids,
     }
     if _AUDIT_LOG is None or not _AUDIT_LOG.enabled:
         # Without the append-only audit table, audit events ride in the state
@@ -16418,6 +16453,17 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
             if isinstance(paths, list):
                 hydrated_grants[str(repo_path)] = [str(p) for p in paths if str(p).strip()]
         store.workspace_grants = hydrated_grants
+
+    capability_grants_payload = payload.get("capability_grants")
+    if isinstance(capability_grants_payload, dict):
+        store.capability_grants = {
+            str(grant_id): dict(record)
+            for grant_id, record in capability_grants_payload.items()
+            if isinstance(record, dict)
+        }
+    revoked_grants_payload = payload.get("revoked_grant_ids")
+    if isinstance(revoked_grants_payload, list):
+        store.revoked_grant_ids = [str(item) for item in revoked_grants_payload if str(item)]
 
     seen_nonces_payload = payload.get("a2a_seen_nonces")
     if isinstance(seen_nonces_payload, dict):
@@ -20737,10 +20783,100 @@ def list_run_escalations(run_id: str, request: Request) -> dict[str, Any]:
     return {"escalations": escalations if isinstance(escalations, list) else []}
 
 
+class GatewayEscalationApproval(BaseModel):
+    """How a gateway ``ask`` is approved. The grant pattern is never taken from
+    the request: it is the one the gateway derived when it raised the ask."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope: Literal["once", "run", "standing"] = "once"
+    pin: bool = False
+
+
+def _approve_gateway_escalation(
+    request: Request, actor: str, run_id: str, target: dict[str, Any], payload: dict[str, Any]
+) -> dict[str, Any]:
+    _enforce_run_access(request, actor, run_id, action="workflow.run.escalations.approve")
+    try:
+        approval = GatewayEscalationApproval.model_validate(payload or {})
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="Invalid approval scope") from exc
+    if approval.pin and approval.scope != "standing":
+        raise HTTPException(status_code=422, detail="Only standing grants can be pinned")
+    if target.get("status") != "pending":
+        raise HTTPException(status_code=409, detail="Escalation is not pending")
+    gateway = _ensure_gateway()
+    audit: dict[str, Any] = {
+        "run_id": run_id,
+        "kind": "gateway",
+        "tool": str(target.get("tool") or ""),
+        "risk": str(target.get("risk") or ""),
+        "gateway_audit_id": str(target.get("audit_id") or ""),
+        "scope": approval.scope,
+    }
+    if approval.scope == "once":
+        # Approve this exact action once for this run. Policy is still evaluated
+        # on the retry; an approval never overrides a deny.
+        approvals = getattr(gateway, "approvals", None)
+        fingerprint = str(target.get("fingerprint") or "")
+        if approvals is None or not fingerprint:
+            raise HTTPException(status_code=409, detail="Gateway approvals are unavailable")
+        approvals.approve(run_id, fingerprint, actor)
+    else:
+        verifier = _gateway_grant_verifier()
+        if verifier is None or not verifier.can_mint:
+            raise HTTPException(
+                status_code=409,
+                detail="Capability grants are unavailable (no grant authority key); approve once",
+            )
+        try:
+            if str(target.get("risk") or "") == "R4":
+                raise GrantError("R4 actions are never grantable")
+            pattern = GrantPattern.from_dict(target.get("grant_pattern") or {})
+            record = verifier.authority.mint(
+                pattern,
+                principal=_run_principal(run_id, actor),
+                scope=approval.scope,
+                run_id=run_id if approval.scope == "run" else "",
+                pinned=approval.pin,
+                approver=actor,
+            )
+        except GrantError as exc:
+            raise HTTPException(status_code=409, detail=f"Cannot grant: {exc}") from exc
+        verifier.store.add(record)
+        target["grant_id"] = record.grant_id
+        target["grant_expires_at"] = record.expires_at
+        audit.update(
+            grant_id=record.grant_id,
+            grant_principal=record.principal,
+            grant_expires_at=record.expires_at,
+            pinned=record.pinned,
+            pattern=pattern.describe()[:300],
+        )
+    target["status"] = "approved"
+    target["approval_scope"] = approval.scope
+    target["approved_by"] = actor
+    target["approved_at"] = _now_iso()
+    _persist_store_state()
+    _append_audit_event("workflow.run.escalations.approve", actor, "allowed", audit)
+    return {"ok": True, "escalation": target}
+
+
 @app.post("/workflow-runs/{run_id}/escalations/{escalation_id}/approve")
-def approve_run_escalation(run_id: str, escalation_id: str, request: Request) -> dict[str, Any]:
-    """Grant an agent access to a folder outside its bound working folder. The
-    grant is remembered for that repo and merged into extra_paths on later runs."""
+def approve_run_escalation(
+    run_id: str,
+    escalation_id: str,
+    request: Request,
+    payload: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, Any]:
+    """Approve a run escalation.
+
+    * Gateway ``ask``: ``{"scope": "once"}`` (default) approves this exact action
+      once; ``"run"`` mints a run-scoped grant; ``"standing"`` mints a standing
+      grant for the tightest pattern (30 days, or no expiry with ``"pin": true``).
+    * Folder escalation: grant access to a folder outside the bound working
+      folder; remembered for that repo and merged into extra_paths on later runs.
+    """
     actor = _enforce_request_authn(request, payload={}, action="workflow.run.escalations.approve")
     details = store.run_details.get(run_id) or {}
     escalations = details.get("escalations")
@@ -20752,34 +20888,7 @@ def approve_run_escalation(run_id: str, escalation_id: str, request: Request) ->
     if target is None:
         raise HTTPException(status_code=404, detail="Escalation not found")
     if target.get("kind") == "gateway":
-        # A gateway "ask": approve this exact action once for this run. Policy is
-        # still evaluated on the retry; an approval never overrides a deny.
-        _enforce_run_access(request, actor, run_id, action="workflow.run.escalations.approve")
-        if target.get("status") != "pending":
-            raise HTTPException(status_code=409, detail="Escalation is not pending")
-        gateway = _ensure_gateway()
-        approvals = getattr(gateway, "approvals", None)
-        fingerprint = str(target.get("fingerprint") or "")
-        if approvals is None or not fingerprint:
-            raise HTTPException(status_code=409, detail="Gateway approvals are unavailable")
-        approvals.approve(run_id, fingerprint, actor)
-        target["status"] = "approved"
-        target["approved_by"] = actor
-        target["approved_at"] = _now_iso()
-        _persist_store_state()
-        _append_audit_event(
-            "workflow.run.escalations.approve",
-            actor,
-            "allowed",
-            {
-                "run_id": run_id,
-                "kind": "gateway",
-                "tool": str(target.get("tool") or ""),
-                "risk": str(target.get("risk") or ""),
-                "gateway_audit_id": str(target.get("audit_id") or ""),
-            },
-        )
-        return {"ok": True, "escalation": target}
+        return _approve_gateway_escalation(request, actor, run_id, target, payload)
     target["status"] = "approved"
     target["approved_by"] = actor
     target["approved_at"] = _now_iso()
@@ -20794,6 +20903,46 @@ def approve_run_escalation(run_id: str, escalation_id: str, request: Request) ->
         "workflow.run.escalations.approve", actor, "allowed", {"run_id": run_id, "path": path}
     )
     return {"ok": True, "escalation": target}
+
+
+def _visible_grant(request: Request, actor: str, grant_id: str) -> Any:
+    record = _GRANT_STORE.get(grant_id)
+    if record is None or (record.principal != actor and not _request_has_admin_access(request)):
+        # Same answer for "absent" and "not yours": no grant enumeration.
+        raise HTTPException(status_code=404, detail="Grant not found")
+    return record
+
+
+@app.get("/gateway/grants")
+def list_gateway_grants(request: Request, include_inactive: bool = False) -> dict[str, Any]:
+    """Capability grants of the calling principal (every principal's for admins).
+
+    Tokens are never returned; grants are only ever used server-side."""
+    actor = _enforce_request_authn(request, action="gateway.grants.read")
+    principal = None if _request_has_admin_access(request) else actor
+    now = time.time()
+    views = [record.public_view(now) for record in _GRANT_STORE.records(principal)]
+    if not include_inactive:
+        views = [view for view in views if view["status"] == "active"]
+    verifier = _gateway_grant_verifier()
+    return {"grants": views, "grants_enabled": bool(verifier is not None and verifier.ready)}
+
+
+@app.post("/gateway/grants/{grant_id}/revoke")
+def revoke_gateway_grant(grant_id: str, request: Request) -> dict[str, Any]:
+    """Revoke a grant (idempotent). Its revocation ids join the persisted
+    revoked set, which also revokes every grant attenuated from it."""
+    actor = _enforce_request_authn(request, payload={}, action="gateway.grants.revoke")
+    record = _visible_grant(request, actor, grant_id)
+    revoked = _GRANT_STORE.revoke(record.grant_id, by=actor)
+    _persist_store_state()
+    _append_audit_event(
+        "gateway.grants.revoke",
+        actor,
+        "allowed",
+        {"grant_id": revoked.grant_id, "grant_principal": revoked.principal},
+    )
+    return {"ok": True, "grant": revoked.public_view(time.time())}
 
 
 @app.get("/platform/settings")

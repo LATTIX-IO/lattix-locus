@@ -69,6 +69,9 @@ hiddenimports += [
     "jaraco.functools",
 ]
 datas += copy_metadata("keyring")
+# Biscuit capability grants (LOCUS-334; biscuit-python, Apache-2.0): a compiled
+# extension module imported by locus_runtime.grants.
+hiddenimports += ["biscuit_auth"]
 # Platform-specific backend dependencies (absent on other OSes — skip quietly).
 for _pkg in ("win32ctypes", "secretstorage", "jeepney"):
     try:

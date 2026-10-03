@@ -64,9 +64,9 @@ Locus sits on a sensitive boundary: operator intent becomes agent execution agai
 | Actor authorization | `LOCUS_ADMIN_ACTORS`, `LOCUS_BUILDER_ACTORS` | Least privilege; bootstrap admin is a first-run convenience, not a standing identity |
 | Signed A2A runtime headers | `locus_runtime/security.py`, `apps/workers/runtime/security/jwt.py` | Required in `hosted`; verified, not assumed |
 | Replay protection | Nonce + TTL, Redis cache with Postgres snapshot fallback | **Fails closed** — `503` when replay state is unavailable |
-| Capability tokens | `CapabilityMinter` / `CapabilityVerifier`, optional Biscuit | Scope-limited, verified at use |
+| Capability grants | Biscuit (`biscuit-python`, Ed25519) — `locus_runtime/grants.py`, verified by the gateway PEP (`locus_runtime/gateway.py`, LOCUS-334) | Grants are stored server-side per principal and never accepted from action input; a covering grant turns an R3 `ask` into `allow` but never overrides a policy deny or R4; standing grants expire after 30 days unless pinned; revocation ids are persisted. No grant authority key (`LOCUS_GRANT_AUTHORITY_KEY`, OS keychain/DPAPI) → no grants (R3 asks). The retired HMAC `CapabilityMinter`/`CapabilityVerifier` tokens are gone; A2A HS256 signing is unchanged (separate follow-up). |
 | Policy decisions | OPA — agent, budget, data classification, filesystem, network egress, network, tool jail | An unavailable PDP is a deny |
-| Guardrails | `locus_runtime/guardrails.py` — prompt render, DLP, capability enforcement | Applied to output paths; redaction before persistence and logging |
+| Guardrails | `locus_runtime/guardrails.py` — prompt render, DLP; capability-scoped envelopes fail closed (capabilities are not carried in messages) | Applied to output paths; redaction before persistence and logging |
 | Tool isolation | `locus_runtime/sandbox.py` | Explicit strategy per host platform — `kernel-bwrap` (Linux), `kernel-seatbelt` (macOS), `windows-appcontainer` (Windows), `hardened-docker` — with declared capabilities and no silent downgrade |
 | Egress control | Sandbox egress gateway, per-integration `egress_allowlist` | Deny by default; allowlist is data, not code |
 | Secret storage | Vault (`hvac`), installer-managed mirroring | Secrets never in the repo, logs, or memory records |

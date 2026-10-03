@@ -197,6 +197,56 @@ def test_mcp_call_to_unlisted_host_is_denied(gateway: Gateway) -> None:
     assert (allowed.outcome, denied.outcome) == ("allow", "deny")
 
 
+# --- Biscuit grants (LOCUS-334) end to end against the real Rego -------------------------
+
+
+def test_biscuit_grant_end_to_end(opa_engine: OpaSidecarEngine) -> None:
+    from locus_runtime import grants as gr
+
+    verifier = gr.BiscuitGrantVerifier(gr.GrantAuthority.generate(), gr.GrantStore())
+    gateway = Gateway(opa_engine, lambda _record: None, grants=verifier)
+    session = _session(gateway, allowed_tools=_caps().allowed_tools | {"export_credentials"})
+    send = {
+        "kind": "tool_call",
+        "tool": "send_email",
+        "target": "api.example.com",
+        "args": {"to": "bob@example.com", "body": "hi"},
+        "egress_host": "api.example.com",
+    }
+    assert session.authorize(**send).outcome == "ask"  # R3, no grant
+
+    record = verifier.store.add(
+        verifier.authority.mint(
+            gr.tightest_pattern(session.action(**send)), principal="alice", scope="standing"
+        )
+    )
+    allowed = session.authorize(**send)
+    assert allowed.outcome == "allow"
+    assert f"gateway.grant:{record.grant_id}" in allowed.reasons
+    assert session.authorize(**{**send, "args": {"to": "x@evil.com"}}).outcome == "ask"
+
+    # Policy deny still wins: a grant for an action whose egress host is not allowlisted.
+    off_list = {**send, "target": "evil.example.net", "egress_host": "evil.example.net"}
+    verifier.store.add(
+        verifier.authority.mint(
+            gr.tightest_pattern(session.action(**off_list)), principal="alice", scope="standing"
+        )
+    )
+    assert session.authorize(**off_list).outcome == "deny"
+
+    # A grant never authorizes R4, even one minted for exactly that action.
+    r4 = gr.GrantPattern("tool_call", "export_credentials", "exact", "api.example.com", args="{}")
+    verifier.store.add(verifier.authority.mint(r4, principal="alice", scope="standing"))
+    exported = session.authorize(
+        kind="tool_call", tool="export_credentials", target="api.example.com"
+    )
+    assert exported.outcome == "deny"
+    assert "gateway.risk_r4_prohibited" in exported.reasons
+
+    verifier.store.revoke(record.grant_id)
+    assert session.authorize(**send).outcome == "ask"
+
+
 # --- budget_policy --------------------------------------------------------------------------
 
 

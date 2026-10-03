@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import json
@@ -30,120 +29,10 @@ def _secret_bytes(key: bytes | str | None = None) -> bytes:
     raise RuntimeError("A2A_JWT_SECRET is required")
 
 
-def build_default_keypair() -> bytes:
-    return _secret_bytes()
-
-
-@dataclass(frozen=True)
-class CapabilityClaims:
-    agent_id: str
-    allowed_tools: list[str]
-    allowed_read_paths: list[str]
-    allowed_write_paths: list[str]
-    max_tool_calls: int
-
-
-@dataclass(frozen=True)
-class CapabilityEvaluationRequest:
-    action: str
-    agent_id: str
-    tool_call_count: int | None = None
-    resource_path: str | None = None
-
-
-class CapabilityMinter:
-    def __init__(self, keypair: bytes | str) -> None:
-        self._key = _secret_bytes(keypair)
-
-    def mint_agent_token(
-        self,
-        agent_id: str,
-        allowed_tools: list[str],
-        allowed_read_paths: list[str],
-        allowed_write_paths: list[str],
-        max_tool_calls: int,
-        ttl_seconds: int = 300,
-    ) -> bytes:
-        now = int(time.time())
-        payload = {
-            "agent_id": agent_id,
-            "allowed_tools": allowed_tools,
-            "allowed_read_paths": allowed_read_paths,
-            "allowed_write_paths": allowed_write_paths,
-            "max_tool_calls": max_tool_calls,
-            "iat": now,
-            "exp": now + ttl_seconds,
-        }
-        payload_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        signature = hmac.new(self._key, payload_bytes, hashlib.sha256).digest()
-        return base64.urlsafe_b64encode(payload_bytes) + b"." + base64.urlsafe_b64encode(signature)
-
-
-class CapabilityVerifier:
-    def __init__(self, keypair: bytes | str) -> None:
-        self._key = _secret_bytes(keypair)
-
-    def verify(
-        self,
-        token: bytes | str,
-        action: str,
-        agent_id: str,
-        *,
-        tool_call_count: int | None = None,
-        resource_path: str | None = None,
-    ) -> bool:
-        raw = token.encode("utf-8") if isinstance(token, str) else token
-        try:
-            encoded_payload, encoded_sig = raw.split(b".", 1)
-            payload_bytes = base64.urlsafe_b64decode(encoded_payload)
-            expected_sig = hmac.new(self._key, payload_bytes, hashlib.sha256).digest()
-            actual_sig = base64.urlsafe_b64decode(encoded_sig)
-            if not hmac.compare_digest(expected_sig, actual_sig):
-                return False
-            payload = json.loads(payload_bytes.decode("utf-8"))
-        except Exception:
-            return False
-        if payload.get("agent_id") != agent_id or action not in (
-            payload.get("allowed_tools") or []
-        ):
-            return False
-
-        # Enforce token expiration
-        exp = payload.get("exp")
-        if exp is not None:
-            try:
-                if int(time.time()) > int(exp):
-                    return False
-            except (TypeError, ValueError):
-                return False
-
-        if tool_call_count is not None:
-            try:
-                max_tool_calls = int(payload.get("max_tool_calls", 0))
-            except (TypeError, ValueError):
-                return False
-            if max_tool_calls > 0 and int(tool_call_count) > max_tool_calls:
-                return False
-
-        if resource_path:
-            normalized_action = str(action or "").strip().lower()
-            if normalized_action.startswith("read"):
-                allowed_paths = [str(item) for item in payload.get("allowed_read_paths", [])]
-                return path_within_allowed_roots(resource_path, allowed_paths)
-            if normalized_action.startswith("write"):
-                allowed_paths = [str(item) for item in payload.get("allowed_write_paths", [])]
-                return path_within_allowed_roots(resource_path, allowed_paths)
-
-        return True
-
-    def verify_request(self, token: bytes | str, request: CapabilityEvaluationRequest) -> bool:
-        return self.verify(
-            token,
-            request.action,
-            request.agent_id,
-            tool_call_count=request.tool_call_count,
-            resource_path=request.resource_path,
-        )
+# The custom HMAC JSON capability tokens (CapabilityMinter/CapabilityVerifier)
+# were retired by LOCUS-334: capability grants are Biscuit tokens verified by
+# the gateway (locus_runtime.grants). The HS256 shared secret below remains for
+# A2A runtime tokens and event signing only (separate follow-up).
 
 
 @dataclass(frozen=True)

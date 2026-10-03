@@ -160,6 +160,7 @@ Prefer the documented aggregate gate over hand-assembled commands, but still run
 | `apps/frontend/**` | `npm run lint`, `npm test`, `npm run build` |
 | `install/**`, `locus_tooling/installer.py`, `locus_runtime/install.py` | the installer test set in `tests/unit/` |
 | `locus_runtime/sandbox.py`, `security.py` | `tests/unit/test_sandbox_policy.py`, `test_tool_jail.py`, `test_biscuit_tokens.py`, `test_event_signing.py` |
+| `locus_runtime/grants.py`, `gateway.py` | `tests/unit/test_biscuit_tokens.py`, `test_gateway_grants.py`, `test_gateway.py`, `apps/backend/tests/test_gateway_grants_api.py`, `tests/policy/test_gateway_opa.py` (real OPA) |
 | a node type | backend executor tests **and** `apps/frontend` schema/catalog tests together |
 
 ### Known gate limitations — state these in the handoff
