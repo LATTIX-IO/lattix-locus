@@ -511,6 +511,30 @@ def loop_enable() -> None:
     print_json(loop_status())
 
 
+@loop.command("autostart")
+@click.option("--repo", "repo", default="", help="Checkout the loop runs on (needs WORKFLOW.md).")
+@click.option("--off", "off", is_flag=True, help="Stop starting the loop with the desktop app.")
+def loop_autostart(repo: str, off: bool) -> None:
+    """Start `lattix loop serve` with the desktop app, also after updates (LOCUS-349).
+
+    The kill switch still wins: with `lattix loop disable` set, the app does not start it.
+    """
+    from locus_runtime.loop_runner.state import default_loop_home
+    from locus_tooling.desktop_update import read_loop_autostart, write_loop_autostart
+
+    home = default_loop_home()
+    if off:
+        flag = write_loop_autostart(home, enabled=False)
+    elif repo:
+        try:
+            flag = write_loop_autostart(home, enabled=True, repo_path=repo)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+    else:
+        flag = read_loop_autostart(home)
+    print_json(flag.model_dump())
+
+
 @cli.command()
 @click.argument("domain", required=False)
 def demo(domain: str | None) -> None:

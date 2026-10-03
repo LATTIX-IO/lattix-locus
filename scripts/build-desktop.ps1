@@ -90,17 +90,12 @@ Write-Host "== generating icons from icon-source.png =="
 & cargo tauri icon (Join-Path $root "apps/desktop-tauri/icon-source.png")
 CheckExit "cargo tauri icon"
 
-# 4) Build the installer. The updater pubkey + GitHub Releases endpoint are baked
-#    into tauri.conf.json (committed; public keys are safe), so the in-app
-#    one-click updater is always configured. Signed update artifacts (latest.json
-#    + .sig) are only emitted when TAURI_SIGNING_PRIVATE_KEY is set — that's done
-#    in CI (desktop-release.yml). A keyless local build still produces a working
-#    installer; it just doesn't sign an update manifest (you don't need one locally).
-if ($env:TAURI_SIGNING_PRIVATE_KEY) {
-  Write-Host "== cargo tauri build (signing update artifacts) =="
-} else {
-  Write-Host "== cargo tauri build (local build; update signing skipped — set `$env:TAURI_SIGNING_PRIVATE_KEY to sign) =="
-}
+# 4) Build the installer. The updater pubkey and the two channel endpoints are
+#    compiled in (tauri.conf.json, src/updates.rs), so the in-app updater is always
+#    configured. Signed updater bundles and latest.json are only produced by CI
+#    (desktop-dev.yml, LOCUS-349); a local build makes a working installer with no
+#    update artifacts and no backend version stamp (its version check is skipped).
+Write-Host "== cargo tauri build (local build; no updater artifacts) =="
 Push-Location $tauri
 try { & cargo tauri build; CheckExit "cargo tauri build" } finally { Pop-Location }
 

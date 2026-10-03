@@ -200,6 +200,67 @@ attempts), cost (sum of usage `cost_usd`; about 0 on the NIM free tier and
 Ollama), gate failures by check, the eval resolve-rate trend and the perf trend
 per metric.
 
+## Delivery to the desktop: update channels (D-26, LOCUS-349)
+
+A merged loop PR reaches the principal's desktop app through the Dev update
+channel; details and the signing-key setup are in
+[INSTALLER.md, "Desktop app: update channels"](../INSTALLER.md#desktop-app-update-channels-d-26-locus-349).
+
+### The full cycle
+
+1. **Merge.** A loop PR merges to `main` (D-22: green required checks and no
+   protected path; the update trust chain is protected, see below).
+2. **Dev release.** `desktop-dev.yml` builds Windows x64 (NSIS) and macOS arm64
+   as `<base>-dev.<run>`, stamps that version into the backend sidecar, signs the
+   updater bundles with `TAURI_SIGNING_PRIVATE_KEY`, verifies each signature
+   against the app's committed public key, publishes the prerelease
+   `dev-v<version>` and moves `channel-dev/latest.json` forward. Runs are
+   serialized; without the key it publishes installers only and no metadata.
+3. **Auto-update.** Apps on the Dev channel check on start and every 4 hours,
+   download the update, then poll `POST /system/update/prepare` until no agent
+   run is in progress and the update holds the loop's single-run lock
+   (`loop.lock`, owner `desktop-update-…`). Holding the lock means a running loop
+   run finishes first and no new one starts; `lattix loop serve` ticks return
+   `busy` meanwhile. The app then stops the backend through its normal teardown,
+   installs (signature verified by the updater) and restarts.
+4. **Version check.** After the restart the app compares the backend's stamped
+   `build_version` with its own version and refuses to load a stale backend
+   (tauri#15134).
+5. **Loop resume.** On every start the desktop supervisor releases an update
+   hold on the loop and, when loop autostart is on and the kill switch is off,
+   starts `lattix loop serve` again, now on the new code (`--loop-serve` mode of
+   the bundled backend, a supervised child that quit and updates stop). A run
+   interrupted by a crash resumes from its checkpoint as usual.
+6. **Stable promotion.** After testing a Dev build, run `desktop-promote` with its
+   version. The same files become `stable-v<version>` (GitHub "latest") and
+   `channel-stable/latest.json` moves to it; Stable apps show an "Update
+   available" banner and install on click.
+
+Loop autostart (persisted in `LOCUS_LOOP_HOME/desktop-autostart.json`):
+
+```powershell
+lattix loop autostart --repo E:\lattix\lattix-locus   # start the loop with the app, also after updates
+lattix loop autostart --off
+lattix loop disable                                   # the kill switch still wins: the app will not start it
+```
+
+The update never sets or clears the kill switch (`DISABLED` / `LOCUS_LOOP_DISABLED`).
+
+### Trust and gates
+
+* The updater signing key in the repository secrets is the root of trust for
+  every Dev and Stable install. A holder of the key and the repository's
+  release write access can ship code to all installs. Signature verification
+  in the app is mandatory and cannot be turned off from the UI or settings; the
+  app accepts only the two compiled-in channel URLs.
+* Dev installs run code the loop wrote. Today the gates in front of that are
+  the CI required checks and D-22 (green gates, no protected path changed). The
+  update trust chain is a protected path, both in `.github/CODEOWNERS` and in the
+  merge guard's built-in baseline: `apps/desktop-tauri/src-tauri/` (pubkey,
+  endpoints, updater code), `scripts/desktop_channel.py`,
+  `locus_tooling/{update_contract,desktop_update,build_info}.py` and
+  `.github/workflows/`. LOCUS-351's scorecard is planned as a further gate.
+
 ## Safety model
 
 * **Fail closed.** No gateway with a running engine → no run. No Linear key →

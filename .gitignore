@@ -241,3 +241,8 @@ apps/desktop-tauri/src-tauri/.updater-private.key.pub
 .venv-desktop/
 apps/desktop-tauri/src-tauri/icons/
 apps/desktop-tauri/src-tauri/resources/
+
+# Desktop sidecar build stamp, written in CI by `python -m locus_tooling.build_info` (LOCUS-349)
+locus_tooling/_build_stamp.py
+# CI-only Tauri overlay written by desktop-dev.yml (LOCUS-349)
+apps/desktop-tauri/src-tauri/dev-channel.conf.json

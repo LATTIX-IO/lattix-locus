@@ -60,38 +60,30 @@ cargo tauri build       # produces MSI/NSIS (Win), .dmg/.app (mac), .deb/AppImag
   ID Application identity and provide notarization creds via env
   (`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`); `hardenedRuntime` is on.
 
-## Auto-update (one-click "Update & Restart")
+## Auto-update: Dev and Stable channels (LOCUS-349, D-26)
 
-UX: when an update is available the app shows a slim banner → **Update &
-Restart** → a confirm ("the app will close, install, and restart") → the shell
-silently downloads + installs the signed update and relaunches. Wiring:
-`UpdateBanner` (frontend) calls the Rust commands `check_for_update` /
-`install_update_and_restart` (`src-tauri/src/main.rs`), which use the
-`tauri-plugin-updater` (`update.download_and_install()` → `app.restart()`).
+Code: `src-tauri/src/updates.rs` (channel setting, background checks, Dev
+auto-install, version handshake) and the sidebar panel
+`apps/frontend/src/components/navigation/platform-update-panel.tsx`. Commands:
+`get_update_status`, `set_update_channel` (`"dev"` or `"stable"` only),
+`check_for_update`, `install_update_and_restart`; events `update-status`,
+`update-available`, `backend-version-mismatch`.
 
-The updater plugin is **always compiled in but inactive by default**, so a
-keyless dev build still works (the check just errors → no banner). To enable it:
+* **Stable** (default): a banner "Update available: Update & Restart"; installs
+  on click.
+* **Dev**: downloads by itself, waits until the backend reports no active run
+  and holds the loop (`POST /system/update/prepare`), stops the sidecar,
+  installs, restarts.
 
-1. **Generate a signing keypair** (once):
-   ```bash
-   cargo tauri signer generate -w "$HOME/.tauri/lattix-updater.key"
-   ```
-   This prints a **public key** and writes the private key. The public key is
-   safe to commit.
-2. **Put the public key** in `src-tauri/updater.conf.json` → `plugins.updater.pubkey`
-   (replace `REPLACE_WITH_MINISIGN_PUBLIC_KEY`) and set `endpoints` to where you
-   host `latest.json`.
-3. **Build with it enabled**:
-   - Local: set `TAURI_SIGNING_PRIVATE_KEY` (+ `_PASSWORD`) and re-run
-     `scripts/build-desktop.ps1` — it auto-applies `--config updater.conf.json`
-     when both the pubkey and the signing key are present.
-   - CI: `desktop-release.yml` already builds with `--config updater.conf.json`
-     and the `TAURI_SIGNING_PRIVATE_KEY` secret, emitting the signed
-     `latest.json` update manifest. Host it (or the GitHub release) at the
-     `endpoints` URL.
-
-Until you do this, the app simply never shows the update banner — everything
-else works.
+The updater only ever uses the two compiled-in URLs
+(`releases/download/channel-{dev,stable}/latest.json`) and verifies every update
+against `plugins.updater.pubkey`. Updater bundles are built only by
+`.github/workflows/desktop-dev.yml` when the `TAURI_SIGNING_PRIVATE_KEY` secret
+exists; without it no update metadata is published and the check just reports
+an error (no banner). Key generation and setup: `docs/INSTALLER.md`, "Principal
+setup: the updater signing key". A local `scripts/build-desktop.ps1` build makes
+no updater bundles and carries no backend version stamp, so its version check is
+skipped with a warning.
 
 ## Icons
 
@@ -114,8 +106,8 @@ The installers are produced by `.github/workflows/desktop-release.yml` — they 
    - `WINDOWS_PFX_BASE64` — your Authenticode cert (`base64 -w0 cert.pfx`)
    - `WINDOWS_PFX_PASSWORD` — the PFX password
    - `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — the
-     updater minisign key (`cargo tauri signer generate`); put the **public** key
-     in `tauri.conf.json` → `plugins.updater.pubkey`.
+     updater minisign key, used by the Dev channel workflow only (see
+     `docs/INSTALLER.md` for generation and the pubkey swap).
    - (later) `APPLE_CERTIFICATE` / `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`
      to enable macOS notarization.
 2. **Generate + commit icons** (above).

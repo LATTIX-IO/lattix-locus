@@ -12,17 +12,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod computer_use;
+mod updates;
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{include_image, Emitter, Manager, WebviewUrl, WindowEvent};
+use tauri::{include_image, AppHandle, Emitter, Manager, WebviewUrl, WindowEvent};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
-use tauri_plugin_updater::UpdaterExt;
 
 const BACKEND_HEALTH_URL: &str = "http://127.0.0.1:8000/healthz";
 const FRONTEND_URL: &str = "http://127.0.0.1:3000";
@@ -37,7 +37,9 @@ static BACKEND_PID: AtomicU32 = AtomicU32::new(0);
 /// Idempotent (clears the PID), so it's safe to call from both the quit command
 /// and the app's Exit event. Without this, quitting from the tray could leave
 /// orphaned Postgres/Node/sidecar processes holding files — which blocks reinstall.
-fn kill_backend_tree() {
+/// A no-op once the sidecar has exited (its Terminated event clears the PID), so
+/// a reused PID is never killed.
+pub(crate) fn kill_backend_tree() {
     let pid = BACKEND_PID.swap(0, Ordering::SeqCst);
     if pid == 0 {
         return;
@@ -56,6 +58,11 @@ fn kill_backend_tree() {
             .args(["-TERM", &pid.to_string()])
             .output();
     }
+}
+
+/// True while the spawned supervisor sidecar has not exited.
+pub(crate) fn backend_running() -> bool {
+    BACKEND_PID.load(Ordering::SeqCst) != 0
 }
 
 /// Show + focus the main window (from the tray).
@@ -77,43 +84,16 @@ fn quit_now(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-/// Returns the available update version (or None). Errors are mapped to a string;
-/// the UI treats "no updater configured" as simply "no update".
-#[tauri::command]
-async fn check_for_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    match updater.check().await {
-        Ok(Some(update)) => Ok(Some(update.version)),
-        Ok(None) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-/// Silently download + install the pending update, then relaunch the app. The
-/// UI confirms with the user (and warns about the restart) before calling this.
-#[tauri::command]
-async fn install_update_and_restart(app: tauri::AppHandle) -> Result<(), String> {
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    let update = updater
-        .check()
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "No update available".to_string())?;
-    update
-        .download_and_install(|_chunk, _total| {}, || {})
-        .await
-        .map_err(|e| e.to_string())?;
-    app.restart();
-}
-
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             quit_now,
-            check_for_update,
-            install_update_and_restart
+            updates::check_for_update,
+            updates::install_update_and_restart,
+            updates::get_update_status,
+            updates::set_update_channel
         ])
         // Closing the window hides to the tray instead of quitting; real quit is
         // the tray "Quit" item, which runs the agent-running validation first.
@@ -124,7 +104,9 @@ fn main() {
             }
         })
         .setup(|app| {
-            let handle = app.handle().clone();
+            // Update channel (LOCUS-349): persisted dev|stable, default stable.
+            let channel = updates::load_channel(app.handle());
+            app.manage(updates::UpdateState::new(channel));
 
             // Computer-use panic hotkey (LOCUS-346): a global shortcut handled in
             // Rust (not the webview) that POSTs /computer-use/panic, so it works
@@ -196,75 +178,12 @@ fn main() {
             // while the agent drives input; polled from Rust, ~1 request/second.
             computer_use::start_status_indicator(app.handle().clone());
 
-            // Spawn the packaged supervisor sidecar. The binary is resolved from
-            // the bundle's `externalBin` (name + target triple suffix).
-            let sidecar = app
-                .shell()
-                .sidecar("locus-backend")
-                .expect("locus-backend sidecar is missing from the bundle")
-                // Single source of truth for the version: the Tauri app/package
-                // version. The backend reports this (LOCUS_APP_VERSION wins in
-                // _platform_version), so the UI no longer shows a stale 0.0.0.
-                .env("LOCUS_APP_VERSION", app.package_info().version.to_string());
-            let (mut rx, _child) = sidecar
-                .spawn()
-                .expect("failed to spawn the locus-backend sidecar");
-            // Remember the supervisor PID so we can kill its whole tree on quit.
-            BACKEND_PID.store(_child.pid(), Ordering::SeqCst);
+            // Spawn the packaged supervisor sidecar, wait for it, check its
+            // version, then open the UI.
+            start_backend(app.handle()).expect("failed to start the locus-backend sidecar");
 
-            // Drain sidecar stdout/stderr; surface first-run progress to the splash.
-            let drain_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        CommandEvent::Stdout(line) => {
-                            let text = String::from_utf8_lossy(&line).to_string();
-                            println!("[backend] {text}");
-                            // The supervisor prefixes provisioning lines with
-                            // "[firstrun]"; forward them to the loading page.
-                            if let Some(msg) = text.split("[firstrun]").nth(1) {
-                                let _ = drain_handle.emit("firstrun-progress", msg.trim().to_string());
-                            }
-                        }
-                        CommandEvent::Stderr(line) => {
-                            let text = String::from_utf8_lossy(&line).to_string();
-                            eprintln!("[backend] {text}");
-                            if let Some(msg) = text.split("[firstrun]").nth(1) {
-                                let _ = drain_handle.emit("firstrun-progress", msg.trim().to_string());
-                            }
-                        }
-                        CommandEvent::Terminated(payload) => {
-                            eprintln!("[backend] terminated: {:?}", payload);
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-            });
-
-            // Drive visible, staged progress on the splash (independent of the
-            // sidecar's stdout) and navigate once the UI port is reachable.
-            tauri::async_runtime::spawn(async move {
-                let _ = handle.emit("firstrun-progress", "Starting backend…".to_string());
-                let backend_up = wait_for_health(BACKEND_HEALTH_URL, HEALTH_TIMEOUT_SECS).await;
-                let _ = handle.emit(
-                    "firstrun-progress",
-                    if backend_up { "Backend ready — loading interface…" } else { "Loading interface…" }
-                        .to_string(),
-                );
-                if wait_for_health(FRONTEND_URL, HEALTH_TIMEOUT_SECS).await {
-                    if let Some(window) = handle.get_webview_window("main") {
-                        let _ = window.navigate(FRONTEND_URL.parse().unwrap());
-                    }
-                } else {
-                    let _ = handle.emit(
-                        "firstrun-progress",
-                        "⚠ The interface didn't start in time. See logs in %LOCALAPPDATA%\\Lattix\\Locus."
-                            .to_string(),
-                    );
-                    eprintln!("frontend did not become reachable within {HEALTH_TIMEOUT_SECS}s");
-                }
-            });
+            // Background update checks on the selected channel (LOCUS-349).
+            updates::start(app.handle().clone());
 
             // The main window starts on the bundled `loading` page (frontendDist).
             let _ = WebviewUrl::default();
@@ -280,6 +199,114 @@ fn main() {
                 kill_backend_tree();
             }
         });
+}
+
+/// Spawn the backend supervisor sidecar, drain its output, wait until it is
+/// healthy, verify its build version (tauri#15134), then point the webview at
+/// the local UI. Used at start and to bring the backend back after a failed
+/// update install.
+pub(crate) fn start_backend(app: &AppHandle) -> Result<(), String> {
+    // The binary is resolved from the bundle's `externalBin` (name + target
+    // triple suffix).
+    let sidecar = app
+        .shell()
+        .sidecar("locus-backend")
+        .map_err(|e| format!("locus-backend sidecar is missing from the bundle: {e}"))?
+        // Single source of truth for the version: the Tauri app/package
+        // version. The backend reports this (LOCUS_APP_VERSION wins in
+        // _platform_version), so the UI no longer shows a stale 0.0.0.
+        .env("LOCUS_APP_VERSION", app.package_info().version.to_string());
+    let (mut rx, child) = sidecar
+        .spawn()
+        .map_err(|e| format!("failed to spawn the locus-backend sidecar: {e}"))?;
+    // Remember the supervisor PID so we can kill its whole tree on quit.
+    let pid = child.pid();
+    BACKEND_PID.store(pid, Ordering::SeqCst);
+
+    // Drain sidecar stdout/stderr; surface first-run progress to the splash.
+    let drain_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(line) => {
+                    let text = String::from_utf8_lossy(&line).to_string();
+                    println!("[backend] {text}");
+                    // The supervisor prefixes provisioning lines with
+                    // "[firstrun]"; forward them to the loading page.
+                    if let Some(msg) = text.split("[firstrun]").nth(1) {
+                        let _ = drain_handle.emit("firstrun-progress", msg.trim().to_string());
+                    }
+                }
+                CommandEvent::Stderr(line) => {
+                    let text = String::from_utf8_lossy(&line).to_string();
+                    eprintln!("[backend] {text}");
+                    if let Some(msg) = text.split("[firstrun]").nth(1) {
+                        let _ = drain_handle.emit("firstrun-progress", msg.trim().to_string());
+                    }
+                }
+                CommandEvent::Terminated(payload) => {
+                    eprintln!("[backend] terminated: {:?}", payload);
+                    // Forget the PID of an exited sidecar (only if it is still ours).
+                    let _ = BACKEND_PID.compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    // Drive visible, staged progress on the splash (independent of the
+    // sidecar's stdout) and navigate once the UI port is reachable.
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = handle.emit("firstrun-progress", "Starting backend…".to_string());
+        let backend_up = wait_for_health(BACKEND_HEALTH_URL, HEALTH_TIMEOUT_SECS).await;
+        // tauri#15134: never run a backend that is not the one this app shipped
+        // with. Release builds only (a debug build runs the source backend).
+        if backend_up && !cfg!(debug_assertions) {
+            let expected = handle.package_info().version.to_string();
+            let verdict =
+                tauri::async_runtime::spawn_blocking(move || updates::backend_handshake(&expected))
+                    .await;
+            match verdict {
+                Ok(updates::Handshake::Match) => {}
+                Ok(updates::Handshake::Unstamped) => {
+                    eprintln!("[update] the backend has no build stamp (local build); not verified");
+                }
+                Ok(updates::Handshake::Mismatch(detail)) => {
+                    updates::report_mismatch(&handle, &detail);
+                    kill_backend_tree();
+                    return;
+                }
+                Err(e) => {
+                    updates::report_mismatch(
+                        &handle,
+                        &format!("the version check did not run ({e})"),
+                    );
+                    kill_backend_tree();
+                    return;
+                }
+            }
+        }
+        let _ = handle.emit(
+            "firstrun-progress",
+            if backend_up { "Backend ready — loading interface…" } else { "Loading interface…" }
+                .to_string(),
+        );
+        if wait_for_health(FRONTEND_URL, HEALTH_TIMEOUT_SECS).await {
+            if let Some(window) = handle.get_webview_window("main") {
+                let _ = window.navigate(FRONTEND_URL.parse().unwrap());
+            }
+        } else {
+            let _ = handle.emit(
+                "firstrun-progress",
+                "⚠ The interface didn't start in time. See logs in %LOCALAPPDATA%\\Lattix\\Locus."
+                    .to_string(),
+            );
+            eprintln!("frontend did not become reachable within {HEALTH_TIMEOUT_SECS}s");
+        }
+    });
+    Ok(())
 }
 
 /// Poll the backend health endpoint until it responds or the timeout elapses.

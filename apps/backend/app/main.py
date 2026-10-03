@@ -20121,16 +20121,64 @@ def logout_operator(request: Request) -> JSONResponse:
     return response
 
 
+def _active_agent_run_count() -> int:
+    try:
+        return int(
+            sum(1 for run in store.runs.values() if str(getattr(run, "status", "")) == "Running")
+        )
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 @app.get("/system/active-agents")
 def system_active_agents() -> dict[str, Any]:
     """How many agent runs are currently in progress (for the desktop quit guard)."""
-    try:
-        active = sum(
-            1 for run in store.runs.values() if str(getattr(run, "status", "")) == "Running"
-        )
-    except Exception:  # noqa: BLE001
-        active = 0
-    return {"active": int(active)}
+    return {"active": _active_agent_run_count()}
+
+
+# ---------------------------------------------------------------------------
+# Desktop update channels (LOCUS-349, D-26). The shell asks whether an update
+# may install now (no agent run in progress, the self-improvement loop held via
+# its single-run lock) and checks after a restart that the backend's stamped
+# build version matches the app (tauri#15134). Logic: locus_tooling.update_contract.
+# ---------------------------------------------------------------------------
+def _update_channel_port() -> Any:
+    from locus_tooling.desktop_update import default_update_channel
+
+    return default_update_channel()
+
+
+def _require_desktop_profile() -> None:
+    if (
+        _active_runtime_profile().name not in {"local-native"}
+        and not _local_authenticated_operator_bootstrap_enabled()
+    ):
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+@app.get("/system/update/status")
+def system_update_status() -> dict[str, Any]:
+    """Read-only update readiness, the build version and the version handshake."""
+    port = _update_channel_port()
+    readiness = port.readiness(_active_agent_run_count())
+    handshake = port.handshake(str(os.getenv("LOCUS_APP_VERSION") or ""))
+    return {**readiness.model_dump(mode="json"), "handshake": handshake.model_dump(mode="json")}
+
+
+@app.post("/system/update/prepare")
+def system_update_prepare() -> dict[str, Any]:
+    """Hold the loop for an update (never stops a running loop run) and report
+    whether the update may install now. Idempotent; the shell polls it."""
+    _require_desktop_profile()
+    port = _update_channel_port()
+    return port.prepare(_active_agent_run_count()).model_dump(mode="json")
+
+
+@app.post("/system/update/cancel")
+def system_update_cancel() -> dict[str, Any]:
+    """Release the update's hold on the loop (update aborted or channel changed)."""
+    _require_desktop_profile()
+    return {"released": bool(_update_channel_port().release())}
 
 
 @app.post("/system/shutdown")

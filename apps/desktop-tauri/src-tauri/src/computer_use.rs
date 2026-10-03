@@ -70,7 +70,8 @@ fn bearer_header() -> String {
 }
 
 /// One loopback request; returns (status code, body). Never logs the request.
-fn request(method: &str, path: &str) -> Option<(u16, String)> {
+/// Also used by the update channels (`updates.rs`, LOCUS-349).
+pub(crate) fn request(method: &str, path: &str) -> Option<(u16, String)> {
     let addr: SocketAddr = BACKEND_ADDR.parse().ok()?;
     let mut stream = TcpStream::connect_timeout(&addr, IO_TIMEOUT).ok()?;
     stream.set_read_timeout(Some(IO_TIMEOUT)).ok()?;
