@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 UTC = timezone.utc
-from pathlib import Path
+from pathlib import Path, PurePath
 from pprint import pformat
 from threading import Lock
 from typing import Any, Callable, Literal
@@ -1775,7 +1775,16 @@ def _decode_oidc_browser_flow_cookie(value: str) -> dict[str, Any]:
     return payload
 
 
+# Shape produced by _encode_oidc_browser_flow_cookie: base64url payload "." hex HMAC.
+_OIDC_BROWSER_FLOW_COOKIE_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,3800}\.[0-9a-f]{64}")
+
+
 def _set_oidc_browser_flow_cookie(response: RedirectResponse, request: Request, value: str) -> None:
+    # The value is server-derived (signed by _encode_oidc_browser_flow_cookie), but
+    # its payload embeds the request's return_to, so allowlist the exact token shape
+    # before it reaches Set-Cookie (CodeQL py/cookie-injection). Fail closed.
+    if not _OIDC_BROWSER_FLOW_COOKIE_PATTERN.fullmatch(str(value or "")):
+        raise HTTPException(status_code=500, detail="OIDC browser sign-in is unavailable.")
     response.set_cookie(
         key=_oidc_browser_flow_cookie_name(),
         value=value,
@@ -1820,10 +1829,27 @@ def _oidc_browser_callback_url(request: Request) -> str:
     return f"{_external_request_origin(request)}/auth/callback"
 
 
+_POST_AUTH_REDIRECT_DEFAULT = "/inbox"
+_POST_AUTH_REDIRECT_MAX_LENGTH = 2048
+
+
 def _safe_post_auth_redirect_path(candidate: str) -> str:
+    """Return ``candidate`` only if it is a same-origin relative path; otherwise
+    the default landing page. Deny by default: rejects absolute URLs, scheme-
+    relative ("//host"), any backslash (browsers treat it as "/", so a leading
+    slash-backslash is scheme-relative too), whitespace, control or non-ASCII
+    characters and oversized values (CodeQL py/url-redirection)."""
     value = str(candidate or "").strip()
-    if not value.startswith("/") or value.startswith("//"):
-        return "/inbox"
+    if not value or len(value) > _POST_AUTH_REDIRECT_MAX_LENGTH:
+        return _POST_AUTH_REDIRECT_DEFAULT
+    if not value.startswith("/") or value[1:2] == "/":
+        return _POST_AUTH_REDIRECT_DEFAULT
+    # Printable ASCII only (0x21-0x7E), and never a backslash.
+    if any(not ("!" <= ch <= "~") or ch == "\\" for ch in value):
+        return _POST_AUTH_REDIRECT_DEFAULT
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc:
+        return _POST_AUTH_REDIRECT_DEFAULT
     return value
 
 
@@ -20379,29 +20405,62 @@ def _path_within(root: Path, target: Path) -> bool:
         return False
 
 
+_WORKING_FOLDER_MAX_LENGTH = 4096
+
+
 def _resolve_working_folder(value: str) -> str | None:
     """Resolve a user-supplied working folder to an absolute path confined to the
-    mounted projects root. Returns the resolved path, or None if it escapes the
-    root. Relative values are taken under the root; a leading 'projects/' is
-    tolerated."""
+    mounted projects root. Deny by default: returns None for empty/oversized
+    input, NUL/control characters, any ``..`` segment, an absolute path that is
+    not lexically under the root, or a resolved path (after following symlinks)
+    that escapes the root. Relative values are taken under the root; a leading
+    'projects/' is tolerated."""
     raw = str(value or "").strip().replace("\\", "/")
-    if not raw:
+    if not raw or len(raw) > _WORKING_FOLDER_MAX_LENGTH:
+        return None
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw):
+        return None
+    if any(segment == ".." for segment in raw.split("/")):
+        return None
+    # Windows drive and drive-relative forms ("C:\\x", "C:x") are refused on every
+    # platform unless they resolve under the root below, so the rule is OS-independent.
+    if re.match(r"^[A-Za-z]:", raw) and os.name != "nt":
         return None
     try:
-        root = _projects_root_path().resolve()
+        root = os.path.realpath(str(_projects_root_path()))
     except Exception:  # noqa: BLE001
         return None
-    candidate = Path(raw)
-    if candidate.is_absolute():
-        target = candidate
+    if os.path.isabs(raw) or PurePath(raw).drive:
+        # Absolute paths are only accepted when they already name a location under
+        # the root (the folder picker echoes back absolute paths it listed).
+        lexical = os.path.normpath(raw)
+        lexical_root = os.path.normpath(str(_projects_root_path()))
+        if not (_path_is_contained(lexical, lexical_root) or _path_is_contained(lexical, root)):
+            return None
+        target = lexical
     else:
         rel = raw[len("projects/") :] if raw.lower().startswith("projects/") else raw
-        target = root / rel
+        target = os.path.join(root, rel)
     try:
-        target = target.resolve()
+        # realpath follows symlinks, so a link inside the root that points
+        # outside it is caught by the containment check below.
+        resolved = os.path.realpath(target)
     except Exception:  # noqa: BLE001
         return None
-    return str(target) if _path_within(root, target) else None
+    if not _path_is_contained(resolved, root):
+        return None
+    return resolved
+
+
+def _path_is_contained(candidate: str, root: str) -> bool:
+    """True when ``candidate`` equals ``root`` or lies beneath it (string-level,
+    case-normalized on Windows). Both arguments must already be normalized."""
+    norm_candidate = os.path.normcase(candidate)
+    norm_root = os.path.normcase(root)
+    if norm_candidate == norm_root:
+        return True
+    prefix = norm_root if norm_root.endswith(os.sep) else norm_root + os.sep
+    return norm_candidate.startswith(prefix)
 
 
 @app.get("/workspace/folders")
@@ -21472,14 +21531,37 @@ def _agent_decides_to_respond(
     respond = True
     reason = "Participating (gate decision defaulted)."
     try:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            parsed = json.loads(match.group(0))
+        span = _extract_json_object_span(text)
+        if span:
+            parsed = json.loads(span)
             respond = bool(parsed.get("respond", respond))
             reason = str(parsed.get("reason") or reason)
     except (ValueError, TypeError):
         pass
     return {"respond": respond, "reason": reason[:200], "mode": str(meta.get("mode") or "")}
+
+
+_JSON_SPAN_MAX_INPUT_CHARS = 200_000
+
+
+def _extract_json_object_span(text: str | None) -> str | None:
+    """Return the substring from the first '{' to the last '}' in ``text``.
+
+    Linear-time replacement for the greedy DOTALL regex "{.*}" previously used here, which
+    backtracks quadratically on model output made of many '{' with no closing '}'
+    (CodeQL py/polynomial-redos). Same result as the greedy regex; input beyond
+    ``_JSON_SPAN_MAX_INPUT_CHARS`` is ignored so a runaway model response is bounded.
+    """
+    if not text:
+        return None
+    bounded = str(text)[:_JSON_SPAN_MAX_INPUT_CHARS]
+    start = bounded.find("{")
+    if start < 0:
+        return None
+    end = bounded.rfind("}")
+    if end <= start:
+        return None
+    return bounded[start : end + 1]
 
 
 def _run_agent_collaboration(
@@ -24290,7 +24372,10 @@ def run_skill_eval(
         case_score = 0.0
         reason = ""
         try:
-            parsed = json.loads(re.search(r"\{.*\}", judge_text, re.DOTALL).group(0))
+            span = _extract_json_object_span(judge_text)
+            if span is None:
+                raise ValueError("Judge output contained no JSON object")
+            parsed = json.loads(span)
             case_score = max(0.0, min(1.0, float(parsed.get("score", 0.0))))
             reason = str(parsed.get("reason") or "")
         except Exception:  # noqa: BLE001 - ungradeable output scores 0
@@ -24390,7 +24475,7 @@ def _validated_skill_import_url(url: str) -> str:
         port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
         infos = socket.getaddrinfo(parsed.hostname, port, proto=socket.IPPROTO_TCP)
     except OSError as exc:
-        raise ValueError(f"Could not resolve import host: {exc}") from exc
+        raise ValueError("Could not resolve import host") from exc
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         if (
@@ -24532,8 +24617,12 @@ def import_skill(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001 - network/parse failures are user-facing
+            # Details stay server-side; the client gets a stable code (CodeQL
+            # py/stack-trace-exposure).
+            LOGGER.warning("skill.import fetch failed: %s", type(exc).__name__, exc_info=True)
             raise HTTPException(
-                status_code=502, detail=f"Unable to fetch skill from URL: {str(exc)[:180]}"
+                status_code=502,
+                detail="Unable to fetch skill from URL (skill_import_fetch_failed).",
             ) from exc
         if not name:
             name = fetched_name
@@ -24766,11 +24855,15 @@ def list_provider_models(provider_id: str, request: Request) -> dict[str, Any]:
                 break
         return {"provider": provider, "configured": True, "models": sorted(model_ids)}
     except Exception as exc:  # noqa: BLE001 - provider listing is best-effort
+        LOGGER.warning(
+            "models.list failed for provider %s: %s", provider, type(exc).__name__, exc_info=True
+        )
         return {
             "provider": provider,
             "configured": True,
             "models": [],
-            "reason": str(exc)[:200],
+            "reason": "Unable to list models from provider.",
+            "error_code": "provider_model_list_failed",
         }
 
 
@@ -24869,7 +24962,11 @@ def delete_local_model(model_id: str, request: Request) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=str(exc)[:200]) from exc
+        LOGGER.warning("models.local.delete failed: %s", type(exc).__name__, exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail="Unable to delete model (local_model_delete_failed).",
+        ) from exc
     _append_audit_event(
         "models.local.delete", actor, "allowed", {"model": model_id, "removed": removed}
     )
@@ -25773,6 +25870,17 @@ def save_integration(
     return {"ok": True, "id": integration_id, "policy": policy}
 
 
+def _integration_probe_failure_message(exc: BaseException) -> str:
+    """Stable, non-sensitive summary of a failed connectivity probe. The raw
+    exception (which can echo URLs, headers or internal hostnames) is logged
+    server-side only."""
+    if isinstance(exc, httpx.TimeoutException):
+        return "Connectivity check failed (timeout)"
+    if isinstance(exc, httpx.ConnectError):
+        return "Connectivity check failed (connection error)"
+    return "Connectivity check failed"
+
+
 @app.post("/integrations/{integration_id}/test")
 def test_integration(integration_id: str, request: Request) -> dict[str, Any]:
     actor = _enforce_builder_access(request, action="integration.test")
@@ -25798,11 +25906,21 @@ def test_integration(integration_id: str, request: Request) -> dict[str, Any]:
                 timeout=httpx.Timeout(10.0, connect=5.0), follow_redirects=True
             ) as client:
                 response = client.request("GET", integration.base_url, headers=headers)
-                response.raise_for_status()
-            connectivity_message = f"Connectivity check succeeded ({response.status_code})"
+            if response.is_success:
+                connectivity_message = f"Connectivity check succeeded ({response.status_code})"
+            else:
+                is_valid = False
+                connectivity_message = f"Connectivity check failed (HTTP {response.status_code})"
+                connectivity_warnings.append("Remote endpoint probe failed")
         except Exception as exc:  # noqa: BLE001
             is_valid = False
-            connectivity_message = f"Connectivity check failed: {str(exc)[:180]}"
+            LOGGER.warning(
+                "integration.test probe failed for %s: %s",
+                integration_id,
+                type(exc).__name__,
+                exc_info=True,
+            )
+            connectivity_message = _integration_probe_failure_message(exc)
             connectivity_warnings.append("Remote endpoint probe failed")
     if store.platform_settings.enforce_integration_policies and not bool(policy.get("ok", True)):
         is_valid = False
