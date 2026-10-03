@@ -50,6 +50,15 @@ from locus_runtime.harness.integrations import (
 )
 from locus_runtime.harness.loop import AgentLoop, LoopBudgets, LoopOutcome, LoopResult
 from locus_runtime.harness.model_profiles import ModelCapabilityProfile, resolve_profile
+from locus_runtime.harness.run_envelope import (
+    AcceptanceCriterion,
+    CommandCheck,
+    EnvelopeCapabilities,
+    FileCheck,
+    RunBudget,
+    RunEnvelope,
+    build_envelope,
+)
 from locus_runtime.harness.swe_agent import SweAgent, SweAgentResult, SweTask
 from locus_runtime.harness.team import (
     ModeratorVerdict,
@@ -61,6 +70,14 @@ from locus_runtime.harness.team import (
 )
 from locus_runtime.harness.tools import CodingToolset
 from locus_runtime.harness.trajectory import TrajectoryRecorder
+from locus_runtime.harness.verified_loop import (
+    Blocker,
+    EndState,
+    ModelPricing,
+    RunResult,
+    StopReason,
+    VerifiedLoop,
+)
 from locus_runtime.harness.workspace import Workspace
 from locus_runtime.harness.workspace_binding import (
     ProvisionedWorkspace,
@@ -69,7 +86,20 @@ from locus_runtime.harness.workspace_binding import (
 )
 
 __all__ = [
+    "AcceptanceCriterion",
     "AgentLoop",
+    "Blocker",
+    "CommandCheck",
+    "EndState",
+    "EnvelopeCapabilities",
+    "FileCheck",
+    "ModelPricing",
+    "RunBudget",
+    "RunEnvelope",
+    "RunResult",
+    "StopReason",
+    "VerifiedLoop",
+    "build_envelope",
     "ChatTurn",
     "CodingToolset",
     "CollaborationResult",

@@ -20,7 +20,10 @@ Design lineage: **mini-SWE-agent** (minimal, replayable, linear trajectory) +
 | `llm.py` | `ChatClient` protocol; `OpenAIChatClient` (any OpenAI-compatible endpoint); `ScriptedChatClient` (tests). |
 | `loop.py` | The agent loop: append-only messages, `submit` termination, hard budgets with submit-or-zero, self-repair, trajectory recording. |
 | `trajectory.py` | Lossless JSONL trajectory (header + verbatim messages + annotations + outcome); replayable / SFT-ready. |
-| `swe_agent.py` | Assembles the above into `SweAgent.solve(SweTask) -> SweAgentResult` (produces the unified-diff prediction). |
+| `run_envelope.py` | `RunEnvelope` (goal, done criteria, capabilities, budget, autonomy tier) and `build_envelope()` from task text + detected repo checks (pytest/ruff/mypy/npm). |
+| `verification.py` | The verify gate: command and file checks through the gated executor, plus the acceptance judge for free-text criteria. |
+| `verified_loop.py` | `VerifiedLoop` (LOCUS-337): plan → act → verify → `done` / `blocked` / `stopped`, budgets reported to the gateway, checkpoint/resume. |
+| `swe_agent.py` | Assembles the above into `SweAgent.solve(SweTask) -> SweAgentResult` (produces the unified-diff prediction). Runs the verified loop when the task has a test command. |
 
 ## Why this should make local models perform (ranked levers)
 
@@ -104,3 +107,33 @@ file operation raises `GatewayBlocked`; `CodingToolset` turns both into a
   (comma separated; default `bash,sh,git,python,python3,pytest,rg,grep,codex`).
 - `tests/harness/test_gateway_bypass.py` fails if a new spawn/write/network
   call or executor class bypasses the gateway.
+
+## Verified run loop (LOCUS-337)
+
+`VerifiedLoop` runs one envelope to exactly one end state (P3):
+
+- **done** -- every done criterion passed at `submit`; `RunResult.evidence` holds
+  the commands, exit codes, output tails, judge verdicts, diff and plan version.
+- **blocked** -- `RunResult.blocker` names the blocker and what would unblock it:
+  a gateway deny/ask on a verifier command, a missing tool (exit 127), the agent's
+  `report_blocker` (e.g. ambiguous criteria), an unavailable model or judge, or
+  the same verification failure `max_identical_failures` times.
+- **stopped** -- `RunResult.stop`: budget (steps, seconds, tokens, cost, actions,
+  context), user (`request_stop()` / `should_stop`) or policy (a `budget_policy`
+  deny at the gateway).
+
+The first model call asks for a plan through `update_plan` (steps + how each
+criterion is verified); `plan_mode="required"` refuses other actions until a
+plan exists. A failing `submit` is rejected with the findings as its tool
+result. Free-text criteria are judged by `judge_client` (default: the worker's
+client with a separate prompt) only after the command and file checks pass.
+
+Before every action the loop reports `BudgetFigures` to the executor's gateway
+session (`GatewaySession.report_budget`, monotonic: usage never decreases and
+limits never rise), so `budget_policy` is evaluated on each action.
+
+With `checkpoint_path` set, the loop state is written atomically after every
+step (`kind: locus.run_checkpoint`, `version: 1`). `VerifiedLoop.resume(path,
+client=..., toolset=..., profile=...)` continues after a restart; resuming a
+finished run returns its result without calling the model. Budget defaults:
+`LOCUS_RUN_MAX_{STEPS,SECONDS,TOKENS,COST_USD,ACTIONS}`; tier: `LOCUS_AUTONOMY_TIER`.

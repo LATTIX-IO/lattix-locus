@@ -936,6 +936,13 @@ class GatewaySession:
     def close(self) -> None:
         self._gateway.close_session(self)
 
+    def report_budget(self, figures: BudgetFigures) -> BudgetFigures | None:
+        """Report the run's current budget usage; see :meth:`Gateway.report_budget`."""
+        merged = self._gateway.report_budget(self, figures)
+        if merged is not None:
+            self.capabilities = replace(self.capabilities, budget=merged)
+        return merged
+
 
 # --------------------------------------------------------------------------- #
 # Gateway
@@ -1020,6 +1027,24 @@ class Gateway:
             self._sessions.pop(_token_key(session.caller.token), None)
         # Approvals outlive the session: a run continued later (same run id) may
         # retry the approved action once. The ledger is bounded.
+
+    def report_budget(
+        self, session: GatewaySession, figures: BudgetFigures
+    ) -> BudgetFigures | None:
+        """Update the used-budget figures ``budget_policy`` evaluates for this session.
+
+        The run loop calls this before each action (LOCUS-337) so the policy sees
+        current spend. It can only tighten: used figures never decrease, a limit
+        never rises above the registered one and a registered limit is never
+        dropped. Returns the merged figures, or ``None`` for an unknown session.
+        """
+        with self._lock:
+            record = self._sessions.get(_token_key(session.caller.token))
+            if record is None:
+                return None
+            merged = _merge_budget(record.capabilities.budget, figures)
+            record.capabilities = replace(record.capabilities, budget=merged)
+            return merged
 
     def _authenticate(self, caller: GatewayCaller) -> _SessionRecord | None:
         if not caller.token:
@@ -1212,6 +1237,29 @@ class Gateway:
             except Exception:  # noqa: BLE001 - listeners report; they never change the decision
                 logger.exception("gateway.listener_error", extra={"audit_id": audit_id})
         return decision
+
+
+def _merge_budget(current: BudgetFigures | None, new: BudgetFigures) -> BudgetFigures:
+    """Monotonic merge: used = max(current, new); limit = min of the declared limits."""
+    if current is None:
+        return new
+
+    def used(a: float | None, b: float | None) -> float | None:
+        values = [v for v in (a, b) if v is not None]
+        return max(values) if values else None
+
+    def limit(a: float | None, b: float | None) -> float | None:
+        values = [v for v in (a, b) if v is not None]
+        return min(values) if values else None
+
+    return BudgetFigures(
+        tokens_used=max(current.tokens_used, new.tokens_used),
+        max_tokens=min(current.max_tokens, new.max_tokens),
+        duration_used_seconds=used(current.duration_used_seconds, new.duration_used_seconds),
+        max_duration_seconds=limit(current.max_duration_seconds, new.max_duration_seconds),
+        cost_used_usd=used(current.cost_used_usd, new.cost_used_usd),
+        max_cost_usd=limit(current.max_cost_usd, new.max_cost_usd),
+    )
 
 
 def _token_key(token: str) -> str:
