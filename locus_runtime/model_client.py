@@ -63,7 +63,7 @@ _HTTP_STATUS: dict[str, int] = {
 
 #: Gateway tool label prefix for model calls (``model:<provider>``).
 MODEL_TOOL_PREFIX = "model:"
-#: Comma-separated provider-qualified tiers, e.g. ``nim/meta/llama-3.3-70b-instruct,ollama/gpt-oss:20b``.
+#: Comma-separated provider-qualified tiers, e.g. ``nim/nvidia/nemotron-3-ultra-550b-a55b,ollama/gpt-oss:20b``.
 AGENT_CHAIN_ENV = "LOCUS_AGENT_MODEL_CHAIN"
 #: ``0`` disables the implicit local (Ollama) fallback behind an explicit hosted engine.
 LOCAL_FALLBACK_ENV = "LOCUS_MODEL_LOCAL_FALLBACK"
@@ -94,6 +94,20 @@ def redact_reason(text: Any, *, secrets: Sequence[str] = ()) -> str:
     for pattern, replacement in _EXTRA_REDACTIONS:
         value = pattern.sub(replacement, value)
     return redact_text(value, limit=_REASON_MAX)
+
+
+#: P28 provenance policy: model families and publishers that must never be called,
+#: whatever provider hosts them (Qwen, DeepSeek, Yi, GLM, Kimi and their publishers).
+_EXCLUDED_MODEL_PATTERN = re.compile(
+    r"(^|[/:_.-])(qwen|qwq|deepseek|yi-|yi_|01-ai|glm|chatglm|z-ai|zhipu|kimi|moonshot|"
+    r"baichuan|internlm|minimax|ernie|hunyuan|doubao)",
+    re.IGNORECASE,
+)
+
+
+def is_provenance_excluded(model: str) -> bool:
+    """True when ``model`` belongs to a family excluded by P28 (checked on every call)."""
+    return bool(_EXCLUDED_MODEL_PATTERN.search(str(model or "").strip()))
 
 
 class ModelProviderError(RuntimeError):
@@ -244,7 +258,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
         default_base_url="https://integrate.api.nvidia.com/v1",
         key_env=("NVIDIA_API_KEY", "NIM_API_KEY"),
         model_env="NIM_MODEL",
-        default_model="meta/llama-3.3-70b-instruct",
+        default_model="nvidia/nemotron-3-ultra-550b-a55b",
         allowlisted_hosts=("integrate.api.nvidia.com",),
         price_per_mtok=(0.0, 0.0),
     ),
@@ -267,7 +281,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
 def resolve_provider(model: str, *, default: str = "openai") -> tuple[str, str]:
     """Split a provider-qualified model id into ``(provider, bare_model)``.
 
-    ``nim/meta/llama-3.3-70b-instruct`` → ``("nim", "meta/llama-3.3-70b-instruct")``;
+    ``nim/nvidia/nemotron-3-ultra-550b-a55b`` → ``("nim", "nvidia/nemotron-3-ultra-550b-a55b")``;
     an unqualified id belongs to ``default``.
     """
     candidate = str(model or "").strip()
@@ -442,6 +456,13 @@ def resolve_endpoint(
             provider=provider_id,
             model=bare,
             reason=f"unknown model provider '{provider_id}'",
+        )
+    if is_provenance_excluded(bare):
+        raise ModelProviderError(
+            code=MODEL_CALL_DENIED,
+            provider=provider_id,
+            model=bare,
+            reason="model family excluded by the provenance policy (P28)",
         )
     url = str(base_url or settings.value(provider_id, "base_url") or "").strip().rstrip("/")
     if not url or not host_of(url):
@@ -1222,7 +1243,7 @@ class ModelTier:
 
 
 def parse_chain(text: str, settings: ProviderSettings | None = None) -> list[ModelTier]:
-    """``"nim/meta/llama-3.3-70b-instruct, ollama/gpt-oss:20b"`` → tiers.
+    """``"nim/nvidia/nemotron-3-ultra-550b-a55b, ollama/gpt-oss:20b"`` → tiers.
 
     A bare provider (``"ollama"``) takes that provider's default model; an
     unqualified model id is ignored (a tier must name its engine).

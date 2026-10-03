@@ -590,3 +590,34 @@ def test_allow_all_gateway_double_still_sees_model_calls() -> None:
         action.kind == "model_call" and action.target == f"nim/{mc.PROVIDERS['nim'].default_model}"
     )
     assert SECRET_PROMPT not in json.dumps(dict(action.args_summary))
+
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "deepseek-ai/deepseek-v4.1-flash",
+        "qwen/qwen3-coder",
+        "01-ai/yi-large",
+        "z-ai/glm-5.3",
+        "moonshotai/kimi-k3",
+        "qwen2.5-coder:7b",
+    ],
+)
+def test_provenance_excluded_models_are_refused_before_any_request(model: str) -> None:
+    assert mc.is_provenance_excluded(model)
+    with pytest.raises(mc.ModelProviderError) as excinfo:
+        mc.resolve_endpoint("nim", model, api_key="nvapi-test")
+    assert excinfo.value.code == mc.MODEL_CALL_DENIED
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["nvidia/nemotron-3-ultra-550b-a55b", "openai/gpt-oss-20b", "mistralai/mistral-large", "gpt-oss:20b", "google/gemma-4-31b-it"],
+)
+def test_provenance_allows_clean_models(model: str) -> None:
+    assert not mc.is_provenance_excluded(model)
+
+
+def test_default_nim_model_is_provenance_clean() -> None:
+    assert not mc.is_provenance_excluded(mc.provider_default_model("nim"))

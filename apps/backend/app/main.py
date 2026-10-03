@@ -3836,7 +3836,7 @@ _PROVIDER_CLEAR_SENTINEL = "__clear__"
 # Chat provider registry (LOCUS-336): a view of locus_runtime.model_client.PROVIDERS.
 # Every entry exposes an OpenAI-compatible chat-completions endpoint served by
 # the unified, gateway-gated ModelClient. Provider-qualified model ids
-# ("nim/meta/llama-3.3-70b-instruct") route through this table; bare ids default
+# ("nim/nvidia/nemotron-3-ultra-550b-a55b") route through this table; bare ids default
 # to OpenAI.
 _PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     spec.id: {
@@ -3990,7 +3990,7 @@ def _apply_provider_settings_side_effects() -> None:
 def _resolve_chat_provider(model: str) -> tuple[str, str]:
     """Split a provider-qualified model id into (provider, bare_model).
 
-    "nim/meta/llama-3.3-70b-instruct" -> ("nim", "meta/llama-3.3-70b-instruct")
+    "nim/nvidia/nemotron-3-ultra-550b-a55b" -> ("nim", "nvidia/nemotron-3-ultra-550b-a55b")
     "ollama/llama3.2:3b"              -> ("ollama", "llama3.2:3b")
     anything else                      -> ("openai", model)
     """
@@ -29346,7 +29346,7 @@ def _agent_resolution_for_node(config: dict[str, Any]) -> Any:
     configured_model = str(model_defaults.get("model") or "").strip()
     configured_provider = str(model_defaults.get("provider") or "").strip().lower()
     if configured_model and not configured_provider:
-        # A provider-qualified id ("nim/meta/llama-3.3-70b-instruct") names its engine.
+        # A provider-qualified id ("nim/nvidia/nemotron-3-ultra-550b-a55b") names its engine.
         qualified_provider, bare_model = model_calls.resolve_provider(configured_model, default="")
         if qualified_provider:
             configured_provider, configured_model = qualified_provider, bare_model
