@@ -27,39 +27,38 @@ from pathlib import Path
 from typing import Callable, Literal
 
 from locus_runtime.gateway import GatewaySession
-from locus_runtime.harness.executor import LocalDirectExecutor
+from locus_runtime.harness.executor import (
+    LocalDirectExecutor,
+    default_executor,
+    sandbox_opt_out,
+)
 from locus_runtime.harness.swe_agent import SweTask
 from locus_runtime.harness.workspace import Workspace
 
 
 def _sandbox_executor_requested() -> bool:
-    """Whether agent tool-execution should run under the OS sandbox
-    (bwrap/seatbelt/AppContainer via SandboxManager) instead of the unconfined
-    LocalDirectExecutor. Opt-in (default off) so existing deploys are unchanged;
-    auto-on for the native desktop profile."""
-    flag = str(os.getenv("LOCUS_SANDBOX_AGENTS") or "").strip().lower()
-    if flag in {"1", "true", "yes", "on"}:
-        return True
-    profile = str(os.getenv("LOCUS_RUNTIME_PROFILE") or "").strip().lower()
-    return profile in {"local-native", "native", "local_native"}
+    """Whether agent tool-execution runs under the OS sandbox (default: yes).
+
+    Sandboxed execution is the default (principal decision 2026-10-03): only an
+    explicit ``LOCUS_SANDBOX_AGENTS=0`` dev opt-out selects LocalDirectExecutor,
+    whose process execution tool_jail denies anyway. K8s (hosted) runs harness
+    work in the workflow engine's pod, not in-process."""
+    if os.getenv("KUBERNETES_SERVICE_HOST"):
+        return False
+    return not sandbox_opt_out()
 
 
 def _make_executor(
     root: str | Path, extra_paths: list[str], gateway_session: GatewaySession | None = None
 ):
-    """Select the harness executor: an OS-sandboxed executor when requested and
-    feasible in-process, else the direct executor. K8s (hosted) is handled by the
-    workflow engine, not in-process, so it stays on the direct executor here."""
-    if _sandbox_executor_requested() and not os.getenv("KUBERNETES_SERVICE_HOST"):
-        try:
-            from locus_runtime.harness.executor import LocalSandboxExecutor
-
-            return LocalSandboxExecutor(
-                root, extra_paths=extra_paths, gateway_session=gateway_session
-            )
-        except Exception:  # noqa: BLE001 - never block provisioning on sandbox setup
-            pass
-    return LocalDirectExecutor(root, extra_paths=extra_paths, gateway_session=gateway_session)
+    """Select the harness executor: the platform's confining tier by default (see
+    :func:`~locus_runtime.harness.executor.default_executor`; with no tier on this
+    host every exec is denied with an actionable reason). K8s (hosted) is handled by
+    the workflow engine, not in-process, so it stays on the direct executor here,
+    which tool_jail denies."""
+    if os.getenv("KUBERNETES_SERVICE_HOST"):
+        return LocalDirectExecutor(root, extra_paths=extra_paths, gateway_session=gateway_session)
+    return default_executor(root, extra_paths=extra_paths, gateway_session=gateway_session)
 
 
 @dataclass

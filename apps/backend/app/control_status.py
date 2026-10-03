@@ -37,6 +37,8 @@ PresidioState = Literal["loaded", "unavailable", "not_loaded"]
 _CONFINING_SANDBOX_STRATEGIES = frozenset(
     {"kernel-bwrap", "kernel-seatbelt", "windows-appcontainer", "hardened-docker"}
 )
+# What the harness reports when no confining tier exists on this host.
+_NO_SANDBOX_STRATEGY = "unavailable"
 # Strategies the planner can name but that Locus does not implement itself.
 _DELEGATED_SANDBOX_STRATEGIES = frozenset({"k8s-gvisor", "k8s-kata"})
 
@@ -410,15 +412,25 @@ def _sandbox(facts: PostureFacts) -> ControlStatus:
             "execution_sandbox",
             label,
             "off",
-            "Harness agents use the unconfined LocalDirectExecutor; set LOCUS_SANDBOX_AGENTS "
-            f"or the local-native profile to use the planner (detected tier '{strategy}').",
+            "Harness agents use LocalDirectExecutor (explicit LOCUS_SANDBOX_AGENTS=0 opt-out "
+            "or a K8s pod); tool_jail denies its process execution "
+            f"(tier available here: '{strategy}').",
+        )
+    if strategy == _NO_SANDBOX_STRATEGY:
+        return ControlStatus(
+            "execution_sandbox",
+            label,
+            "off",
+            "No confining sandbox is available on this host (bubblewrap / seatbelt / "
+            "AppContainer / Docker); tool_jail denies agent process execution (fail closed).",
         )
     if strategy in _CONFINING_SANDBOX_STRATEGIES:
         return ControlStatus(
             "execution_sandbox",
             label,
             "enforced",
-            f"LocalSandboxExecutor plans through SandboxManager with tier '{strategy}'.",
+            f"Harness executes through LocalSandboxExecutor on the '{strategy}' tier selected "
+            "for this host (the default); tool_jail accepts only confining tiers.",
         )
     if strategy in _DELEGATED_SANDBOX_STRATEGIES:
         return ControlStatus(
@@ -498,12 +510,16 @@ def _envoy_authz_filters(config_path: Path | None) -> bool | None:
 
 
 def _detect_sandbox_strategy() -> str | None:
+    """The tier the harness default executor actually selects on this host."""
     try:
-        from locus_runtime.sandbox import SandboxManager
+        from locus_runtime.sandbox import select_confining_strategy
 
-        return str(SandboxManager().active_strategy.value)
+        selection = select_confining_strategy()
     except Exception:  # noqa: BLE001 - reported as "unverified", never as enforced
         return None
+    if selection.strategy is None:
+        return _NO_SANDBOX_STRATEGY
+    return str(selection.strategy.value)
 
 
 def _sandbox_executor_requested() -> bool | None:

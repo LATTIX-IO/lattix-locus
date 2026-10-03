@@ -82,7 +82,9 @@ def _executors(tmp_path: Path) -> list[Any]:
     return [
         LocalDirectExecutor(tmp_path),
         LocalSandboxExecutor(tmp_path, manager=manager),
-        DockerContainerExecutor("container-1", workdir_path="/testbed"),
+        DockerContainerExecutor(
+            "container-1", workdir_path="/testbed", inspect_network_mode=lambda _cid: "none"
+        ),
     ]
 
 
@@ -236,6 +238,10 @@ ALLOWED_SINKS: dict[tuple[str, str], str] = {
     ("executor.py", "LocalDirectExecutor._write_bytes"): "gated sink: called only after _gate",
     ("executor.py", "LocalSandboxExecutor._spawn"): "gated sink: called only after _gate",
     ("executor.py", "DockerContainerExecutor._spawn"): "gated sink: called only after _gate",
+    (
+        "executor.py",
+        "DockerContainerExecutor._docker_network_mode",
+    ): "platform inspection (docker inspect) deriving the jail's network fact",
     ("codex_backend.py", "run_codex"): "gated in-function: authorize_action precedes Popen",
     ("workspace_binding.py", "_git"): "platform provisioning (git worktree) before the agent runs",
     ("workspace_binding.py", "WorkspaceManager._remove_worktree"): "platform cleanup after the run",

@@ -427,13 +427,70 @@ def test_policy_inputs_use_session_capabilities_and_canonical_operations() -> No
     assert jail_input == {
         "command": ["bash"],
         "allowed_executables": ["bash", "git"],
+        "isolation_tier": "kernel-bwrap",
         "readonly_rootfs": True,
         "run_as_user": "1000:1000",
         "allow_network": True,
         "require_egress_mediation": False,
+        "appcontainer": False,
+        "job_object": False,
+        "require_appcontainer": False,
+        "runtime_profile": "",
         "allowed_hosts": [],
         "requested_hosts": [],
     }
+
+
+def test_runtime_profile_comes_from_the_registered_session() -> None:
+    """The evals profile is a session fact; the backend-style gateway refuses it."""
+    engine = FakeEngine()
+    gateway, _ = _gateway(engine)
+    with pytest.raises(ValueError, match="evals"):
+        _session(gateway, runtime_profile="evals")
+    eval_gateway = Gateway(engine, lambda _r: None, allow_eval_sessions=True)
+    session = eval_gateway.open_session(
+        run_id="eval-1",
+        principal="locus-evals",
+        engine="evals",
+        capabilities=Capabilities(
+            allowed_tools=frozenset({"process_exec"}),
+            allowed_executables=("bash",),
+            runtime_profile="evals",
+        ),
+    )
+    session.authorize(
+        kind="process_exec",
+        tool="execute_bash",
+        target="/testbed",
+        command="ls",
+        executable="bash",
+        jail=JailFacts(strategy="docker-exec", allow_network=False),
+    )
+    jail_input = next(payload for policy, payload in engine.calls if policy == "tool_jail")
+    assert (jail_input["runtime_profile"], jail_input["isolation_tier"]) == ("evals", "docker-exec")
+
+
+def test_policy_deny_reason_label_is_reported() -> None:
+    class _Engine(FakeEngine):
+        def decide(self, policy, input):  # noqa: A002, ANN001, ANN201
+            decision = super().decide(policy, input)
+            if policy == "tool_jail":
+                return dataclasses.replace(
+                    decision, allow=False, outputs={"deny_reason": "no_confining_sandbox"}
+                )
+            return decision
+
+    gateway, _ = _gateway(_Engine())
+    decision = _session(gateway).authorize(
+        kind="process_exec",
+        tool="execute_bash",
+        target=ROOT,
+        command="ls",
+        executable="bash",
+        jail=JailFacts(strategy="unavailable"),
+    )
+    assert decision.outcome == "deny"
+    assert "tool_jail.no_confining_sandbox" in decision.reasons
 
 
 # --- audit ---------------------------------------------------------------------------------

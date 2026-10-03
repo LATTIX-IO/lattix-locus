@@ -120,6 +120,7 @@ def test_sandbox_planner_reports_enforced_when_on_execution_path(strategy: str) 
     [
         (False, "kernel-bwrap", "off"),
         (True, "restricted-process", "degraded"),
+        (True, "unavailable", "off"),  # no confining tier on the host: exec denied
         (True, "k8s-gvisor", "unverified"),
         (True, "k8s-kata", "unverified"),
         (True, None, "unverified"),
@@ -328,3 +329,17 @@ def test_policy_engine_availability_is_a_runtime_fact(
     assert control_status._policy_engine_available() is False
     monkeypatch.setenv("LOCUS_OPA_URL", "http://127.0.0.1:8181")
     assert control_status._policy_engine_available() is True
+
+
+def test_detected_strategy_is_the_harness_default_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from locus_runtime import sandbox
+
+    for strategy, expected in (
+        (sandbox.IsolationStrategy.WINDOWS_APPCONTAINER, "windows-appcontainer"),
+        (None, "unavailable"),
+    ):
+        selection = sandbox.ConfinementSelection(strategy, sandbox.HostPlatform.WINDOWS, "x")
+        monkeypatch.setattr(sandbox, "select_confining_strategy", lambda s=selection: s)
+        assert control_status._detect_sandbox_strategy() == expected

@@ -2,14 +2,26 @@
 
 A single ``Executor`` protocol abstracts *where* the agent's tools run:
 
-* ``LocalDirectExecutor`` — plain subprocess in a host directory. Used for
-  local-repo dev loops, tests, and Windows dev hosts that lack a kernel
-  sandbox. No isolation; intended for trusted/CI use.
 * ``LocalSandboxExecutor`` — wraps ``locus_runtime.sandbox.SandboxManager``
-  to run commands under bubblewrap/seatbelt/hardened-docker. Production local.
+  to run commands under the platform's confining tier: bubblewrap (Linux),
+  seatbelt (macOS), AppContainer + Job Object (Windows) or hardened Docker.
+  This is the default (:func:`default_executor`).
 * ``DockerContainerExecutor`` — ``docker exec`` into an already-running
   container (the SWE-bench / DeepSWE per-instance environment on a remote
-  ``DOCKER_HOST``).
+  ``DOCKER_HOST``). tool_jail accepts it only for an ``evals`` session with the
+  container's networking disabled.
+* ``LocalDirectExecutor`` — plain subprocess in a host directory, no isolation.
+  Kept for tests and an explicit dev opt-out (``LOCUS_SANDBOX_AGENTS=0``);
+  tool_jail denies its process execution (``local-direct`` is not a jail).
+
+Jail facts (LOCUS-332, principal decision 2026-10-03): each executor reports the
+tier it actually launches with -- derived from the selected strategy, never
+supplied by a caller -- and tool_jail decides whether that is a jail.
+
+Environment: agent commands never inherit the full ``os.environ``. They get
+``locus_runtime.sandbox.minimal_agent_env`` (PATH, HOME/USERPROFILE, TEMP/TMP,
+LANG, SystemRoot, ...) plus explicit per-run variables; LOCUS_* settings and
+secret-like names (keys, tokens, passwords) are always dropped.
 
 File operations (read/write/exists) are part of the protocol because
 ``str_replace_editor`` must work identically whether files live on the host or
@@ -32,6 +44,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -52,6 +65,9 @@ from locus_runtime.sandbox import (
     SandboxManager,
     SandboxPolicy,
     detect_host_platform,
+    docker_cli_env,
+    minimal_agent_env,
+    select_confining_strategy,
 )
 
 GATEWAY_BLOCKED_EXIT_CODE = 126
@@ -84,12 +100,13 @@ class ExecResult:
         return f"{body}\n[exit code: {self.exit_code}]{suffix}".strip()
 
 
-def _blocked_result(decision: GatewayDecision, backend: str) -> ExecResult:
+def _blocked_result(decision: GatewayDecision, backend: str, hint: str = "") -> ExecResult:
     label = "permission required" if decision.outcome == "ask" else "denied by policy"
+    detail = f"\n{hint}" if hint and decision.outcome == "deny" else ""
     return ExecResult(
         exit_code=GATEWAY_BLOCKED_EXIT_CODE,
         stdout="",
-        stderr=f"[{label}] gateway {decision.describe()}",
+        stderr=f"[{label}] gateway {decision.describe()}{detail}",
         duration_seconds=0.0,
         backend=backend,
         gateway=decision,
@@ -152,7 +169,11 @@ def _is_within(root: Path, candidate: Path) -> bool:
 
 
 class LocalDirectExecutor(_GatedExecutor):
-    """Run commands directly in a host directory (no isolation)."""
+    """Run commands directly in a host directory (no isolation).
+
+    Tests and explicit dev opt-out only: tool_jail never accepts ``local-direct``
+    as a jail, so behind a real gateway its process execution is denied.
+    """
 
     backend = "local-direct"
 
@@ -170,6 +191,9 @@ class LocalDirectExecutor(_GatedExecutor):
         # Additional roots the agent is explicitly permitted to touch (e.g. a
         # shared lib granted by the human). Empty by default = confined to root.
         self.extra_paths = [Path(p).expanduser().resolve() for p in (extra_paths or [])]
+
+    def jail_facts(self) -> JailFacts:
+        return JailFacts(strategy="local-direct", run_as_user=current_uid_user())
 
     def workdir(self) -> str:
         return str(self.root)
@@ -211,9 +235,7 @@ class LocalDirectExecutor(_GatedExecutor):
         import time as _time
 
         start = _time.time()
-        run_env = dict(os.environ)
-        if self.env:
-            run_env.update(self.env)
+        run_env = minimal_agent_env(self.env)
         try:
             proc = subprocess.run(
                 command,
@@ -288,10 +310,14 @@ class LocalDirectExecutor(_GatedExecutor):
 # ---------------------------------------------------------------------------
 
 
-def _sandbox_jail_facts(strategy: IsolationStrategy, allow_network: bool) -> JailFacts:
+def _sandbox_jail_facts(
+    strategy: IsolationStrategy, allow_network: bool, *, require_appcontainer: bool = True
+) -> JailFacts:
     """Jail facts per sandbox strategy, as tool_jail sees them. Nothing is assumed:
-    only strategies that really give a read-only root say so."""
+    each fact restates what the strategy's launch command really does."""
     if strategy in (IsolationStrategy.KERNEL_BWRAP, IsolationStrategy.KERNEL_SEATBELT):
+        # bwrap: --ro-bind / / (+ explicit writable binds); seatbelt: (deny default)
+        # with file-write* only under the bound roots. The uid is this process's.
         return JailFacts(
             strategy=strategy.value,
             readonly_rootfs=True,
@@ -306,13 +332,38 @@ def _sandbox_jail_facts(strategy: IsolationStrategy, allow_network: bool) -> Jai
             run_as_user="1000:1000",
             allow_network=allow_network,
         )
-    # windows-appcontainer (Job Object tier), restricted-process, k8s-*: no
-    # read-only root / numeric non-root uid that tool_jail can verify here.
+    if strategy == IsolationStrategy.WINDOWS_APPCONTAINER:
+        # _WindowsAppContainerStrategy launches win_sandbox, which places the child
+        # in an AppContainer *and* a Job Object; with --require-appcontainer it fails
+        # closed instead of degrading to the Job-Object-only tier. Without the flag
+        # the launcher may degrade, so the facts then claim no AppContainer. Network
+        # capabilities are granted only when allow_network is set.
+        return JailFacts(
+            strategy=strategy.value,
+            allow_network=allow_network,
+            appcontainer=require_appcontainer,
+            job_object=True,
+            require_appcontainer=require_appcontainer,
+        )
+    # restricted-process, k8s-*: nothing tool_jail can verify as a jail here.
     return JailFacts(strategy=strategy.value, allow_network=allow_network)
 
 
+def _resolved_strategy(manager: SandboxManager) -> IsolationStrategy | None:
+    try:
+        return manager.active_strategy
+    except Exception:  # noqa: BLE001 - an undetectable tier is not a jail
+        return None
+
+
 class LocalSandboxExecutor(_GatedExecutor):
-    """Run commands under the kernel/docker sandbox; files on the host."""
+    """Run commands under the kernel/docker/AppContainer sandbox; files on the host.
+
+    ``unavailable_reason`` marks a host with no confining tier (see
+    :func:`default_executor`): process execution then reports the ``unavailable``
+    tier, which tool_jail denies with that actionable reason, and the spawn sink
+    refuses to run even if an authorizer allowed it.
+    """
 
     backend = "local-sandbox"
 
@@ -324,11 +375,17 @@ class LocalSandboxExecutor(_GatedExecutor):
         allow_network: bool = False,
         extra_paths: list[str] | None = None,
         gateway_session: GatewaySession | None = None,
+        env: dict[str, str] | None = None,
+        unavailable_reason: str = "",
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.gateway_session = gateway_session
         self._manager = manager or SandboxManager()
         self._allow_network = allow_network
+        self.env = env
+        self.unavailable_reason = unavailable_reason
+        # Always launch the Windows tier fail-closed (no Job-Object-only downgrade).
+        self._require_appcontainer = True
         self._platform: HostPlatform = detect_host_platform()
         self._extra_paths = [str(Path(p).expanduser().resolve()) for p in (extra_paths or [])]
         # Host-side file ops, gated by the same session inside LocalDirectExecutor.
@@ -337,7 +394,23 @@ class LocalSandboxExecutor(_GatedExecutor):
         )
 
     def jail_facts(self) -> JailFacts:
-        return _sandbox_jail_facts(self._manager.active_strategy, self._allow_network)
+        if self.unavailable_reason:
+            return JailFacts(
+                strategy="unavailable",
+                allow_network=self._allow_network,
+                unavailable_reason=self.unavailable_reason,
+            )
+        strategy = _resolved_strategy(self._manager)
+        if strategy is None:
+            return JailFacts(strategy="none", allow_network=self._allow_network)
+        return _sandbox_jail_facts(
+            strategy, self._allow_network, require_appcontainer=self._require_appcontainer
+        )
+
+    @property
+    def strategy(self) -> IsolationStrategy | None:
+        """The confining tier commands run under (``None`` when there is none)."""
+        return None if self.unavailable_reason else _resolved_strategy(self._manager)
 
     def workdir(self) -> str:
         return str(self.root)
@@ -348,12 +421,21 @@ class LocalSandboxExecutor(_GatedExecutor):
     def run(self, command: list[str], *, timeout: int = 60) -> ExecResult:
         decision = self._gate("process_exec", str(self.root), command=command)
         if not decision.allowed:
-            return _blocked_result(decision, self.backend)
+            return _blocked_result(decision, self.backend, self.unavailable_reason)
         return self._spawn(command, timeout=timeout)
 
     def _spawn(self, command: list[str], *, timeout: int) -> ExecResult:
         import time as _time
 
+        if self.unavailable_reason:
+            # Fail closed even under a permissive authorizer: there is no jail here.
+            return ExecResult(
+                exit_code=GATEWAY_BLOCKED_EXIT_CODE,
+                stdout="",
+                stderr=f"[denied] {self.unavailable_reason}",
+                duration_seconds=0.0,
+                backend=self.backend,
+            )
         executable = command[0] if command else ""
         policy = SandboxPolicy(
             platform=self._platform,
@@ -362,17 +444,35 @@ class LocalSandboxExecutor(_GatedExecutor):
             allowed_write_paths=[str(self.root), *self._extra_paths],
             allowed_executables=[executable],
             timeout_seconds=timeout,
+            require_appcontainer=self._require_appcontainer,
         )
-        spec = ExecutionSpec(tool_id="coding", command=command, cwd=str(self.root))
+        explicit_env = minimal_agent_env(self.env, base={})
+        spec = ExecutionSpec(
+            tool_id="coding", command=command, cwd=str(self.root), env=explicit_env
+        )
         plan = self._manager.plan(spec, policy)
         if plan.backend.startswith("k8s-"):
             raise NotImplementedError(
                 "K8s sandbox execution is the workflow engine's responsibility; "
                 "the harness cannot exec a pod spec in-process."
             )
+        if plan.strategy == IsolationStrategy.HARDENED_DOCKER:
+            # The docker CLI gets DOCKER_* only; the container gets explicit vars (-e).
+            run_env = docker_cli_env()
+        else:
+            # bwrap / seatbelt / the Windows launcher pass their env to the child.
+            run_env = minimal_agent_env(self.env)
+        launcher_cwd = plan.metadata.get("launcher_cwd") or None
         start = _time.time()
         try:
-            proc = subprocess.run(plan.command, capture_output=True, text=True, timeout=timeout)
+            proc = subprocess.run(
+                plan.command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=run_env,
+                cwd=launcher_cwd,
+            )
             return ExecResult(
                 exit_code=proc.returncode,
                 stdout=proc.stdout or "",
@@ -426,12 +526,16 @@ class DockerContainerExecutor(_GatedExecutor):
         docker_host: str | None = None,
         docker_bin: str = "docker",
         gateway_session: GatewaySession | None = None,
+        inspect_network_mode: Callable[[str], str] | None = None,
     ) -> None:
         self.container_id = container_id
         self.gateway_session = gateway_session
         self._workdir = workdir_path
         self._docker_host = docker_host or os.getenv("DOCKER_HOST") or ""
         self._docker = docker_bin
+        # Derives the network fact from the container itself (docker inspect).
+        self._inspect = inspect_network_mode or self._docker_network_mode
+        self._network_mode: str | None = None
 
     def workdir(self) -> str:
         return self._workdir
@@ -442,14 +546,29 @@ class DockerContainerExecutor(_GatedExecutor):
         return abs_path == wd or abs_path.startswith(wd + "/")
 
     def jail_facts(self) -> JailFacts:
-        # The container is not ours: its root fs and user are unknown here.
-        return JailFacts(strategy="docker-exec")
+        """The container is not ours: its root fs and user are unknown, so only the
+        network fact is reported -- derived from the container itself (docker
+        inspect), never from the caller. Unknown network counts as enabled."""
+        if self._network_mode is None:
+            try:
+                self._network_mode = str(self._inspect(self.container_id) or "").strip()
+            except Exception:  # noqa: BLE001 - an uninspectable container is not jailed
+                self._network_mode = ""
+        return JailFacts(strategy="docker-exec", allow_network=self._network_mode != "none")
+
+    def _docker_network_mode(self, container_id: str) -> str:
+        """Platform inspection of the container we exec into (not an agent action)."""
+        proc = subprocess.run(
+            [self._docker, "inspect", "--format", "{{.HostConfig.NetworkMode}}", container_id],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=self._docker_env(),
+        )
+        return proc.stdout.strip() if proc.returncode == 0 else ""
 
     def _docker_env(self) -> dict[str, str]:
-        env = dict(os.environ)
-        if self._docker_host:
-            env["DOCKER_HOST"] = self._docker_host
-        return env
+        return docker_cli_env(self._docker_host)
 
     def _spawn(self, inner: list[str], *, timeout: int) -> ExecResult:
         import time as _time
@@ -536,3 +655,55 @@ class DockerContainerExecutor(_GatedExecutor):
         if path.startswith("/"):
             return path
         return f"{self._workdir.rstrip('/')}/{path}"
+
+
+# ---------------------------------------------------------------------------
+# Default selection — sandboxed execution is the default
+# ---------------------------------------------------------------------------
+
+
+def sandbox_opt_out() -> bool:
+    """Explicit dev opt-out: ``LOCUS_SANDBOX_AGENTS=0`` selects LocalDirectExecutor,
+    whose process execution tool_jail still denies (no unconfined exec)."""
+    flag = str(os.getenv("LOCUS_SANDBOX_AGENTS") or "").strip().lower()
+    return flag in {"0", "false", "no", "off"}
+
+
+def default_executor(
+    root: str | Path,
+    *,
+    extra_paths: list[str] | None = None,
+    gateway_session: GatewaySession | None = None,
+    allow_network: bool = False,
+    env: dict[str, str] | None = None,
+) -> LocalDirectExecutor | LocalSandboxExecutor:
+    """The harness executor for a host workspace: the platform's confining tier.
+
+    Windows → AppContainer + Job Object (require_appcontainer); macOS → seatbelt;
+    Linux → bubblewrap; else hardened Docker when available. With no confining
+    tier, the executor reports the ``unavailable`` tier, so tool_jail denies every
+    exec with an actionable reason (fail closed). ``LOCUS_SANDBOX_AGENTS=0`` is the
+    explicit dev opt-out to LocalDirectExecutor -- also denied by tool_jail.
+    """
+    if sandbox_opt_out():
+        return LocalDirectExecutor(
+            root, env=env, extra_paths=extra_paths, gateway_session=gateway_session
+        )
+    selection = select_confining_strategy()
+    if selection.strategy is None:
+        return LocalSandboxExecutor(
+            root,
+            allow_network=allow_network,
+            extra_paths=extra_paths,
+            gateway_session=gateway_session,
+            env=env,
+            unavailable_reason=selection.reason,
+        )
+    return LocalSandboxExecutor(
+        root,
+        manager=SandboxManager(force_strategy=selection.strategy),
+        allow_network=allow_network,
+        extra_paths=extra_paths,
+        gateway_session=gateway_session,
+        env=env,
+    )

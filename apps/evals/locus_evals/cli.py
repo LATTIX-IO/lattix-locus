@@ -203,7 +203,7 @@ def develop(
     from pathlib import Path as _Path
 
     from locus_runtime.harness.development import build_development_workflow
-    from locus_runtime.harness.executor import LocalDirectExecutor
+    from locus_runtime.harness.executor import default_executor
     from locus_runtime.harness.integrations import DeliveryPolicy, GhCliGitHub, GitHubDelivery
     from locus_runtime.harness.llm import OpenAIChatClient
     from locus_runtime.harness.loop import LoopBudgets
@@ -219,7 +219,7 @@ def develop(
     client = OpenAIChatClient(
         model=model, base_url=api_base_url, api_key="local", provider=provider
     )
-    executor = LocalDirectExecutor(repo)
+    executor = default_executor(repo)
 
     delivery = None
     policy = DeliveryPolicy(auto_open_pr=open_pr, target_branch=target_branch)
@@ -271,7 +271,7 @@ def team(
     import json as _json
     from pathlib import Path as _Path
 
-    from locus_runtime.harness.executor import LocalDirectExecutor
+    from locus_runtime.harness.executor import default_executor
     from locus_runtime.harness.llm import OpenAIChatClient
     from locus_runtime.harness.loop import LoopBudgets
     from locus_runtime.harness.swe_agent import SweTask
@@ -291,7 +291,7 @@ def team(
     task = SweTask(
         instance_id=_Path(repo).name,
         problem_statement=spec_text,
-        executor=LocalDirectExecutor(repo),
+        executor=default_executor(repo),
         test_command=test_command,
     )
     result = team_flow.run(task, spec=spec_text)

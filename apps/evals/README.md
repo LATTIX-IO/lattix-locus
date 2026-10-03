@@ -52,7 +52,8 @@ code is `0` iff the mean resolve rate meets `--threshold`.
 | `config.py` | `EvalConfig` + the remote-runner guardrail. |
 | `datasets.py` | `synthetic-mini` (materialized repos) + `swe-bench` (Docker-backed instances, statements from `princeton-nlp/SWE-bench_Verified`). |
 | `model_client.py` | live `OpenAIChatClient`; plumbing reference/no-op solvers. |
-| `docker_env.py` | boot/clean per-instance SWE-bench containers on a remote `DOCKER_HOST`. |
+| `docker_env.py` | boot/clean per-instance SWE-bench containers on a remote `DOCKER_HOST` (`--network none`). |
+| `gateway_session.py` | the eval gateway (policy engine + `gateway-audit.jsonl`) and one `evals` session per instance (read_file/write_file/process_exec, workspace-scoped). `tool_jail` accepts a SWE-bench container as a jail only for an `evals` session with networking off; synthetic workspaces run under the platform sandbox (`default_executor`). Needs an OPA binary (`LOCUS_OPA_BIN`). |
 | `grading.py` / `swebench_grader.py` | execution grading; live grading defers to the official `swebench.harness`. |
 | `stats.py` | per-seed resolve rate, mean ± SEM, pass@k. |
 | `runner.py` | orchestrates instance × seed → agent → grade → stats → report. |

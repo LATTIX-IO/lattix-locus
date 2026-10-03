@@ -24,6 +24,8 @@ import shutil
 
 import pytest
 
+from tests.gateway_support import eval_run_doubles
+
 requires_bash = pytest.mark.skipif(
     shutil.which("bash") is None, reason="bash not available on this host"
 )
@@ -48,7 +50,9 @@ def test_swe_agent_meets_deepswe_threshold(tmp_path):
         config.threshold = 0.30
         config.output_dir = str(tmp_path / "smoke")
 
-    run = run_eval(config, output_dir=tmp_path / "out")
+    # Plumbing runs use gateway/executor doubles; live runs build the real gateway.
+    doubles = eval_run_doubles() if config.mode == "plumbing" else {}
+    run = run_eval(config, output_dir=tmp_path / "out", **doubles)
     summary = run.summary
 
     # Pipeline integrity: a real, execution-graded number with stats + report.
@@ -71,7 +75,7 @@ def test_reference_solver_resolves_all_synthetic(tmp_path):
     from locus_evals.runner import run_eval
 
     config = EvalConfig(mode="plumbing", dataset="synthetic-mini", seeds=[0, 1, 2])
-    run = run_eval(config, output_dir=tmp_path / "out")
+    run = run_eval(config, output_dir=tmp_path / "out", **eval_run_doubles())
     assert run.summary["resolve_rate_mean"] == 1.0
     assert run.summary["resolve_rate_sem"] == 0.0  # identical across seeds
     assert run.summary["pass_at_k"] == 1.0
@@ -89,7 +93,10 @@ def test_noop_solver_resolves_nothing(tmp_path):
 
     config = EvalConfig(mode="plumbing", dataset="synthetic-mini", seeds=[0])
     run = run_eval(
-        config, client_factory=lambda task: build_noop_solver(), output_dir=tmp_path / "o"
+        config,
+        client_factory=lambda task: build_noop_solver(),
+        output_dir=tmp_path / "o",
+        **eval_run_doubles(),
     )
     assert run.summary["resolve_rate_mean"] == 0.0
     assert run.summary["meets_threshold"] is False

@@ -106,3 +106,19 @@ def installed(authorizer: gw.Authorizer | None) -> Iterator[gw.Authorizer | None
         yield authorizer
     finally:
         gw.install_gateway(previous)
+
+
+def eval_run_doubles() -> dict[str, Any]:
+    """``run_eval`` keyword arguments for plumbing tests: a real :class:`Gateway` that
+    accepts ``evals`` sessions on an allow-all :class:`FakeEngine`, and executors bound
+    to each instance's session. Keeps the pipeline tests independent of an OPA sidecar
+    and of this host's sandbox tier; the real tiers are tested in tests/policy."""
+    from locus_runtime.harness.executor import LocalDirectExecutor
+
+    gateway = gw.Gateway(FakeEngine(), lambda _record: None, allow_eval_sessions=True)
+    return {
+        "gateway": gateway,
+        "executor_factory": lambda root, session: LocalDirectExecutor(
+            root, gateway_session=session
+        ),
+    }

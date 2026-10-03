@@ -8,6 +8,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from locus_runtime.gateway import Gateway, GatewaySession
+from locus_runtime.harness.executor import Executor, default_executor
 from locus_runtime.harness.llm import ChatClient
 from locus_runtime.harness.loop import LoopBudgets
 from locus_runtime.harness.model_profiles import resolve_profile
@@ -15,6 +17,7 @@ from locus_runtime.harness.swe_agent import SweAgent, SweTask
 
 from locus_evals.config import EvalConfig
 from locus_evals.datasets import materialize_synthetic, synthetic_instances
+from locus_evals.gateway_session import build_eval_gateway, close_eval_gateway, open_eval_session
 from locus_evals.grading import grade_synthetic
 from locus_evals.model_client import build_live_client, build_reference_solver
 from locus_evals.report import write_report
@@ -45,6 +48,12 @@ class EvalRun:
 # plumbing mode build a per-task reference solver while live mode reuses one
 # model client.
 ClientFactory = Callable[[SweTask], ChatClient]
+# Builds an instance's executor for a host workspace, bound to its gateway session.
+ExecutorFactory = Callable[[Path, GatewaySession], Executor]
+
+
+def _default_executor_factory(root: Path, session: GatewaySession) -> Executor:
+    return default_executor(root, gateway_session=session)
 
 
 def _client_factory(config: EvalConfig) -> ClientFactory:
@@ -60,9 +69,14 @@ def run_eval(
     *,
     client_factory: ClientFactory | None = None,
     output_dir: Path | None = None,
+    gateway: Gateway | None = None,
+    executor_factory: ExecutorFactory | None = None,
 ) -> EvalRun:
+    """Run an eval. Every instance acts through its own ``evals`` gateway session
+    on ``gateway`` (default: a policy-engine gateway built for this run, audited to
+    ``<output_dir>/gateway-audit.jsonl``) and the platform's confining executor."""
     if config.dataset == "swe-bench":
-        return run_live_swebench(config, output_dir=output_dir)
+        return run_live_swebench(config, output_dir=output_dir, gateway=gateway)
     if config.dataset != "synthetic-mini":
         raise NotImplementedError(
             f"unknown dataset {config.dataset!r}; use 'synthetic-mini' or 'swe-bench'."
@@ -70,9 +84,26 @@ def run_eval(
     instances = synthetic_instances(config.instance_ids)
     config.enforce_remote_guardrail(len(instances))
     factory = client_factory or _client_factory(config)
+    make_executor = executor_factory or _default_executor_factory
     out_dir = Path(output_dir or config.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    owned_gateway = gateway is None
+    eval_gateway = gateway if gateway is not None else build_eval_gateway(out_dir)
+    try:
+        return _run_synthetic(config, instances, factory, make_executor, eval_gateway, out_dir)
+    finally:
+        if owned_gateway:
+            close_eval_gateway(eval_gateway)
 
+
+def _run_synthetic(
+    config: EvalConfig,
+    instances: list,
+    factory: ClientFactory,
+    make_executor: ExecutorFactory,
+    eval_gateway: Gateway,
+    out_dir: Path,
+) -> EvalRun:
     budgets = LoopBudgets(max_steps=config.max_steps, max_seconds=config.max_seconds)
     spec = _load_agent_spec(config)  # shipped SDET agent, if requested
     run = EvalRun(config=_config_public(config))
@@ -87,8 +118,13 @@ def run_eval(
             with tempfile.TemporaryDirectory(
                 prefix=f"eval-{inst.instance_id}-", ignore_cleanup_errors=True
             ) as tmp:
-                root = Path(tmp)
-                task = materialize_synthetic(inst, root, seed=seed)
+                root = Path(tmp).resolve()
+                session = open_eval_session(
+                    eval_gateway, run_id=f"eval-{inst.instance_id}-seed-{seed}", root=str(root)
+                )
+                task = materialize_synthetic(
+                    inst, root, seed=seed, executor=make_executor(root, session)
+                )
                 client = factory(task)
                 profile = _resolve_profile_for(config, spec, client)
                 traj_dir = out_dir / "instances" / inst.instance_id / f"seed-{seed}"
@@ -100,8 +136,11 @@ def run_eval(
                     trajectory_dir=traj_dir,
                     system_prompt_override=spec.system_prompt if spec else None,
                 )
-                result = agent.solve(task)
-                grade = grade_synthetic(task, result, str(root))
+                try:
+                    result = agent.solve(task)
+                    grade = grade_synthetic(task, result, str(root))
+                finally:
+                    session.close()
                 if grade.resolved:
                     resolved_count += 1
                     per_instance_pass[inst.instance_id] += 1
@@ -134,17 +173,15 @@ def run_eval(
 
 
 def run_live_swebench(
-    config: EvalConfig, *, output_dir: Path | None = None
+    config: EvalConfig, *, output_dir: Path | None = None, gateway: Gateway | None = None
 ) -> EvalRun:  # pragma: no cover - live only
     """Run real SWE-bench instances in Docker against the model under test.
 
     Untested in CI (needs a GPU-served model + Docker on a remote runner). Wired
-    so the gpt-oss-20b DeepSWE run is a single command from a runner box.
+    so the gpt-oss-20b DeepSWE run is a single command from a runner box. Each
+    instance runs in a network-disabled container through its own ``evals``
+    gateway session.
     """
-    from locus_evals.datasets import swebench_tasks
-    from locus_evals.docker_env import instance_container
-    from locus_evals.grading import grade_swebench
-
     if not config.instance_ids:
         raise RuntimeError("swe-bench mode requires explicit --instance-ids / LOCUS_EVALS ids")
     config.enforce_remote_guardrail(len(config.instance_ids))
@@ -152,6 +189,22 @@ def run_live_swebench(
     spec = _load_agent_spec(config)
     out_dir = Path(output_dir or config.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    owned_gateway = gateway is None
+    eval_gateway = gateway if gateway is not None else build_eval_gateway(out_dir)
+    try:
+        return _run_swebench(config, client, spec, out_dir, eval_gateway)
+    finally:
+        if owned_gateway:
+            close_eval_gateway(eval_gateway)
+
+
+def _run_swebench(
+    config: EvalConfig, client, spec, out_dir: Path, eval_gateway: Gateway
+) -> EvalRun:  # pragma: no cover - live only
+    from locus_evals.datasets import swebench_tasks
+    from locus_evals.docker_env import instance_container
+    from locus_evals.grading import grade_swebench
+
     budgets = LoopBudgets(max_steps=config.max_steps, max_seconds=config.max_seconds)
 
     run = EvalRun(config=_config_public(config))
@@ -162,11 +215,21 @@ def run_live_swebench(
         resolved_count = 0
         for iid in config.instance_ids:
             with instance_container(iid, docker_host=config.docker_host) as container_id:
+                opened: list[GatewaySession] = []
+
+                def session_for(instance_id: str, _seed: int = seed) -> GatewaySession:
+                    session = open_eval_session(
+                        eval_gateway, run_id=f"eval-{instance_id}-seed-{_seed}", root="/testbed"
+                    )
+                    opened.append(session)
+                    return session
+
                 task = swebench_tasks(
                     [iid],
                     docker_host=config.docker_host,
                     container_resolver=lambda _iid: container_id,
                     seed=seed,
+                    session_for=session_for,
                 )[0]
                 profile = _resolve_profile_for(config, spec, client)
                 traj_dir = out_dir / "instances" / iid / f"seed-{seed}"
@@ -178,7 +241,11 @@ def run_live_swebench(
                     trajectory_dir=traj_dir,
                     system_prompt_override=spec.system_prompt if spec else None,
                 )
-                result = agent.solve(task)
+                try:
+                    result = agent.solve(task)
+                finally:
+                    for session in opened:
+                        session.close()
                 grade = grade_swebench(task, result)
                 if grade.resolved:
                     resolved_count += 1

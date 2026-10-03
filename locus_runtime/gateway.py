@@ -478,16 +478,35 @@ class GatewayCaller:
 
 @dataclass(frozen=True)
 class JailFacts:
-    """What the executor really provides; fed to ``tool_jail`` unmodified."""
+    """What the executor really provides; fed to ``tool_jail`` unmodified.
+
+    Executors derive these from the strategy they actually launch with (see
+    ``locus_runtime.harness.executor``); agents and tool callers never supply them.
+    ``strategy`` is the isolation tier name tool_jail matches on: ``kernel-bwrap``,
+    ``kernel-seatbelt``, ``hardened-docker``, ``windows-appcontainer``,
+    ``docker-exec`` (a container we exec into), ``local-direct``,
+    ``restricted-process``, ``unavailable`` (no confining sandbox on this host) or
+    ``none``.
+    """
 
     strategy: str
     readonly_rootfs: bool = False
     run_as_user: str = ""
     allow_network: bool = True
     require_egress_mediation: bool = False
+    # Windows AppContainer tier: the child runs in an AppContainer, inside a Job
+    # Object, and the launcher fails closed rather than dropping to Job-Object-only.
+    appcontainer: bool = False
+    job_object: bool = False
+    require_appcontainer: bool = False
+    # Why no confining sandbox exists on this host (strategy "unavailable").
+    unavailable_reason: str = ""
 
 
 UNJAILED = JailFacts(strategy="none")
+
+#: Session profile that may use an evaluation container as a jail (tool_jail).
+EVALS_PROFILE = "evals"
 
 
 @dataclass(frozen=True)
@@ -525,6 +544,9 @@ class Capabilities:
     autonomy_tier: AutonomyTier = "tiered"
     max_tool_calls: int = 0
     budget: BudgetFigures | None = None
+    # Run profile registered with the session. ``"evals"`` is accepted only by a
+    # gateway built with ``allow_eval_sessions=True`` (apps/evals); see open_session.
+    runtime_profile: str = ""
 
 
 @dataclass(frozen=True)
@@ -803,8 +825,13 @@ class Gateway:
         intent_gate: IntentGate | None = None,
         clock: Callable[[], float] = time.time,
         max_sessions: int = 4096,
+        allow_eval_sessions: bool = False,
     ) -> None:
         self._engine = engine
+        # Only the evaluation harness builds a gateway that accepts evals sessions;
+        # the backend's gateway never does, so a normal run cannot claim the
+        # evaluation-container jail.
+        self._allow_eval_sessions = allow_eval_sessions
         self._audit_sink = audit_sink
         self.approvals = approvals or ApprovalLedger()
         self._grants: GrantVerifier = grants or NoGrants()
@@ -842,6 +869,11 @@ class Gateway:
             or not str(engine or "").strip()
         ):
             raise ValueError("run_id, principal and engine are required to open a gateway session")
+        if (
+            str(capabilities.runtime_profile or "").strip().lower() == EVALS_PROFILE
+            and not self._allow_eval_sessions
+        ):
+            raise ValueError("this gateway does not accept evals sessions")
         token = secrets.token_urlsafe(32)
         caller = GatewayCaller(run_id=run_id, principal=principal, engine=engine, token=token)
         with self._lock:
@@ -915,6 +947,11 @@ class Gateway:
             if result.allow is not True:
                 denied = True
                 reasons.extend(result.reasons or [f"{policy}.not_allowed"])
+                # Policies may name why they denied (``deny_reason``), e.g. tool_jail's
+                # "no_confining_sandbox"; it is a label, never a decision input.
+                deny_reason = (getattr(result, "outputs", None) or {}).get("deny_reason")
+                if isinstance(deny_reason, str) and re.fullmatch(r"[a-z0-9_]{1,64}", deny_reason):
+                    reasons.append(f"{policy}.{deny_reason}")
             else:
                 reasons.extend(result.reasons or [f"{policy}.allow"])
         policy_version = ",".join(sorted(versions)) or "unknown"
@@ -1074,15 +1111,22 @@ def agent_policy_input(
 
 
 def tool_jail_input(action: GatewayAction, caps: Capabilities) -> dict[str, Any]:
+    """Jail facts come from the executor (``action.jail``); the run profile comes from
+    the registered session, never from the action."""
     jail = action.jail or UNJAILED
     executable = action.executable or action.tool
     return {
         "command": [executable] if executable else [],
         "allowed_executables": list(caps.allowed_executables),
+        "isolation_tier": jail.strategy,
         "readonly_rootfs": jail.readonly_rootfs,
         "run_as_user": jail.run_as_user,
         "allow_network": jail.allow_network,
         "require_egress_mediation": jail.require_egress_mediation,
+        "appcontainer": jail.appcontainer,
+        "job_object": jail.job_object,
+        "require_appcontainer": jail.require_appcontainer,
+        "runtime_profile": str(caps.runtime_profile or "").strip().lower(),
         "allowed_hosts": [],
         "requested_hosts": [],
     }

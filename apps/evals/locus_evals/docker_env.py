@@ -5,6 +5,11 @@ commit under /testbed) and returns its container id, which the harness's
 ``DockerContainerExecutor`` execs into. All docker calls honour ``docker_host``
 so the fleet runs on a remote runner box, never the local dev machine.
 
+Instance containers run with networking disabled (``--network none``): tool_jail
+accepts an evaluation container as a jail only for an ``evals`` gateway session
+*and* a container without network (principal decision 2026-10-03). The executor
+derives that fact from ``docker inspect``, not from this module.
+
 This module is only exercised in live runs (it needs Docker); it has no
 import-time dependency on docker so the package imports cleanly in CI.
 """
@@ -16,12 +21,12 @@ import subprocess
 from contextlib import contextmanager
 from typing import Iterator
 
+from locus_runtime.sandbox import docker_cli_env
+
 
 def _docker_env(docker_host: str) -> dict[str, str]:
-    env = dict(os.environ)
-    if docker_host:
-        env["DOCKER_HOST"] = docker_host
-    return env
+    # The docker CLI gets DOCKER_* plus the minimal environment, never host secrets.
+    return docker_cli_env(docker_host or os.getenv("DOCKER_HOST") or "")
 
 
 def instance_image(instance_id: str, *, namespace: str = "swebench") -> str:
@@ -43,7 +48,7 @@ def instance_container(
     image = instance_image(instance_id, namespace=namespace)
     env = _docker_env(docker_host)
     create = subprocess.run(
-        ["docker", "run", "-d", "--rm", image, "sleep", "infinity"],
+        ["docker", "run", "-d", "--rm", "--network", "none", image, "sleep", "infinity"],
         capture_output=True,
         text=True,
         env=env,
