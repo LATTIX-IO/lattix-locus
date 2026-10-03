@@ -48,6 +48,71 @@ child via Win32 directly — no Docker, no WSL:
   confine filesystem or network — see `LOCUS_WIN_SANDBOX_REQUIRE_APPCONTAINER`
   below to fail closed instead of silently degrading to it.
 
+#### Windows agent toolchain (LOCUS-333)
+
+Inside the AppContainer only binaries readable by `ALL APPLICATION PACKAGES` run
+(`cmd`, `git`). The user's Python, Git-bash and WSL `bash` are unreachable, and
+Locus never widens ACLs on directories it does not own. Instead Locus ships a
+small toolchain into a directory it owns, `<app_home>/toolchain`
+(`%LOCALAPPDATA%\Lattix\Locus\toolchain`, or `LOCUS_APP_HOME\toolchain`):
+
+| Component | Pinned artifact | Licence |
+|---|---|---|
+| BusyBox-w64 (`sh` + POSIX utilities) | `busybox-w64u-FRP-6075-g169694ebd.exe` (amd64), `busybox-w64a-FRP-6075-g169694ebd.exe` (arm64), from `https://frippery.org/files/busybox/` | GPL-2.0-only |
+| CPython embeddable package | `python-3.14.8-embed-{amd64,arm64}.zip` from `https://www.python.org/ftp/python/3.14.8/` | PSF-2.0 |
+
+- **Fetch:** the desktop app fetches it on first run (`ensure_agent_toolchain`).
+  To fetch it on demand, run `lattix native-fetch-toolchain`. Every artifact is
+  checked against its pinned sha256 (`locus_tooling/native_binaries.py`) before
+  anything is extracted. A mismatch fails closed. Re-running is a no-op while
+  each component's install stamp matches its pin.
+- **Grant:** the Locus AppContainer SID (profile `com.lattix.locus.agent`) gets
+  read+execute on the toolchain directory, and on nothing else:
+  `icacls <toolchain> /grant *<SID>:(OI)(CI)RX /T`. The grant runs at install
+  time, and the launcher re-checks it before each AppContainer launch
+  (`--toolchain-root`). A per-SID stamp file makes the grant idempotent. Locus
+  grants only on a directory named `toolchain` that is not a reparse point and
+  carries Locus's `.locus-toolchain` marker. Only a per-app AppContainer SID is
+  accepted, never `ALL APPLICATION PACKAGES`. The container cannot write to the
+  toolchain.
+- **Use:** on Windows, `run_shell` runs `busybox.exe sh -c …`. The executor maps
+  `sh`/`bash` to BusyBox and `python`/`python3` to the toolchain interpreter.
+  The toolchain directories come first on the sandbox `PATH`. The mapping
+  happens only *after* the gateway allowed the logical name: tool_jail
+  allowlists `sh`/`python`, and a path to a toolchain binary is denied. Without
+  an installed toolchain these commands fail with exit 127 and the fetch hint.
+- **Python:** the embeddable package keeps its isolating `._pth` file, so it
+  ignores the registry, user site-packages and host `PYTHON*` variables. The
+  `._pth` file enables `import site` only so that a Locus `sitecustomize.py`
+  restores normal `sys.path[0]` (script directory, or the current directory for
+  `-c`/`-m`) and `PYTHONPATH` handling. Scripts, `python -m <module>` and the
+  standard library therefore work in the workspace. There is no pip in the
+  toolchain, and nothing is installed into the toolchain from inside the
+  sandbox, which cannot write to it. `python -m pytest` works only when pytest
+  is importable from the workspace (for example a vendored copy on
+  `PYTHONPATH`). Known noise: each interpreter start prints
+  `Failed to find real location of …python.exe` on stderr. This happens because
+  `GetFinalPathNameByHandle` needs list access on ancestor directories, which
+  the AppContainer deliberately lacks. The warning is harmless.
+- **BusyBox quirk:** ash `exec`s the last command of `sh -c`. BusyBox-w32's
+  exec emulation silently fails when the shell's parent (the launcher) is
+  outside the container. The executor therefore wraps the script as
+  `{ <script>\n}; exit $?`, which keeps the exit status.
+- **Licences:** BusyBox is GPL-2.0-only. Locus downloads the unmodified upstream
+  binary separately and runs it as a separate program (mere aggregation); the
+  source is at <https://frippery.org/busybox/>. CPython is under the PSF licence
+  (`LICENSE.txt` ships inside the toolchain directory).
+- **Updating:** bump `PYTHON_EMBED_VERSION` / `BUSYBOX_BUILD` in
+  `locus_tooling/native_binaries.py` together with every per-arch sha256. Take
+  the CPython values from python.org's published `sha256_sum` for the release
+  files and the BusyBox values from frippery.org's `SHA256SUM`. Then update this
+  table and run `tests/unit/test_win_toolchain.py`. Finally run the real
+  AppContainer test: fetch into a temp app home with
+  `provision_toolchain(<home>)`, then run
+  `LOCUS_TEST_TOOLCHAIN_APP_HOME=<home> pytest tests/policy/test_jail_tiers_opa.py`.
+  A version change installs into a new `python-<ver>` directory. The old one can
+  be deleted.
+
 **When to use:** Local development on a laptop or desktop where Docker is not installed or too heavy. This is the fastest mode (~1ms startup on Linux/macOS).
 
 ### Tier 2: Hardened Docker (Docker Compose — Local-Secure)

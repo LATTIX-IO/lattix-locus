@@ -15,6 +15,10 @@ package lattix.tool_jail
 #   docker-exec (evaluation container, e.g. SWE-bench)
 #       only for an `evals` session profile and with networking disabled
 # Every tier also needs an allowlisted executable and safe egress/host facts.
+# Executables are matched by exact logical name. On Windows the executor maps
+# `sh`/`bash`/`python`/`python3` to the Locus-owned agent toolchain only after
+# this policy allowed the logical name (LOCUS-333); a binary path is never a
+# logical name, so it is denied unless an operator allowlists that path.
 # Host execution (local-direct, restricted-process, none) is never a jail.
 
 import rego.v1

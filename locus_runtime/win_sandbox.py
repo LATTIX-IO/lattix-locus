@@ -27,6 +27,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
@@ -245,6 +246,8 @@ def _run_with_job_object(
 
 
 _APPCONTAINER_NAME = "com.lattix.locus.agent"
+#: The one AppContainer profile Locus launches agent commands in (stable SID).
+APPCONTAINER_NAME = _APPCONTAINER_NAME
 _PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES = 0x00020009
 _EXTENDED_STARTUPINFO_PRESENT = 0x00080000
 _CREATE_SUSPENDED = 0x00000004
@@ -331,6 +334,7 @@ def _run_in_appcontainer(
     write_paths: list[str],
     cwd: str = "",
     timeout: int = 0,
+    toolchain_root: str = "",
 ) -> int:
     """Launch ``command`` inside an AppContainer (low-privilege, capability-gated)
     bounded by a Job Object. Grants the container SID ACLs on the bound paths so
@@ -352,6 +356,12 @@ def _run_in_appcontainer(
         grant_writes.append(cwd)
     for argv in acl_grant_commands(sid_string, write_paths=grant_writes, read_paths=read_paths):
         subprocess.run(argv, check=False, capture_output=True)
+    if toolchain_root:
+        # Locus-owned toolchain (BusyBox sh + embeddable Python): read+execute for
+        # this container SID only, granted once (stamped). Raises -> fail closed.
+        from locus_runtime.win_toolchain import ensure_toolchain_grant
+
+        ensure_toolchain_grant(Path(toolchain_root), sid_string)
 
     cap_sids = _derive_capability_sids(capability_sids(allow_network=allow_network))
 
@@ -541,6 +551,7 @@ def run_confined(
     write_paths: list[str] | None = None,
     cwd: str = "",
     require_appcontainer: bool = False,
+    toolchain_root: str = "",
 ) -> ConfinementResult:
     """Run ``command`` under the strongest available Windows confinement tier.
 
@@ -578,6 +589,7 @@ def run_confined(
                 write_paths=write_paths or [],
                 cwd=cwd,
                 timeout=timeout,
+                toolchain_root=toolchain_root,
             )
             return ConfinementResult(code, "appcontainer-job")
         except Exception as exc:  # noqa: BLE001
@@ -610,6 +622,7 @@ class _Parsed:
     write_paths: list[str] = field(default_factory=list)
     cwd: str = ""
     require_appcontainer: bool = False
+    toolchain_root: str = ""
 
 
 def _parse_args(argv: list[str]) -> _Parsed:
@@ -631,6 +644,7 @@ def _parse_args(argv: list[str]) -> _Parsed:
     parser.add_argument("--read-path", action="append", default=[])
     parser.add_argument("--write-path", action="append", default=[])
     parser.add_argument("--cwd", default="")
+    parser.add_argument("--toolchain-root", default="")
     ns = parser.parse_args(head)
     return _Parsed(
         command=command,
@@ -643,6 +657,7 @@ def _parse_args(argv: list[str]) -> _Parsed:
         write_paths=ns.write_path,
         cwd=ns.cwd,
         require_appcontainer=ns.require_appcontainer,
+        toolchain_root=ns.toolchain_root,
     )
 
 
@@ -662,6 +677,7 @@ def main(argv: list[str] | None = None) -> int:
         write_paths=parsed.write_paths,
         cwd=parsed.cwd,
         require_appcontainer=parsed.require_appcontainer,
+        toolchain_root=parsed.toolchain_root,
     )
     sys.stderr.write(f"[win_sandbox] tier={result.tier}\n")
     return result.exit_code

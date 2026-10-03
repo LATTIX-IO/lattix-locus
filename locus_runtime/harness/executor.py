@@ -18,6 +18,14 @@ Jail facts (LOCUS-332, principal decision 2026-10-03): each executor reports the
 tier it actually launches with -- derived from the selected strategy, never
 supplied by a caller -- and tool_jail decides whether that is a jail.
 
+Windows toolchain (LOCUS-333): inside the AppContainer only ALL APPLICATION
+PACKAGES-readable tools run, so ``LocalSandboxExecutor`` runs ``run_shell`` as
+BusyBox ``sh -c`` and maps ``sh``/``bash``/``python``/``python3`` to the
+Locus-owned toolchain (``locus_runtime.win_toolchain``) *after* the gateway
+decision: tool_jail allowlists the logical names, never a toolchain path. The
+toolchain directories come first on the sandbox PATH. Without an installed
+toolchain those commands fail with an actionable message (exit 127).
+
 Environment: agent commands never inherit the full ``os.environ``. They get
 ``locus_runtime.sandbox.minimal_agent_env`` (PATH, HOME/USERPROFILE, TEMP/TMP,
 LANG, SystemRoot, ...) plus explicit per-run variables; LOCUS_* settings and
@@ -69,8 +77,18 @@ from locus_runtime.sandbox import (
     minimal_agent_env,
     select_confining_strategy,
 )
+from locus_runtime.win_toolchain import (
+    MISSING_TOOLCHAIN_HINT,
+    WindowsToolchain,
+    discover_toolchain,
+    needs_toolchain,
+)
 
 GATEWAY_BLOCKED_EXIT_CODE = 126
+TOOLCHAIN_MISSING_EXIT_CODE = 127
+
+#: ``toolchain=`` default for LocalSandboxExecutor: discover the installed one.
+AUTO_TOOLCHAIN = "auto"
 
 
 @dataclass
@@ -377,10 +395,16 @@ class LocalSandboxExecutor(_GatedExecutor):
         gateway_session: GatewaySession | None = None,
         env: dict[str, str] | None = None,
         unavailable_reason: str = "",
+        toolchain: WindowsToolchain | str | None = AUTO_TOOLCHAIN,
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.gateway_session = gateway_session
         self._manager = manager or SandboxManager()
+        # Windows AppContainer only: the Locus-owned agent toolchain (``"auto"``
+        # discovers it under the app home on first use; ``None`` = none).
+        self._toolchain_arg = toolchain
+        self._toolchain_resolved = False
+        self._toolchain: WindowsToolchain | None = None
         self._allow_network = allow_network
         self.env = env
         self.unavailable_reason = unavailable_reason
@@ -415,7 +439,30 @@ class LocalSandboxExecutor(_GatedExecutor):
     def workdir(self) -> str:
         return str(self.root)
 
+    def _uses_windows_toolchain(self) -> bool:
+        return (
+            not self.unavailable_reason
+            and _resolved_strategy(self._manager) == IsolationStrategy.WINDOWS_APPCONTAINER
+        )
+
+    @property
+    def toolchain(self) -> WindowsToolchain | None:
+        """The Windows agent toolchain used inside the AppContainer (else ``None``)."""
+        if not self._uses_windows_toolchain():
+            return None
+        if not self._toolchain_resolved:
+            arg = self._toolchain_arg
+            if arg == AUTO_TOOLCHAIN:
+                self._toolchain = discover_toolchain()
+            else:
+                self._toolchain = arg if isinstance(arg, WindowsToolchain) else None
+            self._toolchain_resolved = True
+        return self._toolchain
+
     def run_shell(self, script: str, *, timeout: int = 60) -> ExecResult:
+        if self._uses_windows_toolchain():
+            # BusyBox sh from the Locus toolchain (bash/WSL are unreachable there).
+            return self.run(["sh", "-c", script], timeout=timeout)
         return self.run(["bash", "-lc", script], timeout=timeout)
 
     def run(self, command: list[str], *, timeout: int = 60) -> ExecResult:
@@ -436,6 +483,21 @@ class LocalSandboxExecutor(_GatedExecutor):
                 duration_seconds=0.0,
                 backend=self.backend,
             )
+        toolchain: WindowsToolchain | None = None
+        if self._uses_windows_toolchain() and needs_toolchain(command):
+            toolchain = self.toolchain
+            if toolchain is None:
+                return ExecResult(
+                    exit_code=TOOLCHAIN_MISSING_EXIT_CODE,
+                    stdout="",
+                    stderr=f"[toolchain missing] {MISSING_TOOLCHAIN_HINT}",
+                    duration_seconds=0.0,
+                    backend=self.backend,
+                )
+            # Resolved only after the gateway allowed the logical name.
+            command = toolchain.resolve(command)
+        elif self._uses_windows_toolchain():
+            toolchain = self.toolchain
         executable = command[0] if command else ""
         policy = SandboxPolicy(
             platform=self._platform,
@@ -445,6 +507,7 @@ class LocalSandboxExecutor(_GatedExecutor):
             allowed_executables=[executable],
             timeout_seconds=timeout,
             require_appcontainer=self._require_appcontainer,
+            toolchain_root=str(toolchain.root) if toolchain is not None else "",
         )
         explicit_env = minimal_agent_env(self.env, base={})
         spec = ExecutionSpec(
@@ -461,7 +524,9 @@ class LocalSandboxExecutor(_GatedExecutor):
             run_env = docker_cli_env()
         else:
             # bwrap / seatbelt / the Windows launcher pass their env to the child.
-            run_env = minimal_agent_env(self.env)
+            run_env = minimal_agent_env(
+                self.env, path_prepend=toolchain.path_dirs() if toolchain is not None else None
+            )
         launcher_cwd = plan.metadata.get("launcher_cwd") or None
         start = _time.time()
         try:

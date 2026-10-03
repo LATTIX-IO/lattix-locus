@@ -217,6 +217,29 @@ def native_fetch_command(names: tuple[str, ...]) -> None:
     )
 
 
+@cli.command("native-fetch-toolchain")
+def native_fetch_toolchain_command() -> None:
+    """Fetch the Windows agent toolchain (BusyBox sh + embeddable CPython) into
+    <app_home>/toolchain, verify the pinned sha256 values (fail closed) and grant
+    the Locus AppContainer read+execute on that directory only. Idempotent."""
+    from locus_runtime.win_toolchain import toolchain_app_home
+
+    from .native_binaries import provision_toolchain
+
+    report = provision_toolchain(toolchain_app_home())
+    print_json(
+        {
+            "root": report.root,
+            "installed": report.installed,
+            "present": report.present,
+            "failed": report.failed,
+            "granted": report.granted,
+        }
+    )
+    if not report.ok:
+        raise SystemExit(1)
+
+
 @cli.command("native-serve")
 def native_serve_command() -> None:
     """Run the native supervisor in the FOREGROUND until interrupted (Ctrl+C).

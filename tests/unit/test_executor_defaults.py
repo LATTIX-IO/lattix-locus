@@ -30,6 +30,7 @@ from locus_runtime.harness.executor import (
     LocalSandboxExecutor,
     default_executor,
 )
+from locus_runtime.win_toolchain import WindowsToolchain
 
 P = sb.HostPlatform
 S = sb.IsolationStrategy
@@ -213,6 +214,8 @@ def test_sandbox_executor_spawns_with_minimal_env(
         tmp_path,
         manager=sb.SandboxManager(force_strategy=strategy),
         env={"RUN_LABEL": "x", "SERVICE_TOKEN": "nope"},
+        # Windows: bash resolves to the Locus toolchain's BusyBox (LOCUS-333).
+        toolchain=WindowsToolchain(root=tmp_path / "toolchain"),
     )
     ex.run(["bash", "-c", "true"])
     assert len(calls) == 1
