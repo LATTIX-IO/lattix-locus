@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import zipfile
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any
 
@@ -99,7 +100,7 @@ class _Downloads:
 
     def __call__(self, url: str, dest: Path) -> None:
         self.urls.append(url)
-        name = "busybox" if "frippery.org" in url else "python-embed"
+        name = "busybox" if urlsplit(url).hostname == "frippery.org" else "python-embed"
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(self.payloads[name])
 
