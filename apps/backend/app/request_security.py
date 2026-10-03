@@ -206,6 +206,16 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         RouteAccessCategory.AUTHENTICATED_MUTATE,
         "workflow.run.escalations.approve",
     ),
+    # Biscuit capability grants (LOCUS-334): list own grants, revoke one.
+    RouteAccessRule(
+        ("GET",), "/gateway/grants", RouteAccessCategory.AUTHENTICATED_READ, "gateway.grants.read"
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/gateway/grants/{grant_id}/revoke",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "gateway.grants.revoke",
+    ),
     RouteAccessRule(
         ("GET",), "/memory/{session_id}", RouteAccessCategory.AUTHENTICATED_READ, "memory.read"
     ),

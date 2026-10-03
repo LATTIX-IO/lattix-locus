@@ -234,7 +234,12 @@ def test_secret_generate_and_persist(monkeypatch, tmp_path):
 
 
 def test_plan_exports_secret_storage_mode(monkeypatch, tmp_path):
-    for name in ("LOCUS_API_BEARER_TOKEN", "POSTGRES_PASSWORD", "A2A_JWT_SECRET"):
+    for name in (
+        "LOCUS_API_BEARER_TOKEN",
+        "POSTGRES_PASSWORD",
+        "A2A_JWT_SECRET",
+        nl.GRANT_KEY_SECRET,
+    ):
         monkeypatch.delenv(name, raising=False)
     plan = nl.build_native_plan(_config(tmp_path), which=_which_factory(_ALL))
     assert plan.env[ns.STORAGE_MODE_ENV] == "keychain"
@@ -242,6 +247,22 @@ def test_plan_exports_secret_storage_mode(monkeypatch, tmp_path):
     monkeypatch.setenv("A2A_JWT_SECRET", "from-env")
     plan = nl.build_native_plan(_config(tmp_path / "b"), which=_which_factory(_ALL))
     assert plan.env[ns.STORAGE_MODE_ENV] == "env_only"
+
+
+def test_plan_provisions_grant_authority_key_in_protected_store(monkeypatch, tmp_path):
+    # LOCUS-334: the Biscuit grant key is generated once into the keychain (the
+    # in-memory test keychain here), never a plaintext file, and exported to the
+    # backend, which builds a working grant authority from it.
+    from locus_runtime import grants as gr
+
+    monkeypatch.delenv(nl.GRANT_KEY_SECRET, raising=False)
+    assert nl.GRANT_KEY_SECRET == gr.GRANT_KEY_SECRET
+    plan = nl.build_native_plan(_config(tmp_path), which=_which_factory(_ALL))
+    key = plan.env[nl.GRANT_KEY_SECRET]
+    assert gr.GrantAuthority.from_secret(key).can_mint
+    again = nl.build_native_plan(_config(tmp_path), which=_which_factory(_ALL))
+    assert again.env[nl.GRANT_KEY_SECRET] == key
+    assert not list((tmp_path / ".secrets").glob("*.secret"))
 
 
 # --- B3: multi-process A2A agent subprocesses -------------------------------

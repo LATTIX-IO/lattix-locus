@@ -2,6 +2,8 @@
 # Mirrors [project].dependencies in the root pyproject.toml (keep in sync),
 # plus the optional runtime clients the backend imports lazily.
 PyJWT[crypto]>=2.10.1
+# Biscuit capability grants (LOCUS-334; Apache-2.0, Eclipse Biscuit).
+biscuit-python==0.4.0
 click>=8.1.7
 fastapi>=0.115.0
 httpx>=0.28.0

@@ -218,7 +218,7 @@ Use severity: Critical, High, Medium, Low.
 | T4 | Canonical containment checks (not prefix matching) in backend loaders and shared fallback policy; symlink resolution before containment test | **Implemented** | `apps/backend/app/filesystem.py`, `policies/fs.rego` |
 | T5 | Squid domain allowlist (fail-closed) replacing open IP-range ACL; network namespace isolation when `allow_network=False` | **Implemented** | `docker/sandbox/squid.conf`, `locus_runtime/sandbox.py` |
 | T6 | A2A replay protection: TTL-based nonce expiry with bounded pruning; signed `X-Locus-Subject`/`Nonce`/`Signature` headers verified at receiver | **Implemented** | `apps/backend/app/a2a_replay.py`, worker A2A client in `apps/workers/` |
-| T7 | Capability tokens carry `exp` (10-min TTL), `allowed_tools`, `max_tool_calls`, canonical read/write path scopes; shared verifier enforces all claims | **Implemented** | `locus_runtime/capability_tokens.py`, filter-chain enforcement |
+| T7 | Capability grants are Biscuit tokens (Ed25519, key id + accepted-key list for rotation, attenuation only narrows, persisted revocation ids, expiry: run ≤ 24h, standing 30 days unless pinned). The gateway looks grants up server-side for the authenticated principal; a covering grant turns R3 `ask` into `allow` only after policy allowed and never for R4. HMAC capability tokens retired (LOCUS-334) | **Implemented** | `locus_runtime/grants.py`, `locus_runtime/gateway.py` step 3 |
 | T8 | Memory reads/writes enforce actor, tenant, collaboration-session, or internal-service authorization per scope; scope-to-bucket validation | **Implemented** | `apps/backend/app/memory.py`, worker runtime envelope auth middleware |
 | T9 | Python copy of the rules removed (LOCUS-328); `policies/*.rego` evaluated only by a real Rego engine behind `PolicyEngine` (OPA loopback sidecar, fail closed); parity suite over all 7 policies. Not yet on an execution-path gateway (posture: unverified) | **Partial** | `locus_runtime/policy_engine.py`, `tests/policy/test_policy_parity.py`, `tests/unit/test_policy_engine.py` |
 | T10 | Central route classification marks /healthz public (minimal), diagnostics authenticated; secure local mode serves minimal public healthz | **Implemented** | `apps/backend/app/request_security.py` access classes |
@@ -240,14 +240,14 @@ The following tests provide regression coverage for the threats and mitigations 
 | Filesystem canonical containment | \	ests/unit/test_compose_auth_contract.py\, \policies/tests/fs_test.rego\ | T4 | Every PR |
 | Sandbox egress allowlist & network isolation | \	ests/unit/test_sandbox_policy.py\, \	ests/backend/test_windows_sandbox.py\ | T5, T13 | Every PR |
 | A2A replay protection & nonce expiry | \	ests/unit/test_event_signing.py\, \pps/backend/tests/test_a2a_replay.py\ | T6 | Every PR |
-| Capability token verification (TTL, tools, budgets, scopes) | \	ests/unit/test_biscuit_tokens.py\, \	ests/unit/test_tool_jail.py\ | T7, T14 | Every PR |
+| Capability grant verification (signature, key rotation, expiry, attenuation, revocation, gateway R3/R4/deny) | `tests/unit/test_biscuit_tokens.py`, `tests/unit/test_gateway_grants.py`, `apps/backend/tests/test_gateway_grants_api.py`, `tests/policy/test_gateway_opa.py` | T7 | Every PR |
 | Memory scope authorization (actor, tenant, collaboration, internal) | \pps/backend/tests/test_memory_scope.py\ | T8 | Every PR |
 | Policy parity (PolicyEngine vs expected Rego decisions) | `policies/tests/*.rego`, `tests/policy/test_policy_parity.py` (CI: quality-policy-helm, real OPA) | T9 | Every PR |
 | Health/diagnostic endpoint visibility | \pps/backend/tests/test_endpoint_visibility.py\ | T10 | Every PR |
 | CORS configuration | \pps/backend/tests/test_cors.py\ | T11 | Every PR |
 | Secret scanning (Gitleaks), SAST (Semgrep), SCA (Trivy) | CI-only: \.github/workflows/security-lifecycle.yml\ | T12 | Every PR + scheduled |
 | Sandbox isolation (seccomp, bubblewrap, gVisor) | \	ests/backend/test_windows_sandbox.py\, Helm chart render tests | T13 | Every PR + Windows CI |
-| Resource limits & tool-call budgets | \	ests/unit/test_sandbox_policy.py\, \	ests/unit/test_biscuit_tokens.py\ | T14 | Every PR |
+| Resource limits & tool-call budgets | \	ests/unit/test_sandbox_policy.py\ | T14 | Every PR |
 | Profile consistency (local-lightweight vs local-secure vs hosted) | \	ests/unit/test_helm_security_contract.py\, \helm/lattix-locus/values-*.yaml\ diff check | T15 | Every PR |
 | Compose config validation (both compose files) | \docker compose config --quiet\ in CI | T5, T13, T15 | Every PR |
 | Helm lint & template render (prod values) | \make helm-validate\ in CI | T15 | Every PR |

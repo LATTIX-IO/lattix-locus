@@ -14,6 +14,7 @@ authors = [
 ]
 dependencies = [
   "PyJWT[crypto]>=2.10.1",
+  "biscuit-python==0.4.0",
   "click>=8.1.7",
   "fastapi>=0.115.0",
   "httpx>=0.28.0",
@@ -48,7 +49,6 @@ dev = [
   "ruff>=0.9.0"
 ]
 security = [
-  "biscuit-auth>=4.0.0",
   "gliner>=0.2.16"
 ]
 maf = [

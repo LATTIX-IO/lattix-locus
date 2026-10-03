@@ -33,6 +33,10 @@ from typing import Any, Callable
 from .common import default_app_home, source_repo_root
 from .native_secrets import STORAGE_MODE_ENV, ensure_secret, secret_storage_mode
 
+# Name of the grant authority secret (locus_runtime.grants.GRANT_KEY_SECRET); kept as a
+# literal so the launcher does not import the runtime (and biscuit) to start.
+GRANT_KEY_SECRET = "LOCUS_GRANT_AUTHORITY_KEY"
+
 
 class NativeLauncherError(RuntimeError):
     """A required native sidecar (e.g. a missing binary) blocked startup."""
@@ -200,9 +204,12 @@ def build_native_plan(config: NativeConfig, *, which: WhichFn = _which) -> Nativ
     env["LOCUS_API_BEARER_TOKEN"] = api_token
     # Keep signed A2A real for the native multi-process agents (defense in depth).
     env["A2A_JWT_SECRET"] = ensure_secret("A2A_JWT_SECRET", app_home=home)
+    # Ed25519 grant authority key for Biscuit capability grants (LOCUS-334): 32
+    # random bytes, kept in the protected store like every other native secret.
+    env[GRANT_KEY_SECRET] = ensure_secret(GRANT_KEY_SECRET, app_home=home, nbytes=32)
     # Tell supervised processes where these secrets live so Posture can report it.
     env[STORAGE_MODE_ENV] = secret_storage_mode(
-        ("LOCUS_API_BEARER_TOKEN", "POSTGRES_PASSWORD", "A2A_JWT_SECRET")
+        ("LOCUS_API_BEARER_TOKEN", "POSTGRES_PASSWORD", "A2A_JWT_SECRET", GRANT_KEY_SECRET)
     )
     env.setdefault("A2A_JWT_ALG", "HS256")
     env.setdefault("A2A_JWT_ISS", "lattix-locus")

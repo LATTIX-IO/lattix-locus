@@ -317,6 +317,38 @@ def test_gateway_enforcing_is_a_runtime_fact() -> None:
         gw.install_gateway(previous)
 
 
+def test_capability_grants_enforced_only_with_verifier_keys_and_gateway() -> None:
+    # LOCUS-334: a loaded library is not enforcement; the running gateway must
+    # verify grants with loaded keys.
+    states = lambda **kw: _states(_facts(**kw))["capability_tokens_biscuit"]  # noqa: E731
+    assert states(biscuit_loaded=True, gateway_enforcing=True, grants_enforcing=True) == "enforced"
+    assert (
+        states(biscuit_loaded=True, gateway_enforcing=False, grants_enforcing=True) == "unverified"
+    )
+    assert (
+        states(biscuit_loaded=True, gateway_enforcing=True, grants_enforcing=False) == "unverified"
+    )
+    assert states(biscuit_loaded=False) == "off"
+
+
+def test_grants_enforcing_is_a_runtime_fact() -> None:
+    from locus_runtime import gateway as gw
+    from locus_runtime import grants as gr
+    from tests.gateway_support import FakeEngine
+
+    previous = gw.installed_gateway()
+    try:
+        gw.install_gateway(gw.Gateway(FakeEngine(), lambda record: None))
+        assert control_status._grants_enforcing() is False  # NoGrants: no key loaded
+        verifier = gr.BiscuitGrantVerifier(gr.GrantAuthority.generate(), gr.GrantStore())
+        gw.install_gateway(gw.Gateway(FakeEngine(running=False), lambda r: None, grants=verifier))
+        assert control_status._grants_enforcing() is False  # gateway not enforcing
+        gw.install_gateway(gw.Gateway(FakeEngine(), lambda record: None, grants=verifier))
+        assert control_status._grants_enforcing() is True
+    finally:
+        gw.install_gateway(previous)
+
+
 def test_policy_engine_availability_is_a_runtime_fact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
