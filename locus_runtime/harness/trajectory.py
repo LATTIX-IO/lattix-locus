@@ -39,6 +39,8 @@ class TrajectoryRecorder:
     run_id: str
     file_path: Path | None = None
     records: list[dict[str, Any]] = field(default_factory=list)
+    # Resume (LOCUS-337): continue an existing trajectory file instead of truncating it.
+    append: bool = False
     _seq: int = 0
     _store_max_bytes: int = 0  # 0 = uncapped; otherwise cap per tool/message content
 
@@ -49,6 +51,10 @@ class TrajectoryRecorder:
             self._store_max_bytes = max(0, int(raw))
         except ValueError:
             self._store_max_bytes = 0
+        if self.file_path is not None and self.append and self.file_path.is_file():
+            self.records = self.parse(self.file_path.read_text(encoding="utf-8"))
+            self._seq = max((int(r.get("seq", -1)) for r in self.records), default=-1) + 1
+            return
         if self.file_path is not None:
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
             # truncate any prior file for this run

@@ -155,7 +155,8 @@ def test_budget_exhaustion_yields_zero_credit(tmp_path):
 def test_malformed_tool_call_triggers_reask(tmp_path):
     _make_repo(tmp_path)
     executor = LocalDirectExecutor(tmp_path)
-    # First a malformed call (bad JSON), then a valid submit.
+    # First a malformed call (bad JSON), then the fix and a valid submit
+    # (LOCUS-337: submit is accepted only once the test command passes).
     client = ScriptedChatClient(
         responses=[
             ChatResponse(
@@ -165,6 +166,7 @@ def test_malformed_tool_call_triggers_reask(tmp_path):
                     )
                 ]
             ),
+            _fix_call("fix"),
             tool_response("ok", "submit", answer="done"),
         ]
     )
@@ -192,7 +194,9 @@ def test_trajectory_is_written(tmp_path):
     _make_repo(tmp_path)
     executor = LocalDirectExecutor(tmp_path)
     traj_dir = tmp_path / "traj"
-    client = ScriptedChatClient(responses=[tool_response("s", "submit", answer="trivial")])
+    client = ScriptedChatClient(
+        responses=[_fix_call("fix"), tool_response("s", "submit", answer="fixed")]
+    )
     agent = SweAgent(
         client=client,
         profile=resolve_profile("scripted", "x", profile_id="local-32b-class"),
@@ -212,4 +216,18 @@ def test_trajectory_is_written(tmp_path):
     records = result.trajectory.parse(path.read_text(encoding="utf-8"))
     assert records[0]["kind"] == "meta"
     assert records[-1]["kind"] == "outcome"
-    assert records[-1]["status"] == "submitted"
+    # Verified loop (LOCUS-337): the end state, not the legacy "submitted".
+    assert records[-1]["status"] == "done"
+    assert result.end_state == "done"
+    assert (traj_dir / "traj-test.checkpoint.json").exists()
+
+
+def _fix_call(call_id: str):
+    return tool_response(
+        call_id,
+        "str_replace_editor",
+        command="str_replace",
+        path="mathlib/core.py",
+        old_str=FIXED_LINE_OLD,
+        new_str=FIXED_LINE_NEW,
+    )

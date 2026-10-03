@@ -250,6 +250,7 @@ ALLOWED_SINKS: dict[tuple[str, str], str] = {
         "TrajectoryRecorder.__post_init__",
     ): "platform telemetry file, not an agent action",
     ("trajectory.py", "TrajectoryRecorder._emit"): "platform telemetry file, not an agent action",
+    ("verified_loop.py", "write_checkpoint"): "platform run-state checkpoint, not an agent action",
 }
 _GATED_SINK_NAMES = {"_spawn", "_write_bytes", "_read_text"}
 
