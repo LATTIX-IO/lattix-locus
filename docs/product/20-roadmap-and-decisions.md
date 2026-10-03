@@ -66,6 +66,10 @@ Exit: two principals co-run a real project for 4 weeks from their own instances 
 | D-18 | Skills use the Agent Skills format with a Locus capability manifest | Portability with vendor agents; enforceable bounds | — |
 | D-19 | Helm/hosted profile unsupported; desktop and headless peer are the targets | Follows D-03 and D-09 | An org deployment is requested |
 | D-20 | Publishing an agent, workflow, playbook or guardrail makes the new revision active immediately; "Activate" stays available to roll back to an earlier revision | One step for a single principal; rollback stays one click in Releases (LOCUS-311) | Shared spaces (H3) need staged promotion |
+| D-21 | The self-improvement loop runs on hosted NVIDIA NIM (API catalog; key in the OS keychain) with local Ollama as the fallback tier | Free inference without a GPU host; offline fallback (P13) | Self-hosted NIM capacity is available |
+| D-22 | Self-improvement PRs auto-merge only when every gate is green **and** no protected path changed (policies, gateway, sandbox, secrets, auth, CI workflows, `AGENTS.md`, `CODEOWNERS`); protected-path PRs need principal review. The loop can never weaken or skip a gate | Lets the loop iterate without letting it edit its own guardrails (P6–P9, P32) | Gate calibration shows safe wider autonomy |
+| D-23 | Windows coding agents use a Locus-managed toolchain (portable CPython + BusyBox-w64) in a Locus-owned directory, granted only to the AppContainer | Usable shell and Python inside the jail without changing ACLs elsewhere | A uid-style Windows jail or WSL2 becomes the default |
+| D-24 | Unsigned macOS and Windows test installers are built by GitHub Actions until signing certificates exist | Unblock installing and dogfooding now | Developer ID / Authenticode certificates are provisioned |
 
 ## 3. Open questions (with recommendations)
 
