@@ -65,6 +65,7 @@ Exit: two principals co-run a real project for 4 weeks from their own instances 
 | D-17 | Dependency provenance policy as in Kepler, including local models (P28); tldraw excluded for licensing (P29) | Security, customer eligibility, AGPL compatibility | — |
 | D-18 | Skills use the Agent Skills format with a Locus capability manifest | Portability with vendor agents; enforceable bounds | — |
 | D-19 | Helm/hosted profile unsupported; desktop and headless peer are the targets | Follows D-03 and D-09 | An org deployment is requested |
+| D-20 | Publishing an agent, workflow, playbook or guardrail makes the new revision active immediately; "Activate" stays available to roll back to an earlier revision | One step for a single principal; rollback stays one click in Releases (LOCUS-311) | Shared spaces (H3) need staged promotion |
 
 ## 3. Open questions (with recommendations)
 

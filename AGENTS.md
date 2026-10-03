@@ -24,7 +24,6 @@ Lattix Locus (formerly xFrontier) is a local-first personal AI operator with a z
 Gate status as of 2026-10-02 (after the H0 main restore, LOCUS-305). Pytest collects and passes, `ruff check .` is clean, and `make typecheck` is clean for `locus_tooling/` and `locus_runtime/`. Known gaps:
 - `apps/backend/` is **not** type-checked yet (LOCUS-61).
 - CI runs `ruff check` but not `ruff format --check` (LOCUS-62).
-- Two publish-activation tests are `xfail(strict=True)` pending a product decision (LOCUS-311).
 - The CodeQL and Lattix pentest/SBOM jobs are switched off unless the repo variables `CODEQL_ENABLED` / `LATTIX_PENTEST_ENABLED` are `true`.
 
 If your change is unrelated to these, say so explicitly in the handoff rather than claiming a green run.
