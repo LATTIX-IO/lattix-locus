@@ -51,7 +51,7 @@ except Exception:  # noqa: BLE001
 from pydantic import BaseModel, Field, ValidationError
 from app import cron as app_cron
 from app import knowledge as app_knowledge
-from app import local_models, mcp_client, skills_catalog
+from app import local_models, mcp_client, policy_gateway, skills_catalog
 from app.control_status import (
     build_control_status_report,
     collect_posture_facts,
@@ -66,6 +66,16 @@ from app.platform_services import (
     PostgresStateStore,
     PostgresWorldGraph,
     RedisMemoryStore,
+)
+from locus_runtime.gateway import (
+    GatewayAction,
+    GatewayAuditRecord,
+    GatewayBlocked,
+    GatewayDecision,
+    GatewaySession,
+    authorize_action,
+    gateway_message,
+    host_of,
 )
 from locus_runtime.legacy import normalize_legacy_identifiers
 from locus_runtime.cognitive import (
@@ -11748,6 +11758,17 @@ def _execute_node(
                         "status": {"state": "guardrail_rejected"},
                     }
 
+        gateway_rejection = _gateway_gate_tool_node(
+            execution_state=execution_state,
+            tool_id=tool_id,
+            endpoint_url=endpoint_url,
+            mcp_server_url=mcp_server_url,
+            method=str(tool_config.get("method") or "POST"),
+            request_payload=request_payload,
+        )
+        if gateway_rejection is not None:
+            return gateway_rejection
+
         if tool_executed_engine != "native":
             delegated_result, delegated_meta = _run_framework_tool_call(
                 engine=tool_executed_engine,
@@ -14127,6 +14148,191 @@ def _append_audit_event(
         store.audit_events = store.audit_events[:2000]
 
 
+# --- Gateway PEP wiring (LOCUS-332) ------------------------------------------
+_GATEWAY_AUDIT_OUTCOME: dict[str, Literal["allowed", "blocked", "error"]] = {
+    "allow": "allowed",
+    "ask": "blocked",
+    "deny": "blocked",
+}
+
+
+def _gateway_audit_sink(record: GatewayAuditRecord) -> None:
+    """Step 8: every gateway decision goes to the backend audit log."""
+    _append_audit_event(
+        "gateway.decision",
+        record.principal,
+        _GATEWAY_AUDIT_OUTCOME.get(record.outcome, "blocked"),
+        record.as_metadata(),
+    )
+
+
+def _ensure_gateway() -> Any:
+    return policy_gateway.ensure_backend_gateway(_gateway_audit_sink)
+
+
+def _run_principal(run_id: str, fallback: str = "") -> str:
+    access = _run_access_context(run_id)
+    actor = str(access.get("actor") or "").strip()
+    return actor or str(fallback or "").strip() or "anonymous"
+
+
+def _gateway_egress_hosts() -> tuple[str, ...]:
+    platform = store.platform_settings
+    return policy_gateway.egress_hosts(
+        platform.allowed_egress_hosts, platform.allowed_mcp_server_urls
+    )
+
+
+def _gateway_decision_metadata(decision: GatewayDecision) -> dict[str, Any]:
+    return {
+        "gateway_outcome": decision.outcome,
+        "action_kind": decision.action_kind,
+        "tool": decision.tool,
+        "target": decision.target,
+        "risk_class": decision.risk.label,
+        "reasons": list(decision.reasons),
+        "audit_id": decision.audit_id,
+        "policy_version": decision.policy_version,
+    }
+
+
+def _gateway_decision_listener(action: GatewayAction, decision: GatewayDecision) -> None:
+    """Surface non-allow decisions on the run: deny as a run event; ask as a run
+    event plus a pending escalation the operator approves through the existing
+    ``/workflow-runs/{run_id}/escalations/{id}/approve`` endpoint."""
+    if decision.outcome == "allow":
+        return
+    run_id = action.caller.run_id
+    if not run_id:
+        return
+    metadata = {"phase": "gateway", **_gateway_decision_metadata(decision)}
+    if decision.outcome == "ask":
+        details = store.run_details.setdefault(run_id, {})
+        escalations = details.get("escalations")
+        if not isinstance(escalations, list):
+            escalations = []
+            details["escalations"] = escalations
+        pending = any(
+            isinstance(item, dict)
+            and item.get("kind") == "gateway"
+            and item.get("status") == "pending"
+            and item.get("fingerprint") == decision.fingerprint
+            for item in escalations
+        )
+        if not pending:
+            escalations.append(
+                {
+                    "id": f"esc-{uuid4()}",
+                    "kind": "gateway",
+                    "path": decision.target,
+                    "workspace_root": "",
+                    "policy": "ask",
+                    "status": "pending",
+                    "created_at": _now_iso(),
+                    "action_kind": decision.action_kind,
+                    "tool": decision.tool,
+                    "risk": decision.risk.label,
+                    "reasons": list(decision.reasons),
+                    "audit_id": decision.audit_id,
+                    "fingerprint": decision.fingerprint,
+                }
+            )
+        event_type = "approval_required"
+        title = f"Approval required: {decision.tool} ({decision.risk.label})"
+    else:
+        event_type = "guardrail_result"
+        title = f"Gateway denied: {decision.tool} ({decision.risk.label})"
+    store.run_events.setdefault(run_id, []).append(
+        WorkflowRunEvent(
+            id=f"evt-{uuid4()}",
+            type=event_type,  # type: ignore[arg-type]
+            title=title[:120],
+            summary=gateway_message(decision, decision.tool)[:500],
+            createdAt=_now_iso(),
+            metadata=metadata,
+        )
+    )
+
+
+def _graph_declared_tools(nodes: Any) -> set[str]:
+    """Tool capabilities a graph declares: the tools its tool-call nodes name."""
+    tools: set[str] = set()
+    for node in nodes or []:
+        if _normalize_node_type(getattr(node, "type", "")) != "locus/tool-call":
+            continue
+        config = node.config if isinstance(getattr(node, "config", None), dict) else {}
+        for key in ("tool_id", "integration_id"):
+            value = str(config.get(key) or "").strip()
+            if value:
+                tools.add(value)
+        if config.get("mcp_connection_id") or config.get("mcp_server_url"):
+            tools.add("tool/mcp")
+    return tools
+
+
+def _open_tool_node_session(run_id: str, principal: str, nodes: Any) -> GatewaySession | None:
+    _ensure_gateway()
+    return policy_gateway.open_run_session(
+        run_id=run_id,
+        principal=principal,
+        engine="backend.tool_node",
+        capabilities=policy_gateway.run_capabilities(
+            allowed_tools=_graph_declared_tools(nodes),
+            egress=_gateway_egress_hosts(),
+            max_tool_calls=int(store.platform_settings.max_tool_calls_per_run or 0),
+        ),
+        on_decision=_gateway_decision_listener,
+    )
+
+
+def _gateway_gate_tool_node(
+    *,
+    execution_state: dict[str, Any],
+    tool_id: str,
+    endpoint_url: str,
+    mcp_server_url: str,
+    method: str,
+    request_payload: Any,
+) -> dict[str, Any] | None:
+    """Gateway check for a ``locus/tool-call`` node; a rejection result or None."""
+    _ensure_gateway()
+    session = execution_state.get("gateway_session")
+    is_mcp = bool(mcp_server_url) or "mcp" in tool_id.lower()
+    host = host_of(mcp_server_url or endpoint_url)
+    arguments = (
+        dict(request_payload) if isinstance(request_payload, dict) else {"request": request_payload}
+    )
+    decision = authorize_action(
+        session if isinstance(session, GatewaySession) else None,
+        kind="mcp_tool_call" if is_mcp else "tool_call",
+        tool=tool_id,
+        target=host or tool_id,
+        args=arguments,
+        egress_host=host,
+        method="" if is_mcp else method,
+    )
+    if decision.allowed:
+        return None
+    meta = _gateway_decision_metadata(decision)
+    message = gateway_message(decision, tool_id)
+    if decision.outcome == "ask":
+        return {
+            "tool_output": {
+                "ok": False,
+                "approval_required": True,
+                "message": message,
+                "gateway": meta,
+            },
+            "status": {"state": "approval_required"},
+            "policy": {"control": "gateway", **meta},
+        }
+    return {
+        "tool_output": {"ok": False, "rejected": True, "message": message, "gateway": meta},
+        "status": {"state": "policy_rejected"},
+        "policy": {"control": "gateway", **meta},
+    }
+
+
 _CORTICAL_REASON_CODES = {
     "": "ok",
     "allowed": "ok",
@@ -16385,6 +16591,10 @@ def _sync_repo_workflows_into_store(*, update_existing: bool = False) -> None:
 @app.on_event("startup")
 def _startup_initialize_state() -> None:
     _active_runtime_profile()
+    try:
+        _ensure_gateway()
+    except Exception:  # noqa: BLE001 - no gateway installed means every action denies
+        LOGGER.exception("Failed to install the policy gateway")
     pre_startup_integrations = dict(store.integrations)
     postgres_status, postgres_reason = _service_status_with_reason(_POSTGRES_STATE)
     if postgres_status != "connected":
@@ -20541,6 +20751,35 @@ def approve_run_escalation(run_id: str, escalation_id: str, request: Request) ->
     )
     if target is None:
         raise HTTPException(status_code=404, detail="Escalation not found")
+    if target.get("kind") == "gateway":
+        # A gateway "ask": approve this exact action once for this run. Policy is
+        # still evaluated on the retry; an approval never overrides a deny.
+        _enforce_run_access(request, actor, run_id, action="workflow.run.escalations.approve")
+        if target.get("status") != "pending":
+            raise HTTPException(status_code=409, detail="Escalation is not pending")
+        gateway = _ensure_gateway()
+        approvals = getattr(gateway, "approvals", None)
+        fingerprint = str(target.get("fingerprint") or "")
+        if approvals is None or not fingerprint:
+            raise HTTPException(status_code=409, detail="Gateway approvals are unavailable")
+        approvals.approve(run_id, fingerprint, actor)
+        target["status"] = "approved"
+        target["approved_by"] = actor
+        target["approved_at"] = _now_iso()
+        _persist_store_state()
+        _append_audit_event(
+            "workflow.run.escalations.approve",
+            actor,
+            "allowed",
+            {
+                "run_id": run_id,
+                "kind": "gateway",
+                "tool": str(target.get("tool") or ""),
+                "risk": str(target.get("risk") or ""),
+                "gateway_audit_id": str(target.get("audit_id") or ""),
+            },
+        )
+        return {"ok": True, "escalation": target}
     target["status"] = "approved"
     target["approved_by"] = actor
     target["approved_at"] = _now_iso()
@@ -22280,12 +22519,41 @@ def create_workflow_run(
             else:
                 tool_schemas, tool_dispatch, tool_sources = [], {}, []
 
+            mcp_gateway_session: GatewaySession | None = None
+            if tool_dispatch:
+                _ensure_gateway()
+                mcp_gateway_session = policy_gateway.open_run_session(
+                    run_id=run_id,
+                    principal=_run_principal(run_id, actor),
+                    engine="backend.mcp",
+                    capabilities=policy_gateway.run_capabilities(
+                        allowed_tools=tool_dispatch.keys(),
+                        egress=_gateway_egress_hosts(),
+                        max_tool_calls=int(store.platform_settings.max_tool_calls_per_run or 0),
+                    ),
+                    on_decision=_gateway_decision_listener,
+                )
+
             def _execute_mcp_tool(name: str, arguments: dict[str, Any]) -> str:
                 entry = tool_dispatch.get(name)
                 if entry is None:
                     raise RuntimeError(f"Unknown tool '{name}'")
                 server, real_name = entry
-                return server.call_tool(real_name, arguments)
+                call_args = dict(arguments or {})
+                host = host_of(getattr(server, "base_url", ""))
+                decision = authorize_action(
+                    mcp_gateway_session,
+                    kind="mcp_tool_call",
+                    tool=name,
+                    target=host,
+                    args=call_args,
+                    egress_host=host,
+                )
+                if not decision.allowed:
+                    # Caught by the tool loop: reported to the model as a failed
+                    # tool call; the run continues (the listener records the event).
+                    raise GatewayBlocked(decision)
+                return server.call_tool(real_name, call_args, decision=decision)
 
             primary_work_id = f"work-{uuid4()}"
 
@@ -22366,6 +22634,8 @@ def create_workflow_run(
                 provider_error = exc
                 response_text = ""
                 model_meta = exc.to_meta()
+            finally:
+                policy_gateway.close_sessions([mcp_gateway_session])
             if tool_sources:
                 model_meta = {**model_meta, "tool_sources": tool_sources}
 
@@ -28588,6 +28858,7 @@ def _compile_and_run_locus_graph(
     *,
     run_id: str,
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
+    principal: str = "",
 ) -> tuple[dict[str, dict[str, Any]], list[GraphRunEvent]]:
     """Compile the canvas graph into a real LangGraph StateGraph and run it.
 
@@ -28633,12 +28904,14 @@ def _compile_and_run_locus_graph(
     session_id = str(
         runtime.get("session_id") or run_input.get("session_id") or f"session:{run_id}"
     )
+    gateway_principal = _run_principal(run_id, principal)
     execution_state: dict[str, Any] = {
         "run_id": run_id,
         "runtime": runtime,
         "session_id": session_id,
         "runtime_info": _resolve_runtime_engine(run_input, store.platform_settings),
         "effective_security_policy": _resolve_execution_security_policy(run_input),
+        "gateway_session": _open_tool_node_session(run_id, gateway_principal, payload.nodes),
     }
 
     def execute_native(
@@ -28709,6 +28982,7 @@ def _compile_and_run_locus_graph(
             res.reasoning_effort = override_effort
         return res
 
+    gateway_sessions: list[Any] = [execution_state.get("gateway_session")]
     deps = gc.CompilerDeps(
         resolve_agent=resolve_agent,
         make_chat_client=_make_harness_chat_client,
@@ -28721,10 +28995,20 @@ def _compile_and_run_locus_graph(
         max_loop_iterations=max(1, min(max_loops, 12)),
         node_timeout_s=600,
         mode=run_mode,
+        gateway_session_factory=policy_gateway.harness_session_factory(
+            run_id=run_id,
+            principal=gateway_principal,
+            egress=_gateway_egress_hosts(),
+            on_decision=_gateway_decision_listener,
+            opened=gateway_sessions,
+        ),
     )
 
-    compiled = gc.compile_locus_graph(list(payload.nodes), list(payload.links), deps)
-    result = gc.run_compiled_graph(compiled, run_input, deps)
+    try:
+        compiled = gc.compile_locus_graph(list(payload.nodes), list(payload.links), deps)
+        result = gc.run_compiled_graph(compiled, run_input, deps)
+    finally:
+        policy_gateway.close_sessions(gateway_sessions)
     node_results = result.get("node_results", {})
     if not isinstance(node_results, dict):
         node_results = {}
@@ -28812,7 +29096,7 @@ def _run_compiled_workflow_run(
 
     try:
         node_results, compiled_events, changed_files = _compile_and_run_locus_graph(
-            gp, run_id=run_id
+            gp, run_id=run_id, principal=str(access_context.get("actor") or "")
         )
     except Exception as exc:  # noqa: BLE001
         store.runs[run_id] = WorkflowRunSummary(
@@ -29035,7 +29319,7 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
     if _should_use_compiler(payload):
         try:
             compiled_results, compiled_events, compiled_changed = _compile_and_run_locus_graph(
-                payload, run_id=run_id
+                payload, run_id=run_id, principal=actor
             )
             _merge_changed_files(run_id, compiled_changed)
             runtime_snapshot = {
@@ -29123,6 +29407,9 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
             payload.input.get("tenant_runtime_policy")
             if isinstance(payload.input.get("tenant_runtime_policy"), dict)
             else {}
+        ),
+        "gateway_session": _open_tool_node_session(
+            run_id, _run_principal(run_id, actor), payload.nodes
         ),
     }
 
@@ -29294,8 +29581,10 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
             _append_audit_event(
                 "graph.run", actor, "error", {"run_id": run_id, "status": result.status}
             )
+            policy_gateway.close_sessions([execution_state.get("gateway_session")])
             return result.model_dump()
 
+    policy_gateway.close_sessions([execution_state.get("gateway_session")])
     runtime_snapshot = dict(runtime_info)
     runtime_snapshot["node_dispatches"] = execution_state.get("runtime_dispatches", [])
     result = GraphRunResult(

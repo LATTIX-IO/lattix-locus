@@ -54,7 +54,8 @@ confinement of agent tool execution.
 The frozen desktop bundle runs agents **in-process** via the harness
 (`desktop_config` sets `enable_agents=False` / `manage_backend=False` — a frozen
 exe cannot spawn `python -m uvicorn`). Tool execution is still OS-sandboxed
-(`LOCUS_SANDBOX_AGENTS=1` → `LocalSandboxExecutor`).
+(`LocalSandboxExecutor` is the default on every profile; `LOCUS_SANDBOX_AGENTS=0`
+is a dev opt-out whose process execution `tool_jail` still denies).
 
 The full **multi-process signed-A2A confined agent roster** (research/code/review
 over NATS) runs via `lattix native-up` (source/server install), not the shipped

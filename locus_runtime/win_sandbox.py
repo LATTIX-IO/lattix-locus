@@ -451,7 +451,12 @@ def _run_in_appcontainer(
         if not ok:
             raise OSError(ctypes.get_last_error(), "CreateProcessW (AppContainer) failed")
         try:
-            k32.AssignProcessToJobObject(h_job, pi.hProcess)
+            if not k32.AssignProcessToJobObject(h_job, pi.hProcess):
+                # Fail closed: the child is still suspended, so it never ran
+                # outside the Job Object's memory/process caps.
+                err = ctypes.get_last_error()
+                k32.TerminateProcess(pi.hProcess, 1)
+                raise OSError(err, "AssignProcessToJobObject (AppContainer) failed")
             k32.ResumeThread(pi.hThread)
             k32.WaitForSingleObject(
                 pi.hProcess, wintypes.DWORD(0xFFFFFFFF if not timeout else timeout * 1000)
@@ -535,6 +540,7 @@ def run_confined(
     read_paths: list[str] | None = None,
     write_paths: list[str] | None = None,
     cwd: str = "",
+    require_appcontainer: bool = False,
 ) -> ConfinementResult:
     """Run ``command`` under the strongest available Windows confinement tier.
 
@@ -546,14 +552,21 @@ def run_confined(
     silently degrading to the resource-only Job-Object tier when AppContainer is
     unavailable — use this for the hostile-code threat model where losing
     filesystem/network confinement is unacceptable.
+
+    ``require_appcontainer=True`` (the ``--require-appcontainer`` flag the harness
+    executor always passes) forces the AppContainer tier and fails closed whatever
+    the environment says: the gateway's jail facts promise exactly that.
     """
     if not _is_windows():
         raise RuntimeError("win_sandbox.run_confined is Windows-only")
     limits = compute_job_limits(memory=memory, pids=pids)
-    tier, allow_fallback = select_confinement_tier(
-        forced=os.getenv("LOCUS_WIN_SANDBOX_TIER"),
-        require_appcontainer=_env_flag("LOCUS_WIN_SANDBOX_REQUIRE_APPCONTAINER"),
-    )
+    if require_appcontainer:
+        tier, allow_fallback = "appcontainer", False
+    else:
+        tier, allow_fallback = select_confinement_tier(
+            forced=os.getenv("LOCUS_WIN_SANDBOX_TIER"),
+            require_appcontainer=_env_flag("LOCUS_WIN_SANDBOX_REQUIRE_APPCONTAINER"),
+        )
 
     if tier == "appcontainer":
         try:
@@ -573,8 +586,8 @@ def run_confined(
                 # and must NOT silently downgrade to the resource-only Job tier.
                 raise RuntimeError(
                     "AppContainer confinement is required "
-                    "(LOCUS_WIN_SANDBOX_REQUIRE_APPCONTAINER=1) but could not be "
-                    f"established: {exc}"
+                    "(--require-appcontainer / LOCUS_WIN_SANDBOX_REQUIRE_APPCONTAINER=1) "
+                    f"but could not be established: {exc}"
                 ) from exc
             sys.stderr.write(f"[win_sandbox] appcontainer unavailable, using job-object: {exc}\n")
 
@@ -596,6 +609,7 @@ class _Parsed:
     read_paths: list[str] = field(default_factory=list)
     write_paths: list[str] = field(default_factory=list)
     cwd: str = ""
+    require_appcontainer: bool = False
 
 
 def _parse_args(argv: list[str]) -> _Parsed:
@@ -613,6 +627,7 @@ def _parse_args(argv: list[str]) -> _Parsed:
     parser.add_argument("--cpu", default="1.0")
     parser.add_argument("--timeout", type=int, default=0)
     parser.add_argument("--allow-network", action="store_true")
+    parser.add_argument("--require-appcontainer", action="store_true")
     parser.add_argument("--read-path", action="append", default=[])
     parser.add_argument("--write-path", action="append", default=[])
     parser.add_argument("--cwd", default="")
@@ -627,6 +642,7 @@ def _parse_args(argv: list[str]) -> _Parsed:
         read_paths=ns.read_path,
         write_paths=ns.write_path,
         cwd=ns.cwd,
+        require_appcontainer=ns.require_appcontainer,
     )
 
 
@@ -645,6 +661,7 @@ def main(argv: list[str] | None = None) -> int:
         read_paths=parsed.read_paths,
         write_paths=parsed.write_paths,
         cwd=parsed.cwd,
+        require_appcontainer=parsed.require_appcontainer,
     )
     sys.stderr.write(f"[win_sandbox] tier={result.tier}\n")
     return result.exit_code

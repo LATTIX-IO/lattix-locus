@@ -19,11 +19,20 @@ from locus_runtime import sandbox as sb  # noqa: E402
 
 
 # --- executor selection ------------------------------------------------------
-def test_default_uses_direct_executor(tmp_path, monkeypatch):
+def test_default_uses_sandbox_executor(tmp_path, monkeypatch):
+    # Principal decision 2026-10-03: sandboxed execution is the default.
     monkeypatch.delenv("LOCUS_SANDBOX_AGENTS", raising=False)
     monkeypatch.delenv("LOCUS_RUNTIME_PROFILE", raising=False)
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
     ex = wb._make_executor(tmp_path, [])
-    assert isinstance(ex, LocalDirectExecutor)  # current deploys unchanged
+    assert isinstance(ex, LocalSandboxExecutor)
+
+
+def test_explicit_opt_out_uses_direct_executor(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCUS_SANDBOX_AGENTS", "0")
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    assert wb._sandbox_executor_requested() is False
+    assert isinstance(wb._make_executor(tmp_path, []), LocalDirectExecutor)
 
 
 def test_flag_selects_sandbox_executor(tmp_path, monkeypatch):

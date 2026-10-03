@@ -49,12 +49,44 @@ def _read(resource: str) -> dict[str, Any]:
 
 def _jail(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
+        "isolation_tier": "hardened-docker",
         "readonly_rootfs": True,
         "require_egress_mediation": True,
         "allow_network": False,
         "run_as_user": "1000:1000",
         "command": ["python", "-c", "1+1"],
         "allowed_executables": ["python"],
+    }
+    base.update(overrides)
+    return {key: value for key, value in base.items() if value is not None}
+
+
+def _appcontainer(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "isolation_tier": "windows-appcontainer",
+        "appcontainer": True,
+        "job_object": True,
+        "require_appcontainer": True,
+        "readonly_rootfs": False,
+        "run_as_user": "",
+        "allow_network": False,
+        "require_egress_mediation": False,
+        "command": ["cmd"],
+        "allowed_executables": ["cmd"],
+    }
+    base.update(overrides)
+    return {key: value for key, value in base.items() if value is not None}
+
+
+def _eval_container(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "isolation_tier": "docker-exec",
+        "runtime_profile": "evals",
+        "readonly_rootfs": False,
+        "run_as_user": "",
+        "allow_network": False,
+        "command": ["bash"],
+        "allowed_executables": ["bash"],
     }
     base.update(overrides)
     return {key: value for key, value in base.items() if value is not None}
@@ -401,6 +433,40 @@ ALLOW_CASES: list[tuple[str, str, dict[str, Any], bool]] = [
         False,
     ),
     ("jail.deny_unlisted_executable", "tool_jail", _jail(command=["bash", "-c", "id"]), False),
+    # --- tool_jail tiers (principal decision 2026-10-03: accept real OS jails) ---
+    ("jail.allow_bwrap", "tool_jail", _jail(isolation_tier="kernel-bwrap"), True),
+    ("jail.allow_seatbelt", "tool_jail", _jail(isolation_tier="kernel-seatbelt"), True),
+    ("jail.deny_facts_without_tier", "tool_jail", _jail(isolation_tier=None), False),
+    ("jail.allow_appcontainer_required", "tool_jail", _appcontainer(), True),
+    (
+        "jail.deny_appcontainer_not_required",
+        "tool_jail",
+        _appcontainer(require_appcontainer=False),
+        False,
+    ),
+    ("jail.deny_job_object_only", "tool_jail", _appcontainer(appcontainer=False), False),
+    ("jail.deny_appcontainer_no_job", "tool_jail", _appcontainer(job_object=False), False),
+    ("jail.deny_local_direct", "tool_jail", _jail(isolation_tier="local-direct"), False),
+    (
+        "jail.deny_restricted_process",
+        "tool_jail",
+        _jail(isolation_tier="restricted-process"),
+        False,
+    ),
+    ("jail.deny_unavailable", "tool_jail", _jail(isolation_tier="unavailable"), False),
+    ("jail.allow_eval_container", "tool_jail", _eval_container(), True),
+    (
+        "jail.deny_eval_container_normal_profile",
+        "tool_jail",
+        _eval_container(runtime_profile=""),
+        False,
+    ),
+    (
+        "jail.deny_eval_container_with_network",
+        "tool_jail",
+        _eval_container(allow_network=True, require_egress_mediation=True),
+        False,
+    ),
 ]
 
 # Rules the .rego tests assert on directly (``agent_policy.deny``).

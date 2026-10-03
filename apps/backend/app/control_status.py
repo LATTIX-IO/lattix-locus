@@ -37,6 +37,8 @@ PresidioState = Literal["loaded", "unavailable", "not_loaded"]
 _CONFINING_SANDBOX_STRATEGIES = frozenset(
     {"kernel-bwrap", "kernel-seatbelt", "windows-appcontainer", "hardened-docker"}
 )
+# What the harness reports when no confining tier exists on this host.
+_NO_SANDBOX_STRATEGY = "unavailable"
 # Strategies the planner can name but that Locus does not implement itself.
 _DELEGATED_SANDBOX_STRATEGIES = frozenset({"k8s-gvisor", "k8s-kata"})
 
@@ -83,18 +85,32 @@ class PostureFacts:
     nats_loaded: bool
     # locus_tooling.native_secrets.secret_storage_mode(); None if undeterminable.
     secret_storage_mode: str | None
+    # locus_runtime.gateway.gateway_enforcing(): a Gateway with a running engine is
+    # installed in this process (LOCUS-332). CI evidence that every execution entry
+    # point calls it: tests/harness/test_gateway_bypass.py.
+    gateway_enforcing: bool = False
 
 
 def _policy_engine(facts: PostureFacts) -> ControlStatus:
-    # Never "enforced" until an execution-path gateway calls the engine and this
-    # check is updated to prove it (P9). The Python copy of the rules is gone.
+    # "enforced" only when the engine can run here AND the gateway (the single PEP
+    # on every execution entry point) is installed with that engine running (P9).
+    if facts.policy_engine_available and facts.gateway_enforcing:
+        return ControlStatus(
+            "policy_engine_rego",
+            "Policy engine (Rego)",
+            "enforced",
+            "locus_runtime.gateway.Gateway evaluates policies/*.rego through a running OPA "
+            "sidecar before every harness exec/file write, tool-call node and MCP tool call "
+            "(fail closed); bypass test: tests/harness/test_gateway_bypass.py.",
+        )
     if facts.policy_engine_available:
         return ControlStatus(
             "policy_engine_rego",
             "Policy engine (Rego)",
             "unverified",
             "locus_runtime.policy_engine can evaluate policies/*.rego with OPA "
-            "(loopback sidecar, fail closed), but no execution-path gateway calls it yet.",
+            "(loopback sidecar, fail closed), but no gateway with a running engine is "
+            "installed in this process; side effects are denied until it is.",
         )
     return ControlStatus(
         "policy_engine_rego",
@@ -396,15 +412,25 @@ def _sandbox(facts: PostureFacts) -> ControlStatus:
             "execution_sandbox",
             label,
             "off",
-            "Harness agents use the unconfined LocalDirectExecutor; set LOCUS_SANDBOX_AGENTS "
-            f"or the local-native profile to use the planner (detected tier '{strategy}').",
+            "Harness agents use LocalDirectExecutor (explicit LOCUS_SANDBOX_AGENTS=0 opt-out "
+            "or a K8s pod); tool_jail denies its process execution "
+            f"(tier available here: '{strategy}').",
+        )
+    if strategy == _NO_SANDBOX_STRATEGY:
+        return ControlStatus(
+            "execution_sandbox",
+            label,
+            "off",
+            "No confining sandbox is available on this host (bubblewrap / seatbelt / "
+            "AppContainer / Docker); tool_jail denies agent process execution (fail closed).",
         )
     if strategy in _CONFINING_SANDBOX_STRATEGIES:
         return ControlStatus(
             "execution_sandbox",
             label,
             "enforced",
-            f"LocalSandboxExecutor plans through SandboxManager with tier '{strategy}'.",
+            f"Harness executes through LocalSandboxExecutor on the '{strategy}' tier selected "
+            "for this host (the default); tool_jail accepts only confining tiers.",
         )
     if strategy in _DELEGATED_SANDBOX_STRATEGIES:
         return ControlStatus(
@@ -484,12 +510,16 @@ def _envoy_authz_filters(config_path: Path | None) -> bool | None:
 
 
 def _detect_sandbox_strategy() -> str | None:
+    """The tier the harness default executor actually selects on this host."""
     try:
-        from locus_runtime.sandbox import SandboxManager
+        from locus_runtime.sandbox import select_confining_strategy
 
-        return str(SandboxManager().active_strategy.value)
+        selection = select_confining_strategy()
     except Exception:  # noqa: BLE001 - reported as "unverified", never as enforced
         return None
+    if selection.strategy is None:
+        return _NO_SANDBOX_STRATEGY
+    return str(selection.strategy.value)
 
 
 def _sandbox_executor_requested() -> bool | None:
@@ -512,6 +542,15 @@ def _policy_engine_available() -> bool:
 
         return bool(policy_engine_available())
     except Exception:  # noqa: BLE001 - reported as "off", never as enforced
+        return False
+
+
+def _gateway_enforcing() -> bool:
+    try:
+        from locus_runtime.gateway import gateway_enforcing
+
+        return bool(gateway_enforcing())
+    except Exception:  # noqa: BLE001 - reported as not enforced
         return False
 
 
@@ -558,4 +597,5 @@ def collect_posture_facts(
         envoy_authz_filters=_envoy_authz_filters(envoy_config_path),
         nats_loaded=_module_loaded("nats"),
         secret_storage_mode=_detect_secret_storage_mode(),
+        gateway_enforcing=_gateway_enforcing(),
     )

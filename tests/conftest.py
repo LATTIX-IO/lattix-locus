@@ -78,3 +78,13 @@ def in_memory_keychain(monkeypatch: pytest.MonkeyPatch) -> InMemoryKeychain:
     monkeypatch.setattr(native_secrets, "_keychain_backend", lambda: keychain)
     monkeypatch.setattr(native_secrets, "_RESOLVED", {})
     return keychain
+
+
+@pytest.fixture(autouse=True)
+def permissive_gateway():
+    """Install an allow-all gateway double so suites that predate the gateway PEP
+    (LOCUS-332) keep testing their own behaviour. Gateway tests install their own."""
+    from tests.gateway_support import AllowAllAuthorizer, installed
+
+    with installed(AllowAllAuthorizer()) as authorizer:
+        yield authorizer

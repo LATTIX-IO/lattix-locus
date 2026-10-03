@@ -83,6 +83,105 @@ def _validated_seccomp_profile_path() -> Path:
     return resolved
 
 
+#: Host environment variables an agent command may inherit (matched case-insensitively,
+#: because Windows environment names are case-insensitive). Everything else -- LOCUS_*
+#: settings, API keys, tokens, cloud credentials -- is dropped before a spawn.
+AGENT_ENV_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "PATH",
+        "PATHEXT",
+        "HOME",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "USER",
+        "USERNAME",
+        "LOGNAME",
+        "SHELL",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "LANG",
+        "LANGUAGE",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TERM",
+        "TZ",
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "COMSPEC",
+        "APPDATA",
+        # AppContainer process creation needs LOCALAPPDATA (Windows rewrites it to
+        # the container's own AC directory); without it CreateProcessW fails (203).
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PROGRAMW6432",
+        "COMMONPROGRAMFILES",
+        "COMMONPROGRAMFILES(X86)",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "OS",
+        "VIRTUAL_ENV",
+    }
+)
+
+#: Extra host variables the docker CLI itself needs (they never reach the container:
+#: only ``-e`` entries do).
+DOCKER_CLI_ENV_ALLOWLIST: frozenset[str] = frozenset(
+    {"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY"}
+)
+
+_SECRET_NAME_MARKERS = (
+    "KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "AUTH",
+    "SESSION",
+    "COOKIE",
+    "PRIVATE",
+)
+
+
+def is_secret_env_name(name: str) -> bool:
+    """True for names an agent command must never receive (LOCUS_* and secret-like)."""
+    upper = str(name or "").upper()
+    if upper.startswith("LOCUS_"):
+        return True
+    return any(marker in upper for marker in _SECRET_NAME_MARKERS)
+
+
+def minimal_agent_env(
+    extra: dict[str, str] | None = None,
+    *,
+    base: dict[str, str] | None = None,
+    allow: frozenset[str] = AGENT_ENV_ALLOWLIST,
+) -> dict[str, str]:
+    """The environment an agent command runs with: allowlisted host variables plus
+    explicit per-run variables. Secret-like names are dropped even when passed
+    explicitly (fail safe): credentials reach tools by reference, never via env."""
+    source = os.environ if base is None else base
+    env = {key: value for key, value in source.items() if key.upper() in allow}
+    for key, value in (extra or {}).items():
+        if is_secret_env_name(key):
+            continue
+        env[str(key)] = str(value)
+    return env
+
+
+def docker_cli_env(docker_host: str = "", *, base: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for the docker CLI process: the agent minimum plus DOCKER_* only."""
+    env = minimal_agent_env(base=base, allow=AGENT_ENV_ALLOWLIST | DOCKER_CLI_ENV_ALLOWLIST)
+    if docker_host:
+        env["DOCKER_HOST"] = docker_host
+    return env
+
+
 def sandbox_runner_image() -> str:
     return (
         str(os.getenv("SANDBOX_RUNNER_IMAGE") or DEFAULT_SANDBOX_RUNNER_IMAGE).strip()
@@ -140,6 +239,9 @@ class SandboxPolicy:
     cpu_limit: str = DEFAULT_CPU_LIMIT
     pid_limit: int = DEFAULT_PID_LIMIT
     timeout_seconds: int = DEFAULT_TOOL_TIMEOUT_SECONDS
+    # Windows: the launcher must fail closed instead of degrading to the
+    # resource-only Job-Object tier when AppContainer cannot be established.
+    require_appcontainer: bool = True
 
     def capabilities(self) -> SandboxCapabilities:
         return SandboxCapabilities(
@@ -366,9 +468,15 @@ class _HardenedDockerStrategy:
         return args
 
 
+#: Directory to start the Windows launcher in, so ``-m locus_runtime.win_sandbox``
+#: imports this checkout's launcher whatever the caller's working directory is.
+WIN_LAUNCHER_CWD = str(Path(__file__).resolve().parent.parent)
+
+
 class _WindowsAppContainerStrategy:
-    """Windows: confine the child via the win_sandbox launcher (Job Object now,
-    AppContainer / Windows-Sandbox as opt-in tiers). No Docker required."""
+    """Windows: confine the child via the win_sandbox launcher (AppContainer + Job
+    Object; with ``require_appcontainer`` the launcher fails closed instead of
+    degrading to the Job-Object-only tier). No Docker required."""
 
     def build_command(self, spec: ExecutionSpec, policy: SandboxPolicy) -> list[str]:
         import sys as _sys
@@ -389,6 +497,8 @@ class _WindowsAppContainerStrategy:
         ]
         if policy.allow_network:
             args.append("--allow-network")
+        if policy.require_appcontainer:
+            args.append("--require-appcontainer")
         for path in policy.allowed_read_paths:
             args += ["--read-path", str(Path(path).expanduser().resolve())]
         for path in policy.allowed_write_paths:
@@ -518,12 +628,16 @@ class SandboxManager:
             backend = "restricted-process"
 
         network_name = "locus-sandbox-internal" if policy.allow_network else None
+        metadata: dict[str, Any] = {}
+        if strategy == IsolationStrategy.WINDOWS_APPCONTAINER:
+            metadata["launcher_cwd"] = WIN_LAUNCHER_CWD
 
         return ExecutionPlan(
             backend=backend,
             command=cmd,
             strategy=strategy,
             network_name=network_name,
+            metadata=metadata,
         )
 
     @staticmethod
@@ -584,6 +698,106 @@ class ToolJailService:
 # ---------------------------------------------------------------------------
 # Utility
 # ---------------------------------------------------------------------------
+
+
+#: Strategies that confine a command on this host (what tool_jail accepts as a jail).
+CONFINING_STRATEGIES: frozenset[IsolationStrategy] = frozenset(
+    {
+        IsolationStrategy.KERNEL_BWRAP,
+        IsolationStrategy.KERNEL_SEATBELT,
+        IsolationStrategy.WINDOWS_APPCONTAINER,
+        IsolationStrategy.HARDENED_DOCKER,
+    }
+)
+
+_SEATBELT_PATH = Path("/usr/bin/sandbox-exec")
+
+
+def windows_appcontainer_supported() -> bool:
+    """The AppContainer APIs the win_sandbox launcher calls exist on this host."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        userenv = ctypes.WinDLL("userenv")  # type: ignore[attr-defined]
+        return all(
+            hasattr(userenv, name)
+            for name in ("CreateAppContainerProfile", "DeriveAppContainerSidFromAppContainerName")
+        )
+    except (OSError, AttributeError):
+        return False
+
+
+@dataclass(frozen=True)
+class ConfinementSelection:
+    """The confining strategy for harness execution on this host, or why there is none."""
+
+    strategy: IsolationStrategy | None
+    platform: HostPlatform
+    reason: str
+
+
+def _no_sandbox_hint(platform: HostPlatform, native: bool) -> str:
+    docker = "" if native else " or install Docker (hardened-docker tier)"
+    if platform == HostPlatform.LINUX:
+        return (
+            "no confining sandbox available on this host: install bubblewrap "
+            f"(apt install bubblewrap / dnf install bubblewrap){docker}"
+        )
+    if platform == HostPlatform.MACOS:
+        return (
+            f"no confining sandbox available on this host: /usr/bin/sandbox-exec is missing{docker}"
+        )
+    return (
+        "no confining sandbox available on this host: the Windows AppContainer APIs "
+        f"(userenv.dll, Windows 8 / Server 2012 or later) are unavailable{docker}"
+    )
+
+
+def select_confining_strategy(
+    *,
+    platform: HostPlatform | None = None,
+    which: Any = None,
+    seatbelt_available: bool | None = None,
+    appcontainer_available: bool | None = None,
+    profile: str | None = None,
+) -> ConfinementSelection:
+    """Pick the platform's confining tier for harness execution (fail closed).
+
+    Windows → AppContainer (+ Job Object, require_appcontainer); macOS → seatbelt;
+    Linux → bubblewrap; otherwise hardened Docker when the docker CLI exists (never
+    under the Dockerless native profile). ``strategy`` is ``None`` when nothing can
+    confine a command here; ``reason`` then says what to install. Inputs are
+    injectable so selection is testable on any host.
+    """
+    host = platform or detect_host_platform()
+    find = which or shutil.which
+    run_profile = str(
+        profile if profile is not None else os.getenv("LOCUS_RUNTIME_PROFILE") or ""
+    ).lower()
+    native = run_profile in {"local-native", "native", "local_native"}
+    if host == HostPlatform.WINDOWS:
+        available = (
+            windows_appcontainer_supported()
+            if appcontainer_available is None
+            else appcontainer_available
+        )
+        if available:
+            return ConfinementSelection(
+                IsolationStrategy.WINDOWS_APPCONTAINER, host, "windows AppContainer + Job Object"
+            )
+    elif host == HostPlatform.MACOS:
+        available = _SEATBELT_PATH.is_file() if seatbelt_available is None else seatbelt_available
+        if available:
+            return ConfinementSelection(IsolationStrategy.KERNEL_SEATBELT, host, "macOS seatbelt")
+    elif find("bwrap"):
+        return ConfinementSelection(IsolationStrategy.KERNEL_BWRAP, host, "linux bubblewrap")
+    if not native and find("docker"):
+        return ConfinementSelection(
+            IsolationStrategy.HARDENED_DOCKER, host, "hardened docker container"
+        )
+    return ConfinementSelection(None, host, _no_sandbox_hint(host, native))
 
 
 def detect_host_platform(system_name: str | None = None) -> HostPlatform:

@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from locus_runtime.harness.executor import DockerContainerExecutor, LocalDirectExecutor
+from locus_runtime.gateway import GatewaySession
+from locus_runtime.harness.executor import DockerContainerExecutor, Executor, default_executor
 from locus_runtime.harness.swe_agent import SweTask
 
 
@@ -149,8 +150,19 @@ def synthetic_instances(instance_ids: list[str] | None = None) -> list[LoadedIns
     return [i for i in _SYNTHETIC if i.instance_id in wanted]
 
 
-def materialize_synthetic(inst: LoadedInstance, root: Path, *, seed: int | None = None) -> SweTask:
-    """Write the buggy repo to ``root``, git-init it, return a bound SweTask."""
+def materialize_synthetic(
+    inst: LoadedInstance,
+    root: Path,
+    *,
+    seed: int | None = None,
+    executor: Executor | None = None,
+) -> SweTask:
+    """Write the buggy repo to ``root``, git-init it, return a bound SweTask.
+
+    ``executor`` is the instance's gated executor (bound to its eval gateway
+    session); by default the platform's confining executor for ``root``. The
+    git setup below is platform provisioning before the agent runs, not an
+    agent action."""
     import subprocess
 
     for rel, content in inst.files.items():
@@ -172,7 +184,7 @@ def materialize_synthetic(inst: LoadedInstance, root: Path, *, seed: int | None 
     return SweTask(
         instance_id=inst.instance_id,
         problem_statement=inst.problem_statement,
-        executor=LocalDirectExecutor(root),
+        executor=executor if executor is not None else default_executor(root),
         test_command=f"{py} runtests.py",
         seed=seed,
         metadata={"dataset": "synthetic-mini", "fix": inst.fix.edits},
@@ -190,6 +202,7 @@ def swebench_tasks(
     docker_host: str = "",
     container_resolver: Callable[[str], str] | None = None,
     seed: int | None = None,
+    session_for: Callable[[str], GatewaySession] | None = None,
 ) -> list[SweTask]:
     """Build SweTasks backed by per-instance SWE-bench Docker containers.
 
@@ -197,6 +210,7 @@ def swebench_tasks(
     official SWE-bench image for the instance (caller-provided so this module
     stays free of a hard docker/datasets dependency). Problem statements are
     pulled from the ``princeton-nlp/SWE-bench_Verified`` dataset when available.
+    ``session_for(instance_id)`` opens the instance's ``evals`` gateway session.
     """
     statements = _load_swebench_statements(instance_ids)
     tasks: list[SweTask] = []
@@ -207,7 +221,10 @@ def swebench_tasks(
             )
         container_id = container_resolver(iid)
         executor = DockerContainerExecutor(
-            container_id, workdir_path="/testbed", docker_host=docker_host
+            container_id,
+            workdir_path="/testbed",
+            docker_host=docker_host,
+            gateway_session=session_for(iid) if session_for is not None else None,
         )
         tasks.append(
             SweTask(

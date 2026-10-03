@@ -68,7 +68,9 @@ def test_sdet_agent_drives_eval_with_reference_solver(tmp_path):
         seeds=[0],
         output_dir=str(tmp_path / "out"),
     )
-    run = run_eval(config, output_dir=tmp_path / "out")
+    from tests.gateway_support import eval_run_doubles
+
+    run = run_eval(config, output_dir=tmp_path / "out", **eval_run_doubles())
     assert run.summary["resolve_rate_mean"] == 1.0
     # the run used the SDET agent's prompt — confirm via a trajectory header
     traj = next((tmp_path / "out" / "instances").rglob("*.jsonl"))
