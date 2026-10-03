@@ -79,12 +79,46 @@ def ensure_sidecars(
     return report
 
 
+ToolchainFn = Callable[..., "nb.ToolchainReport"]
+
+
+def ensure_agent_toolchain(
+    app_home: Path,
+    *,
+    progress: ProgressFn | None = None,
+    provision_toolchain: ToolchainFn | None = None,
+    os_name: str | None = None,
+) -> "nb.ToolchainReport | None":
+    """Windows only: fetch the agent toolchain (BusyBox sh + embeddable Python) that
+    commands inside the AppContainer run with, and grant the container access to it.
+    Never raises; a failure is reported and agent shell commands then fail with an
+    actionable message until a later run fetches it."""
+    progress = progress or _default_progress
+    if (os_name or nb.current_platform()[0]) != "windows":
+        return None
+    provision_toolchain = provision_toolchain or nb.provision_toolchain
+    progress("checking agent toolchain (busybox sh, python)")
+    try:
+        report = provision_toolchain(Path(app_home))
+    except Exception as exc:  # noqa: BLE001 - first run must not crash the app
+        progress(f"FAILED agent toolchain: {exc}")
+        return None
+    for name in report.installed:
+        progress(f"installed {name}")
+    for name in report.present:
+        progress(f"present {name}")
+    for name, err in report.failed.items():
+        progress(f"FAILED {name}: {err}")
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
-    from .desktop import writable_bin_dir
+    from .desktop import desktop_app_home, writable_bin_dir
 
     args = list(argv if argv is not None else sys.argv[1:])
     model = args[0] if args else "gpt-oss:20b"
     ensure_sidecars(writable_bin_dir(), model=model)
+    ensure_agent_toolchain(desktop_app_home())
     return 0
 
 

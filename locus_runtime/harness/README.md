@@ -95,7 +95,11 @@ file operation raises `GatewayBlocked`; `CodingToolset` turns both into a
   are always dropped. The docker CLI additionally gets DOCKER_* only.
 - On Windows the AppContainer is default-deny: only native tools readable by
   ALL APPLICATION PACKAGES (System32, Program Files, e.g. `cmd`, `git`) run;
-  WSL `bash` and user-profile Python installs do not.
+  WSL `bash` and user-profile Python installs do not. Shell and Python therefore
+  come from the Locus-owned agent toolchain (BusyBox `sh` + embeddable CPython,
+  `lattix native-fetch-toolchain`): `run_shell` is `busybox sh -c`, and
+  `sh`/`bash`/`python`/`python3` map to the toolchain after the gateway allowed
+  the logical name. See `docs/SANDBOXING.md`, "Windows agent toolchain".
 - Executables allowed by `tool_jail`: `LOCUS_GATEWAY_ALLOWED_EXECUTABLES`
   (comma separated; default `bash,sh,git,python,python3,pytest,rg,grep,codex`).
 - `tests/harness/test_gateway_bypass.py` fails if a new spawn/write/network

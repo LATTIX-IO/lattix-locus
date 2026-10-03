@@ -146,6 +146,7 @@ celerybeat.pid
 .installer/
 .locus/
 .tools/
+/toolchain/
 .venv
 node_modules/
 .next/

@@ -166,7 +166,7 @@ def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
     fast_supervisor.start_all()
     _LIVE_SUPERVISORS.append(fast_supervisor)
 
-    from .desktop_firstrun import ensure_sidecars
+    from .desktop_firstrun import ensure_agent_toolchain, ensure_sidecars
 
     deferred_supervisors: list = []
 
@@ -174,6 +174,7 @@ def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
         # Fetch any missing sidecar binaries, then start DB/model services + pull
         # the model (re-plan so newly-fetched binaries are picked up).
         ensure_sidecars(writable_bin_dir(), model=None, progress=log)
+        ensure_agent_toolchain(desktop_app_home(), progress=log)
         plan2 = build_native_plan(desktop_config(**overrides))
         deferred = NativePlan([s for s in plan2.services if s.name != "frontend"], plan2.env, [])
         sup = NativeSupervisor(deferred, log=log)

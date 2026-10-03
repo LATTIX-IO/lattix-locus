@@ -43,6 +43,7 @@ from locus_runtime.sandbox import (
     SandboxManager,
     windows_appcontainer_supported,
 )
+from locus_runtime.win_toolchain import WindowsToolchain, discover_toolchain
 
 ROOT = "/workspace/project"
 
@@ -293,3 +294,84 @@ def test_real_command_runs_in_appcontainer_through_the_gateway(
     assert blocked.exit_code != 0
     assert "host-only" not in blocked.stdout
     assert os.name == "nt"
+
+
+# --- Windows agent toolchain inside the AppContainer (LOCUS-333) -------------------------------
+
+
+def _installed_toolchain() -> WindowsToolchain | None:
+    """The toolchain under ``LOCUS_TEST_TOOLCHAIN_APP_HOME`` (else the real app home).
+    Fetch one with ``provision_toolchain(<app_home>)`` / ``lattix native-fetch-toolchain``."""
+    home = str(os.getenv("LOCUS_TEST_TOOLCHAIN_APP_HOME") or "").strip()
+    return discover_toolchain(Path(home) if home else None)
+
+
+@requires_appcontainer
+def test_toolchain_shell_and_python_run_in_appcontainer_through_the_gateway(
+    gateway: Gateway,
+    audit: list[GatewayAuditRecord],
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    toolchain = _installed_toolchain()
+    if toolchain is None:
+        pytest.skip("Windows agent toolchain not installed (set LOCUS_TEST_TOOLCHAIN_APP_HOME)")
+    workspace = tmp_path_factory.mktemp("toolchain-ws").resolve()
+    outside = tmp_path_factory.mktemp("toolchain-outside").resolve()
+    secret = outside / "secret.txt"
+    secret.write_text("host-only", encoding="utf-8")
+    (workspace / "pkg").mkdir()
+    (workspace / "pkg" / "__init__.py").write_text("VALUE = 42\n", encoding="utf-8")
+    (workspace / "main.py").write_text("import pkg\nprint('pkg', pkg.VALUE)\n", encoding="utf-8")
+    session = _session(
+        gateway,
+        read_roots=(str(workspace),),
+        write_roots=(str(workspace),),
+        allowed_executables=("sh", "python"),
+    )
+    executor = LocalSandboxExecutor(
+        workspace,
+        manager=SandboxManager(force_strategy=IsolationStrategy.WINDOWS_APPCONTAINER),
+        gateway_session=session,
+        toolchain=toolchain,
+    )
+
+    result = executor.run_shell("echo hi && python -c 'print(2+2)'", timeout=60)
+    if result.exit_code != 0 and "AppContainer confinement is required" in result.stderr:
+        pytest.skip(f"AppContainer tier cannot be created on this host: {result.stderr[-300:]}")
+    assert audit[-1].outcome == "allow"
+    assert result.exit_code == 0, result.stderr
+    assert result.backend == "windows-appcontainer"
+    assert result.stdout.split() == ["hi", "4"], (result.stdout, result.stderr)
+
+    # Scripts and -m resolve modules from the workspace like a regular CPython.
+    scripts = executor.run_shell(
+        "python main.py && python -m pkg.__init__ && echo done", timeout=60
+    )
+    assert scripts.exit_code == 0, scripts.stderr
+    assert "pkg 42" in scripts.stdout and "done" in scripts.stdout
+
+    # Toolchain first on PATH; the workspace is writable.
+    probe = executor.run_shell("command -v python && echo ok > inside.txt", timeout=60)
+    assert probe.exit_code == 0, probe.stderr
+    assert Path(probe.stdout.strip()).parent == toolchain.python_dir
+    assert (workspace / "inside.txt").read_text(encoding="utf-8").strip() == "ok"
+
+    # Still default-deny outside the workspace + toolchain: shell and Python alike.
+    for script in (
+        f"cat '{secret.as_posix()}'",
+        f"python -c \"print(open(r'{secret}').read())\"",
+    ):
+        blocked = executor.run_shell(script, timeout=60)
+        assert blocked.gateway is None, script  # the gateway allowed it; the OS refused it
+        assert blocked.exit_code != 0, script
+        assert "host-only" not in blocked.stdout, script
+
+    # The toolchain is read+execute only for the container.
+    tamper = executor.run_shell(f"echo x > '{(toolchain.python_dir / 'pwned.txt').as_posix()}'")
+    assert tamper.exit_code != 0
+    assert not (toolchain.python_dir / "pwned.txt").exists()
+
+    # A toolchain binary path is not a logical name: tool_jail denies it.
+    by_path = executor.run([str(toolchain.busybox_exe), "sh", "-c", "echo hi"], timeout=60)
+    assert by_path.gateway is not None and by_path.gateway.outcome == "deny"
+    assert "tool_jail.executable_not_allowlisted" in by_path.gateway.reasons

@@ -156,21 +156,45 @@ def is_secret_env_name(name: str) -> bool:
     return any(marker in upper for marker in _SECRET_NAME_MARKERS)
 
 
+def prepend_path(env: dict[str, str], dirs: list[str]) -> dict[str, str]:
+    """Return ``env`` with ``dirs`` first on PATH (Windows keys are case-insensitive;
+    an existing ``Path``/``PATH`` key is reused). Duplicates are dropped."""
+    out = dict(env)
+    key = next((k for k in out if k.upper() == "PATH"), "PATH")
+    existing = [p for p in str(out.get(key, "")).split(os.pathsep) if p]
+    seen: set[str] = set()
+    merged: list[str] = []
+    for entry in [*dirs, *existing]:
+        norm = os.path.normcase(entry)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        merged.append(entry)
+    out[key] = os.pathsep.join(merged)
+    return out
+
+
 def minimal_agent_env(
     extra: dict[str, str] | None = None,
     *,
     base: dict[str, str] | None = None,
     allow: frozenset[str] = AGENT_ENV_ALLOWLIST,
+    path_prepend: list[str] | None = None,
 ) -> dict[str, str]:
     """The environment an agent command runs with: allowlisted host variables plus
     explicit per-run variables. Secret-like names are dropped even when passed
-    explicitly (fail safe): credentials reach tools by reference, never via env."""
+    explicitly (fail safe): credentials reach tools by reference, never via env.
+
+    ``path_prepend`` puts directories first on PATH (the Windows agent toolchain:
+    BusyBox, then the embeddable Python), ahead of explicit and host entries."""
     source = os.environ if base is None else base
     env = {key: value for key, value in source.items() if key.upper() in allow}
     for key, value in (extra or {}).items():
         if is_secret_env_name(key):
             continue
         env[str(key)] = str(value)
+    if path_prepend:
+        env = prepend_path(env, [str(d) for d in path_prepend])
     return env
 
 
@@ -242,6 +266,9 @@ class SandboxPolicy:
     # Windows: the launcher must fail closed instead of degrading to the
     # resource-only Job-Object tier when AppContainer cannot be established.
     require_appcontainer: bool = True
+    # Windows: the Locus-owned agent toolchain directory; the launcher grants the
+    # AppContainer SID read+execute on it (once, idempotent). Empty: no toolchain.
+    toolchain_root: str = ""
 
     def capabilities(self) -> SandboxCapabilities:
         return SandboxCapabilities(
@@ -505,6 +532,8 @@ class _WindowsAppContainerStrategy:
             args += ["--write-path", str(Path(path).expanduser().resolve())]
         if spec.cwd:
             args += ["--cwd", spec.cwd]
+        if policy.toolchain_root:
+            args += ["--toolchain-root", str(Path(policy.toolchain_root).resolve())]
         args += ["--", *spec.command]
         return args
 

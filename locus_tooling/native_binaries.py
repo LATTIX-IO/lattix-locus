@@ -78,6 +78,10 @@ class BinarySpec:
     nested_glob: str | None = None  # glob of the inner archive inside the outer
     nested_archive: str = ""  # archive type of the inner ("tar.xz")
     runtime_dep: str = ""  # informational: e.g. neo4j needs "jre"
+    # dir layout: write launcher shims into bin_dir. The agent toolchain turns this
+    # off: its binaries are invoked by absolute path / PATH inside the sandbox, and a
+    # .cmd shim would need cmd.exe there.
+    write_shims: bool = True
 
 
 # Versions mirror the docker-compose images so native == hosted parity. Overridable.
@@ -260,6 +264,8 @@ def _extract_dir(archive_path: Path, spec: BinarySpec, bin_dir: Path) -> Path:
             inner.unlink()
         except OSError:
             pass
+    if not spec.write_shims:
+        return _resolve_in_tree(root, spec.member_rel)
     primary: Path | None = None
     for shim_name, rel in [(_shim_base(spec.exe), spec.member_rel), *spec.extra_shims]:
         target = _resolve_in_tree(root, rel)
@@ -436,4 +442,297 @@ def provision(
                 )
         except Exception as exc:  # noqa: BLE001 - record, don't abort the batch
             report.failed[name] = str(exc)
+    return report
+
+
+# --------------------------------------------------------------------------- #
+# Windows agent toolchain (LOCUS-333)
+# --------------------------------------------------------------------------- #
+# Inside the Windows AppContainer only binaries readable by ALL APPLICATION
+# PACKAGES run (cmd, git, ...): the user's Python, Git-bash and WSL bash are not
+# reachable. Locus therefore ships its own small toolchain into a Locus-owned
+# directory (``<app_home>/toolchain``) and grants read+execute on that directory
+# only, to the Locus AppContainer SID (see ``locus_runtime.win_toolchain``).
+#
+# Pinned artifacts (P28 provenance: official URL + sha256; P29 licence):
+# * CPython "embeddable package" -- python.org, PSF-2.0. The sha256 values are the
+#   ones python.org publishes for the release files (downloads API ``sha256_sum``).
+# * BusyBox-w64 -- frippery.org (Ron Yorston), GPL-2.0-only. Fetched as a separate,
+#   unmodified binary and run as a separate program (mere aggregation); source at
+#   https://frippery.org/busybox/. The sha256 values are from frippery.org's SHA256SUM.
+# Bumping a version means updating the version, every per-arch sha256 and the docs
+# (docs/SANDBOXING.md, "Windows agent toolchain"). There is deliberately no env
+# override: an unpinned toolchain would bypass verification.
+TOOLCHAIN_DIRNAME = "toolchain"
+TOOLCHAIN_MARKER = ".locus-toolchain"  # proves the directory was created by Locus
+INSTALL_STAMP = ".locus-installed"  # written last: the component is complete
+
+PYTHON_EMBED_VERSION = "3.14.8"
+_PYTHON_EMBED_SHA256 = {
+    "amd64": "a93abe456ab01bd96d7a085b3cdb6566b3063f4241360d114142fbdb07f0a310",
+    "arm64": "155be84ccb57c6331cf0e39001c78a1dfac3be62f403f3ff5f2e29b80dda7ebe",
+}
+
+BUSYBOX_BUILD = "FRP-6075-g169694ebd"
+# amd64: the UTF-8 ("u") build (Windows 10 1903+); the arm64 build is UTF-8 already.
+_BUSYBOX_ASSETS = {
+    "amd64": (
+        f"busybox-w64u-{BUSYBOX_BUILD}.exe",
+        "6e263d154d8548d1eb936f65d1d8312c80df31c45974e48d6335e4dcc0f4f34c",
+    ),
+    "arm64": (
+        f"busybox-w64a-{BUSYBOX_BUILD}.exe",
+        "e67f873d19d58c535cc9f0c4965ffd622e19b7bab87e3da89cb2185fb54464d7",
+    ),
+}
+
+BUSYBOX_SUBDIR = "busybox"
+BUSYBOX_EXE = "busybox.exe"
+
+
+def python_embed_subdir(version: str = PYTHON_EMBED_VERSION) -> str:
+    return f"python-{version}"
+
+
+def _python_tag(version: str) -> str:
+    major, minor = version.split(".")[:2]
+    return f"python{major}{minor}"
+
+
+def toolchain_dir(app_home: Path) -> Path:
+    return Path(app_home) / TOOLCHAIN_DIRNAME
+
+
+def _require_windows(name: str, os_name: str, arch: str) -> None:
+    if os_name != "windows":
+        raise UnsupportedPlatformError(f"'{name}' is part of the Windows agent toolchain only")
+    if arch not in {"amd64", "arm64"}:
+        raise UnsupportedPlatformError(f"unsupported arch '{arch}' for '{name}'")
+
+
+def _python_embed_spec(os_name: str, arch: str) -> BinarySpec:
+    _require_windows("python-embed", os_name, arch)
+    v = PYTHON_EMBED_VERSION
+    return BinarySpec(
+        name="python-embed",
+        exe="python.exe",
+        kind="auto",
+        url=f"https://www.python.org/ftp/python/{v}/python-{v}-embed-{arch}.zip",
+        archive="zip",
+        sha256=_PYTHON_EMBED_SHA256[arch],
+        layout="dir",
+        install_subdir=python_embed_subdir(v),
+        member_rel="python.exe",
+        write_shims=False,
+        note="CPython embeddable package (PSF-2.0)",
+    )
+
+
+def _busybox_spec(os_name: str, arch: str) -> BinarySpec:
+    _require_windows("busybox", os_name, arch)
+    asset, digest = _BUSYBOX_ASSETS[arch]
+    return BinarySpec(
+        name="busybox",
+        exe=BUSYBOX_EXE,
+        kind="auto",
+        url=f"https://frippery.org/files/busybox/{asset}",
+        archive="raw",
+        sha256=digest,
+        layout="single",
+        note="BusyBox-w64 (GPL-2.0-only), unmodified upstream binary",
+    )
+
+
+_TOOLCHAIN_BUILDERS: dict[str, Callable[[str, str], BinarySpec]] = {
+    "python-embed": _python_embed_spec,
+    "busybox": _busybox_spec,
+}
+TOOLCHAIN_COMPONENTS = tuple(_TOOLCHAIN_BUILDERS)
+
+
+def resolve_toolchain_spec(name: str, os_name: str, arch: str) -> BinarySpec:
+    builder = _TOOLCHAIN_BUILDERS.get(name)
+    if builder is None:
+        raise UnsupportedPlatformError(f"no toolchain spec for '{name}'")
+    return builder(os_name, arch)
+
+
+def toolchain_component_dir(root: Path, spec: BinarySpec) -> Path:
+    return Path(root) / (spec.install_subdir if spec.layout == "dir" else BUSYBOX_SUBDIR)
+
+
+# The embeddable package runs isolated via its ._pth file: no registry PythonPath,
+# no user site-packages, no PYTHON* host variables -- the toolchain behaves the same
+# on every host. ``import site`` is enabled only so the sitecustomize below runs.
+_SITECUSTOMIZE = '''"""Locus agent toolchain: normal sys.path[0] / PYTHONPATH behaviour.
+
+The embeddable CPython runs isolated because of its ._pth file, which also drops
+the script directory (or the current directory for -c, -m and stdin) from
+sys.path and ignores PYTHONPATH. That breaks ``python script.py`` and
+``python -m pkg`` in an agent workspace, so re-add exactly what a regular CPython
+adds. The sandbox never passes the host PYTHONPATH; only the agent's own shell
+can set it. Written by Locus (locus_tooling.native_binaries); do not edit.
+"""
+
+import os
+import sys
+
+
+def _locus_safe_path_requested():
+    args = sys.orig_argv[1:]
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-c", "-m", "-") or not arg.startswith("-"):
+            return False
+        if arg.startswith("--"):
+            i += 1
+            continue
+        letters = arg[1:]
+        if letters in ("W", "X"):
+            i += 2
+            continue
+        if letters[:1] in ("W", "X"):
+            i += 1
+            continue
+        if "P" in letters or "I" in letters:
+            return True
+        i += 1
+    return False
+
+
+def _locus_fix_path():
+    if _locus_safe_path_requested():
+        return
+    argv0 = sys.argv[0] if sys.argv else ""
+    if argv0 in ("", "-c", "-"):
+        path0 = ""
+    elif argv0 == "-m":
+        path0 = os.getcwd()
+    elif os.path.isfile(argv0) and not argv0.lower().endswith((".zip", ".pyz")):
+        path0 = os.path.dirname(os.path.abspath(argv0))
+    else:
+        path0 = None  # directories / zipapps: CPython already inserted them
+    extra = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
+    head = ([path0] if path0 is not None else []) + extra
+    for entry in reversed(head):
+        if entry not in sys.path:
+            sys.path.insert(0, entry)
+
+
+_locus_fix_path()
+del _locus_fix_path, _locus_safe_path_requested
+'''
+
+
+def configure_embedded_python(python_dir: Path, version: str = PYTHON_EMBED_VERSION) -> None:
+    """Rewrite the embeddable package's ``._pth`` (stdlib zip + home + ``import site``)
+    and add the Locus ``sitecustomize.py``. Idempotent."""
+    tag = _python_tag(version)
+    home = Path(python_dir)
+    (home / f"{tag}._pth").write_text(f"{tag}.zip\n.\nimport site\n", encoding="utf-8")
+    (home / "sitecustomize.py").write_text(_SITECUSTOMIZE, encoding="utf-8")
+
+
+def _stamp_text(spec: BinarySpec) -> str:
+    return f"{spec.url} {spec.sha256}"
+
+
+def toolchain_component_installed(root: Path, spec: BinarySpec) -> bool:
+    """The component's install stamp matches the pinned url + sha256."""
+    stamp = toolchain_component_dir(root, spec) / INSTALL_STAMP
+    try:
+        return stamp.read_text(encoding="utf-8").strip() == _stamp_text(spec)
+    except OSError:
+        return False
+
+
+def ensure_toolchain_marker(root: Path) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    marker = root / TOOLCHAIN_MARKER
+    if not marker.is_file():
+        marker.write_text(
+            "Locus-managed Windows agent toolchain. Read+execute is granted to the Locus "
+            "AppContainer SID only. Safe to delete; Locus fetches it again.\n",
+            encoding="utf-8",
+        )
+
+
+GrantFn = Callable[[Path], None]
+
+
+def _default_toolchain_grant(root: Path) -> None:
+    from locus_runtime.win_toolchain import grant_toolchain_access
+
+    grant_toolchain_access(root)
+
+
+@dataclass
+class ToolchainReport:
+    root: str = ""
+    installed: dict[str, str] = field(default_factory=dict)
+    present: dict[str, str] = field(default_factory=dict)
+    failed: dict[str, str] = field(default_factory=dict)
+    granted: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed
+
+
+def provision_toolchain(
+    app_home: Path,
+    *,
+    os_name: str | None = None,
+    arch: str | None = None,
+    download: DownloadFn = _default_download,
+    extract: ExtractFn = _default_extract,
+    verify: VerifyFn = _default_verify,
+    grant: GrantFn | None = _default_toolchain_grant,
+) -> ToolchainReport:
+    """Fetch (first run / on demand) the Windows agent toolchain into
+    ``<app_home>/toolchain`` and grant the Locus AppContainer read+execute on it.
+
+    Every artifact is sha256-verified before extraction; a mismatch fails closed
+    (nothing is extracted, the component is reported failed). Components whose
+    install stamp matches the pinned url + sha256 are left alone, so re-running is
+    cheap. ``grant`` (default: ``win_toolchain.grant_toolchain_access``) runs only
+    when every component is present; it is idempotent.
+    """
+    detected_os, detected_arch = current_platform()
+    os_name = os_name or detected_os
+    arch = arch or detected_arch
+    root = toolchain_dir(app_home)
+    report = ToolchainReport(root=str(root))
+    try:
+        specs = [resolve_toolchain_spec(name, os_name, arch) for name in TOOLCHAIN_COMPONENTS]
+    except UnsupportedPlatformError as exc:
+        report.failed["toolchain"] = str(exc)
+        return report
+    ensure_toolchain_marker(root)
+    for spec in specs:
+        component = toolchain_component_dir(root, spec)
+        if toolchain_component_installed(root, spec):
+            report.present[spec.name] = str(component)
+            continue
+        if not spec.sha256:  # never install an unpinned toolchain component
+            report.failed[spec.name] = "sha256 not pinned"
+            continue
+        try:
+            target = root if spec.layout == "dir" else component
+            installed = fetch_and_install(
+                spec, target, download=download, extract=extract, verify=verify
+            )
+            if spec.name == "python-embed":
+                configure_embedded_python(component)
+            (component / INSTALL_STAMP).write_text(_stamp_text(spec) + "\n", encoding="utf-8")
+            report.installed[spec.name] = str(installed)
+        except Exception as exc:  # noqa: BLE001 - reported; the toolchain stays unusable
+            report.failed[spec.name] = str(exc)
+    if report.ok and grant is not None:
+        try:
+            grant(root)
+            report.granted = True
+        except Exception as exc:  # noqa: BLE001 - fail closed: reported, toolchain unusable
+            report.failed["grant"] = str(exc)
     return report

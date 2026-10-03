@@ -96,6 +96,22 @@ test_deny_appcontainer_unlisted_executable if {
   tool_jail.deny_reason == "executable_not_allowlisted" with input as facts
 }
 
+# Windows agent toolchain (LOCUS-333): the executor asks with the logical name
+# (`sh`, `python`) and maps it to the Locus toolchain only after an allow; a path
+# to a toolchain binary is not a logical name and stays outside the allowlist.
+test_allow_appcontainer_toolchain_shell if {
+  tool_jail.allow with input as object.union(appcontainer_input, {"command": ["sh"], "allowed_executables": ["sh", "python"]})
+}
+
+test_deny_appcontainer_toolchain_absolute_path if {
+  facts := object.union(appcontainer_input, {
+    "command": ["C:/Users/u/AppData/Local/Lattix/Locus/toolchain/busybox/busybox.exe"],
+    "allowed_executables": ["sh", "python"],
+  })
+  not tool_jail.allow with input as facts
+  tool_jail.deny_reason == "executable_not_allowlisted" with input as facts
+}
+
 # --- host execution is never a jail --------------------------------------------
 
 test_deny_local_direct if {
