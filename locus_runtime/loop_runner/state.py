@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 DISABLED_ENV = "LOCUS_LOOP_DISABLED"
 HOME_ENV = "LOCUS_LOOP_HOME"
