@@ -98,6 +98,9 @@ class SweAgent:
     # legacy scripted flows). Use "required" for the native runner.
     plan_mode: PlanMode = "optional"
     run_dir: Path | None = None  # checkpoint location (defaults to trajectory_dir)
+    # Agent Skills (LOCUS-340): a ``locus_runtime.skills.SkillTools``; the envelope
+    # must list ``use_skill`` / ``run_skill_script`` for the loop to offer them.
+    skills: Any = None
 
     def _resolve_profile(self) -> ModelCapabilityProfile:
         if self.profile is not None:
@@ -124,6 +127,7 @@ class SweAgent:
             out_of_bounds=self.out_of_bounds,
             on_escalation=self.on_escalation,
             allow_edits=self.allow_edits,
+            skills=self.skills,
         )
         recorder = None
         if self.trajectory_dir is not None:

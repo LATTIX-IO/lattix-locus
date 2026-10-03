@@ -89,6 +89,7 @@ from locus_runtime.grants import (
     tightest_pattern,
 )
 from locus_runtime.legacy import normalize_legacy_identifiers
+from locus_runtime import skills as skill_format
 from locus_runtime import model_client as model_calls
 from locus_runtime.model_client import (
     FallbackEvent,
@@ -420,6 +421,15 @@ class SkillDefinition(BaseModel):
     import_source: str = ""
     quarantine_status: Literal["none", "pending", "cleared", "blocked"] = "none"
     security_scan: SkillSecurityScan | None = None
+    # Agent Skills folder (LOCUS-340): stored under the skill store with the
+    # sha256 of every file; ``bundle_hash`` is empty for legacy text-only skills.
+    bundle_hash: str = ""
+    files: dict[str, str] = Field(default_factory=dict)
+    scripts: list[str] = Field(default_factory=list)
+    manifest: dict[str, Any] = Field(default_factory=dict)
+    # Trust lifecycle: untrusted (imported/scanned/evaluated) -> trusted
+    # (promoted; reviewed hash recorded) -> revoked (terminal).
+    trust_status: Literal["untrusted", "trusted", "revoked"] = "untrusted"
 
 
 class WorkflowDefinition(BaseModel):
@@ -13281,16 +13291,24 @@ class InMemoryStore:
             ),
         }
 
+        # Seeds are loaded through the Agent Skills parser (LOCUS-340): first-party,
+        # trusted by origin, no scripts.
         self.skills: dict[str, SkillDefinition] = {
             str(seed["id"]): SkillDefinition(
                 id=str(seed["id"]),
-                name=str(seed["name"]),
-                description=str(seed.get("description") or ""),
-                content=str(seed.get("content") or ""),
+                name=document.name,
+                description=document.description,
+                content=document.body.strip(),
                 tags=[str(tag) for tag in seed.get("tags", [])],
                 source="bundled",
+                bundle_hash=document.bundle_hash,
+                files=dict(document.files),
+                manifest=document.manifest.to_dict(),
+                trust_status="trusted",
             )
-            for seed in skills_catalog.SKILL_SEEDS
+            for seed, (document, _files) in zip(
+                skills_catalog.SKILL_SEEDS, skills_catalog.bundled_skill_bundles(), strict=True
+            )
         }
 
         # Webhook trigger tokens: token -> {workflow_id, actor, label, created_at}.
@@ -21891,6 +21909,9 @@ def _augment_system_prompt_with_skills(
         if skill.quarantine_status in {"pending", "blocked"}:
             # Imported skills that have not cleared the blast chamber never reach context.
             continue
+        if skill.trust_status == "revoked":
+            # Revoked skills never load (LOCUS-340).
+            continue
         body = skill.content.strip()
         if not body:
             continue
@@ -25009,6 +25030,37 @@ def save_skill(
         status_value = "enabled"
 
     resolved_quarantine = existing.quarantine_status if existing else "none"
+    bundle_update: dict[str, Any] = (
+        {
+            "bundle_hash": existing.bundle_hash,
+            "files": dict(existing.files),
+            "scripts": list(existing.scripts),
+            "manifest": dict(existing.manifest),
+            "trust_status": existing.trust_status,
+        }
+        if existing is not None
+        else {}
+    )
+    if existing is not None and existing.trust_status == "revoked" and status_value == "enabled":
+        raise HTTPException(
+            status_code=400, detail="A revoked skill cannot be enabled; re-import it instead."
+        )
+    if (
+        existing is not None
+        and _skill_in_store(existing)
+        and "content" in payload
+        and str(payload.get("content") or "").strip() != existing.content.strip()
+    ):
+        # Any content change returns the skill to Scan (15 §2); it stays disabled
+        # and untrusted until a new scan (and eval + promote) clears it.
+        try:
+            record, document = _replace_stored_skill_body(existing, str(payload.get("content")))
+        except skill_format.SkillError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid skill content: {exc}") from exc
+        resolved_quarantine = "pending"
+        status_value = "disabled"
+        bundle_update.update(_bundle_fields(record, document))
+        bundle_update.update({"security_scan": None, "last_eval": None})
     if status_value == "enabled" and resolved_quarantine in {"pending", "blocked"}:
         raise HTTPException(
             status_code=400,
@@ -25083,6 +25135,8 @@ def save_skill(
         quarantine_status=resolved_quarantine,
         security_scan=existing.security_scan if existing else None,
     )
+    if bundle_update:
+        skill = skill.model_copy(update=bundle_update)
     store.skills[skill_id] = skill
     _append_audit_event(
         "skill.save",
@@ -25119,6 +25173,8 @@ def run_skill_eval(
     skill = store.skills.get(skill_id)
     if skill is None:
         raise HTTPException(status_code=404, detail="Skill not found")
+    if skill.trust_status == "revoked":
+        raise HTTPException(status_code=400, detail="A revoked skill cannot be evaluated")
     # Allow ad-hoc cases in the request, else use the saved dataset.
     raw_cases = (
         payload.get("eval_dataset")
@@ -25203,6 +25259,11 @@ def run_skill_eval(
         "validated"
     ):
         skill.maturity = "validated"
+    if _skill_in_store(skill):
+        try:
+            skills_catalog.skill_store().mark_evaluated(skill_id, passed=passed)
+        except skill_format.SkillError as exc:
+            LOGGER.warning("skill.eval store update failed: %s", exc.code)
     _append_audit_event(
         "skill.eval",
         actor,
@@ -25235,19 +25296,46 @@ def promote_skill(
     skill = store.skills.get(skill_id)
     if skill is None:
         raise HTTPException(status_code=404, detail="Skill not found")
+    if skill.trust_status == "revoked":
+        raise HTTPException(status_code=400, detail="A revoked skill cannot be promoted")
+    if skill.quarantine_status in {"pending", "blocked"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Promotion requires a cleared security scan — run the skill scan first",
+        )
     if not (skill.last_eval and skill.last_eval.passed):
         raise HTTPException(
             status_code=400,
             detail="Promotion requires a passing eval — run the skill eval first",
         )
     current_rank = _SKILL_TIER_RANK.get(skill.tier, 1)
-    if current_rank >= 3:
+    newly_trusted = skill.trust_status != "trusted"
+    if not newly_trusted and current_rank >= 3:
         raise HTTPException(status_code=400, detail="Skill is already at the top tier")
-    skill.tier = {1: "tier2", 2: "tier1"}[current_rank]
+    if newly_trusted and _skill_in_store(skill):
+        # Trust signs the reviewed bundle hash; the store re-verifies every file.
+        try:
+            record = skills_catalog.skill_store().trust(skill_id)
+        except skill_format.SkillError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Skill cannot be trusted: {exc} ({exc.code})"
+            ) from exc
+        skill.bundle_hash = record.bundle_hash
+    skill.trust_status = "trusted"
+    if current_rank < 3:
+        skill.tier = {1: "tier2", 2: "tier1"}[current_rank]
     if skill.tier == "tier1":
         skill.maturity = "standard"
     _append_audit_event(
-        "skill.promote", actor, "allowed", {"skill_id": skill_id, "tier": skill.tier}
+        "skill.promote",
+        actor,
+        "allowed",
+        {
+            "skill_id": skill_id,
+            "tier": skill.tier,
+            "trust_status": skill.trust_status,
+            "bundle_hash": skill.bundle_hash,
+        },
     )
     _persist_store_state()
     return skill.model_dump()
@@ -25312,9 +25400,181 @@ def _fetch_remote_skill(url: str) -> tuple[str, str]:
     text = response.text[:_SKILL_IMPORT_MAX_BYTES]
     name = ""
     segments = [seg for seg in urlsplit(safe_url).path.split("/") if seg]
+    if segments and segments[-1].lower() == "skill.md" and len(segments) > 1:
+        segments = segments[:-1]  # a SKILL.md is named after its folder
     if segments:
         name = segments[-1].rsplit(".", 1)[0].replace("-", " ").replace("_", " ").strip().title()
     return text, name
+
+
+def _fetch_remote_archive(url: str) -> bytes:
+    """Fetch a skill zip archive from a validated remote URL (size-capped while streaming)."""
+    import httpx
+
+    safe_url = _validated_skill_import_url(url)
+    limit = skill_format.MAX_ARCHIVE_BYTES
+    chunks: list[bytes] = []
+    received = 0
+    with httpx.stream(
+        "GET",
+        safe_url,
+        headers={
+            "Accept": "application/zip, application/octet-stream",
+            "User-Agent": "lattix-locus-skill-import/1.0",
+        },
+        timeout=20.0,
+        follow_redirects=False,
+    ) as response:
+        response.raise_for_status()
+        for chunk in response.iter_bytes():
+            received += len(chunk)
+            if received > limit:
+                raise ValueError("Skill archive exceeds the import size limit")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _skill_in_store(skill: SkillDefinition) -> bool:
+    """An imported Agent Skills folder held in the skill store (not a bundled seed)."""
+    return skill.source != "bundled" and bool(skill.bundle_hash)
+
+
+def _bundle_fields(
+    record: skill_format.SkillRecord, document: skill_format.SkillDocument
+) -> dict[str, Any]:
+    return {
+        "bundle_hash": record.bundle_hash,
+        "files": dict(record.files),
+        "scripts": list(record.scripts),
+        "manifest": document.manifest.to_dict(),
+        "trust_status": "untrusted",
+    }
+
+
+def _replace_stored_skill_body(
+    skill: SkillDefinition, body: str
+) -> tuple[skill_format.SkillRecord, skill_format.SkillDocument]:
+    """Rewrite a stored skill's SKILL.md body (frontmatter kept); back to quarantine."""
+    skill_store = skills_catalog.skill_store()
+    current = skill_store.read_file(skill.id, skill_format.SKILL_FILE).decode("utf-8")
+    return skill_store.replace_skill_md(skill.id, skill_format.with_body(current, body))
+
+
+def _authorize_skill_import_egress(url: str, actor: str) -> None:
+    """URL imports are network egress: the gateway decides (P6), against the
+    operator egress allowlist. Not allowed -> 403 with the typed gateway message."""
+    host = host_of(url)
+    _ensure_gateway()
+    session = policy_gateway.open_run_session(
+        run_id=f"skill-import-{uuid4()}",
+        principal=actor or "anonymous",
+        engine="backend.skill_import",
+        capabilities=policy_gateway.run_capabilities(
+            allowed_tools={"network_egress"}, egress=_gateway_egress_hosts()
+        ),
+    )
+    try:
+        decision = authorize_action(
+            session,
+            kind="network_egress",
+            tool="skill.import",
+            target=host,
+            egress_host=host,
+        )
+    finally:
+        policy_gateway.close_sessions([session])
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail=gateway_message(decision, "skill.import"))
+
+
+def _skill_import_files(payload: dict[str, Any], actor: str) -> tuple[dict[str, bytes], str, str]:
+    """``(files, source_label, folder_name)`` for an import request.
+
+    Sources: ``archive_base64`` (a zip of a skill folder; ``subdir`` selects one),
+    ``url`` (SKILL.md, a .zip, or a GitHub tree/blob URL; gateway egress check
+    first), or pasted ``content`` (a SKILL.md or plain markdown).
+    """
+    url = str(payload.get("url") or "").strip()
+    content = str(payload.get("content") or "")
+    archive_b64 = str(payload.get("archive_base64") or "")
+    subdir = str(payload.get("subdir") or "")
+    name = str(payload.get("name") or "").strip()
+    description = str(payload.get("description") or "")
+    if archive_b64.strip():
+        archive = skills_catalog.decode_archive(archive_b64)
+        files, folder = skill_format.read_zip_bundle(archive, subdir=subdir)
+        return files, str(payload.get("source") or "archive upload"), folder
+    if url and not content.strip():
+        try:
+            plan = skills_catalog.plan_skill_url(url, subdir=subdir)
+        except skill_format.SkillError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _authorize_skill_import_egress(plan.fetch_url, actor)
+        try:
+            if plan.kind == "archive":
+                archive = _fetch_remote_archive(plan.fetch_url)
+                files, folder = skill_format.read_zip_bundle(archive, subdir=plan.subdir)
+                return files, url, folder
+            content, fetched_name = _fetch_remote_skill(plan.fetch_url)
+        except ValueError:
+            raise  # validation (SSRF, size, format): the endpoint answers 400
+        except Exception as exc:  # noqa: BLE001 - network/parse failures are user-facing
+            # Details stay server-side; the client gets a stable code (CodeQL
+            # py/stack-trace-exposure).
+            LOGGER.warning("skill.import fetch failed: %s", type(exc).__name__, exc_info=True)
+            raise HTTPException(
+                status_code=502,
+                detail="Unable to fetch skill from URL (skill_import_fetch_failed).",
+            ) from exc
+        name = name or fetched_name
+        return (
+            skills_catalog.files_from_markdown(content, name=name, description=description),
+            url,
+            "",
+        )
+    if not content.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Provide a skill URL, a skill folder archive, or paste skill content",
+        )
+    return (
+        skills_catalog.files_from_markdown(
+            content, name=name or "imported-skill", description=description
+        ),
+        str(payload.get("source") or "manual import"),
+        "",
+    )
+
+
+def _bundle_scan_findings(skill: SkillDefinition) -> list[SkillSecurityFinding]:
+    """Static checks over every file of a stored skill (scripts, shebangs,
+    network/exfil, injection phrases); integrity failures are high findings."""
+    if not _skill_in_store(skill):
+        return []
+    skill_store = skills_catalog.skill_store()
+    try:
+        files = skill_store.verified_files(skill.id)
+        document = skill_format.load_skill_files(files)
+    except skill_format.SkillError as exc:
+        return [
+            SkillSecurityFinding(
+                code="SKILL_INTEGRITY",
+                message=str(exc)[:300],
+                severity="high",
+                source="skill_store",
+                stage="static",
+            )
+        ]
+    return [
+        SkillSecurityFinding(
+            code=finding.code,
+            message=(f"{finding.path}: " if finding.path else "") + finding.message,
+            severity=finding.severity,
+            source="skill_static",
+            stage="static",
+        )
+        for finding in skill_format.scan_skill_files(document, files)
+    ]
 
 
 def _scan_skill_text(text: str, *, stage: str) -> list[SkillSecurityFinding]:
@@ -25347,6 +25607,9 @@ def _scan_skill_text(text: str, *, stage: str) -> list[SkillSecurityFinding]:
 def _run_skill_blast_chamber(skill: SkillDefinition) -> SkillSecurityScan:
     """Run an imported skill through the static-scan → dry-run security pipeline."""
     static_findings = _scan_skill_text(skill.content, stage="static")
+    # Agent Skills folders: every bundled file (scripts, shebangs, network/exfil,
+    # injection phrases) plus a sha256 integrity check (LOCUS-340).
+    static_findings += _bundle_scan_findings(skill)
     static_passed = not any(f.severity.lower() == "high" for f in static_findings)
 
     dry_run_findings: list[SkillSecurityFinding] = []
@@ -25402,48 +25665,34 @@ def _run_skill_blast_chamber(skill: SkillDefinition) -> SkillSecurityScan:
 def import_skill(
     request: Request, payload: dict[str, Any] = Body(default_factory=dict)
 ) -> dict[str, Any]:
-    """Import a skill from an online source into quarantine, then run the blast chamber.
+    """Import an Agent Skills folder into quarantine, then run the blast chamber.
 
-    Imported skills land disabled and quarantined; they are immediately scanned
-    (static content scan + a guarded dry-run whose output is scanned) and can only
-    be enabled once the scan clears.
+    Sources: ``archive_base64`` (zip of a skill folder, ``subdir`` optional),
+    ``url`` (SKILL.md, a .zip, or a GitHub tree/blob URL -- gateway egress check
+    first) or pasted ``content``. The folder is validated (frontmatter, names,
+    paths, sizes), stored under the skill store with the sha256 of every file,
+    and lands disabled, quarantined and untrusted; it is scanned immediately
+    (bundle checks + static content scan + a guarded dry-run) and can only be
+    enabled once the scan clears. Scripts never run before promotion.
     """
     actor = _enforce_builder_access(request, payload=payload, action="skill.import")
     _enforce_emergency_write_policy("skill.import", actor)
 
-    url = str(payload.get("url") or "").strip()
-    content = str(payload.get("content") or "")
-    name = str(payload.get("name") or "").strip()
-    source_label = url or str(payload.get("source") or "manual import")
-
-    if url and not content.strip():
-        try:
-            content, fetched_name = _fetch_remote_skill(url)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001 - network/parse failures are user-facing
-            # Details stay server-side; the client gets a stable code (CodeQL
-            # py/stack-trace-exposure).
-            LOGGER.warning("skill.import fetch failed: %s", type(exc).__name__, exc_info=True)
-            raise HTTPException(
-                status_code=502,
-                detail="Unable to fetch skill from URL (skill_import_fetch_failed).",
-            ) from exc
-        if not name:
-            name = fetched_name
-    if not content.strip():
-        raise HTTPException(
-            status_code=400, detail="Provide a skill URL to fetch or paste skill content"
+    try:
+        files, source_label, folder_name = _skill_import_files(payload, actor)
+        skill_id = f"skill-{uuid4()}"
+        record, document = skills_catalog.skill_store().install(
+            skill_id, files, source=source_label
         )
-    if not name:
-        name = "Imported skill"
+    except ValueError as exc:  # SkillError (format/size/paths) and URL validation
+        code = getattr(exc, "code", "invalid_skill")
+        raise HTTPException(status_code=400, detail=f"{exc} ({code})") from exc
 
-    skill_id = f"skill-{uuid4()}"
     skill = SkillDefinition(
         id=skill_id,
-        name=name,
-        description=str(payload.get("description") or ""),
-        content=content,
+        name=document.name,
+        description=document.description,
+        content=document.body.strip(),
         status="disabled",
         source="custom",
         auto_inject=False,
@@ -25453,15 +25702,42 @@ def import_skill(
         maturity="draft",
         import_source=source_label,
         quarantine_status="pending",
+        **_bundle_fields(record, document),
     )
     store.skills[skill_id] = skill
     _append_audit_event(
-        "skill.import", actor, "allowed", {"skill_id": skill_id, "source": source_label[:200]}
+        "skill.import",
+        actor,
+        "allowed",
+        {
+            "skill_id": skill_id,
+            "source": source_label[:200],
+            "bundle_hash": record.bundle_hash,
+            "files": len(record.files),
+            "scripts": len(record.scripts),
+        },
     )
 
     scan = _run_skill_blast_chamber(skill)
+    if folder_name and folder_name != document.name:
+        scan.findings.append(
+            SkillSecurityFinding(
+                code="SKILL_NAME_DIR_MISMATCH",
+                message=f"skill name '{document.name}' differs from its folder '{folder_name[:80]}'",
+                severity="low",
+                source="skill_static",
+            )
+        )
     skill.security_scan = scan
     skill.quarantine_status = "cleared" if scan.cleared else "blocked"
+    skills_catalog.skill_store().mark_scanned(
+        skill_id,
+        cleared=scan.cleared,
+        findings=[
+            {"code": f.code, "severity": f.severity, "message": f.message[:300]}
+            for f in scan.findings
+        ],
+    )
     _append_audit_event(
         "skill.scan",
         actor,
@@ -25485,10 +25761,27 @@ def scan_skill(
     skill = store.skills.get(skill_id)
     if skill is None:
         raise HTTPException(status_code=404, detail="Skill not found")
+    if skill.trust_status == "revoked":
+        raise HTTPException(status_code=400, detail="A revoked skill cannot be re-scanned")
     scan = _run_skill_blast_chamber(skill)
     skill.security_scan = scan
     if skill.quarantine_status in {"pending", "blocked", "cleared"}:
         skill.quarantine_status = "cleared" if scan.cleared else "blocked"
+    if _skill_in_store(skill):
+        try:
+            record = skills_catalog.skill_store().mark_scanned(
+                skill_id,
+                cleared=scan.cleared,
+                findings=[
+                    {"code": f.code, "severity": f.severity, "message": f.message[:300]}
+                    for f in scan.findings
+                ],
+            )
+        except skill_format.SkillError as exc:
+            LOGGER.warning("skill.scan store update failed: %s", exc.code)
+        else:
+            # A blocked rescan withdraws trust; a cleared one keeps a still-valid trust.
+            skill.trust_status = "trusted" if record.trusted else "untrusted"
     _append_audit_event(
         "skill.scan",
         actor,
@@ -25516,6 +25809,8 @@ def test_skill(
     skill = store.skills.get(skill_id)
     if skill is None:
         raise HTTPException(status_code=404, detail="Skill not found")
+    if skill.trust_status == "revoked":
+        raise HTTPException(status_code=400, detail="A revoked skill cannot be loaded")
     sample_task = str(payload.get("prompt") or "").strip()
     if not sample_task:
         raise HTTPException(status_code=400, detail="A sample task prompt is required")
@@ -25563,9 +25858,44 @@ def delete_skill(skill_id: str, request: Request) -> dict[str, Any]:
             status_code=400, detail="Bundled skills cannot be deleted — disable them instead"
         )
     store.skills.pop(skill_id, None)
+    if _skill_in_store(existing):
+        try:
+            skills_catalog.skill_store().remove(skill_id)
+        except (skill_format.SkillError, OSError) as exc:
+            LOGGER.warning("skill.delete store cleanup failed: %s", type(exc).__name__)
     _append_audit_event("skill.delete", actor, "allowed", {"skill_id": skill_id})
     _persist_store_state()
     return {"ok": True}
+
+
+@app.post("/skills/{skill_id}/revoke")
+def revoke_skill(
+    skill_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Revoke a skill (15 §2): immediate and terminal. It is disabled, never injected
+    or loaded again, and its scripts cannot run; re-import to use it again."""
+    actor = _enforce_builder_access(request, payload=payload, action="skill.revoke")
+    _enforce_emergency_write_policy("skill.revoke", actor)
+    skill = store.skills.get(skill_id)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    if skill.source == "bundled":
+        raise HTTPException(
+            status_code=400, detail="Bundled skills cannot be revoked — disable them instead"
+        )
+    if _skill_in_store(skill):
+        try:
+            skills_catalog.skill_store().revoke(skill_id)
+        except skill_format.SkillError as exc:
+            # The catalog entry is revoked regardless; a missing store record is
+            # already unloadable by the runtime (fail closed).
+            LOGGER.warning("skill.revoke store update failed: %s", exc.code)
+    skill.trust_status = "revoked"
+    skill.status = "disabled"
+    skill.auto_inject = False
+    _append_audit_event("skill.revoke", actor, "allowed", {"skill_id": skill_id})
+    _persist_store_state()
+    return skill.model_dump()
 
 
 @app.get("/integrations/catalog")

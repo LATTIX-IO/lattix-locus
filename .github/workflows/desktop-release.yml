@@ -16,8 +16,18 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 0.1.0)"
-        required: true
+        description: "Version label (e.g. 0.1.0). Test builds can leave the default."
+        required: false
+        default: "0.1.0-dev"
+      platforms:
+        description: "Which installers to build"
+        type: choice
+        default: windows-macos
+        options: [windows-macos, windows, macos, all]
+      create_release:
+        description: "Create a draft GitHub release (otherwise artifacts only, D-24)"
+        type: boolean
+        default: false
   push:
     tags: ["v*"]
 
@@ -25,20 +35,40 @@ permissions:
   contents: write
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+      release: ${{ steps.m.outputs.release }}
+    steps:
+      - id: m
+        shell: python
+        env:
+          PLATFORMS: ${{ github.event.inputs.platforms || 'all' }}
+          CREATE_RELEASE: ${{ github.event_name == 'push' || github.event.inputs.create_release == 'true' }}
+        run: |
+          import json, os
+          rows = {
+              "windows": {"os": "windows-latest", "triple": "x86_64-pc-windows-msvc", "ext": ".exe"},
+              "macos": {"os": "macos-latest", "triple": "aarch64-apple-darwin", "ext": ""},
+              "macos-intel": {"os": "macos-13", "triple": "x86_64-apple-darwin", "ext": ""},
+              "linux": {"os": "ubuntu-latest", "triple": "x86_64-unknown-linux-gnu", "ext": ""},
+          }
+          pick = {
+              "windows-macos": ["windows", "macos", "macos-intel"],
+              "windows": ["windows"],
+              "macos": ["macos", "macos-intel"],
+              "all": ["windows", "macos", "macos-intel", "linux"],
+          }[os.environ["PLATFORMS"]]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write("matrix=" + json.dumps({"include": [rows[k] for k in pick]}) + chr(10))
+              out.write("release=" + os.environ["CREATE_RELEASE"].lower() + chr(10))
+
   build:
+    needs: plan
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            triple: x86_64-pc-windows-msvc
-            ext: .exe
-          - os: macos-latest
-            triple: aarch64-apple-darwin
-            ext: ""
-          - os: ubuntu-latest
-            triple: x86_64-unknown-linux-gnu
-            ext: ""
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     env:
       # Sign only when an Authenticode cert secret is present; otherwise the
@@ -66,13 +96,15 @@ jobs:
           python -m pip install --upgrade pip pyinstaller
           python -m pip install -e .
           pyinstaller packaging/locus-backend.spec
+          # Fail the build, not the installed app, when the bundle misses a module.
+          "dist/locus-backend${{ matrix.ext }}" --self-check
           mkdir -p apps/desktop-tauri/src-tauri/bin
           cp "dist/locus-backend${{ matrix.ext }}" \
              "apps/desktop-tauri/src-tauri/bin/locus-backend-${{ matrix.triple }}${{ matrix.ext }}"
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       # --- 2) Frontend standalone + vendored Node -------------------------
       - name: Build frontend (Next.js standalone)
@@ -107,7 +139,9 @@ jobs:
           cargo install tauri-cli --version "^2" --locked
           cargo tauri icon ../icon-source.png
 
-      - uses: tauri-apps/tauri-action@v0
+      - name: Build installers (release)
+        if: needs.plan.outputs.release == 'true'
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Signs the auto-update artifacts (latest.json + .sig). The matching
@@ -124,6 +158,16 @@ jobs:
           releaseName: "Lattix Locus ${{ github.event.inputs.version || github.ref_name }}"
           releaseDraft: true
           prerelease: false
+          args: --target ${{ matrix.triple }}
+
+      # Test builds (D-24): installers as workflow artifacts only, no tag/release.
+      - name: Build installers (artifacts only)
+        if: needs.plan.outputs.release != 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop-tauri/src-tauri
           args: --target ${{ matrix.triple }}
 
       # --- 4) Windows: Authenticode-sign the produced installers ----------
@@ -148,11 +192,11 @@ jobs:
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
-          name: installers-${{ matrix.triple }}
+          name: locus-${{ github.event.inputs.version || github.ref_name }}-${{ matrix.triple }}
           path: |
             apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.msi
             apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.exe
             apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.dmg
             apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.deb
             apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.AppImage
-          if-no-files-found: warn
+          if-no-files-found: error

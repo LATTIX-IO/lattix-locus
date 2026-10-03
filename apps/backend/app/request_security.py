@@ -467,6 +467,12 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         "skill.promote",
     ),
     RouteAccessRule(
+        ("POST",),
+        "/skills/{skill_id}/revoke",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "skill.revoke",
+    ),
+    RouteAccessRule(
         ("GET",),
         "/integrations/catalog",
         RouteAccessCategory.AUTHENTICATED_READ,
