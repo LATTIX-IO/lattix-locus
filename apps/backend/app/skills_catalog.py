@@ -1,9 +1,11 @@
 """Bundled skills and the preloaded integration catalog.
 
-Skills follow the Symphony SKILL.md model: a named, versioned markdown
-procedure that is injected into agent context when enabled. The bundled set
-below is adapted from Symphony's `.codex/skills/` catalog, generalized away
-from Symphony-specific tooling.
+Skills use the open Agent Skills format (D-18, LOCUS-340): a folder with a
+``SKILL.md`` (YAML frontmatter + markdown body) plus optional ``scripts/``,
+``references/`` and ``assets/``, parsed and validated by
+:mod:`locus_runtime.skills`. The bundled set below is adapted from Symphony's
+`.codex/skills/` catalog; each seed is rendered to SKILL.md and loaded through
+the same parser as an imported skill, so seeds always conform to the format.
 
 The integration catalog preloads well-known MCP servers and APIs so builders
 start from a vetted list; custom integrations remain fully supported through
@@ -12,7 +14,16 @@ the existing integrations CRUD.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
+from urllib.parse import urlsplit
+
+from locus_runtime import skills as skill_format
 
 SKILL_SEEDS: list[dict[str, Any]] = [
     {
@@ -304,3 +315,139 @@ def catalog_entry(catalog_id: str) -> dict[str, Any] | None:
         if entry["catalog_id"] == normalized:
             return dict(entry)
     return None
+
+
+# --- Agent Skills bundles (LOCUS-340) ----------------------------------------
+
+
+def seed_skill_files(seed: Mapping[str, Any]) -> dict[str, bytes]:
+    """A bundled seed as an Agent Skills folder (``SKILL.md`` only)."""
+    text = skill_format.render_skill_md(
+        name=str(seed["name"]),
+        description=str(seed.get("description") or ""),
+        body=str(seed.get("content") or ""),
+        metadata={"tags": " ".join(str(tag) for tag in seed.get("tags", []))},
+    )
+    return {skill_format.SKILL_FILE: text.encode("utf-8")}
+
+
+@lru_cache(maxsize=1)
+def bundled_skill_bundles() -> tuple[tuple[skill_format.SkillDocument, dict[str, bytes]], ...]:
+    """Every seed parsed through the Agent Skills parser (raises if a seed is invalid)."""
+    out: list[tuple[skill_format.SkillDocument, dict[str, bytes]]] = []
+    for seed in SKILL_SEEDS:
+        files = seed_skill_files(seed)
+        out.append((skill_format.load_skill_files(files), files))
+    return tuple(out)
+
+
+def bundled_skill_document(seed_id: str) -> skill_format.SkillDocument | None:
+    for seed, (document, _files) in zip(SKILL_SEEDS, bundled_skill_bundles(), strict=True):
+        if seed["id"] == seed_id:
+            return document
+    return None
+
+
+def skill_store() -> skill_format.SkillStore:
+    """The skill store under the Locus app home (``LOCUS_SKILLS_DIR`` overrides)."""
+    return skill_format.SkillStore(skill_format.default_skills_dir())
+
+
+def skill_library() -> skill_format.SkillLibrary:
+    """Bundled + stored skills, for an agent run's ``SkillTools``."""
+    return skill_format.SkillLibrary(store=skill_store(), bundled=bundled_skill_bundles())
+
+
+def _first_line_description(body: str, fallback: str) -> str:
+    for line in body.splitlines():
+        text = line.strip().lstrip("#").strip()
+        if text:
+            return text[:300]
+    return fallback
+
+
+def files_from_markdown(text: str, *, name: str = "", description: str = "") -> dict[str, bytes]:
+    """A single-file skill folder from pasted/fetched markdown.
+
+    Text that already carries frontmatter is used as-is (it is validated later);
+    plain markdown is wrapped with a generated name and description.
+    """
+    stripped = text.lstrip("﻿")
+    if stripped.startswith("---"):
+        return {skill_format.SKILL_FILE: stripped.encode("utf-8")}
+    slug = skill_format.slugify_skill_name(name)
+    rendered = skill_format.render_skill_md(
+        name=slug,
+        description=(description or "").strip()[: skill_format.DESCRIPTION_MAX]
+        or _first_line_description(stripped, f"Imported skill {slug}"),
+        body=stripped,
+    )
+    return {skill_format.SKILL_FILE: rendered.encode("utf-8")}
+
+
+def decode_archive(encoded: str) -> bytes:
+    """Base64 zip archive from an import request (size-capped before decoding)."""
+    text = re.sub(r"\s+", "", str(encoded or ""))
+    if len(text) > (skill_format.MAX_ARCHIVE_BYTES * 4) // 3 + 8:
+        raise skill_format.SkillError("oversized", "archive is too large")
+    try:
+        return base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise skill_format.SkillError("invalid_archive", "archive_base64 is not base64") from exc
+
+
+@dataclass(frozen=True)
+class SkillUrlPlan:
+    """How to fetch a skill URL: a markdown file or a zip archive (+ folder)."""
+
+    kind: str  # "markdown" | "archive"
+    fetch_url: str
+    subdir: str = ""
+
+
+_GITHUB_TREE = re.compile(r"^/([^/]+)/([^/]+)/tree/([^/]+)/?(.*)$")
+_GITHUB_BLOB = re.compile(r"^/([^/]+)/([^/]+)/blob/([^/]+)/(.+)$")
+
+
+def plan_skill_url(url: str, *, subdir: str = "") -> SkillUrlPlan:
+    """Map a skill URL to a fetch plan. Git repositories are read as archives:
+
+    * ``https://github.com/<o>/<r>/tree/<ref>/<folder>`` -> the codeload zip of
+      ``<ref>`` with ``<folder>`` selected (``<ref>`` is one path segment);
+    * ``https://github.com/<o>/<r>/blob/<ref>/<path>/SKILL.md`` -> the raw file;
+    * any ``*.zip`` URL -> that archive (``subdir`` selects the folder);
+    * anything else -> a markdown SKILL.md.
+
+    Clone URLs (``git+``, ``ssh``, ``*.git``) are refused: cloning would run git
+    with network access, which no sandbox tier permits.
+    """
+    raw = str(url or "").strip()
+    lowered = raw.lower()
+    if lowered.startswith(("git+", "ssh://", "git://", "git@")) or lowered.rstrip("/").endswith(
+        ".git"
+    ):
+        raise skill_format.SkillError(
+            "unsupported_url",
+            "git clone URLs are not supported; use a GitHub tree URL or a .zip archive URL",
+        )
+    parts = urlsplit(raw)
+    host = (parts.hostname or "").lower()
+    path = parts.path or ""
+    if host == "github.com":
+        tree = _GITHUB_TREE.match(path)
+        if tree:
+            owner, repo, ref, folder = tree.groups()
+            selected = "/".join(p for p in (folder.strip("/"), subdir.strip("/")) if p)
+            return SkillUrlPlan(
+                "archive", f"https://codeload.github.com/{owner}/{repo}/zip/{ref}", selected
+            )
+        blob = _GITHUB_BLOB.match(path)
+        if blob:
+            owner, repo, ref, file_path = blob.groups()
+            return SkillUrlPlan(
+                "markdown",
+                f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{file_path}",
+            )
+    if path.lower().endswith(".zip"):
+        return SkillUrlPlan("archive", raw, subdir.strip("/"))
+    return SkillUrlPlan("markdown", raw)

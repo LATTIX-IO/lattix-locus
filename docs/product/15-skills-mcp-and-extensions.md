@@ -24,6 +24,8 @@ scripts: { sandbox: required }
 
 A skill can never exceed the envelope of the run that invokes it. The manifest narrows; it never widens.
 
+**Implemented today (LOCUS-340, `locus_runtime/skills.py`):** the capability manifest is read from frontmatter only, as `allowed-tools` plus `metadata.locus.capabilities` (or a top-level `locus.capabilities`) with the keys `tools`, `executables`, `egress`, `read_roots` and `write_roots` (roots are workspace-relative). A skill that declares nothing gets nothing: its scripts cannot run. Unknown capability keys are rejected. A script runs only for a trusted skill whose files still match the reviewed sha256. It runs in the sandboxed executor with network off, under a gateway session whose capabilities are the run envelope's intersected with the manifest. If the skill declares an egress host the envelope does not grant, the script is refused. The `skill.locus.yaml` sidecar and the `areas`, `secrets`, `risk_ceiling` and `engines` keys above are not implemented yet.
+
 ## 2. Skill lifecycle
 
 | Stage | What happens |
