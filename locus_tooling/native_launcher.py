@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .common import default_app_home, source_repo_root
-from .native_secrets import ensure_secret
+from .native_secrets import STORAGE_MODE_ENV, ensure_secret, secret_storage_mode
 
 
 class NativeLauncherError(RuntimeError):
@@ -193,12 +193,17 @@ def build_native_plan(config: NativeConfig, *, which: WhichFn = _which) -> Nativ
     if config.projects_root:
         env["LOCUS_PROJECTS_ROOT"] = config.projects_root
 
-    # Secrets: materialize without ever committing them.
+    # Secrets: materialize without ever committing them. Raises
+    # SecretStorageUnavailable (refuse to start) when no secure store is usable.
     api_token = ensure_secret("LOCUS_API_BEARER_TOKEN", app_home=home)
     pg_password = ensure_secret("POSTGRES_PASSWORD", app_home=home)
     env["LOCUS_API_BEARER_TOKEN"] = api_token
     # Keep signed A2A real for the native multi-process agents (defense in depth).
     env["A2A_JWT_SECRET"] = ensure_secret("A2A_JWT_SECRET", app_home=home)
+    # Tell supervised processes where these secrets live so Posture can report it.
+    env[STORAGE_MODE_ENV] = secret_storage_mode(
+        ("LOCUS_API_BEARER_TOKEN", "POSTGRES_PASSWORD", "A2A_JWT_SECRET")
+    )
     env.setdefault("A2A_JWT_ALG", "HS256")
     env.setdefault("A2A_JWT_ISS", "lattix-locus")
     env.setdefault("A2A_JWT_AUD", "locus-runtime")

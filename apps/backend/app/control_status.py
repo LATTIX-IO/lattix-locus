@@ -80,6 +80,8 @@ class PostureFacts:
     vault_addr_configured: bool
     envoy_authz_filters: bool | None
     nats_loaded: bool
+    # locus_tooling.native_secrets.secret_storage_mode(); None if undeterminable.
+    secret_storage_mode: str | None
 
 
 def _policy_engine(facts: PostureFacts) -> ControlStatus:
@@ -132,6 +134,51 @@ def _vault(facts: PostureFacts) -> ControlStatus:
         "off",
         "VAULT_ADDR is not set; VaultClient exists but is not integrated into the runtime.",
     )
+
+
+def _secret_storage(facts: PostureFacts) -> ControlStatus:
+    label = "Secret storage (OS keychain)"
+    mode = facts.secret_storage_mode
+    if mode == "keychain":
+        return ControlStatus(
+            "secret_storage",
+            label,
+            "enforced",
+            "Native secrets are held in the OS keychain (Credential Manager / macOS Keychain "
+            "/ Secret Service) via keyring.",
+        )
+    if mode == "dpapi_file":
+        return ControlStatus(
+            "secret_storage",
+            label,
+            "degraded",
+            "Credential Manager was unusable; native secrets are a DPAPI-encrypted file "
+            "(Windows user scope) under the app home.",
+        )
+    if mode == "plaintext_file_opt_in":
+        return ControlStatus(
+            "secret_storage",
+            label,
+            "degraded",
+            "Native secrets are a 0600 plaintext file (opt-in, LOCUS-317): "
+            "LOCUS_SECRETS_ALLOW_FILE=1 and no Secret Service is available.",
+        )
+    if mode == "unavailable":
+        return ControlStatus(
+            "secret_storage",
+            label,
+            "off",
+            "No secure secret store is usable on this host; native secret storage is "
+            "refused (fail closed).",
+        )
+    if mode == "env_only":
+        evidence = (
+            "Secrets were supplied through the environment; where they are stored is "
+            "outside Locus and cannot be verified."
+        )
+    else:
+        evidence = "The secret storage mode could not be determined."
+    return ControlStatus("secret_storage", label, "unverified", evidence)
 
 
 def _envoy(facts: PostureFacts) -> ControlStatus:
@@ -381,6 +428,7 @@ _CONTROL_BUILDERS = (
     _presidio,
     _sandbox,
     _audit,
+    _secret_storage,
     _policy_engine,
     _capability_tokens,
     _vault,
@@ -455,6 +503,15 @@ def _sandbox_executor_requested() -> bool | None:
         return None
 
 
+def _detect_secret_storage_mode() -> str | None:
+    try:
+        from locus_tooling.native_secrets import secret_storage_mode
+
+        return str(secret_storage_mode())
+    except Exception:  # noqa: BLE001 - reported as "unverified", never as enforced
+        return None
+
+
 def collect_posture_facts(
     *,
     auth_required: bool,
@@ -488,4 +545,5 @@ def collect_posture_facts(
         vault_addr_configured=bool(str(os.getenv("VAULT_ADDR") or "").strip()),
         envoy_authz_filters=_envoy_authz_filters(envoy_config_path),
         nats_loaded=_module_loaded("nats"),
+        secret_storage_mode=_detect_secret_storage_mode(),
     )
