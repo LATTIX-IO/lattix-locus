@@ -213,6 +213,17 @@ per metric.
 * **One gateway (P6).** Agent tool calls and model calls go through the run's
   gateway session. Git, `gh` and Linear write-back are the runner's own delivery
   steps (argv only, no shell) and are not reachable by the agent.
+* **Host git never trusts the working copy's `.git`.** The working copy's `.git`
+  is inside the agent's write root, so a run could plant hooks or config
+  (filter/diff drivers, `core.fsmonitor`, `sshCommand`, credential helpers,
+  `insteadOf`, remote URL, object alternates) that host git would execute or
+  follow. Every host git call runs with `core.hooksPath` set to an empty
+  runner-owned directory and `core.fsmonitor=false`, and commit/push pass
+  `--no-verify`. After provisioning, the runner seals a digest of `.git/config`,
+  `HEAD`, `hooks/`, `info/` and the alternates files in `<worktree>.gitseal`
+  (outside the write root). Any later host git call on that copy first checks
+  the seal and fails with `workspace_git_tampered` on a mismatch. The push uses
+  no `-u`, so the runner never rewrites the sealed config itself.
 * **D-22 auto-merge guard** (`merge_guard.evaluate_auto_merge`, pure). It merges
   only when every check is green (required checks must be `success`; a skipped
   required check holds) **and** no protected path changed. Protected paths are
