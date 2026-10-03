@@ -173,3 +173,37 @@ def test_pyinstaller_spec_targets_desktop_main():
     spec = (_REPO_ROOT / "packaging" / "locus-backend.spec").read_text(encoding="utf-8")
     assert "desktop_main.py" in spec
     assert "locus-backend" in spec
+
+
+# --- computer use in the desktop bundle (LOCUS-346) --------------------------
+def test_pyinstaller_spec_collects_playwright_driver():
+    spec = (_REPO_ROOT / "packaging" / "locus-backend.spec").read_text(encoding="utf-8")
+    # collect_all over _DYNAMIC_PKGS ships playwright/driver (node + cli.js).
+    assert '"playwright",' in spec and "collect_all(pkg)" in spec
+    assert '"locus_runtime.computer_use.browser"' in spec
+    assert '"greenlet"' in spec
+
+
+def test_desktop_supervisor_points_playwright_at_app_home():
+    source = (_REPO_ROOT / "locus_tooling" / "desktop.py").read_text(encoding="utf-8")
+    assert "PLAYWRIGHT_BROWSERS_PATH" in source
+    assert "ensure_playwright_chromium(desktop_app_home()" in source
+
+
+def test_tauri_panic_hotkey_is_wired_from_rust():
+    cargo = (_TAURI_DIR / "Cargo.toml").read_text(encoding="utf-8")
+    assert 'tauri-plugin-global-shortcut = "2"' in cargo
+    cap = json.loads((_TAURI_DIR / "capabilities" / "default.json").read_text(encoding="utf-8"))
+    assert any(str(p).startswith("global-shortcut:") for p in cap["permissions"])
+    main_rs = (_TAURI_DIR / "src" / "main.rs").read_text(encoding="utf-8")
+    assert "tauri_plugin_global_shortcut::Builder::new()" in main_rs
+    assert "computer_use::trigger_panic()" in main_rs
+    assert "computer_use::start_status_indicator" in main_rs
+    cu_rs = (_TAURI_DIR / "src" / "computer_use.rs").read_text(encoding="utf-8")
+    assert 'PANIC_PATH: &str = "/computer-use/panic"' in cu_rs
+    assert 'STATUS_PATH: &str = "/computer-use/status"' in cu_rs
+    assert "Code::Escape" in cu_rs and "Modifiers::SUPER" in cu_rs
+    # The token is sent, never printed.
+    assert "eprintln!" in cu_rs and "token" not in "".join(
+        line for line in cu_rs.splitlines() if "eprintln!" in line or "println!" in line
+    )

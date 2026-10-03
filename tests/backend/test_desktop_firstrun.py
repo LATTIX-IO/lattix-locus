@@ -94,3 +94,73 @@ def test_degrade_full_stack_present_uses_postgres(tmp_path):
     plan = nl.build_native_plan(cfg, which=_which_factory(all_bins))
     assert "postgres" in plan.service_names()
     assert "POSTGRES_DSN" in plan.env and "LOCUS_SQLITE_STATE_PATH" not in plan.env
+
+
+# --- Playwright Chromium for the agent browser (LOCUS-346) -------------------
+def _fake_driver():
+    return (
+        "/bundle/playwright/driver/node",
+        "/bundle/playwright/driver/package/cli.js",
+        {"PATH": "/usr/bin", "PLAYWRIGHT_DOWNLOAD_HOST": "https://evil.example"},
+        "1.63.0",
+    )
+
+
+def test_playwright_install_command_uses_bundled_driver_and_app_home(tmp_path):
+    argv, env, version = fr.playwright_install_command(tmp_path, driver=_fake_driver)
+    assert argv == [
+        "/bundle/playwright/driver/node",
+        "/bundle/playwright/driver/package/cli.js",
+        "install",
+        "chromium",
+    ]
+    assert env["PLAYWRIGHT_BROWSERS_PATH"] == str(tmp_path / "playwright")
+    assert "PLAYWRIGHT_DOWNLOAD_HOST" not in env  # no redirected downloads
+    assert version == "1.63.0"
+
+
+def test_real_driver_resolves_to_the_pinned_playwright_package(tmp_path):
+    argv, env, version = fr.playwright_install_command(tmp_path)
+    assert argv[2:] == ["install", "chromium"]
+    assert argv[1].replace("\\", "/").endswith("playwright/driver/package/cli.js")
+    assert env["PW_LANG_NAME"] == "python"
+    pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert f'"playwright=={version}"' in pyproject
+
+
+def test_ensure_playwright_chromium_installs_once_per_version(tmp_path):
+    calls: list[tuple[list[str], dict]] = []
+    progress: list[str] = []
+
+    def run(argv, env):
+        calls.append((argv, env))
+        return 0
+
+    assert fr.ensure_playwright_chromium(
+        tmp_path, driver=_fake_driver, run=run, progress=progress.append
+    )
+    assert len(calls) == 1 and calls[0][1]["PLAYWRIGHT_BROWSERS_PATH"] == str(
+        tmp_path / "playwright"
+    )
+    assert (tmp_path / "playwright" / ".locus-chromium-1.63.0").exists()
+    assert any("installed playwright chromium" in line for line in progress)
+
+    # Second launch: marker present, nothing runs.
+    assert fr.ensure_playwright_chromium(
+        tmp_path, driver=_fake_driver, run=run, progress=progress.append
+    )
+    assert len(calls) == 1
+
+
+def test_ensure_playwright_chromium_failures_never_raise(tmp_path):
+    progress: list[str] = []
+    assert not fr.ensure_playwright_chromium(
+        tmp_path, driver=_fake_driver, run=lambda argv, env: 1, progress=progress.append
+    )
+    assert not (tmp_path / "playwright" / ".locus-chromium-1.63.0").exists()
+
+    def boom():
+        raise ImportError("no playwright")
+
+    assert not fr.ensure_playwright_chromium(tmp_path, driver=boom, progress=progress.append)
+    assert any(line.startswith("FAILED playwright chromium") for line in progress)

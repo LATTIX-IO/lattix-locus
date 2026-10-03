@@ -11,12 +11,15 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod computer_use;
+
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{include_image, Emitter, Manager, WebviewUrl, WindowEvent};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_updater::UpdaterExt;
@@ -123,6 +126,26 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
 
+            // Computer-use panic hotkey (LOCUS-346): a global shortcut handled in
+            // Rust (not the webview) that POSTs /computer-use/panic, so it works
+            // even when the UI is frozen. Configurable via LOCUS_PANIC_HOTKEY.
+            let panic_shortcut = computer_use::panic_shortcut();
+            let expected = panic_shortcut.clone();
+            app.handle().plugin(
+                tauri_plugin_global_shortcut::Builder::new()
+                    .with_handler(move |_app, shortcut, event| {
+                        if shortcut == &expected && matches!(event.state(), ShortcutState::Pressed) {
+                            computer_use::trigger_panic();
+                        }
+                    })
+                    .build(),
+            )?;
+            if let Err(e) = app.global_shortcut().register(panic_shortcut) {
+                // Another app may own the chord; POST /computer-use/panic (and
+                // LOCUS_PANIC_HOTKEY to pick another chord) still work.
+                eprintln!("[computer-use] could not register the panic hotkey: {e}");
+            }
+
             // System tray: logo icon + a menu (Open / Quit). Left-click opens the
             // window; "Quit" asks the UI to validate running agents, then exits.
             //
@@ -168,6 +191,10 @@ fn main() {
             {
                 eprintln!("failed to create system tray icon: {e}");
             }
+
+            // "Takeover active" indicator: tray tooltip (and macOS menu-bar title)
+            // while the agent drives input; polled from Rust, ~1 request/second.
+            computer_use::start_status_indicator(app.handle().clone());
 
             // Spawn the packaged supervisor sidecar. The binary is resolved from
             // the bundle's `externalBin` (name + target triple suffix).

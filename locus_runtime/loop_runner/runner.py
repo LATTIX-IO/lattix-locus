@@ -46,6 +46,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from locus_runtime.computer_use.wiring import build_run_toolset, release_run_toolset
 from locus_runtime.gateway import (
     Gateway,
     GatewayAuditRecord,
@@ -67,7 +68,6 @@ from locus_runtime.harness.run_envelope import (
     build_envelope,
     detect_repo_checks,
 )
-from locus_runtime.harness.tools import CodingToolset
 from locus_runtime.harness.trajectory import TrajectoryRecorder
 from locus_runtime.harness.verified_loop import (
     EndState,
@@ -622,7 +622,14 @@ class LoopRunner:
             workspace = Workspace(
                 run_id=run_id, executor=executor, base_ref=str(record.get("base_sha") or "HEAD")
             )
-            toolset = CodingToolset(workspace=workspace, edit_format=profile.edit_format)
+            # Computer-use tools when the envelope lists them (LOCUS-346), on this
+            # run's session (its capabilities came from the envelope).
+            toolset = build_run_toolset(
+                tools=envelope.capabilities.tools,
+                workspace=workspace,
+                session=session,
+                edit_format=profile.edit_format,
+            )
             owner = f"run-{run_id}"
 
             def on_event(kind: str, data: dict[str, Any]) -> None:
@@ -656,7 +663,10 @@ class LoopRunner:
                     task_meta={"issue": issue.identifier, "url": issue.url, "run_id": run_id},
                     **options,
                 )
-            result = loop.run()
+            try:
+                result = loop.run()
+            finally:
+                release_run_toolset(toolset)
             model = f"{getattr(client, 'provider', '')}/{getattr(client, 'model', '')}"
             return result, model
         finally:

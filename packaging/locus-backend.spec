@@ -38,6 +38,12 @@ _DYNAMIC_PKGS = [
     "structlog",
     "pydantic",
     "yaml",
+    # Agent browser (computer use, LOCUS-346): collect_all ships playwright's
+    # Node driver (playwright/driver: node + package/cli.js) as data, which the
+    # frozen backend runs to launch Chromium and first-run uses to install it
+    # (locus_tooling.desktop_firstrun.ensure_playwright_chromium). Chromium
+    # itself is NOT bundled; it lands in <app_home>/playwright on first run.
+    "playwright",
 ]
 
 datas, binaries, hiddenimports = [], [], []
@@ -72,6 +78,15 @@ datas += copy_metadata("keyring")
 # Biscuit capability grants (LOCUS-334; biscuit-python, Apache-2.0): a compiled
 # extension module imported by locus_runtime.grants.
 hiddenimports += ["biscuit_auth"]
+# Playwright's sync API runs on greenlet (compiled) and pyee; the browser module
+# is imported lazily by the computer-use wiring.
+hiddenimports += [
+    "greenlet",
+    "pyee",
+    "playwright.sync_api",
+    "playwright._impl._driver",
+    "locus_runtime.computer_use.browser",
+]
 # Platform-specific backend dependencies (absent on other OSes — skip quietly).
 for _pkg in ("win32ctypes", "secretstorage", "jeepney"):
     try:

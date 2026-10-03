@@ -537,3 +537,32 @@ def test_reconcile_waits_for_pending_checks_and_skips_when_auto_merge_off(
     github.checks = [GateCheck("ci / test", "completed", "success")]
     off = _runner(repo, tmp_path, tracker, [], github=github, auto_merge=False).run_once()
     assert off.merges == [] and github.merged == []
+
+
+# --------------------------------------------------------------------------- #
+# computer use (LOCUS-346): the toolset comes from the envelope's tools
+# --------------------------------------------------------------------------- #
+def test_runner_builds_toolset_from_envelope_tools_and_releases_it(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from locus_runtime.loop_runner import runner as runner_module
+
+    built: list[dict[str, Any]] = []
+    released: list[Any] = []
+    real_build = runner_module.build_run_toolset
+
+    def spy_build(**kwargs: Any) -> Any:
+        built.append(kwargs)
+        return real_build(**kwargs)
+
+    monkeypatch.setattr(runner_module, "build_run_toolset", spy_build)
+    monkeypatch.setattr(runner_module, "release_run_toolset", released.append)
+    tracker = FakeTracker([_issue()])
+    runner = _runner(repo, tmp_path, tracker, [_plan(), _fix(), _submit()])
+
+    result = runner.run_once()
+
+    assert result.status == "done", result.detail
+    assert len(built) == 1 and len(released) == 1
+    assert "execute_bash" in built[0]["tools"]
+    assert isinstance(built[0]["session"], gw.GatewaySession)

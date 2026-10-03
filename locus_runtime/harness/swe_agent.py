@@ -26,6 +26,7 @@ from locus_runtime.harness.llm import ChatClient
 from locus_runtime.harness.loop import AgentLoop, LoopBudgets, LoopOutcome
 from locus_runtime.harness.model_profiles import ModelCapabilityProfile, resolve_profile
 from locus_runtime.harness.run_envelope import (
+    DEFAULT_CODING_TOOLS,
     CommandCheck,
     EnvelopeCapabilities,
     RunBudget,
@@ -101,6 +102,11 @@ class SweAgent:
     # Agent Skills (LOCUS-340): a ``locus_runtime.skills.SkillTools``; the envelope
     # must list ``use_skill`` / ``run_skill_script`` for the loop to offer them.
     skills: Any = None
+    # Computer use (LOCUS-346): browser_* / desktop_* tools this run may use, and the
+    # desktop apps it may drive. With an explicit ``envelope`` its
+    # ``capabilities.tools`` / ``apps`` decide instead.
+    computer_use_tools: tuple[str, ...] = ()
+    computer_use_apps: tuple[str, ...] = ()
 
     def _resolve_profile(self) -> ModelCapabilityProfile:
         if self.profile is not None:
@@ -119,16 +125,51 @@ class SweAgent:
             base_ref=task.base_ref,
             git_executor=task.git_executor,
         )
-        toolset = CodingToolset(
+        envelope = self._envelope_for(task)
+        toolset = self._build_toolset(task, workspace, profile, envelope)
+        try:
+            return self._solve_with(task, envelope, profile, workspace, toolset)
+        finally:
+            from locus_runtime.computer_use.wiring import release_run_toolset
+
+            release_run_toolset(toolset)
+
+    def _build_toolset(
+        self,
+        task: SweTask,
+        workspace: Workspace,
+        profile: ModelCapabilityProfile,
+        envelope: RunEnvelope | None,
+    ) -> CodingToolset:
+        coding: dict[str, Any] = {
+            "edit_format": profile.edit_format,
+            "bash_timeout": self.bash_timeout,
+            "test_timeout": self.test_timeout,
+            "out_of_bounds": self.out_of_bounds,
+            "on_escalation": self.on_escalation,
+            "allow_edits": self.allow_edits,
+            "skills": self.skills,
+        }
+        tools = envelope.capabilities.tools if envelope is not None else self.computer_use_tools
+        if not tools:
+            return CodingToolset(workspace=workspace, **coding)
+        from locus_runtime.computer_use.wiring import build_run_toolset
+
+        return build_run_toolset(
+            tools=tools,
             workspace=workspace,
-            edit_format=profile.edit_format,
-            bash_timeout=self.bash_timeout,
-            test_timeout=self.test_timeout,
-            out_of_bounds=self.out_of_bounds,
-            on_escalation=self.on_escalation,
-            allow_edits=self.allow_edits,
-            skills=self.skills,
+            session=getattr(task.executor, "gateway_session", None),
+            **coding,
         )
+
+    def _solve_with(
+        self,
+        task: SweTask,
+        envelope: RunEnvelope | None,
+        profile: ModelCapabilityProfile,
+        workspace: Workspace,
+        toolset: CodingToolset,
+    ) -> SweAgentResult:
         recorder = None
         if self.trajectory_dir is not None:
             recorder = TrajectoryRecorder(
@@ -149,7 +190,6 @@ class SweAgent:
             test_hint=task.test_command,
         )
 
-        envelope = self._envelope_for(task)
         if envelope is not None:
             return self._solve_verified(
                 task, envelope, profile, workspace, toolset, recorder, system_prompt, user_prompt
@@ -221,7 +261,10 @@ class SweAgent:
                 ),
             ),
             capabilities=EnvelopeCapabilities(
-                read_roots=(task.executor.workdir(),), write_roots=(task.executor.workdir(),)
+                tools=(*DEFAULT_CODING_TOOLS, *self.computer_use_tools),
+                read_roots=(task.executor.workdir(),),
+                write_roots=(task.executor.workdir(),),
+                apps=tuple(self.computer_use_apps),
             ),
             budget=budget,
         )

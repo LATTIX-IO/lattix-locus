@@ -39,6 +39,9 @@ _SELF_CHECK_MODULES = (
     "locus_tooling.native_secrets",
     "biscuit_auth",
     "keyring",
+    "playwright.sync_api",
+    "locus_runtime.computer_use.browser",
+    "locus_runtime.computer_use.wiring",
 )
 
 
