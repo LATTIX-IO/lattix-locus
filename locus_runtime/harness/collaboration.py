@@ -188,6 +188,9 @@ class CollaborativeTeam:
     on_escalation: Callable[[dict[str, Any]], None] | None = None
     trajectory_dir: Path | None = None
     on_event: Callable[[str, dict[str, Any]], None] | None = None
+    # Computer-use tools / desktop apps for the implementer's run (LOCUS-346).
+    computer_use_tools: tuple[str, ...] = ()
+    computer_use_apps: tuple[str, ...] = ()
 
     def _emit(self, kind: str, **data: Any) -> None:
         if self.on_event:
@@ -399,6 +402,8 @@ class CollaborativeTeam:
             system_prompt_override=self.prompts.get(IMPLEMENTER),
             out_of_bounds=self.out_of_bounds,
             on_escalation=self.on_escalation,
+            computer_use_tools=tuple(self.computer_use_tools),
+            computer_use_apps=tuple(self.computer_use_apps),
         )
         return agent.solve(impl_task)
 
@@ -454,6 +459,8 @@ def build_collaborative_team(
     profile_overrides: dict[str, Any] | None = None,
     trajectory_dir: Path | None = None,
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
+    computer_use_tools: tuple[str, ...] = (),
+    computer_use_apps: tuple[str, ...] = (),
 ) -> CollaborativeTeam:
     """Assemble the collaborative team from the shipped agent definitions."""
     from locus_runtime.harness.agent_library import load_agent_spec
@@ -483,4 +490,6 @@ def build_collaborative_team(
         on_escalation=on_escalation,
         trajectory_dir=trajectory_dir,
         on_event=on_event,
+        computer_use_tools=tuple(computer_use_tools),
+        computer_use_apps=tuple(computer_use_apps),
     )

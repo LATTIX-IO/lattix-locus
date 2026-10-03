@@ -118,6 +118,10 @@ class CompilerDeps:
     # (workspace_root, extra_paths) -> GatewaySession for this run's harness
     # executors (LOCUS-332). None => executors are unbound and the gateway denies.
     gateway_session_factory: Optional[Callable[[Any, list[str]], Any]] = None
+    # Computer-use tools / desktop apps for code and team nodes (LOCUS-346); the
+    # session factory above must grant their gateway operations.
+    computer_use_tools: tuple[str, ...] = ()
+    computer_use_apps: tuple[str, ...] = ()
     # run-scoped, populated by run_compiled_graph:
     provisioned: Any = None  # ProvisionedWorkspace | None
 
@@ -502,6 +506,8 @@ def _delegate_to_swe_agent(
             out_of_bounds=getattr(binding, "allow_outside", "ask") or "ask",
             on_event=(lambda kind, data: deps._emit(f"swe.{kind}", node_id=node.id, **data)),
             on_escalation=deps.on_escalation,
+            computer_use_tools=tuple(deps.computer_use_tools),
+            computer_use_apps=tuple(deps.computer_use_apps),
         )
         deps._emit("code_node_started", node_id=node.id, agent_id=r.agent_id)
         result = agent.solve(task)
@@ -718,6 +724,8 @@ def _delegate_to_collaborative_team(
             out_of_bounds=getattr(prov.binding, "allow_outside", "ask") or "ask",
             on_event=(lambda kind, data: deps._emit(f"team.{kind}", node_id=node.id, **data)),
             on_escalation=deps.on_escalation,
+            computer_use_tools=tuple(deps.computer_use_tools),
+            computer_use_apps=tuple(deps.computer_use_apps),
         )
         task = SweTask(
             instance_id=f"{deps.run_id}-{node.id}",

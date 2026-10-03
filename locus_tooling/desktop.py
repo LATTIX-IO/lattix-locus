@@ -156,6 +156,13 @@ def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
     os.environ.pop("POSTGRES_DSN", None)
     os.environ["LOCUS_MEMORY_ENABLE_LONG_TERM"] = "false"
     os.environ["LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED"] = "false"
+    # The agent browser (computer use) launches the Chromium first-run installs
+    # under <app_home>/playwright, never a system or user browser.
+    from .desktop_firstrun import playwright_browsers_dir
+
+    os.environ.setdefault(
+        "PLAYWRIGHT_BROWSERS_PATH", str(playwright_browsers_dir(Path(cfg.app_home)))
+    )
 
     # FAST PATH: start only the frontend synchronously so the window appears in
     # seconds. Everything heavy (DB init, Ollama serve + the multi-GB model pull,
@@ -166,7 +173,11 @@ def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
     fast_supervisor.start_all()
     _LIVE_SUPERVISORS.append(fast_supervisor)
 
-    from .desktop_firstrun import ensure_agent_toolchain, ensure_sidecars
+    from .desktop_firstrun import (
+        ensure_agent_toolchain,
+        ensure_playwright_chromium,
+        ensure_sidecars,
+    )
 
     deferred_supervisors: list = []
 
@@ -175,6 +186,7 @@ def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
         # the model (re-plan so newly-fetched binaries are picked up).
         ensure_sidecars(writable_bin_dir(), model=None, progress=log)
         ensure_agent_toolchain(desktop_app_home(), progress=log)
+        ensure_playwright_chromium(desktop_app_home(), progress=log)
         plan2 = build_native_plan(desktop_config(**overrides))
         deferred = NativePlan([s for s in plan2.services if s.name != "frontend"], plan2.env, [])
         sup = NativeSupervisor(deferred, log=log)

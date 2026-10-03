@@ -16873,6 +16873,11 @@ def _startup_initialize_state() -> None:
         _ensure_gateway()
     except Exception:  # noqa: BLE001 - no gateway installed means every action denies
         LOGGER.exception("Failed to install the policy gateway")
+    try:
+        # Computer use (LOCUS-346): only wired when the gateway enforces.
+        policy_gateway.ensure_computer_use_controller()
+    except Exception:  # noqa: BLE001 - not installed means no computer-use tools
+        LOGGER.exception("Failed to install the computer-use controller")
     pre_startup_integrations = dict(store.integrations)
     postgres_status, postgres_reason = _service_status_with_reason(_POSTGRES_STATE)
     if postgres_status != "connected":
@@ -29960,6 +29965,9 @@ def _compile_and_run_locus_graph(
 
     gateway_sessions: list[Any] = [execution_state.get("gateway_session")]
     run_data_class = str(run_input.get("data_classification") or "")
+    # Computer-use tools / desktop apps the run asks for (LOCUS-346); the session
+    # below gets their gateway operations, the code / team nodes their toolset.
+    cu_tools, cu_apps = policy_gateway.computer_use_request(run_input.get("computer_use"))
 
     def make_chat_client(resolution: Any) -> Any:
         return _make_harness_chat_client(
@@ -29987,7 +29995,11 @@ def _compile_and_run_locus_graph(
             egress=_gateway_egress_hosts(),
             on_decision=_gateway_decision_listener,
             opened=gateway_sessions,
+            computer_use_tools=cu_tools,
+            apps=cu_apps,
         ),
+        computer_use_tools=cu_tools,
+        computer_use_apps=cu_apps,
     )
 
     try:

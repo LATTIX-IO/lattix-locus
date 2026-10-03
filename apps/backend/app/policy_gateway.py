@@ -23,6 +23,10 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
+from locus_runtime.computer_use.operations import (
+    COMPUTER_USE_TOOL_NAMES,
+    computer_use_operations,
+)
 from locus_runtime.gateway import (
     AuditSink,
     Authorizer,
@@ -55,6 +59,8 @@ _LOCK = threading.Lock()
 
 #: Operations a coding run's executors perform (agent_policy ``allowed_tools``).
 HARNESS_OPERATIONS = frozenset({"read_file", "write_file", "process_exec"})
+_MAX_COMPUTER_USE_APPS = 32
+_MAX_APP_CHARS = 128
 
 
 class UnavailableEngine:
@@ -130,6 +136,33 @@ def egress_hosts(
     return tuple(sorted(hosts))
 
 
+def computer_use_request(raw: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(tools, apps)`` from a run input's ``computer_use`` block (LOCUS-346).
+
+    ``{"tools": ["browser_navigate", ...], "apps": ["notepad.exe", ...]}``. Only
+    known computer-use tool names survive; apps are trimmed, bounded strings.
+    Anything else is dropped (the run then gets no computer-use tools).
+    """
+    if not isinstance(raw, dict):
+        return (), ()
+    tools_raw = raw.get("tools")
+    apps_raw = raw.get("apps")
+    tools = sorted(
+        {str(t).strip() for t in tools_raw if str(t).strip() in COMPUTER_USE_TOOL_NAMES}
+        if isinstance(tools_raw, list)
+        else set()
+    )
+    apps: list[str] = []
+    if isinstance(apps_raw, list):
+        for app in apps_raw:
+            value = str(app or "").strip()
+            if value and len(value) <= _MAX_APP_CHARS and value not in apps:
+                apps.append(value)
+            if len(apps) >= _MAX_COMPUTER_USE_APPS:
+                break
+    return tuple(tools), tuple(apps)
+
+
 def run_capabilities(
     *,
     allowed_tools: Iterable[str],
@@ -137,6 +170,7 @@ def run_capabilities(
     egress: Iterable[str] = (),
     max_tool_calls: int = 0,
     budget: BudgetFigures | None = None,
+    apps: Iterable[str] = (),
 ) -> Capabilities:
     root_list = tuple(str(Path(root)) for root in roots if str(root or "").strip())
     return Capabilities(
@@ -147,6 +181,7 @@ def run_capabilities(
         allowed_egress_hosts=tuple(egress),
         max_tool_calls=max(0, int(max_tool_calls or 0)),
         budget=budget,
+        allowed_apps=tuple(str(app) for app in apps if str(app or "").strip()),
     )
 
 
@@ -183,9 +218,18 @@ def harness_session_factory(
     egress: Iterable[str],
     on_decision: DecisionListener | None,
     opened: list[GatewaySession],
+    computer_use_tools: Iterable[str] = (),
+    apps: Iterable[str] = (),
 ) -> Callable[[Any, list[str]], GatewaySession | None]:
-    """``(workspace_root, extra_paths) -> session`` for harness executors."""
+    """``(workspace_root, extra_paths) -> session`` for harness executors.
+
+    ``computer_use_tools`` adds the gateway operations those tools need
+    (``ui_*`` / ``browser_*`` / ``network_egress``) and ``apps`` the desktop
+    apps they may drive (LOCUS-346); both empty for a plain coding run.
+    """
     egress_tuple = tuple(egress)
+    operations = HARNESS_OPERATIONS | computer_use_operations(computer_use_tools)
+    apps_tuple = tuple(apps)
 
     def factory(root: Any, extra_paths: list[str]) -> GatewaySession | None:
         session = open_run_session(
@@ -193,9 +237,10 @@ def harness_session_factory(
             principal=principal,
             engine="harness",
             capabilities=run_capabilities(
-                allowed_tools=HARNESS_OPERATIONS,
+                allowed_tools=operations,
                 roots=[str(root), *[str(p) for p in extra_paths]],
                 egress=egress_tuple,
+                apps=apps_tuple,
             ),
             on_decision=on_decision,
         )
@@ -204,6 +249,32 @@ def harness_session_factory(
         return session
 
     return factory
+
+
+def ensure_computer_use_controller() -> bool:
+    """Install the process computer-use controller when the gateway enforces (LOCUS-346).
+
+    Idempotent. The controller is the same instance ``/computer-use/panic`` and
+    ``/computer-use/status`` use (``get_controller()``). Returns whether one is
+    installed: without an enforcing gateway nothing is installed, so runs get no
+    computer-use tools and posture reports the control as off.
+    """
+    from locus_runtime.computer_use.controller import (
+        controller_installed,
+        get_controller,
+        install_controller,
+    )
+    from locus_runtime.gateway import gateway_enforcing
+
+    with _LOCK:
+        if controller_installed():
+            return True
+        if not gateway_enforcing():
+            LOGGER.warning("computer_use.not_installed: gateway is not enforcing")
+            return False
+        install_controller(get_controller())
+        LOGGER.info("computer_use.installed")
+        return True
 
 
 def close_sessions(sessions: Iterable[GatewaySession | None]) -> None:

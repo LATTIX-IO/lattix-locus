@@ -26,7 +26,8 @@ Status of LOCUS-341, the first slice of [docs/product/12-computer-use.md](produc
 
 - Measured on Windows 11: in-flight synthetic typing (fake backend, 2,000 keystrokes queued) stopped within 0.22 ms of panic at worst over 20 runs (median 0.11 ms). The test in `tests/unit/test_computer_use_controller.py` asserts at most 100 ms. An in-flight Chromium action waiting on an element stopped 1.5 ms after panic (`tests/policy/test_computer_use_opa.py`). New actions are rejected in under 0.1 ms. A single Playwright primitive that is already running (a click, a fill) is bounded by its own action timeout, 5 s by default; cancellation takes effect at the next primitive boundary.
 - `POST /computer-use/panic` exposes panic. It always requires authentication, whatever the runtime profile. It is idempotent and audited as `computer_use.panic`. `GET /computer-use/status` and `POST /computer-use/reset` sit beside it.
-- **Follow-up:** wire the desktop app's global hotkey to `POST /computer-use/panic`. This needs `tauri-plugin-global-shortcut` in `apps/desktop-tauri` plus the backend bearer token. It is not done here because it cannot be built and verified in this change.
+- **Desktop panic hotkey (LOCUS-346).** The desktop app registers a global shortcut, **Ctrl+Alt+Shift+Esc** (macOS: **Cmd+Alt+Shift+Esc**), that `POST`s `/computer-use/panic` on `127.0.0.1:8000`. Set `LOCUS_PANIC_HOTKEY` (for example `ctrl+alt+shift+F12`) in the app's environment to choose another chord. The hotkey uses `tauri-plugin-global-shortcut` v2 and is handled in Rust (`apps/desktop-tauri/src-tauri/src/computer_use.rs`) on its own thread with a raw loopback request, so it fires even when the UI webview is frozen or still on the loading page. Authentication: the desktop backend runs the `local-native` profile with the local-operator bootstrap (loopback only), the same path the UI uses. If `LOCUS_API_BEARER_TOKEN` is set in the shell's own environment it is sent as a bearer token too. The token is never logged. If another app already owns the chord, registration fails, the shell logs it, and the endpoint still works.
+- **Takeover indicator.** The shell polls `GET /computer-use/status` about once a second. While the mode is `takeover`, the tray tooltip reads "AGENT IS CONTROLLING THIS COMPUTER (... to stop)" and, on macOS, the menu bar shows "AGENT IN CONTROL". After a panic it reads "computer use stopped (panic)". A richer web UI indicator is P31.
 - Not in v1: the OS-level native helper (12 §4) with physical-input preemption, HUD and screen border. Cancellation is cooperative and runs inside the Python process.
 
 ## Safety model
@@ -98,8 +99,32 @@ The allowlist is host-level, not port-level.
 | Real Windows UIA: observe a Notepad window and set its text through the Value pattern, then restore it | `tests/policy/test_computer_use_opa.py::test_real_notepad_observe_and_type`. It skips without a desktop session, and also when Notepad is already running, so the user's documents are never touched. |
 | macOS AX backend logic (secure fields, walk caps, frontmost check) | `tests/unit/test_computer_use_desktop.py`, with a **fake** PyObjC API only. **Not verified on a Mac.** |
 | Panic endpoint is authenticated, idempotent, cancels and latches; posture control | `apps/backend/tests/test_computer_use_endpoint.py` |
+| Backend installs the controller only with an enforcing gateway, and posture then reads `enforced`. Run input `computer_use` reaches the session capabilities and the code node. A token-less loopback panic is accepted only under the desktop local-operator bootstrap. | `apps/backend/tests/test_computer_use_backend_wiring.py` |
+| Envelope tools select the `ComputerUseToolset` (SweAgent, loop runner), and the browser is released at the end of the run | `tests/unit/test_computer_use_wiring.py`, `tests/harness/test_loop_runner.py` |
+| First-run Chromium install command (bundled driver, app-home browsers path, no host override, once per version). Spec, Cargo and capability wiring checked as strings. | `tests/backend/test_desktop_firstrun.py`, `tests/backend/test_desktop_packaging.py`. **No PyInstaller, Tauri or `cargo` build was run.** |
 
-**Posture.** The `computer_use` control (`apps/backend/app/control_status.py`) is `enforced` only when a controller is installed (`install_controller`) *and* an enforcing gateway is installed. It is `unverified` with the controller but no gateway, and `off` otherwise. The backend does not install a controller yet: no backend run drives computer use. So the control reports `off` today.
+**Posture.** The `computer_use` control (`apps/backend/app/control_status.py`) is `enforced` only when a controller is installed (`install_controller`) *and* an enforcing gateway is installed. It is `unverified` with the controller but no gateway, and `off` otherwise. At startup the backend installs the process controller (`policy_gateway.ensure_computer_use_controller`) right after the gateway, but only when that gateway is enforcing (OPA running). With OPA down nothing is installed, runs get no computer-use tools, and the control reports `off`.
+
+## Running computer use (LOCUS-346)
+
+A run gets the computer-use tools when its envelope lists them (`capabilities.tools`) and a controller is installed. Otherwise it keeps the coding tools only, and the omission is logged.
+
+- **Backend workflow runs.** Pass `"computer_use": {"tools": ["browser_navigate", "browser_read", "browser_act"], "apps": ["notepad.exe"]}` in the run input. Unknown tool names are dropped, and apps are bounded strings (`policy_gateway.computer_use_request`). The run's harness gateway session then grants those tools' operations (`ui_*`, `browser_*`, `network_egress`) and the listed apps. Code nodes and the team implementer get a `ComputerUseToolset` (`locus_runtime/computer_use/wiring.py`). Analyzer nodes stay read and exec only. Browser egress is still the operator allowlist.
+- **Linear loop runner.** It builds its toolset through the same wiring from the envelope's tools, on the session the envelope's capabilities opened. Its default envelope lists coding tools only.
+- **Mode.** The controller starts in `observe`. Acting tools return proposals until the mode is `takeover`, and a panic resets the mode to `observe`.
+- **Desktop bundle.** The PyInstaller spec ships Playwright's Node driver (`collect_all("playwright")`). First run (`locus_tooling/desktop_firstrun.ensure_playwright_chromium`) runs that driver's `install chromium` into `<app_home>/playwright`, which is the same as `python -m playwright install chromium`. The supervisor exports `PLAYWRIGHT_BROWSERS_PATH` to that directory before the backend starts. The Chromium build is the one pinned by the `playwright` package version (1.63.0). It comes from Playwright's CDN with the headless shell and small helpers (ffmpeg, and winldd on Windows). Download-host overrides are stripped. A per-version marker makes later launches a no-op. If the install fails, browser tools report themselves unavailable and nothing else is affected.
+
+## Verify on macOS
+
+macOS is **unverified**: none of this has run on a real Mac. Before claiming macOS support, check each item below on a signed build (`hardenedRuntime: true`):
+
+1. **Accessibility permission (required for desktop tools).** The first `desktop_observe` makes `AXIsProcessTrusted()` return false and the tool reports "this process lacks the macOS Accessibility permission". Grant Lattix Locus in System Settings > Privacy & Security > Accessibility, then relaunch. Check which entry TCC lists. The AX calls run in the `locus-backend` sidecar, which TCC normally attributes to the parent `Lattix Locus.app` (the responsible process). If it lists `locus-backend` separately, the sidecar's signature and identifier must stay stable across updates or the grant is lost on every update.
+2. **Screen Recording permission.** v1 does not capture the screen. Desktop tools read the AX tree, and `browser_screenshot` captures only the agent's own Chromium page. So **no Screen Recording prompt should appear**. If one does, record what triggered it. Desktop frame capture (follow-up) will need this permission, and its prompt and denial path must be tested then.
+3. **Panic hotkey.** Cmd+Alt+Shift+Esc must fire with the app in the background, with the window hidden to the tray, and while the webview is busy. Carbon hotkeys need no permission. Confirm that no Input Monitoring prompt appears. Confirm that `POST /computer-use/panic` lands (`computer_use.panic` in the audit log) and that an in-flight `desktop_type` into TextEdit stops.
+4. **Takeover indicator.** Set the mode to `takeover`. Within about 1 s the menu bar shows "AGENT IN CONTROL" next to the tray icon, and the tooltip changes. Both clear after reset.
+5. **Playwright Chromium.** On first run `<app_home>/playwright` gets Chromium and the headless shell. Check that the bundled `node` driver was executable after PyInstaller unpacking (first run sets the exec bit if it is missing). Check that Gatekeeper and quarantine do not block the downloaded Chromium. Check that the agent browser launches from the frozen backend.
+6. **AX behaviour.** Secure text fields (`AXSecureTextField`) are never read or typed. The frontmost-app check refuses to send keys to another app. Walk caps hold on a large window (Xcode, Safari).
+7. **Scenario suite.** Run `tests/policy/test_computer_use_opa.py` on the Mac (real OPA, real Chromium). Then run the doc 12 section 9 scenarios.
 
 ## Dependencies (P28 / P29 / P30)
 
@@ -113,10 +138,9 @@ The egress proxy is our own code, about 150 lines. mitmproxy (MIT) was considere
 
 ## Follow-ups
 
-- Desktop-app global hotkey → `POST /computer-use/panic` (Tauri global-shortcut plugin).
 - Signed native helper (12 §4): OS-level preemption on physical input, HUD and screen border, panic outside the Python process.
 - Encrypted frame storage. Sensitive-screen detection that drops whole frames rather than masking fields.
 - Per-app R3 standing-grant override of the built-in deny list (12 §6). v1 does not allow overrides at all.
 - Run the scenario suite on a real Mac before claiming macOS (12 §9).
-- PyInstaller packaging of Playwright's driver for the desktop bundle (`packaging/locus-backend.spec`).
-- Wire a computer-use run into the backend (install the controller), which flips the posture control.
+- Build and smoke-test the desktop bundle with the hotkey, tray indicator and bundled Playwright driver on Windows and macOS. The Rust shell changes were not compiled in LOCUS-346.
+- A web UI control for the computer-use mode and takeover state (P31).
