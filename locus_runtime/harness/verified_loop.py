@@ -392,11 +392,14 @@ def write_checkpoint(path: Path, payload: dict[str, Any]) -> None:
 
 def read_checkpoint(path: str | Path) -> dict[str, Any]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} is not a Locus run checkpoint")
     if data.get("kind") != CHECKPOINT_KIND:
         raise ValueError(f"{path} is not a Locus run checkpoint")
     if int(data.get("version") or 0) != CHECKPOINT_VERSION:
         raise ValueError(f"unsupported checkpoint version {data.get('version')}")
-    return data
+    checkpoint: dict[str, Any] = data
+    return checkpoint
 
 
 def gateway_session_of(toolset: CodingToolset) -> GatewaySession | None:
