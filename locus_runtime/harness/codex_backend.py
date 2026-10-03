@@ -26,13 +26,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from locus_runtime.gateway import GatewaySession, JailFacts, authorize_action
+
 
 @dataclass
 class CodexResult:
     answer: str = ""
     reasoning: str = ""
     files: list[str] = field(default_factory=list)
-    outcome: str = "completed"  # completed | failed | unavailable | timeout
+    # completed | failed | unavailable | timeout | denied | approval_required
+    outcome: str = "completed"
+    gateway_reasons: list[str] = field(default_factory=list)
+    gateway_audit_id: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
     events: list[dict[str, Any]] = field(default_factory=list)
     exit_code: int | None = None
@@ -138,11 +143,16 @@ def run_codex(
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
     timeout: int = 900,
     codex_bin: str | None = None,
+    gateway_session: GatewaySession | None = None,
 ) -> CodexResult:
     """Run ``codex exec --json`` in ``cwd`` and stream its events.
 
     Degrades to ``outcome="unavailable"`` if the codex binary is missing, so the
     caller can fall back to the native backend rather than crash.
+
+    Launching the Codex engine is a gateway ``process_exec`` action (P6). Codex's
+    own sandbox is not a jail Locus can verify, so the launch reports no jail
+    facts; tool calls *inside* Codex do not pass the gateway (see LOCUS-332 notes).
     """
     binary = codex_bin or os.getenv("CODEX_BIN", "codex")
     model = model.split("/", 1)[-1] if "/" in model else model  # strip provider prefix
@@ -154,6 +164,20 @@ def run_codex(
         overrides.setdefault("model_providers.oss.base_url", f"{base.rstrip('/')}/v1")
 
     result = CodexResult()
+    decision = authorize_action(
+        gateway_session,
+        kind="process_exec",
+        tool="codex",
+        target=str(cwd),
+        command=f"codex exec --sandbox {sandbox} -m {model}",
+        executable="codex",
+        jail=JailFacts(strategy=f"codex-{sandbox}"),
+    )
+    if not decision.allowed:
+        result.outcome = "approval_required" if decision.outcome == "ask" else "denied"
+        result.gateway_reasons = list(decision.reasons)
+        result.gateway_audit_id = decision.audit_id
+        return result
     last_msg_path = ""
     try:
         fd, last_msg_path = tempfile.mkstemp(prefix="codex-last-", suffix=".txt")

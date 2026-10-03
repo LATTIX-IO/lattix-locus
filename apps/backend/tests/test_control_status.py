@@ -273,9 +273,47 @@ def test_atf_report_and_health_details_share_the_control_status(
 
 
 def test_policy_engine_is_unverified_when_available_and_off_otherwise() -> None:
-    # LOCUS-328: the engine exists but no execution-path gateway calls it yet.
+    # LOCUS-328/332: an available engine without a running gateway is not enforcement.
     assert _states(_facts(policy_engine_available=True))["policy_engine_rego"] == "unverified"
     assert _states(_facts(policy_engine_available=False))["policy_engine_rego"] == "off"
+
+
+def test_policy_engine_is_enforced_only_with_engine_and_gateway() -> None:
+    # LOCUS-332: enforced needs both facts; the bypass test is the CI evidence.
+    both = _facts(policy_engine_available=True, gateway_enforcing=True)
+    assert _states(both)["policy_engine_rego"] == "enforced"
+    gateway_only = _facts(policy_engine_available=False, gateway_enforcing=True)
+    assert _states(gateway_only)["policy_engine_rego"] == "off"
+    engine_only = _facts(policy_engine_available=True, gateway_enforcing=False)
+    assert _states(engine_only)["policy_engine_rego"] == "unverified"
+
+
+def test_gateway_enforcing_is_a_runtime_fact() -> None:
+    from locus_runtime import gateway as gw
+    from locus_runtime.policy_engine import Decision
+
+    class _Engine:
+        name = "fake"
+
+        def __init__(self, running: bool) -> None:
+            self.running = running
+
+        def decide(self, policy, input):  # noqa: A002, ANN001
+            return Decision(allow=True, reasons=[], policy_version="v", backend="fake")
+
+        def close(self) -> None:
+            return None
+
+    previous = gw.installed_gateway()
+    try:
+        gw.install_gateway(None)
+        assert control_status._gateway_enforcing() is False
+        gw.install_gateway(gw.Gateway(_Engine(running=False), lambda record: None))
+        assert control_status._gateway_enforcing() is False
+        gw.install_gateway(gw.Gateway(_Engine(running=True), lambda record: None))
+        assert control_status._gateway_enforcing() is True
+    finally:
+        gw.install_gateway(previous)
 
 
 def test_policy_engine_availability_is_a_runtime_fact(

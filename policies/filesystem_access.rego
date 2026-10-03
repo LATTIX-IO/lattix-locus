@@ -10,6 +10,14 @@ allow if {
   path_within_allowed_root(input.path, allowed_path)
 }
 
+# Writes are allowed only under an explicit write root (the run workspace and
+# granted extra paths). Reads never imply writes. (LOCUS-332 gateway)
+allow if {
+  input.action == "write"
+  some allowed_path in input.allowed_write_paths
+  path_within_allowed_root(input.path, allowed_path)
+}
+
 path_within_allowed_root(path, allowed_path) if {
   candidate_segments := normalized_path_segments(path)
   allowed_segments := normalized_path_segments(allowed_path)

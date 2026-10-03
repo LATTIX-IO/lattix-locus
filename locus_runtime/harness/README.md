@@ -57,3 +57,25 @@ print(result.telemetry)      # well_formed_edit_rate, reasks, …
 ```
 
 Benchmarking (DeepSWE/SWE-bench) is driven by `apps/evals` — see its README.
+
+## Gateway (policy enforcement, LOCUS-332)
+
+Every executor side effect asks `locus_runtime.gateway` first: `run`/`run_shell`
+are `process_exec`, `write_file` is `file_write`, `read_file` is `file_read`.
+A blocked command returns exit code 126 with the decision attached; a blocked
+file operation raises `GatewayBlocked`; `CodingToolset` turns both into a
+`[denied by policy]` / `[permission required]` tool result, so the run continues.
+
+- Executors need a run `gateway_session` (the backend opens one per run via
+  `WorkspaceManager.provision(..., session_factory=...)`). Without one they are
+  unbound callers and a real gateway denies them; with no gateway installed in
+  the process everything is denied.
+- `tool_jail` sees the executor's real jail facts. `LocalDirectExecutor`,
+  `DockerContainerExecutor`, Windows AppContainer (Job Object tier) and
+  restricted-process report no read-only root / numeric non-root user, so
+  `process_exec` is denied there by policy. bwrap, seatbelt and hardened Docker
+  satisfy it.
+- Executables allowed by `tool_jail`: `LOCUS_GATEWAY_ALLOWED_EXECUTABLES`
+  (comma separated; default `bash,sh,git,python,python3,pytest,rg,grep,codex`).
+- `tests/harness/test_gateway_bypass.py` fails if a new spawn/write/network
+  call or executor class bypasses the gateway.

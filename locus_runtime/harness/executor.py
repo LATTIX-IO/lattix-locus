@@ -14,6 +14,17 @@ A single ``Executor`` protocol abstracts *where* the agent's tools run:
 File operations (read/write/exists) are part of the protocol because
 ``str_replace_editor`` must work identically whether files live on the host or
 inside a container.
+
+Gateway (LOCUS-332, P6): every executor asks ``locus_runtime.gateway`` before a
+side effect. ``run``/``run_shell`` are ``process_exec`` actions, ``write_file``
+is ``file_write`` and ``read_file`` is ``file_read``. The process spawn and the
+file IO live only in the private ``_spawn`` / ``_write_bytes`` / ``_read_text``
+sinks, which are called only after ``_gate`` allowed the action
+(``tests/harness/test_gateway_bypass.py`` enforces this). A blocked command
+returns an ``ExecResult`` with exit code 126 and the decision attached; a
+blocked file operation raises :class:`~locus_runtime.gateway.GatewayBlocked`.
+Executors constructed without a ``gateway_session`` act as unbound callers,
+which a real gateway never authenticates (deny).
 """
 
 from __future__ import annotations
@@ -25,13 +36,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from locus_runtime.gateway import (
+    GatewayBlocked,
+    GatewayDecision,
+    GatewaySession,
+    JailFacts,
+    authorize_action,
+    current_tool,
+    current_uid_user,
+)
 from locus_runtime.sandbox import (
     ExecutionSpec,
     HostPlatform,
+    IsolationStrategy,
     SandboxManager,
     SandboxPolicy,
     detect_host_platform,
 )
+
+GATEWAY_BLOCKED_EXIT_CODE = 126
 
 
 @dataclass
@@ -42,6 +65,7 @@ class ExecResult:
     duration_seconds: float
     timed_out: bool = False
     backend: str = ""
+    gateway: GatewayDecision | None = None
 
     @property
     def ok(self) -> bool:
@@ -58,6 +82,48 @@ class ExecResult:
         if self.timed_out:
             suffix = f"\n[command timed out after {self.duration_seconds:.0f}s]"
         return f"{body}\n[exit code: {self.exit_code}]{suffix}".strip()
+
+
+def _blocked_result(decision: GatewayDecision, backend: str) -> ExecResult:
+    label = "permission required" if decision.outcome == "ask" else "denied by policy"
+    return ExecResult(
+        exit_code=GATEWAY_BLOCKED_EXIT_CODE,
+        stdout="",
+        stderr=f"[{label}] gateway {decision.describe()}",
+        duration_seconds=0.0,
+        backend=backend,
+        gateway=decision,
+    )
+
+
+def _command_text(command: list[str]) -> str:
+    if len(command) == 3 and command[0] in ("bash", "sh") and command[1] in ("-c", "-lc"):
+        return command[2]
+    return " ".join(shlex.quote(str(part)) for part in command)
+
+
+class _GatedExecutor:
+    """Shared gateway plumbing for the executors below."""
+
+    backend = ""
+    gateway_session: GatewaySession | None = None
+
+    def jail_facts(self) -> JailFacts:
+        return JailFacts(strategy="none", run_as_user=current_uid_user())
+
+    def _gate(self, kind: str, target: str, *, command: list[str] | None = None) -> GatewayDecision:
+        if kind == "process_exec":
+            argv = list(command or [])
+            return authorize_action(
+                self.gateway_session,
+                kind=kind,
+                tool=current_tool(),
+                target=target,
+                command=_command_text(argv),
+                executable=str(argv[0]) if argv else "",
+                jail=self.jail_facts(),
+            )
+        return authorize_action(self.gateway_session, kind=kind, tool=current_tool(), target=target)
 
 
 class Executor(Protocol):
@@ -85,7 +151,7 @@ def _is_within(root: Path, candidate: Path) -> bool:
         return False
 
 
-class LocalDirectExecutor:
+class LocalDirectExecutor(_GatedExecutor):
     """Run commands directly in a host directory (no isolation)."""
 
     backend = "local-direct"
@@ -96,9 +162,11 @@ class LocalDirectExecutor:
         *,
         env: dict[str, str] | None = None,
         extra_paths: list[str] | None = None,
+        gateway_session: GatewaySession | None = None,
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.env = env
+        self.gateway_session = gateway_session
         # Additional roots the agent is explicitly permitted to touch (e.g. a
         # shared lib granted by the human). Empty by default = confined to root.
         self.extra_paths = [Path(p).expanduser().resolve() for p in (extra_paths or [])]
@@ -130,12 +198,18 @@ class LocalDirectExecutor:
         return self.run(["bash", "-c", script], timeout=timeout)
 
     def run(self, command: list[str], *, timeout: int = 60) -> ExecResult:
-        import time as _time
-
         # Local dev/CI: a login shell resets PATH; downgrade to -c so the
         # inherited environment (active venv/python) is used.
         if len(command) == 3 and command[0] == "bash" and command[1] == "-lc":
             command = ["bash", "-c", command[2]]
+        decision = self._gate("process_exec", str(self.root), command=command)
+        if not decision.allowed:
+            return _blocked_result(decision, self.backend)
+        return self._spawn(command, timeout=timeout)
+
+    def _spawn(self, command: list[str], *, timeout: int) -> ExecResult:
+        import time as _time
+
         start = _time.time()
         run_env = dict(os.environ)
         if self.env:
@@ -172,18 +246,31 @@ class LocalDirectExecutor:
 
     def read_file(self, path: str) -> str | None:
         p = self._resolve(path)
+        decision = self._gate("file_read", str(p))
+        if not decision.allowed:
+            raise GatewayBlocked(decision)
+        return self._read_text(p)
+
+    @staticmethod
+    def _read_text(p: Path) -> str | None:
         if not p.is_file():
             return None
         return p.read_text(encoding="utf-8", errors="replace")
 
     def write_file(self, path: str, content: str) -> None:
         p = self._resolve(path)
+        decision = self._gate("file_write", str(p))
+        if not decision.allowed:
+            raise GatewayBlocked(decision)
+        self._write_bytes(p, content.encode("utf-8"))
+
+    @staticmethod
+    def _write_bytes(p: Path, data: bytes) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         # Write + fsync so a command shell observing the same path through a
         # different filesystem view (e.g. WSL /mnt/c reading a Windows write,
         # or an NFS-mounted runner) sees the change immediately. No-op cost on
         # native filesystems; eliminates a read-after-write race on interop FS.
-        data = content.encode("utf-8")
         with open(p, "wb") as fh:
             fh.write(data)
             fh.flush()
@@ -201,7 +288,30 @@ class LocalDirectExecutor:
 # ---------------------------------------------------------------------------
 
 
-class LocalSandboxExecutor:
+def _sandbox_jail_facts(strategy: IsolationStrategy, allow_network: bool) -> JailFacts:
+    """Jail facts per sandbox strategy, as tool_jail sees them. Nothing is assumed:
+    only strategies that really give a read-only root say so."""
+    if strategy in (IsolationStrategy.KERNEL_BWRAP, IsolationStrategy.KERNEL_SEATBELT):
+        return JailFacts(
+            strategy=strategy.value,
+            readonly_rootfs=True,
+            run_as_user=current_uid_user(),
+            allow_network=allow_network,
+        )
+    if strategy == IsolationStrategy.HARDENED_DOCKER:
+        # _HardenedDockerStrategy runs --read-only --user=1000:1000.
+        return JailFacts(
+            strategy=strategy.value,
+            readonly_rootfs=True,
+            run_as_user="1000:1000",
+            allow_network=allow_network,
+        )
+    # windows-appcontainer (Job Object tier), restricted-process, k8s-*: no
+    # read-only root / numeric non-root uid that tool_jail can verify here.
+    return JailFacts(strategy=strategy.value, allow_network=allow_network)
+
+
+class LocalSandboxExecutor(_GatedExecutor):
     """Run commands under the kernel/docker sandbox; files on the host."""
 
     backend = "local-sandbox"
@@ -213,13 +323,21 @@ class LocalSandboxExecutor:
         manager: SandboxManager | None = None,
         allow_network: bool = False,
         extra_paths: list[str] | None = None,
+        gateway_session: GatewaySession | None = None,
     ) -> None:
         self.root = Path(root).expanduser().resolve()
+        self.gateway_session = gateway_session
         self._manager = manager or SandboxManager()
         self._allow_network = allow_network
         self._platform: HostPlatform = detect_host_platform()
         self._extra_paths = [str(Path(p).expanduser().resolve()) for p in (extra_paths or [])]
-        self._direct = LocalDirectExecutor(root, extra_paths=extra_paths)
+        # Host-side file ops, gated by the same session inside LocalDirectExecutor.
+        self._direct = LocalDirectExecutor(
+            root, extra_paths=extra_paths, gateway_session=gateway_session
+        )
+
+    def jail_facts(self) -> JailFacts:
+        return _sandbox_jail_facts(self._manager.active_strategy, self._allow_network)
 
     def workdir(self) -> str:
         return str(self.root)
@@ -228,6 +346,12 @@ class LocalSandboxExecutor:
         return self.run(["bash", "-lc", script], timeout=timeout)
 
     def run(self, command: list[str], *, timeout: int = 60) -> ExecResult:
+        decision = self._gate("process_exec", str(self.root), command=command)
+        if not decision.allowed:
+            return _blocked_result(decision, self.backend)
+        return self._spawn(command, timeout=timeout)
+
+    def _spawn(self, command: list[str], *, timeout: int) -> ExecResult:
         import time as _time
 
         executable = command[0] if command else ""
@@ -285,7 +409,7 @@ class LocalSandboxExecutor:
 # ---------------------------------------------------------------------------
 
 
-class DockerContainerExecutor:
+class DockerContainerExecutor(_GatedExecutor):
     """Execute inside an already-running container via ``docker exec``.
 
     ``docker_host`` maps to the ``DOCKER_HOST`` env for the spawned docker CLI,
@@ -301,8 +425,10 @@ class DockerContainerExecutor:
         workdir_path: str = "/testbed",
         docker_host: str | None = None,
         docker_bin: str = "docker",
+        gateway_session: GatewaySession | None = None,
     ) -> None:
         self.container_id = container_id
+        self.gateway_session = gateway_session
         self._workdir = workdir_path
         self._docker_host = docker_host or os.getenv("DOCKER_HOST") or ""
         self._docker = docker_bin
@@ -315,13 +441,17 @@ class DockerContainerExecutor:
         wd = self._workdir.rstrip("/") or "/"
         return abs_path == wd or abs_path.startswith(wd + "/")
 
+    def jail_facts(self) -> JailFacts:
+        # The container is not ours: its root fs and user are unknown here.
+        return JailFacts(strategy="docker-exec")
+
     def _docker_env(self) -> dict[str, str]:
         env = dict(os.environ)
         if self._docker_host:
             env["DOCKER_HOST"] = self._docker_host
         return env
 
-    def _exec(self, inner: list[str], *, timeout: int) -> ExecResult:
+    def _spawn(self, inner: list[str], *, timeout: int) -> ExecResult:
         import time as _time
 
         cmd = [
@@ -356,17 +486,24 @@ class DockerContainerExecutor:
 
     def run_shell(self, script: str, *, timeout: int = 60) -> ExecResult:
         # Login shell so conda/venv activation in the SWE-bench image applies.
-        return self._exec(["bash", "-lc", script], timeout=timeout)
+        return self.run(["bash", "-lc", script], timeout=timeout)
 
     def run(self, command: list[str], *, timeout: int = 60) -> ExecResult:
         # Run through bash -lc so PATH/activate scripts behave like a shell.
         if len(command) == 3 and command[0] in ("bash", "sh") and command[1] in ("-lc", "-c"):
-            return self._exec(["bash", "-lc", command[2]], timeout=timeout)
-        joined = " ".join(shlex.quote(c) for c in command)
-        return self._exec(["bash", "-lc", joined], timeout=timeout)
+            inner = ["bash", "-lc", command[2]]
+        else:
+            inner = ["bash", "-lc", " ".join(shlex.quote(c) for c in command)]
+        decision = self._gate("process_exec", self._workdir, command=inner)
+        if not decision.allowed:
+            return _blocked_result(decision, self.backend)
+        return self._spawn(inner, timeout=timeout)
 
     def read_file(self, path: str) -> str | None:
-        res = self._exec(["cat", "--", self._abs(path)], timeout=30)
+        decision = self._gate("file_read", self._abs(path))
+        if not decision.allowed:
+            raise GatewayBlocked(decision)
+        res = self._spawn(["cat", "--", self._abs(path)], timeout=30)
         if res.exit_code != 0:
             return None
         return res.stdout
@@ -375,18 +512,24 @@ class DockerContainerExecutor:
         # base64-pipe to avoid quoting hazards with arbitrary content.
         import base64
 
-        b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
         target = self._abs(path)
+        decision = self._gate("file_write", target)
+        if not decision.allowed:
+            raise GatewayBlocked(decision)
+        b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
         script = (
             f'mkdir -p "$(dirname {shlex.quote(target)})" && '
             f"printf %s {shlex.quote(b64)} | base64 -d > {shlex.quote(target)}"
         )
-        res = self._exec(["bash", "-lc", script], timeout=60)
+        res = self._spawn(["bash", "-lc", script], timeout=60)
         if res.exit_code != 0:
             raise RuntimeError(f"write_file failed in container: {res.stderr or res.stdout}")
 
     def exists(self, path: str) -> bool:
-        res = self._exec(["test", "-e", self._abs(path)], timeout=15)
+        decision = self._gate("file_read", self._abs(path))
+        if not decision.allowed:
+            return False
+        res = self._spawn(["test", "-e", self._abs(path)], timeout=15)
         return res.exit_code == 0
 
     def _abs(self, path: str) -> str:

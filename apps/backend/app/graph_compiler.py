@@ -112,6 +112,9 @@ class CompilerDeps:
     # Run-level focus: execute = tools/code/team enabled; plan = analyze + produce
     # an execution plan (no file mutation); chat = pure conversation (no tools).
     mode: str = "execute"
+    # (workspace_root, extra_paths) -> GatewaySession for this run's harness
+    # executors (LOCUS-332). None => executors are unbound and the gateway denies.
+    gateway_session_factory: Optional[Callable[[Any, list[str]], Any]] = None
     # run-scoped, populated by run_compiled_graph:
     provisioned: Any = None  # ProvisionedWorkspace | None
 
@@ -168,9 +171,7 @@ def _classify(nodes: list[Any], links: list[Any]) -> dict[str, Any]:
         (n.id for n in nodes if _norm_type(n.type) == "locus/trigger" or not in_links[n.id]),
         nodes[0].id if nodes else "",
     )
-    terminals = [
-        n.id for n in nodes if not out_links[n.id] or _norm_type(n.type) == "locus/output"
-    ]
+    terminals = [n.id for n in nodes if not out_links[n.id] or _norm_type(n.type) == "locus/output"]
 
     # ancestors via reverse reachability (used to find the loop's forward port)
     rev: dict[str, set[str]] = {n.id: set() for n in nodes}
@@ -549,7 +550,31 @@ def _delegate_to_codex_agent(
             sandbox=sandbox,
             on_event=_sink,
             timeout=deps.node_timeout_s if deps.node_timeout_s else 900,
+            gateway_session=getattr(prov.workspace.executor, "gateway_session", None),
         )
+        if result.outcome in {"denied", "approval_required"}:
+            # The gateway did not allow launching the engine: report, don't fall back
+            # to another engine (that would route around the decision).
+            deps._emit(
+                "codex_gateway_blocked",
+                node_id=node.id,
+                outcome=result.outcome,
+                reasons=result.gateway_reasons,
+                audit_id=result.gateway_audit_id,
+            )
+            return {
+                "agent_id": r.agent_id,
+                "title": getattr(node, "title", node.id),
+                "model": f"{r.provider}/{r.model}",
+                "response": "",
+                "message": f"Codex launch {result.outcome} by the gateway",
+                "summary": f"codex {result.outcome}: {', '.join(result.gateway_reasons)}"[:240],
+                "patch": "",
+                "route": "request_changes",
+                "outcome": result.outcome,
+                "mode": "codex",
+                "error_code": "gateway_" + result.outcome,
+            }
         if result.outcome == "unavailable":
             # No codex binary on this host — fall back to the native engine.
             deps._emit("codex_unavailable", node_id=node.id)
@@ -904,7 +929,11 @@ def run_compiled_graph(
             )
 
             binding = WorkspaceBinding.from_payload(deps.workspace or {})
-            prov = WorkspaceManager().provision(binding, run_id=deps.run_id.replace("/", "-"))
+            prov = WorkspaceManager().provision(
+                binding,
+                run_id=deps.run_id.replace("/", "-"),
+                session_factory=deps.gateway_session_factory,
+            )
             deps.provisioned = prov
             cleanup = prov.cleanup
             deps._emit("workspace_provisioned", root=str(prov.root), branch=prov.branch)

@@ -10,6 +10,11 @@ the bound repo and must ask permission to touch anything outside it.
 git worktree checked out at the base ref on a task branch) and a cleanup handle.
 This is the same model T3 Code / Codex use: a task knows its working folder, and
 work is delivered into that codebase.
+
+The ``git worktree`` calls in this module are platform provisioning done before
+an agent runs (not agent actions) and are not gateway actions. Every agent
+action goes through the executor built here, which carries the run's gateway
+session (LOCUS-332).
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal
 
+from locus_runtime.gateway import GatewaySession
 from locus_runtime.harness.executor import LocalDirectExecutor
 from locus_runtime.harness.swe_agent import SweTask
 from locus_runtime.harness.workspace import Workspace
@@ -38,7 +44,9 @@ def _sandbox_executor_requested() -> bool:
     return profile in {"local-native", "native", "local_native"}
 
 
-def _make_executor(root: str | Path, extra_paths: list[str]):
+def _make_executor(
+    root: str | Path, extra_paths: list[str], gateway_session: GatewaySession | None = None
+):
     """Select the harness executor: an OS-sandboxed executor when requested and
     feasible in-process, else the direct executor. K8s (hosted) is handled by the
     workflow engine, not in-process, so it stays on the direct executor here."""
@@ -46,10 +54,12 @@ def _make_executor(root: str | Path, extra_paths: list[str]):
         try:
             from locus_runtime.harness.executor import LocalSandboxExecutor
 
-            return LocalSandboxExecutor(root, extra_paths=extra_paths)
+            return LocalSandboxExecutor(
+                root, extra_paths=extra_paths, gateway_session=gateway_session
+            )
         except Exception:  # noqa: BLE001 - never block provisioning on sandbox setup
             pass
-    return LocalDirectExecutor(root, extra_paths=extra_paths)
+    return LocalDirectExecutor(root, extra_paths=extra_paths, gateway_session=gateway_session)
 
 
 @dataclass
@@ -119,14 +129,25 @@ class WorkspaceManager:
             os.getenv("LOCUS_WORKTREES_ROOT") or (Path.home() / ".locus" / "worktrees")
         )
 
-    def provision(self, binding: WorkspaceBinding, run_id: str) -> ProvisionedWorkspace:
+    def provision(
+        self,
+        binding: WorkspaceBinding,
+        run_id: str,
+        *,
+        gateway_session: GatewaySession | None = None,
+        session_factory: Callable[[Path, list[str]], GatewaySession] | None = None,
+    ) -> ProvisionedWorkspace:
+        """``session_factory(root, extra_paths)`` opens the run's gateway session once
+        the workspace root is known (its capabilities name that root)."""
         repo = binding.resolved_repo()
         if not repo.is_dir():
             raise FileNotFoundError(f"bound repo does not exist: {repo}")
         branch = binding.branch or _safe_branch(run_id)
 
         if binding.isolation == "in-place" or not self._is_git_repo(repo):
-            executor = _make_executor(repo, binding.extra_paths)
+            if session_factory is not None and gateway_session is None:
+                gateway_session = session_factory(repo, list(binding.extra_paths))
+            executor = _make_executor(repo, binding.extra_paths, gateway_session)
             ws = Workspace(
                 run_id=run_id,
                 executor=executor,
@@ -148,7 +169,9 @@ class WorkspaceManager:
             if add2.returncode != 0:
                 raise RuntimeError(f"git worktree add failed: {add.stderr or add2.stderr}")
 
-        executor = _make_executor(wt_dir, binding.extra_paths)
+        if session_factory is not None and gateway_session is None:
+            gateway_session = session_factory(wt_dir, list(binding.extra_paths))
+        executor = _make_executor(wt_dir, binding.extra_paths, gateway_session)
         ws = Workspace(
             run_id=run_id, executor=executor, test_command=binding.test_command, base_ref=base
         )
@@ -159,9 +182,14 @@ class WorkspaceManager:
         return ProvisionedWorkspace(binding, ws, wt_dir, branch, cleanup)
 
     def build_task(
-        self, binding: WorkspaceBinding, run_id: str, problem_statement: str
+        self,
+        binding: WorkspaceBinding,
+        run_id: str,
+        problem_statement: str,
+        *,
+        gateway_session: GatewaySession | None = None,
     ) -> tuple[SweTask, ProvisionedWorkspace]:
-        prov = self.provision(binding, run_id)
+        prov = self.provision(binding, run_id, gateway_session=gateway_session)
         task = SweTask(
             instance_id=run_id,
             problem_statement=problem_statement,

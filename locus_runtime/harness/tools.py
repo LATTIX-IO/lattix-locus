@@ -22,6 +22,7 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
+from locus_runtime.gateway import GatewayBlocked, GatewayDecision, gateway_message, tool_context
 from locus_runtime.harness.workspace import Workspace
 
 TOOL_OUTPUT_MAX_BYTES = 50_000
@@ -66,6 +67,8 @@ class CodingTelemetry:
     edit_format_downgrades: int = 0
     bash_calls: int = 0
     test_runs: int = 0
+    gateway_denied: int = 0
+    gateway_asked: int = 0
 
     def well_formed_edit_rate(self) -> float:
         return 1.0 if self.edits_attempted == 0 else self.edits_well_formed / self.edits_attempted
@@ -85,6 +88,8 @@ class CodingTelemetry:
             "edit_format_downgrades": self.edit_format_downgrades,
             "bash_calls": self.bash_calls,
             "test_runs": self.test_runs,
+            "gateway_denied": self.gateway_denied,
+            "gateway_asked": self.gateway_asked,
             "well_formed_edit_rate": round(self.well_formed_edit_rate(), 4),
             "well_formed_call_rate": round(self.well_formed_call_rate(), 4),
         }
@@ -220,6 +225,7 @@ class CodingToolset:
     submitted: bool = False
     submission: dict[str, Any] | None = None
     escalations: list[dict[str, Any]] = field(default_factory=list)
+    gateway_blocks: list[dict[str, Any]] = field(default_factory=list)
     _consecutive_edit_failures: int = 0
     _failed_submits: int = 0
 
@@ -228,6 +234,39 @@ class CodingToolset:
 
     # -- dispatch -----------------------------------------------------------
     def dispatch(self, name: str, arguments: dict[str, Any]) -> str:
+        # Every executor action below is attributed to this tool in the gateway audit.
+        with tool_context(name):
+            try:
+                return self._dispatch(name, arguments)
+            except GatewayBlocked as blocked:
+                return self._blocked(blocked.decision, name)
+
+    def _blocked(self, decision: GatewayDecision, tool: str) -> str:
+        if decision.outcome == "ask":
+            self.telemetry.gateway_asked += 1
+        else:
+            self.telemetry.gateway_denied += 1
+        self.gateway_blocks.append(
+            {
+                "tool": tool,
+                "outcome": decision.outcome,
+                "action_kind": decision.action_kind,
+                "target": decision.target,
+                "risk": decision.risk.label,
+                "reasons": list(decision.reasons),
+                "audit_id": decision.audit_id,
+            }
+        )
+        return gateway_message(decision, tool)
+
+    def _exec_output(self, res: Any, tool: str) -> str | None:
+        """Typed message when ``res`` was blocked by the gateway, else None."""
+        decision = getattr(res, "gateway", None)
+        if decision is not None and not decision.allowed:
+            return self._blocked(decision, tool)
+        return None
+
+    def _dispatch(self, name: str, arguments: dict[str, Any]) -> str:
         if name == "submit":
             return self._submit(arguments)
         if name == "execute_bash":
@@ -251,6 +290,9 @@ class CodingToolset:
         requested = int(args.get("timeout") or self.bash_timeout)
         timeout = max(1, min(requested, BASH_TIMEOUT_CEILING))
         res = self.workspace.executor.run_shell(cmd, timeout=timeout)
+        blocked = self._exec_output(res, "execute_bash")
+        if blocked is not None:
+            return blocked
         out, _ = truncate_output(res.combined())
         return out
 
@@ -262,6 +304,9 @@ class CodingToolset:
         max_results = int(args.get("max_results") or 50)
         ex = self.workspace.executor
         probe = ex.run_shell("command -v rg >/dev/null 2>&1 && echo yes || echo no", timeout=15)
+        blocked = self._exec_output(probe, "search")
+        if blocked is not None:
+            return blocked
         if probe.stdout.strip().endswith("yes"):
             cmd = (
                 f"rg --line-number --no-heading --color=never --max-count={max_results} "
@@ -273,6 +318,9 @@ class CodingToolset:
                 f"2>/dev/null || true"
             )
         res = ex.run_shell(cmd, timeout=60)
+        blocked = self._exec_output(res, "search")
+        if blocked is not None:
+            return blocked
         out, _ = truncate_output(res.stdout or "(no matches)")
         return out
 
@@ -282,6 +330,9 @@ class CodingToolset:
         res = self.workspace.run_tests(cmd, timeout=self.test_timeout)
         if res is None:
             return "[error] no test command configured for this workspace."
+        blocked = self._exec_output(res, "run_tests")
+        if blocked is not None:
+            return blocked
         out, _ = truncate_output(res.combined())
         return out
 
