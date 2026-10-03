@@ -1,4 +1,4 @@
-.PHONY: up down update remove local-up local-down stack-up stack-down test unit-test integration-test performance-test lint typecheck policy-test helm-validate release-bundle bootstrap health ps logs smoke install-opa frontend-serve resource-baseline
+.PHONY: up down update remove local-up local-down stack-up stack-down test unit-test integration-test performance-test lint typecheck policy-test helm-validate release-bundle bootstrap health ps logs smoke install-opa frontend-serve resource-baseline loop-once loop-status
 
 # Canonical public install path: install/bootstrap.sh (or install/bootstrap.ps1 on Windows).
 # This Makefile is kept as a source-checkout convenience wrapper for contributors.
@@ -82,6 +82,12 @@ release-bundle: ## Build a local release bundle (requires VERSION and helm)
 	cp install/locus-installer.py dist/installer/
 	cp install/manifest.json dist/installer/
 	$(PYTHON) scripts/build_release_bundle.py --version "$(VERSION)" --repo "local-worktree" --chart-dist dist/chart --installer-dist dist/installer --output-root dist/release
+
+loop-once:      ## Run one self-improvement loop tick (Linear -> verified run -> PR; LOCUS-338)
+	$(CLI_RUNNER) loop run --once
+
+loop-status:    ## Show self-improvement loop status (enabled, last run, open loop PRs)
+	$(CLI_RUNNER) loop status
 
 install-opa:    ## Install repo-local OPA binary (Windows helper remains available too)
 	@echo "Install OPA with .\\scripts\\locus.ps1 install-opa on Windows, or place the binary at .tools/opa/opa(.exe)."

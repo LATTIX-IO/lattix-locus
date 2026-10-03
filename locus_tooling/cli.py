@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 from collections.abc import Mapping
 
 import click
@@ -406,6 +407,94 @@ def install_run() -> None:
 @install.command("bootstrap-url")
 def install_bootstrap_url() -> None:
     click.echo(installer.bootstrap_url() or DEFAULT_ARCHIVE_URL)
+
+
+@cli.group()
+def secrets() -> None:
+    """Store secrets in the OS keychain (Windows DPAPI fallback); never echoed."""
+
+
+_SECRET_NAME = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
+
+
+@secrets.command("set")
+@click.argument("name")
+def secrets_set(name: str) -> None:
+    """Prompt (hidden input) for NAME's value and store it, e.g. LINEAR_API_KEY, NVIDIA_API_KEY."""
+    from .native_secrets import SecretStorageUnavailable, set_secret
+
+    if not _SECRET_NAME.fullmatch(name):
+        raise click.BadParameter("use an upper-case name such as LINEAR_API_KEY", param_hint="NAME")
+    value = click.prompt(f"{name}", hide_input=True, confirmation_prompt=True).strip()
+    if not value:
+        raise click.ClickException("an empty value was not stored")
+    try:
+        mode = set_secret(name, value)
+    except SecretStorageUnavailable as exc:
+        raise click.ClickException(str(exc)) from exc
+    print_json({"name": name, "stored": True, "storage": mode})
+
+
+@cli.group()
+def loop() -> None:
+    """Self-improvement loop: Linear intake -> verified run -> PR (LOCUS-338)."""
+
+
+def _loop_runner():  # noqa: ANN202 - lazy import keeps the CLI start fast
+    from locus_runtime.loop_runner import build_runner
+
+    return build_runner(str(ROOT))
+
+
+@loop.command("run")
+@click.option("--once", is_flag=True, required=True, help="Run one tick and exit.")
+def loop_run(once: bool) -> None:  # noqa: ARG001 - --once is the only mode
+    """Pick, run and deliver at most one eligible issue."""
+    result = _loop_runner().run_once()
+    print_json(result.to_dict())
+    if result.status in {"error", "refused"}:
+        raise SystemExit(1)
+
+
+@loop.command("serve")
+@click.option("--poll-interval", type=float, default=None, help="Seconds between ticks.")
+def loop_serve(poll_interval: float | None) -> None:
+    """Tick until the kill switch is set (Ctrl+C stops; a crashed run resumes next start)."""
+    try:
+        result = _loop_runner().serve(poll_interval)
+    except KeyboardInterrupt:
+        click.echo("loop stopped")
+        return
+    print_json(result.to_dict())
+
+
+@loop.command("status")
+def loop_status_command() -> None:
+    """Enabled/disabled, runs today, active run, last outcome, open loop PRs."""
+    from locus_runtime.loop_runner import loop_status
+
+    print_json(loop_status())
+
+
+@loop.command("disable")
+def loop_disable() -> None:
+    """Set the file kill switch (the loop stops before its next step)."""
+    from locus_runtime.loop_runner.state import KILL_FILE, default_loop_home
+
+    home = default_loop_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / KILL_FILE).write_text("disabled via `lattix loop disable`\n", encoding="utf-8")
+    print_json({"enabled": False, "kill_switch": str(home / KILL_FILE)})
+
+
+@loop.command("enable")
+def loop_enable() -> None:
+    """Remove the file kill switch (LOCUS_LOOP_DISABLED still wins if set)."""
+    from locus_runtime.loop_runner import loop_status
+    from locus_runtime.loop_runner.state import KILL_FILE, default_loop_home
+
+    (default_loop_home() / KILL_FILE).unlink(missing_ok=True)
+    print_json(loop_status())
 
 
 @cli.command()
