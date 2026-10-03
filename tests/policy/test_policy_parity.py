@@ -15,7 +15,6 @@ import pytest
 
 from locus_runtime.policy_engine import (
     KNOWN_POLICIES,
-    REASON_HTTP_ERROR,
     OpaSidecarEngine,
     default_policy_dir,
     is_test_module,
@@ -198,7 +197,7 @@ ALLOW_CASES: list[tuple[str, str, dict[str, Any], bool]] = [
         ),
         False,
     ),
-    # --- budget_policy (no .rego tests; derived from the rule text) ---
+    # --- budget_policy (policies/tests/budget_policy_test.rego; deny by default) ---
     (
         "budget.within_limits",
         "budget_policy",
@@ -216,10 +215,23 @@ ALLOW_CASES: list[tuple[str, str, dict[str, Any], bool]] = [
     (
         "budget.deny_duration",
         "budget_policy",
-        {"duration_used_seconds": 61, "max_duration_seconds": 60},
+        {
+            "tokens_used": 1,
+            "max_tokens": 10,
+            "duration_used_seconds": 61,
+            "max_duration_seconds": 60,
+        },
         False,
     ),
-    ("budget.deny_cost", "budget_policy", {"cost_used_usd": 1.01, "max_cost_usd": 1.0}, False),
+    (
+        "budget.deny_cost",
+        "budget_policy",
+        {"tokens_used": 1, "max_tokens": 10, "cost_used_usd": 1.01, "max_cost_usd": 1.0},
+        False,
+    ),
+    ("budget.deny_empty_input", "budget_policy", {}, False),
+    ("budget.deny_missing_token_limit", "budget_policy", {"tokens_used": 1}, False),
+    ("budget.deny_non_numeric", "budget_policy", {"tokens_used": "1", "max_tokens": 10}, False),
     # --- filesystem_access (policies/tests/filesystem_access_test.rego) ---
     (
         "fs.allow_under_root",
@@ -447,12 +459,11 @@ def test_data_classification_matches_expected(
     assert decision.allow is False
 
 
-def test_conflicting_classification_fails_closed(opa_engine: OpaSidecarEngine) -> None:
-    # "ssn" (restricted) and "customer" (confidential) both match; the complete
-    # rule conflicts, OPA returns an evaluation error, and the engine denies.
+def test_overlapping_classification_takes_the_highest_label(opa_engine: OpaSidecarEngine) -> None:
+    # "ssn" (restricted) and "customer" (confidential) both match; restricted wins.
     decision = opa_engine.decide("data_classification", {"text": "customer ssn export"})
+    assert decision.outputs.get("classification") == "restricted"
     assert decision.allow is False
-    assert decision.reasons[0] == REASON_HTTP_ERROR
 
 
 def test_policy_version_is_the_repo_bundle_hash(opa_engine: OpaSidecarEngine) -> None:
