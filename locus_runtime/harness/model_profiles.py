@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import fnmatch
+import os
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -47,6 +48,15 @@ class ModelCapabilityProfile:
         if not clean:
             return self
         return dataclasses.replace(self, **clean)
+
+
+def _env_context(name: str, default: int) -> int:
+    """Context size from the environment (bounded), else ``default``."""
+    try:
+        value = int(str(os.getenv(name) or "").strip() or default)
+    except ValueError:
+        return default
+    return max(4_096, min(value, 2_000_000))
 
 
 BUILTIN_PROFILES: dict[str, ModelCapabilityProfile] = {
@@ -96,6 +106,29 @@ BUILTIN_PROFILES: dict[str, ModelCapabilityProfile] = {
         temperature=0.0,
         structured_output="json_schema",
     ),
+    # Hosted NVIDIA NIM (D-21): OpenAI tool calling on the API catalog. The
+    # effective context is configurable (LOCUS_NIM_CONTEXT_TOKENS) because it
+    # differs per catalog model; 128K matches the Llama 3.x 70B instruct models.
+    "nim-hosted": ModelCapabilityProfile(
+        profile_id="nim-hosted",
+        edit_format="search-replace",
+        tool_protocol="native-fc",
+        max_effective_context=_env_context("LOCUS_NIM_CONTEXT_TOKENS", 131_072),
+        temperature=0.2,
+        top_p=0.95,
+        structured_output="json_schema",
+    ),
+    # gpt-oss served by NIM speaks OpenAI tools, not raw harmony channels.
+    "nim-gpt-oss": ModelCapabilityProfile(
+        profile_id="nim-gpt-oss",
+        edit_format="apply_patch",
+        tool_protocol="native-fc",
+        max_effective_context=_env_context("LOCUS_NIM_CONTEXT_TOKENS", 131_072),
+        temperature=1.0,
+        top_p=1.0,
+        reasoning_effort="medium",
+        structured_output="json_schema",
+    ),
     # bash-only mini-SWE-agent scaffold: no tool-calling API at all; works with
     # any model/endpoint that can complete text. Most robust fallback.
     "bash-only": ModelCapabilityProfile(
@@ -109,6 +142,8 @@ BUILTIN_PROFILES: dict[str, ModelCapabilityProfile] = {
 
 # (provider/bare_model glob, profile_id) — first match wins.
 PROFILE_PATTERNS: list[tuple[str, str]] = [
+    ("nim/*gpt-oss*", "nim-gpt-oss"),
+    ("nim/*", "nim-hosted"),
     ("*/gpt-oss*", "gpt-oss-harmony"),
     ("vllm/*", "local-32b-class"),
     ("llamacpp/*", "local-32b-class"),

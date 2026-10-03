@@ -452,6 +452,35 @@ def set_secret(name: str, value: str, *, app_home: Path | None = None) -> Secret
     return mode
 
 
+def delete_secret(name: str, *, app_home: Path | None = None) -> None:
+    """Remove a stored secret from every protected store (keychain, DPAPI, opt-in file).
+
+    Idempotent: a secret that is not stored is not an error. Environment
+    variables are the operator's and are never touched. Raises
+    :class:`SecretStorageUnavailable` only when a stored copy exists but cannot
+    be removed (the caller must not report it as cleared).
+    """
+    backend = _keychain_backend()
+    if backend is not None and _keychain_get(backend, name) is not None:
+        try:
+            delete = getattr(backend, "delete_password", None)
+            if callable(delete):
+                delete(KEYRING_SERVICE, name)
+            else:  # pragma: no cover - every keyring backend implements delete
+                backend.set_password(KEYRING_SERVICE, name, "")
+        except Exception as exc:  # noqa: BLE001 - locked keychain: fail loudly
+            raise SecretStorageUnavailable(
+                f"Cannot remove secret {name} from the keychain ({type(exc).__name__})."
+            ) from exc
+        if _keychain_get(backend, name) is not None:
+            raise SecretStorageUnavailable(f"Secret {name} is still present in the keychain.")
+    # File stores: look without creating the secrets directory.
+    secrets_dir = (app_home or default_app_home()) / ".secrets"
+    for suffix in (".dpapi", ".secret"):
+        (secrets_dir / f"{_safe_name(name)}{suffix}").unlink(missing_ok=True)
+    _RESOLVED.pop(name, None)
+
+
 def ensure_secret(name: str, *, app_home: Path | None = None, nbytes: int = 48) -> str:
     """Return the existing secret or generate+persist a new one (fail closed)."""
     existing = get_secret(name, app_home=app_home)

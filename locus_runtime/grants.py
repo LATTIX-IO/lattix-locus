@@ -212,7 +212,7 @@ def tightest_pattern(action: GatewayAction) -> GrantPattern:
             action.target,
             command=str(facets.get("command", action.command_summary)),
         )
-    if action.kind == "network_egress":
+    if action.kind in {"network_egress", "model_call"}:
         return GrantPattern(action.kind, action.tool, "exact", action.target)
     amount = facets.get("amount_cents")
     return GrantPattern(

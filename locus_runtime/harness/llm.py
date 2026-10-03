@@ -5,10 +5,15 @@ schemas + sampler settings, returns a ``ChatResponse`` (assistant text and/or
 tool calls + token usage). This keeps the loop model-agnostic and makes it
 trivially testable with a scripted client (no network, no provider SDK).
 
-``OpenAIChatClient`` is the production implementation over any
-OpenAI-compatible endpoint (vLLM, llama.cpp llama-server, LM Studio, Ollama,
-OpenAI). It lazily imports the ``openai`` SDK so importing this module never
-requires it.
+``GatedChatClient`` is the production implementation (LOCUS-336): it drives a
+:class:`~locus_runtime.model_client.ModelRouter`, so every turn is a gateway
+``model_call`` (engine, egress host, data ceiling, budget), keys resolve from the
+OS keychain, and a NIM → Ollama fallback is recorded rather than silent.
+
+``OpenAIChatClient`` is the ungated direct client kept for the evaluation
+harness (``apps/evals``), which runs against a model under test outside a
+platform run. It lazily imports the ``openai`` SDK so importing this module
+never requires it.
 """
 
 from __future__ import annotations
@@ -134,6 +139,61 @@ class OpenAIChatClient:
             }
         return ChatResponse(
             text=msg.content or "", tool_calls=tool_calls, usage=usage, raw=completion
+        )
+
+
+class GatedChatClient:
+    """Harness ``ChatClient`` over the unified, gated model client (LOCUS-336).
+
+    ``provider``/``model`` report the tier that served the latest turn (the
+    primary until a fallback happens). ``fallbacks`` lists every recorded tier
+    change; the router also reports each one to its ``on_fallback`` listener.
+    """
+
+    def __init__(self, router: Any, *, default_max_tokens: int = 4096) -> None:
+        self._router = router
+        self.default_max_tokens = default_max_tokens
+
+    @property
+    def provider(self) -> str:
+        return str(self._router.provider)
+
+    @property
+    def model(self) -> str:
+        return str(self._router.model)
+
+    @property
+    def fallbacks(self) -> list[Any]:
+        return list(getattr(self._router, "fallbacks", []))
+
+    def complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> ChatResponse:
+        result = self._router.complete(
+            messages,
+            tools=tools,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens or self.default_max_tokens,
+            reasoning_effort=reasoning_effort,
+            extra=extra,
+        )
+        return ChatResponse(
+            text=result.text,
+            tool_calls=[
+                ToolCall(id=call["id"], name=call["name"], arguments=call["arguments"])
+                for call in result.tool_calls
+            ],
+            usage=dict(result.usage),
+            raw=result.raw,
         )
 
 

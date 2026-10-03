@@ -460,6 +460,12 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         "integration.catalog.install",
     ),
     RouteAccessRule(
+        ("PUT", "DELETE"),
+        "/models/providers/{provider_id}/key",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "models.provider.key.manage",
+    ),
+    RouteAccessRule(
         ("POST",),
         "/models/local/pull",
         RouteAccessCategory.AUTHENTICATED_MUTATE,
