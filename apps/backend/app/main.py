@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import os
@@ -22,6 +23,8 @@ import importlib
 import importlib.util
 from importlib import metadata as importlib_metadata
 from collections import Counter, defaultdict, deque
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -86,6 +89,17 @@ from locus_runtime.grants import (
     tightest_pattern,
 )
 from locus_runtime.legacy import normalize_legacy_identifiers
+from locus_runtime import model_client as model_calls
+from locus_runtime.model_client import (
+    FallbackEvent,
+    ModelCall,
+    ModelClient,
+    ModelEndpoint,
+    ModelProviderError,
+    ModelUsage,
+    ProviderKeyStore,
+    UsageMeter,
+)
 from locus_runtime.cognitive import (
     ColumnState,
     ConsensusEngine,
@@ -869,7 +883,12 @@ class RuntimeProviderStatus(BaseModel):
     mode: Literal["live", "not_configured"]
 
 
-ProviderErrorCode = Literal["provider_not_configured", "provider_call_failed"]
+ProviderErrorCode = Literal["provider_not_configured", "provider_call_failed", "model_call_denied"]
+_PROVIDER_ERROR_STATUS: dict[str, int] = {
+    "provider_not_configured": 412,
+    "provider_call_failed": 424,
+    "model_call_denied": 403,
+}
 
 
 class ProviderUnavailableError(HTTPException):
@@ -888,7 +907,7 @@ class ProviderUnavailableError(HTTPException):
         self.model = str(model or "").strip() or "unknown"
         self.reason = str(reason or "").strip()[:300] or "unavailable"
         super().__init__(
-            status_code=412 if code == "provider_not_configured" else 424,
+            status_code=_PROVIDER_ERROR_STATUS.get(code, 424),
             detail=self.to_detail(),
         )
 
@@ -900,6 +919,11 @@ class ProviderUnavailableError(HTTPException):
                 f"'{self.model}': {self.reason}. Configure provider credentials "
                 "(Settings > Runtime providers, or the provider's environment variables) "
                 "and retry."
+            )
+        if self.code == "model_call_denied":
+            return (
+                f"Model call to '{self.provider}' (model '{self.model}') was denied by the "
+                f"gateway: {self.reason}"
             )
         return (
             f"Model provider '{self.provider}' call failed for model '{self.model}': {self.reason}"
@@ -931,6 +955,13 @@ class ProviderUnavailableError(HTTPException):
 def _provider_not_configured(provider: str, model: str, reason: str) -> ProviderUnavailableError:
     return ProviderUnavailableError(
         code="provider_not_configured", provider=provider, model=model, reason=reason
+    )
+
+
+def _provider_error_from_model_error(exc: ModelProviderError) -> ProviderUnavailableError:
+    """Map the unified client's typed error onto the HTTP contract (reasons already redacted)."""
+    return ProviderUnavailableError(
+        code=exc.code, provider=exc.provider, model=exc.model, reason=exc.reason
     )
 
 
@@ -3802,78 +3833,28 @@ def _resolve_node_runtime_engine(runtime_info: dict[str, Any], role: str) -> dic
 _PROVIDER_SECRET_FIELDS = ("openai_api_key", "nim_api_key")
 _PROVIDER_CLEAR_SENTINEL = "__clear__"
 
-# Chat provider registry. Every entry exposes an OpenAI-compatible
-# chat-completions endpoint, so one SDK covers all of them. Provider-qualified
-# model ids ("anthropic/claude-sonnet-4-6") route through this table; bare ids
-# default to OpenAI.
+# Chat provider registry (LOCUS-336): a view of locus_runtime.model_client.PROVIDERS.
+# Every entry exposes an OpenAI-compatible chat-completions endpoint served by
+# the unified, gateway-gated ModelClient. Provider-qualified model ids
+# ("nim/meta/llama-3.3-70b-instruct") route through this table; bare ids default
+# to OpenAI.
 _PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
-    "openai": {
-        "label": "OpenAI",
-        "default_base_url": "",
-        "key_env": ["OPENAI_API_KEY"],
-        "model_env": "OPENAI_MODEL",
-        "default_model": "gpt-5.2",
-        "key_required": True,
-    },
-    "anthropic": {
-        "label": "Anthropic Claude",
-        "default_base_url": "https://api.anthropic.com/v1",
-        "key_env": ["ANTHROPIC_API_KEY"],
-        "model_env": "ANTHROPIC_MODEL",
-        "default_model": "claude-sonnet-4-6",
-        "key_required": True,
-    },
-    "azure": {
-        "label": "Microsoft Azure OpenAI",
-        # Resource-specific: https://<resource>.openai.azure.com/openai/v1
-        "default_base_url": "",
-        "key_env": ["AZURE_OPENAI_API_KEY"],
-        "model_env": "AZURE_OPENAI_DEPLOYMENT",
-        "default_model": "",
-        "key_required": True,
-        "base_url_required": True,
-    },
-    "google": {
-        "label": "Google Gemini",
-        "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "key_env": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
-        "model_env": "GEMINI_MODEL",
-        "default_model": "gemini-2.5-pro",
-        "key_required": True,
-    },
-    "mistral": {
-        "label": "Mistral",
-        "default_base_url": "https://api.mistral.ai/v1",
-        "key_env": ["MISTRAL_API_KEY"],
-        "model_env": "MISTRAL_MODEL",
-        "default_model": "mistral-large-latest",
-        "key_required": True,
-    },
-    "xai": {
-        "label": "xAI Grok",
-        "default_base_url": "https://api.x.ai/v1",
-        "key_env": ["XAI_API_KEY"],
-        "model_env": "XAI_MODEL",
-        "default_model": "grok-4",
-        "key_required": True,
-    },
-    "nim": {
-        "label": "NVIDIA NIM",
-        "default_base_url": "https://integrate.api.nvidia.com/v1",
-        "key_env": ["NVIDIA_API_KEY", "NIM_API_KEY"],
-        "model_env": "NIM_MODEL",
-        "default_model": "meta/llama-3.3-70b-instruct",
-        "key_required": True,
-    },
-    "ollama": {
-        "label": "Local (Ollama)",
-        "default_base_url": "",  # resolved via local_models
-        "key_env": [],
-        "model_env": "OLLAMA_MODEL",
-        "default_model": "llama3.2:3b",
-        "key_required": False,
-    },
+    spec.id: {
+        "label": spec.label,
+        # OpenAI uses the SDK default endpoint; Ollama resolves via local_models.
+        "default_base_url": "" if spec.id in {"openai", "ollama"} else spec.default_base_url,
+        "key_env": list(spec.key_env),
+        "model_env": spec.model_env,
+        "default_model": spec.default_model,
+        "key_required": spec.key_required,
+        **({"base_url_required": True} if spec.base_url_required else {}),
+    }
+    for spec in model_calls.PROVIDERS.values()
 }
+# Provider API keys live in the OS keychain (env -> keychain -> DPAPI), never in
+# platform settings (P10). Settings only hold non-secret fields.
+_MODEL_KEYS = ProviderKeyStore()
+_LEGACY_SECRET_FIELD_PROVIDER: dict[str, str] = {"openai_api_key": "openai", "nim_api_key": "nim"}
 
 
 def _provider_setting(name: str) -> str:
@@ -3908,7 +3889,15 @@ _LEGACY_PROVIDER_FIELDS: dict[tuple[str, str], str] = {
 
 
 def _provider_config_value(provider: str, field: str) -> str:
-    """Resolution order: ai_providers map -> legacy flat field -> environment."""
+    """Resolution order: ai_providers map -> legacy flat field -> environment.
+
+    API keys resolve env -> OS keychain -> DPAPI first; a key still held in
+    settings is only read until the startup migration moves it to the keychain.
+    """
+    if field == "api_key" and provider in _PROVIDER_REGISTRY:
+        stored = _MODEL_KEYS.get(provider)
+        if stored:
+            return stored
     value = _provider_settings_entry(provider).get(field, "")
     if value:
         return value
@@ -4501,37 +4490,58 @@ def _get_openai_client() -> Any | None:
 _PROVIDER_CLIENTS: dict[str, Any] = {}
 
 
-def _get_chat_client(provider: str) -> tuple[Any | None, str]:
-    """Resolve an OpenAI-SDK-compatible client for a chat provider.
+class _BackendProviderSettings:
+    """Non-secret provider config for the unified client: platform settings -> env."""
 
-    NIM and Ollama both expose OpenAI-compatible chat-completions endpoints,
-    so one SDK covers all three providers. Returns (client, unavailable_reason).
+    def value(self, provider: str, field: str) -> str:
+        if field == "base_url":
+            if provider == "ollama":
+                return local_models.ollama_openai_base_url()
+            spec = model_calls.PROVIDERS.get(provider)
+            return _provider_base_url(provider) or (spec.default_base_url if spec else "")
+        if field == "default_model":
+            return _provider_default_model(provider)
+        return ""
+
+
+_BACKEND_PROVIDER_SETTINGS = _BackendProviderSettings()
+
+
+def _build_model_client(
+    provider: str,
+    model: str = "",
+    *,
+    run_id: str = "",
+    base_url: str = "",
+    api_key: str = "",
+) -> ModelClient:
+    """A gated client for ``provider``; raises ``ModelProviderError`` when not configured."""
+    endpoint = model_calls.resolve_endpoint(
+        provider,
+        model,
+        settings=_BACKEND_PROVIDER_SETTINGS,
+        keys=_MODEL_KEYS,
+        base_url=base_url,
+        api_key=api_key,
+    )
+    return ModelClient(endpoint, gate=_backend_model_gate(), run_id=run_id)
+
+
+def _get_chat_client(provider: str) -> tuple[Any | None, str]:
+    """Resolve the gated, OpenAI-SDK-shaped client for a chat provider (LOCUS-336).
+
+    Every provider is served by one :class:`ModelClient`; each request through it
+    is authorized as a gateway ``model_call``. Returns ``(client, unavailable_reason)``.
     """
-    if OpenAI is None:
-        return None, "OpenAI SDK unavailable"
     registry = _PROVIDER_REGISTRY.get(provider)
     if registry is None:
         return None, f"Unknown chat provider '{provider}'"
-    if provider == "openai":
-        client = _get_openai_client()
-        if client is None:
-            return None, "OpenAI API key missing/placeholder or OpenAI SDK unavailable"
-        return client, ""
     if provider in _PROVIDER_CLIENTS:
         return _PROVIDER_CLIENTS[provider], ""
-    if provider == "ollama":
-        # Ollama ignores the API key but the SDK requires a non-empty value.
-        client = OpenAI(api_key="ollama", base_url=local_models.ollama_openai_base_url())
-    else:
-        key = _provider_api_key(provider)
-        if registry.get("key_required", True) and (
-            not key or "change" in key.lower() or "your-" in key.lower()
-        ):
-            return None, f"{registry['label']} API key missing or placeholder"
-        base_url = _provider_base_url(provider)
-        if not base_url:
-            return None, f"{registry['label']} endpoint is not configured"
-        client = OpenAI(api_key=key or "unused", base_url=base_url)
+    try:
+        client = _build_model_client(provider)
+    except ModelProviderError as exc:
+        return None, exc.reason
     _PROVIDER_CLIENTS[provider] = client
     return client, ""
 
@@ -6231,9 +6241,17 @@ def _default_provider_model(provider: str) -> str:
     return _default_openai_model()
 
 
+def _runtime_key(registry_provider: str) -> tuple[str, str]:
+    """Platform key for a runtime provider (env -> keychain -> DPAPI) and its source label."""
+    key = _MODEL_KEYS.get(registry_provider)
+    if not key:
+        return "", ""
+    return key, "environment" if _MODEL_KEYS.source(registry_provider) == "env" else "keychain"
+
+
 def _env_provider_runtime(provider: str) -> dict[str, Any] | None:
     if provider in {"openai", "openai-compatible"}:
-        api_key = str(os.getenv("OPENAI_API_KEY", "") or "").strip()
+        api_key, key_source = _runtime_key("openai")
         if not api_key:
             # No key means no provider: never hand back a keyless "simulated"
             # runtime (LOCUS-309); callers raise provider_not_configured / 412.
@@ -6246,10 +6264,10 @@ def _env_provider_runtime(provider: str) -> dict[str, Any] | None:
             "base_url": _normalize_provider_base_url(provider, os.getenv("OPENAI_BASE_URL", "")),
             "api_key": api_key,
             "preferred": provider == "openai",
-            "source": "environment",
+            "source": key_source,
         }
     if provider == "anthropic":
-        api_key = str(os.getenv("ANTHROPIC_API_KEY", "") or "").strip()
+        api_key, key_source = _runtime_key("anthropic")
         if not api_key:
             return None
         model = _default_anthropic_model()
@@ -6260,12 +6278,10 @@ def _env_provider_runtime(provider: str) -> dict[str, Any] | None:
             "base_url": _normalize_provider_base_url(provider, os.getenv("ANTHROPIC_BASE_URL", "")),
             "api_key": api_key,
             "preferred": False,
-            "source": "environment",
+            "source": key_source,
         }
     if provider == "gemini":
-        api_key = str(
-            os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "") or ""
-        ).strip()
+        api_key, key_source = _runtime_key("google")
         if not api_key:
             return None
         model = _default_gemini_model()
@@ -6276,7 +6292,7 @@ def _env_provider_runtime(provider: str) -> dict[str, Any] | None:
             "base_url": _normalize_provider_base_url(provider, os.getenv("GEMINI_BASE_URL", "")),
             "api_key": api_key,
             "preferred": False,
-            "source": "environment",
+            "source": key_source,
         }
     return None
 
@@ -6569,56 +6585,46 @@ def _stream_openai_compatible_chat(
     temperature: float,
     on_chunk: Callable[[str], None] | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
-    headers = {
-        "Authorization": f"Bearer {runtime['api_key']}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": runtime["model"],
-        "messages": messages,
-        "temperature": temperature,
-        "stream": True,
-    }
+    """SSE streaming through the unified, gated client (LOCUS-336)."""
+    provider = str(runtime.get("provider") or "openai")
+    client = ModelClient(
+        ModelEndpoint(
+            provider=provider,
+            model=str(runtime["model"]),
+            base_url=str(runtime["base_url"]).rstrip("/"),
+            api_key=str(runtime.get("api_key") or ""),
+        ),
+        gate=_backend_model_gate(),
+        timeout=60.0,
+    )
     chunks: list[str] = []
-    with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-        with client.stream(
-            "POST",
-            f"{str(runtime['base_url']).rstrip('/')}/chat/completions",
-            headers=headers,
-            json=payload,
-        ) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    event = json.loads(data)
-                except Exception:  # noqa: BLE001
-                    continue
-                delta = ""
-                choices = event.get("choices") if isinstance(event, dict) else None
-                if isinstance(choices, list) and choices:
-                    choice0 = choices[0] if isinstance(choices[0], dict) else {}
-                    delta_payload = (
-                        choice0.get("delta") if isinstance(choice0.get("delta"), dict) else {}
-                    )
-                    delta = str(delta_payload.get("content") or "")
-                if delta:
-                    chunks.append(delta)
-                    if on_chunk is not None:
-                        on_chunk(delta)
+
+    def _relay(piece: str) -> None:
+        chunks.append(piece)
+        if on_chunk is not None:
+            on_chunk(piece)
+
+    try:
+        result = client.stream(messages, temperature=temperature, on_chunk=_relay)
+    except ModelProviderError as exc:
+        raise _provider_error_from_model_error(exc) from exc
     return chunks, {
         "provider": runtime["provider"],
         "model": runtime["model"],
         "mode": "live",
         "source": runtime.get("source") or "environment",
         "transport": "sse",
+        "usage": dict(result.usage),
     }
+
+
+def _authorize_native_model_stream(provider: str, model: str, base_url: str) -> None:
+    """Gate a provider-native (non OpenAI-compatible) stream as a ``model_call``."""
+    call = ModelCall(provider=provider, model=model, egress_host=host_of(base_url), stream=True)
+    try:
+        _backend_model_gate().authorize(call)
+    except ModelProviderError as exc:
+        raise _provider_error_from_model_error(exc) from exc
 
 
 def _stream_anthropic_chat(
@@ -6643,6 +6649,7 @@ def _stream_anthropic_chat(
         "stream": True,
     }
     chunks: list[str] = []
+    _authorize_native_model_stream("anthropic", str(runtime["model"]), str(runtime["base_url"]))
     with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
         with client.stream(
             "POST",
@@ -6706,6 +6713,7 @@ def _stream_gemini_chat(
         "generationConfig": {"temperature": temperature},
     }
     chunks: list[str] = []
+    _authorize_native_model_stream("gemini", str(runtime["model"]), str(runtime["base_url"]))
     with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
         with client.stream(
             "POST",
@@ -6833,7 +6841,21 @@ def _run_openai_chat(
     on_tool_event: Callable[[str, dict[str, Any], str, bool], None] | None = None,
     reasoning_effort: str = "",
     runtime: dict[str, Any] | None = None,
+    model_chain: list[model_calls.ModelTier] | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    if model_chain:
+        return _run_model_chain_chat(
+            model_chain,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+            messages=messages,
+            tools=tools,
+            tool_executor=tool_executor,
+            max_tool_calls=max_tool_calls,
+            on_tool_event=on_tool_event,
+            reasoning_effort=reasoning_effort,
+        )
     # An explicit provider runtime (e.g. a user-scoped provider credential from
     # /runtime/user-providers) is served by the streaming provider adapters.
     # Tool loops still require the chat.completions client path below.
@@ -6918,6 +6940,10 @@ def _run_openai_chat(
                             },
                         },
                     )
+            except ModelProviderError as exc:
+                if exc.code == model_calls.MODEL_CALL_DENIED:
+                    raise _provider_error_from_model_error(exc) from exc
+                response_api_error = exc.reason
             except Exception as exc:  # noqa: BLE001
                 response_api_error = str(exc)
 
@@ -7023,6 +7049,16 @@ def _run_openai_chat(
                     },
                 },
             )
+        except ModelProviderError as exc:
+            if exc.code == model_calls.MODEL_CALL_DENIED:
+                # A gateway refusal is not a provider failure: never retry around it.
+                raise _provider_error_from_model_error(exc) from exc
+            completion_error = exc.reason
+            if response_api_error:
+                last_error = f"responses.create failed: {response_api_error[:120]} ; chat.completions failed: {completion_error[:120]}"
+            else:
+                last_error = completion_error
+            continue
         except Exception as exc:  # noqa: BLE001
             completion_error = str(exc)
             if response_api_error:
@@ -7035,6 +7071,50 @@ def _run_openai_chat(
         provider,
         primary_model,
         f"attempted {', '.join(attempt_models)}: {last_error or 'no response'}",
+    )
+
+
+def _run_model_chain_chat(
+    chain: list[model_calls.ModelTier], **kwargs: Any
+) -> tuple[str, dict[str, Any]]:
+    """Run ``_run_openai_chat`` down a tier chain (D-21); every fallback is recorded."""
+    errors: list[ProviderUnavailableError] = []
+    fallbacks: list[dict[str, str]] = []
+    for index, tier in enumerate(chain):
+        try:
+            text, meta = _run_openai_chat(model=tier.qualified, **kwargs)
+        except ProviderUnavailableError as exc:
+            errors.append(exc)
+            if exc.code == "model_call_denied" and index == len(chain) - 1:
+                break
+            if index + 1 < len(chain):
+                nxt = chain[index + 1]
+                event = FallbackEvent(
+                    from_provider=tier.provider,
+                    from_model=tier.model,
+                    to_provider=nxt.provider,
+                    to_model=nxt.model,
+                    reason_code=exc.code,
+                    reason=exc.reason,
+                )
+                fallbacks.append(event.as_metadata())
+                _record_model_fallback(event)
+            continue
+        return text, {
+            **meta,
+            "model_chain": [item.qualified for item in chain],
+            "tier_fallback_used": bool(fallbacks),
+            "tier_fallbacks": fallbacks,
+        }
+    last = errors[-1]
+    if len(errors) == 1:
+        raise last
+    summary = "; ".join(f"{err.provider}: {err.code}" for err in errors)
+    raise ProviderUnavailableError(
+        code=last.code,
+        provider=chain[0].provider,
+        model=chain[0].model,
+        reason=f"all model tiers failed ({summary}); last: {last.reason}",
     )
 
 
@@ -14366,6 +14446,140 @@ def _gateway_gate_tool_node(
     }
 
 
+# --- Model calls through the gateway (LOCUS-336) -----------------------------
+#: Operation agent_policy checks for a model call (its ``llm_call`` rule).
+_MODEL_CALL_OPERATION = "llm_call"
+_DATA_CLASSES = frozenset({"public", "internal", "confidential", "restricted"})
+_MODEL_METER = UsageMeter()
+
+
+@dataclass(frozen=True)
+class _ModelCallScope:
+    run_id: str = ""
+    principal: str = ""
+    # Highest data class in the run's context (area data ceiling seam): with
+    # ``restricted`` agent_policy only allows local engines. Empty = unclassified.
+    data_classification: str = ""
+
+
+_MODEL_CALL_SCOPE: ContextVar[_ModelCallScope] = ContextVar(
+    "locus_model_call_scope", default=_ModelCallScope()
+)
+
+
+@contextmanager
+def _model_call_scope(run_id: str, principal: str = "", data_classification: str = ""):
+    """Attribute model calls made in this context to a run (audit, budget, events)."""
+    classification = str(data_classification or "").strip().lower()
+    token = _MODEL_CALL_SCOPE.set(
+        _ModelCallScope(
+            run_id=str(run_id or ""),
+            principal=str(principal or ""),
+            data_classification=classification if classification in _DATA_CLASSES else "",
+        )
+    )
+    try:
+        yield
+    finally:
+        _MODEL_CALL_SCOPE.reset(token)
+
+
+def _model_call_run_id(call: ModelCall) -> str:
+    return call.run_id or _MODEL_CALL_SCOPE.get().run_id
+
+
+def _model_call_egress_hosts(provider: str) -> tuple[str, ...]:
+    """Operator egress allowlist plus the hosts the provider registry vouches for."""
+    spec = model_calls.PROVIDERS.get(provider)
+    hosts = set(_gateway_egress_hosts())
+    if spec is not None:
+        hosts.update(spec.allowlisted_hosts)
+    return tuple(sorted(hosts))
+
+
+def _open_model_call_session(call: ModelCall) -> GatewaySession | None:
+    """A fresh gateway session for one model call: current egress and budget figures."""
+    _ensure_gateway()
+    scope = _MODEL_CALL_SCOPE.get()
+    run_id = _model_call_run_id(call) or f"model-call:{uuid4()}"
+    principal = scope.principal or (
+        _run_principal(run_id, "locus-backend") if call.run_id or scope.run_id else "locus-backend"
+    )
+    max_tokens, max_cost = model_calls.run_budget_limits()
+    capabilities = policy_gateway.run_capabilities(
+        allowed_tools={_MODEL_CALL_OPERATION},
+        egress=_model_call_egress_hosts(call.provider),
+        budget=_MODEL_METER.budget(run_id, max_tokens=max_tokens, max_cost_usd=max_cost),
+    )
+    if scope.data_classification:
+        capabilities = dataclasses.replace(
+            capabilities, data_classification=scope.data_classification
+        )
+    return policy_gateway.open_run_session(
+        run_id=run_id,
+        principal=principal,
+        engine=f"model.{call.provider}",
+        capabilities=capabilities,
+        on_decision=_gateway_decision_listener,
+    )
+
+
+def _record_model_usage(usage: ModelUsage) -> None:
+    """Meter and audit a model call: provider, model, tokens, est. cost -- no text."""
+    scope = _MODEL_CALL_SCOPE.get()
+    run_id = usage.run_id or scope.run_id
+    metered = dataclasses.replace(usage, run_id=run_id)
+    _MODEL_METER.add(metered)
+    _append_audit_event(
+        "model.call",
+        scope.principal or "locus-backend",
+        "allowed" if usage.ok else "error",
+        metered.as_metadata(),
+    )
+
+
+def _record_model_fallback(event: FallbackEvent, *, run_id: str = "", principal: str = "") -> None:
+    """A tier change is never silent (P16): audit it and put it on the run timeline."""
+    scope = _MODEL_CALL_SCOPE.get()
+    run_id = run_id or scope.run_id
+    metadata = {"phase": "model_fallback", "run_id": run_id, **event.as_metadata()}
+    _append_audit_event("model.fallback", principal or scope.principal or "locus-backend", "allowed", metadata)
+    if run_id:
+        store.run_events.setdefault(run_id, []).append(
+            WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="guardrail_result",
+                title=(
+                    f"Model fallback: {event.from_provider}/{event.from_model} -> "
+                    f"{event.to_provider}/{event.to_model}"
+                )[:120],
+                summary=f"{event.reason_code}: {event.reason}"[:500],
+                createdAt=_now_iso(),
+                metadata=metadata,
+            )
+        )
+
+
+def _backend_model_gate() -> model_calls.GatewayModelGate:
+    return model_calls.GatewayModelGate(
+        session_factory=_open_model_call_session, usage_sink=_record_model_usage
+    )
+
+
+# Every ModelClient built in this process defaults to the backend gate (LOCUS-336).
+model_calls.install_model_gate(_backend_model_gate)
+
+
+def _default_agent_chain() -> list[model_calls.ModelTier]:
+    """D-21 default tiers for agent and self-improvement work (NIM -> Ollama)."""
+    return model_calls.default_agent_chain(_BACKEND_PROVIDER_SETTINGS)
+
+
+def _default_agent_model() -> str:
+    """Provider-neutral default model id: the D-21 chain's primary tier."""
+    return _default_agent_chain()[0].qualified
+
+
 _CORTICAL_REASON_CODES = {
     "": "ok",
     "allowed": "ok",
@@ -16679,6 +16893,10 @@ def _startup_initialize_state() -> None:
         for integration_id, integration in pre_startup_integrations.items():
             store.integrations.setdefault(integration_id, integration)
     _apply_provider_settings_side_effects()
+    try:
+        _migrate_provider_keys_to_keychain()
+    except Exception:  # noqa: BLE001 - migration must never block startup
+        LOGGER.exception("provider key migration failed")
 
     if _AUDIT_LOG is not None and _AUDIT_LOG.enabled:
         try:
@@ -20556,7 +20774,10 @@ def _masked_provider_settings_view(data: dict[str, Any]) -> dict[str, Any]:
     """Provider API keys are write-only: never returned, never audited in clear."""
     masked = dict(data)
     for field in _PROVIDER_SECRET_FIELDS:
-        configured = bool(str(masked.get(field) or "").strip())
+        provider = _LEGACY_SECRET_FIELD_PROVIDER.get(field, "")
+        configured = bool(str(masked.get(field) or "").strip()) or (
+            bool(provider) and _MODEL_KEYS.configured(provider)
+        )
         masked[field] = ""
         masked[f"{field}_configured"] = configured
     providers = masked.get("ai_providers")
@@ -20564,12 +20785,120 @@ def _masked_provider_settings_view(data: dict[str, Any]) -> dict[str, Any]:
         masked_providers: dict[str, dict[str, Any]] = {}
         for provider, entry in providers.items():
             entry_view: dict[str, Any] = dict(entry) if isinstance(entry, dict) else {}
-            configured = bool(str(entry_view.get("api_key") or "").strip())
+            configured = bool(str(entry_view.get("api_key") or "").strip()) or (
+                str(provider) in _PROVIDER_REGISTRY
+                and bool(_PROVIDER_REGISTRY[str(provider)]["key_env"])
+                and _MODEL_KEYS.configured(str(provider))
+            )
             entry_view["api_key"] = ""
             entry_view["api_key_configured"] = configured
             masked_providers[str(provider)] = entry_view
         masked["ai_providers"] = masked_providers
     return masked
+
+
+def _store_provider_key(provider: str, value: str, *, actor: str) -> dict[str, Any]:
+    """Write (or with the clear sentinel, remove) a provider key in the OS keychain.
+
+    Never returns, logs or audits the value. Raises 503 when no secure store is
+    usable: the key is then not stored anywhere (fail closed, no plaintext).
+    """
+    from locus_tooling.native_secrets import SecretStorageUnavailable
+
+    clearing = value == _PROVIDER_CLEAR_SENTINEL
+    try:
+        if clearing:
+            _MODEL_KEYS.clear(provider)
+            storage = ""
+        else:
+            storage = _MODEL_KEYS.set(provider, value)
+    except SecretStorageUnavailable as exc:
+        _append_audit_event(
+            "models.provider.key.clear" if clearing else "models.provider.key.set",
+            actor,
+            "error",
+            {"provider": provider, "reason": "secure_storage_unavailable"},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "secure_storage_unavailable",
+                "message": (
+                    "No secure secret store (OS keychain / DPAPI) is usable on this host; "
+                    "the key was not stored. Supply it through the environment instead."
+                ),
+                "provider": provider,
+            },
+        ) from exc
+    # Any copy still held in settings goes too: the keychain is the only store.
+    entry = store.platform_settings.ai_providers.get(provider)
+    if isinstance(entry, dict) and entry.get("api_key"):
+        entry["api_key"] = ""
+    for field, field_provider in _LEGACY_SECRET_FIELD_PROVIDER.items():
+        if field_provider == provider and getattr(store.platform_settings, field, ""):
+            setattr(store.platform_settings, field, "")
+    _apply_provider_settings_side_effects()
+    _append_audit_event(
+        "models.provider.key.clear" if clearing else "models.provider.key.set",
+        actor,
+        "allowed",
+        {"provider": provider, "storage": storage},
+    )
+    return {
+        "provider": provider,
+        "configured": _MODEL_KEYS.configured(provider),
+        "source": _MODEL_KEYS.source(provider),
+        "storage": storage,
+    }
+
+
+def _migrate_provider_keys_to_keychain() -> int:
+    """Move API keys persisted in platform settings by earlier builds into the keychain.
+
+    Each key is written, verified by read-back, then blanked in state. A key that
+    cannot be stored securely stays where it is (it is not lost) and is reported.
+    Returns the number of keys migrated.
+    """
+    from locus_tooling.native_secrets import SecretStorageUnavailable
+
+    settings = store.platform_settings
+    pending: list[tuple[str, str, str]] = []  # (provider, value, location)
+    for field, provider in _LEGACY_SECRET_FIELD_PROVIDER.items():
+        value = str(getattr(settings, field, "") or "").strip()
+        if value:
+            pending.append((provider, value, field))
+    for provider, entry in (settings.ai_providers or {}).items():
+        if isinstance(entry, dict) and str(entry.get("api_key") or "").strip():
+            if provider in _PROVIDER_REGISTRY and _PROVIDER_REGISTRY[provider]["key_env"]:
+                pending.append((provider, str(entry["api_key"]).strip(), "ai_providers"))
+    migrated = 0
+    for provider, value, location in pending:
+        try:
+            _MODEL_KEYS.set(provider, value)
+            from locus_tooling.native_secrets import get_secret
+
+            verified = get_secret(ProviderKeyStore.secret_name(provider)) == value
+        except (SecretStorageUnavailable, ValueError) as exc:
+            LOGGER.warning(
+                "provider key migration skipped for %s: %s", provider, type(exc).__name__
+            )
+            continue
+        if not verified:
+            # The environment overrides the stored key, or read-back failed: keep state.
+            LOGGER.warning("provider key migration for %s not verified; left in settings", provider)
+            continue
+        if location == "ai_providers":
+            settings.ai_providers[provider]["api_key"] = ""
+        else:
+            setattr(settings, location, "")
+        migrated += 1
+    if migrated:
+        _apply_provider_settings_side_effects()
+        _append_audit_event(
+            "models.provider.key.migrate", "locus-backend", "allowed", {"migrated": migrated}
+        )
+        _persist_store_state()
+    return migrated
 
 
 _CHAT_MODES = ("chat", "plan", "execute")
@@ -21011,15 +21340,21 @@ def save_platform_settings(
     current = current_settings.model_dump()
 
     # Secret provider fields are write-only: empty submissions keep the stored
-    # value, the clear sentinel removes it.
+    # value, the clear sentinel removes it. Keys are written to the OS keychain
+    # (LOCUS-336) and never kept in platform settings (P10).
     payload = dict(payload)
+    key_writes: dict[str, str] = {}
     for field in _PROVIDER_SECRET_FIELDS:
         if field in payload:
             value = str(payload[field] or "").strip()
+            if value and value != _PROVIDER_CLEAR_SENTINEL:
+                key_writes[_LEGACY_SECRET_FIELD_PROVIDER[field]] = value
+            elif value == _PROVIDER_CLEAR_SENTINEL:
+                key_writes[_LEGACY_SECRET_FIELD_PROVIDER[field]] = _PROVIDER_CLEAR_SENTINEL
+            # The raw value never reaches state; a stale stored copy is blanked.
+            payload[field] = ""
             if not value:
                 payload.pop(field)
-            elif value == _PROVIDER_CLEAR_SENTINEL:
-                payload[field] = ""
     if isinstance(payload.get("ai_providers"), dict):
         merged_providers: dict[str, dict[str, str]] = {
             provider: dict(entry)
@@ -21038,10 +21373,9 @@ def save_platform_settings(
                     target[field] = str(entry.get(field) or "").strip()
             if "api_key" in entry:
                 key_value = str(entry.get("api_key") or "").strip()
-                if key_value == _PROVIDER_CLEAR_SENTINEL:
+                if key_value and _PROVIDER_REGISTRY[provider_id]["key_env"]:
+                    key_writes[provider_id] = key_value
                     target["api_key"] = ""
-                elif key_value:
-                    target["api_key"] = key_value
                 # blank submissions keep the stored key
         payload["ai_providers"] = merged_providers
 
@@ -21115,6 +21449,8 @@ def save_platform_settings(
     _validate_platform_settings_update(
         current_settings, candidate_settings, payload=payload, actor=actor
     )
+    for provider_id, key_value in key_writes.items():
+        _store_provider_key(provider_id, key_value, actor=actor)
     store.platform_settings = candidate_settings
     _apply_provider_settings_side_effects()
     _append_config_mutation_audit(
@@ -23189,10 +23525,19 @@ def create_workflow_run(
             _persist_store_state()
             _finish_stream()
 
+    def _execute_run_scoped() -> None:
+        # Model calls in this run are attributed to it (audit, budget, fallback events).
+        with _model_call_scope(
+            run_id,
+            _run_principal(run_id, actor),
+            str(payload.get("data_classification") or "") if isinstance(payload, dict) else "",
+        ):
+            _execute_run()
+
     if _sync_run_execution_enabled():
-        _execute_run()
+        _execute_run_scoped()
     else:
-        _submit_run_task(_execute_run)
+        _submit_run_task(_execute_run_scoped)
     return {"id": run_id, "status": "started"}
 
 
@@ -24756,7 +25101,10 @@ def run_skill_eval(
     rubric = str(payload.get("eval_rubric") or skill.eval_rubric or "").strip()
     if not rubric:
         rubric = "Score how well the response follows the skill's procedure and produces a correct, useful result."
-    model = str(payload.get("model") or "").strip() or _default_openai_model()
+    requested_model = str(payload.get("model") or "").strip()
+    # No model named: the D-21 agent chain (NIM -> Ollama), fallback recorded.
+    eval_chain = None if requested_model else _default_agent_chain()
+    model = requested_model or (eval_chain or _default_agent_chain())[0].qualified
 
     skill_system_prompt = (
         "You are an agent on the Lattix Locus platform. Follow this operating "
@@ -24773,6 +25121,7 @@ def run_skill_eval(
             user_prompt=case["prompt"],
             model=model,
             temperature=0.2,
+            model_chain=eval_chain,
         )
         judge_prompt = (
             "You are grading an AI response against a rubric. Respond with ONLY a JSON object "
@@ -24787,6 +25136,7 @@ def run_skill_eval(
             user_prompt=judge_prompt,
             model=model,
             temperature=0.0,
+            model_chain=eval_chain,
         )
         case_score = 0.0
         reason = ""
@@ -24974,11 +25324,13 @@ def _run_skill_blast_chamber(skill: SkillDefinition) -> SkillSecurityScan:
             f"{skill.content.strip()}"
         )
         try:
+            probe_chain = _default_agent_chain()
             output, model_meta = _run_openai_chat(
                 system_prompt=system_prompt,
                 user_prompt=_SKILL_IMPORT_PROBE_TASK,
-                model=_default_openai_model(),
+                model=probe_chain[0].qualified,
                 temperature=0.2,
+                model_chain=probe_chain,
             )
         except ProviderUnavailableError as exc:
             # No provider: the dry-run did not execute. Record why instead of
@@ -25133,7 +25485,9 @@ def test_skill(
     sample_task = str(payload.get("prompt") or "").strip()
     if not sample_task:
         raise HTTPException(status_code=400, detail="A sample task prompt is required")
-    model = str(payload.get("model") or "").strip() or _default_openai_model()
+    requested_model = str(payload.get("model") or "").strip()
+    test_chain = None if requested_model else _default_agent_chain()
+    model = requested_model or (test_chain or _default_agent_chain())[0].qualified
 
     system_prompt = (
         "You are an agent on the Lattix Locus platform. Follow this operating "
@@ -25145,6 +25499,7 @@ def test_skill(
         user_prompt=sample_task,
         model=model,
         temperature=0.2,
+        model_chain=test_chain,
     )
     _append_audit_event(
         "skill.test",
@@ -25352,6 +25707,42 @@ def get_models_overview(request: Request) -> dict[str, Any]:
         "external": external,
         "catalog": catalog,
     }
+
+
+def _key_provider(provider_id: str) -> str:
+    provider = str(provider_id or "").strip().lower()
+    registry = _PROVIDER_REGISTRY.get(provider)
+    if registry is None:
+        raise HTTPException(status_code=404, detail="Unknown provider")
+    if not registry["key_env"]:
+        raise HTTPException(status_code=400, detail=f"Provider '{provider}' takes no API key")
+    return provider
+
+
+@app.put("/models/providers/{provider_id}/key")
+def set_provider_key(
+    provider_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Store a provider API key in the OS keychain (admin only; never echoed back)."""
+    actor = _enforce_admin_access(request, payload=payload, action="models.provider.key.set")
+    _enforce_emergency_write_policy("models.provider.key.set", actor)
+    provider = _key_provider(provider_id)
+    value = str(payload.get("api_key") or "").strip()
+    if not value or value == _PROVIDER_CLEAR_SENTINEL or len(value) > 4096:
+        raise HTTPException(status_code=400, detail="A non-empty api_key (<= 4096 chars) is required")
+    _persist_store_state()
+    return _store_provider_key(provider, value, actor=actor)
+
+
+@app.delete("/models/providers/{provider_id}/key")
+def clear_provider_key(provider_id: str, request: Request) -> dict[str, Any]:
+    """Remove a provider API key from the keychain (admin only). Env keys are untouched."""
+    actor = _enforce_admin_access(request, action="models.provider.key.clear")
+    _enforce_emergency_write_policy("models.provider.key.clear", actor)
+    provider = _key_provider(provider_id)
+    result = _store_provider_key(provider, _PROVIDER_CLEAR_SENTINEL, actor=actor)
+    _persist_store_state()
+    return result
 
 
 @app.post("/models/local/pull")
@@ -28931,15 +29322,17 @@ def _agent_resolution_for_node(config: dict[str, Any]) -> Any:
             "You are a specialist engineer in a collaborative workflow. Reason in your "
             "discipline, be concrete and minimal, and respond to your teammates."
         )
+        primary = _default_agent_chain()[0]
         return AgentResolution(
             agent_id=agent_id or "agent",
             system_prompt=_augment_node_system_prompt(fallback_prompt, node_instructions),
-            model=_default_ollama_model(),
-            provider="ollama",
-            base_url=base_url,
+            model=primary.model,
+            provider=primary.provider,
+            base_url=base_url if primary.provider == "ollama" else "",
             execution_mode=mode,
             harness_backend=backend,
             found=False,
+            model_source="default",
         )
 
     config_json = defn.config_json if isinstance(defn.config_json, dict) else {}
@@ -28950,8 +29343,25 @@ def _agent_resolution_for_node(config: dict[str, Any]) -> Any:
     )
     system_prompt, _src = _resolve_agent_system_prompt(defn, requested_token=agent_id)
     system_prompt = _augment_node_system_prompt(system_prompt, node_instructions)
-    model = str(model_defaults.get("model") or "").strip() or _default_ollama_model()
-    provider = str(model_defaults.get("provider") or "ollama").strip() or "ollama"
+    configured_model = str(model_defaults.get("model") or "").strip()
+    configured_provider = str(model_defaults.get("provider") or "").strip().lower()
+    if configured_model and not configured_provider:
+        # A provider-qualified id ("nim/meta/llama-3.3-70b-instruct") names its engine.
+        qualified_provider, bare_model = model_calls.resolve_provider(configured_model, default="")
+        if qualified_provider:
+            configured_provider, configured_model = qualified_provider, bare_model
+    model_source = "agent"
+    if configured_model or configured_provider:
+        provider = configured_provider or "ollama"
+        model = configured_model or model_calls.provider_default_model(
+            provider, _BACKEND_PROVIDER_SETTINGS
+        )
+    else:
+        # The agent names no engine: the D-21 agent chain decides (NIM -> Ollama).
+        primary = _default_agent_chain()[0]
+        provider, model, model_source = primary.provider, primary.model, "default"
+    if provider != "ollama":
+        base_url = ""
 
     def _as_float(value: Any, default: float) -> float:
         try:
@@ -28971,23 +29381,75 @@ def _agent_resolution_for_node(config: dict[str, Any]) -> Any:
         execution_mode=mode,
         harness_backend=backend,
         found=True,
+        model_source=model_source,
     )
 
 
-def _make_harness_chat_client(resolution: Any) -> Any:
-    """Build the harness OpenAI-compatible client pointed at the local model
-    endpoint (Ollama by default). One client type serves chat, code (SweAgent)
-    and team (CollaborativeTeam) nodes."""
-    from locus_runtime.harness.llm import OpenAIChatClient
+def _harness_model_chain(resolution: Any) -> list[model_calls.ModelTier]:
+    """Tiers for a harness node: the resolved engine, honoured (LOCUS-336, D-21).
 
-    base = resolution.base_url or local_models.ollama_openai_base_url()
-    return OpenAIChatClient(
-        model=resolution.model,
-        base_url=base,
-        api_key="ollama",
-        provider="openai-compatible",
-        request_timeout=600.0,
+    * ``model_source == "default"`` (the node/agent named no engine) -> the D-21
+      agent chain (NIM -> Ollama, ``LOCUS_AGENT_MODEL_CHAIN``);
+    * an explicit local engine -> just that engine;
+    * an explicit hosted engine (e.g. NIM) -> it, then the local Ollama tier.
+    """
+    provider = str(getattr(resolution, "provider", "") or "ollama").strip().lower()
+    if provider not in model_calls.PROVIDERS:
+        provider = "ollama"
+    explicit = str(getattr(resolution, "model_source", "agent") or "agent") != "default"
+    return model_calls.chain_for(
+        provider,
+        str(getattr(resolution, "model", "") or ""),
+        explicit=explicit,
+        settings=_BACKEND_PROVIDER_SETTINGS,
     )
+
+
+def _make_harness_chat_client(
+    resolution: Any, *, run_id: str = "", principal: str = "", data_classification: str = ""
+) -> Any:
+    """Build the harness ChatClient for a code/team/chat node (LOCUS-336).
+
+    Honours the resolved provider/model (so code and team nodes can run on NIM),
+    walks the D-21 tiers with an explicit, recorded fallback, and authorizes
+    every turn as a gateway ``model_call`` attributed to ``run_id``.
+    """
+    from locus_runtime.harness.llm import GatedChatClient
+
+    tiers = _harness_model_chain(resolution)
+    resolved_provider = str(getattr(resolution, "provider", "") or "").strip().lower()
+    base_override = str(getattr(resolution, "base_url", "") or "").strip()
+    if resolved_provider == "ollama" and base_override == local_models.ollama_openai_base_url():
+        base_override = ""
+
+    def _scoped_open(call: ModelCall) -> GatewaySession | None:
+        with _model_call_scope(run_id, principal, data_classification):
+            return _open_model_call_session(call)
+
+    def _scoped_usage(usage: ModelUsage) -> None:
+        with _model_call_scope(run_id, principal, data_classification):
+            _record_model_usage(usage)
+
+    gate = model_calls.GatewayModelGate(session_factory=_scoped_open, usage_sink=_scoped_usage)
+
+    def _factory(tier: model_calls.ModelTier) -> ModelClient:
+        endpoint = model_calls.resolve_endpoint(
+            tier.provider,
+            tier.model,
+            settings=_BACKEND_PROVIDER_SETTINGS,
+            keys=_MODEL_KEYS,
+            base_url=base_override if tier.provider == resolved_provider else "",
+        )
+        return ModelClient(endpoint, gate=gate, run_id=run_id, timeout=600.0)
+
+    router = model_calls.ModelRouter(
+        tiers,
+        client_factory=_factory,
+        on_fallback=lambda event: _record_model_fallback(
+            event, run_id=run_id, principal=principal
+        ),
+    )
+    return GatedChatClient(router)
 
 
 def _should_use_compiler(payload: GraphPayload) -> bool:
@@ -29125,6 +29587,7 @@ def _compile_and_run_locus_graph(
             provider, bare = _resolve_chat_provider(override_model)
             res.model = bare or res.model
             res.provider = provider or res.provider
+            res.model_source = "override"
             if res.provider == "ollama":
                 res.base_url = local_models.ollama_openai_base_url()
         if override_effort:
@@ -29132,9 +29595,19 @@ def _compile_and_run_locus_graph(
         return res
 
     gateway_sessions: list[Any] = [execution_state.get("gateway_session")]
+    run_data_class = str(run_input.get("data_classification") or "")
+
+    def make_chat_client(resolution: Any) -> Any:
+        return _make_harness_chat_client(
+            resolution,
+            run_id=run_id,
+            principal=gateway_principal,
+            data_classification=run_data_class,
+        )
+
     deps = gc.CompilerDeps(
         resolve_agent=resolve_agent,
-        make_chat_client=_make_harness_chat_client,
+        make_chat_client=make_chat_client,
         execute_native=execute_native,
         run_id=run_id,
         repo_root=str(_repository_root()),

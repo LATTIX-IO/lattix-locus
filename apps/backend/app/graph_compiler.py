@@ -86,6 +86,9 @@ class AgentResolution:
     reasoning_effort: str = ""  # "" | low | medium | high
     harness_backend: str = "native"  # native (SweAgent) | codex
     found: bool = True
+    # Where provider/model came from: "agent" (agent config), "override" (run
+    # input), or "default" (nothing named one; the D-21 agent chain applies).
+    model_source: str = "agent"
 
 
 @dataclass

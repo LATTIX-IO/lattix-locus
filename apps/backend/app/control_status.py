@@ -92,6 +92,10 @@ class PostureFacts:
     # locus_runtime.gateway.grants_enforcing(): that gateway verifies Biscuit grants
     # (BiscuitGrantVerifier installed, grant authority keys loaded) -- LOCUS-334.
     grants_enforcing: bool = False
+    # locus_runtime.model_client.model_gate_installed(): the backend installed its
+    # gateway-bound model gate, so every ModelClient authorizes a ``model_call``
+    # (engine, egress host, data ceiling, budget) before each request -- LOCUS-336.
+    model_gate_installed: bool = False
 
 
 def _policy_engine(facts: PostureFacts) -> ControlStatus:
@@ -151,6 +155,39 @@ def _capability_tokens(facts: PostureFacts) -> ControlStatus:
         "off",
         "No Biscuit library is loaded; no capability grants are verified and R3 actions "
         "always ask.",
+    )
+
+
+def _model_calls(facts: PostureFacts) -> ControlStatus:
+    label = "Gated model calls"
+    # "enforced" needs both the wiring (the backend gate is the default for every
+    # model client) and an enforcing gateway behind it (P9).
+    if facts.model_gate_installed and facts.gateway_enforcing:
+        return ControlStatus(
+            "model_calls_gated",
+            label,
+            "enforced",
+            "Every model request (backend chat, streaming, harness nodes, skill eval) is a "
+            "gateway model_call: engine allowed, egress host allowlisted, data ceiling and "
+            "budget checked, usage audited without prompt text "
+            "(tests/unit/test_model_client.py, tests/policy/test_model_call_opa.py, "
+            "apps/backend/tests/test_model_calls.py).",
+        )
+    if facts.model_gate_installed:
+        return ControlStatus(
+            "model_calls_gated",
+            label,
+            "unverified",
+            "Model clients authorize every request through the gateway, but no gateway with "
+            "a running policy engine is installed in this process; model calls are denied "
+            "until it is.",
+        )
+    return ControlStatus(
+        "model_calls_gated",
+        label,
+        "off",
+        "No model gate is installed in this process; model calls are not authorized by "
+        "the gateway.",
     )
 
 
@@ -476,6 +513,7 @@ _CONTROL_BUILDERS = (
     _secret_storage,
     _policy_engine,
     _capability_tokens,
+    _model_calls,
     _vault,
     _envoy,
     _nats,
@@ -579,6 +617,15 @@ def _grants_enforcing() -> bool:
         return False
 
 
+def _model_gate_installed() -> bool:
+    try:
+        from locus_runtime.model_client import model_gate_installed
+
+        return bool(model_gate_installed())
+    except Exception:  # noqa: BLE001 - reported as not enforced
+        return False
+
+
 def _detect_secret_storage_mode() -> str | None:
     try:
         from locus_tooling.native_secrets import secret_storage_mode
@@ -624,4 +671,5 @@ def collect_posture_facts(
         secret_storage_mode=_detect_secret_storage_mode(),
         gateway_enforcing=_gateway_enforcing(),
         grants_enforcing=_grants_enforcing(),
+        model_gate_installed=_model_gate_installed(),
     )

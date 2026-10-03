@@ -69,6 +69,9 @@ class InMemoryKeychain:
     def set_password(self, service: str, username: str, password: str) -> None:
         self.store[(service, username)] = password
 
+    def delete_password(self, service: str, username: str) -> None:
+        self.store.pop((service, username), None)
+
 
 @pytest.fixture(autouse=True)
 def in_memory_keychain(monkeypatch: pytest.MonkeyPatch) -> InMemoryKeychain:

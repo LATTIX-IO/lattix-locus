@@ -98,10 +98,10 @@ def test_ai_providers_save_merges_and_respects_secret_semantics() -> None:
             headers=ADMIN_HEADERS,
         )
         assert first.status_code == 200
+        # LOCUS-336: the key lives in the OS keychain, never in platform settings.
         # Settings saves replace the model instance; always re-read the store.
-        assert (
-            main_module.store.platform_settings.ai_providers["google"]["api_key"] == "google-key-1"
-        )
+        assert main_module.store.platform_settings.ai_providers["google"]["api_key"] == ""
+        assert main_module._provider_api_key("google") == "google-key-1"
 
         # Blank key keeps the stored value; other fields update.
         client.post(
@@ -113,7 +113,8 @@ def test_ai_providers_save_merges_and_respects_secret_semantics() -> None:
             headers=ADMIN_HEADERS,
         )
         current = main_module.store.platform_settings.ai_providers["google"]
-        assert current["api_key"] == "google-key-1"
+        assert current["api_key"] == ""
+        assert main_module._provider_api_key("google") == "google-key-1"
         assert current["default_model"] == "gemini-2.5-flash"
 
         # Clear sentinel removes the key; unknown providers are ignored.
@@ -129,6 +130,7 @@ def test_ai_providers_save_merges_and_respects_secret_semantics() -> None:
             headers=ADMIN_HEADERS,
         )
         assert main_module.store.platform_settings.ai_providers["google"]["api_key"] == ""
+        assert main_module._provider_api_key("google") == ""
         assert "not-a-provider" not in main_module.store.platform_settings.ai_providers
     finally:
         main_module.store.platform_settings.ai_providers = original
@@ -225,7 +227,9 @@ def test_platform_settings_save_secret_semantics() -> None:
             headers=ADMIN_HEADERS,
         )
         assert saved.status_code == 200
-        assert main_module.store.platform_settings.nim_api_key == "nvapi-first-value-111111"
+        # LOCUS-336: stored in the keychain, blank in platform settings.
+        assert main_module.store.platform_settings.nim_api_key == ""
+        assert main_module._nim_api_key() == "nvapi-first-value-111111"
 
         # Empty submission leaves it unchanged.
         client.post(
@@ -233,7 +237,7 @@ def test_platform_settings_save_secret_semantics() -> None:
             json={"nim_api_key": "", "confirm_security_change": True},
             headers=ADMIN_HEADERS,
         )
-        assert main_module.store.platform_settings.nim_api_key == "nvapi-first-value-111111"
+        assert main_module._nim_api_key() == "nvapi-first-value-111111"
 
         # The clear sentinel removes it.
         client.post(
@@ -242,6 +246,7 @@ def test_platform_settings_save_secret_semantics() -> None:
             headers=ADMIN_HEADERS,
         )
         assert main_module.store.platform_settings.nim_api_key == ""
+        assert main_module._nim_api_key() == ""
     finally:
         main_module.store.platform_settings.nim_api_key = original
         main_module._apply_provider_settings_side_effects()

@@ -53,6 +53,8 @@ process_exec          outbound or irreversible: git push, gh pr merge/       R3
 process_exec          plain network fetch (curl/wget GET, an http(s) URL)   R2
 process_exec          anything else (runs inside the bound workspace)        R1
 network_egress        any host                                               R2
+model_call            engine on a loopback host (local Ollama etc.)          R1
+model_call            any other host (data leaves the machine)               R2
 tool_call /           name pairs an export verb with a credential noun, or   R4
 mcp_tool_call         a mutate verb with policy/audit/grant/permission
 tool_call /           name contains an outbound/irreversible verb (send,     R3
@@ -83,6 +85,11 @@ Policy mapping (inputs are documented on each builder below):
 * ``filesystem_access`` -- ``file_read`` / ``file_write``.
 * ``network_egress`` -- ``network_egress`` and tool/MCP calls with an egress host.
 * ``budget_policy`` -- when the session carries numeric budget figures.
+* ``model_call`` (LOCUS-336) -- ``agent_policy`` with operation ``llm_call``
+  (``provider`` is ``local`` for a loopback engine; ``classification`` is the
+  session's data ceiling, so ``restricted`` data never reaches a hosted engine),
+  plus ``network_egress`` on the engine's host and ``budget_policy`` when the
+  session carries token/cost figures. No prompt text enters the action.
 
 No decision is cached: each call evaluates policy afresh, so a policy change or
 an engine outage takes effect on the next action.
@@ -122,10 +129,24 @@ from locus_runtime.policy_engine import Decision, PolicyEngine, default_policy_d
 logger = logging.getLogger(__name__)
 
 ActionKind = Literal[
-    "tool_call", "file_write", "file_read", "network_egress", "process_exec", "mcp_tool_call"
+    "tool_call",
+    "file_write",
+    "file_read",
+    "network_egress",
+    "process_exec",
+    "mcp_tool_call",
+    "model_call",
 ]
 ACTION_KINDS: frozenset[str] = frozenset(
-    {"tool_call", "file_write", "file_read", "network_egress", "process_exec", "mcp_tool_call"}
+    {
+        "tool_call",
+        "file_write",
+        "file_read",
+        "network_egress",
+        "process_exec",
+        "mcp_tool_call",
+        "model_call",
+    }
 )
 Outcome = Literal["allow", "ask", "deny"]
 AutonomyTier = Literal["tiered", "supervised", "envelope-autonomous"]
@@ -149,7 +170,12 @@ CANONICAL_OPERATION: Mapping[str, str] = {
     "file_write": "write_file",
     "process_exec": "process_exec",
     "network_egress": "network_egress",
+    # agent_policy already carries the data-ceiling rule for ``llm_call``.
+    "model_call": "llm_call",
 }
+
+#: Hosts that keep a model call on this machine (risk R1 instead of R2).
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]", "0:0:0:0:0:0:0:1"})
 
 _ARG_VALUE_MAX = 160
 _ARG_KEYS_MAX = 24
@@ -523,6 +549,12 @@ def path_within(path: str, root: str) -> bool:
     return bool(base) and candidate[: len(base)] == base
 
 
+def is_loopback_host(host: str) -> bool:
+    """True for a loopback host name or address (a model call that stays local)."""
+    value = str(host or "").strip().lower()
+    return value in _LOOPBACK_HOSTS or value.startswith("127.")
+
+
 def _tool_risk(tool: str, args: Mapping[str, Any] | None, method: str) -> RiskClass:
     tokens = _name_tokens(tool)
     if (tokens & _CREDENTIAL_NOUNS and tokens & _EXPORT_VERBS) or (
@@ -559,6 +591,7 @@ def classify_risk(
     method: str = "",
     write_roots: Sequence[str] = (),
     policy_dir: str | None = None,
+    egress_host: str = "",
 ) -> RiskClass:
     """Deterministic risk class for an action (table in the module docstring)."""
     if kind == "file_read":
@@ -576,6 +609,9 @@ def classify_risk(
         return classify_command(command or target)
     if kind == "network_egress":
         return RiskClass.R2
+    if kind == "model_call":
+        # Data leaves the machine unless the engine is on loopback (D-21, 13 §4).
+        return RiskClass.R1 if is_loopback_host(egress_host) else RiskClass.R2
     if kind in {"tool_call", "mcp_tool_call"}:
         return _tool_risk(tool, args, str(method or "").upper())
     return RiskClass.R4  # unknown kinds are treated as prohibited
@@ -665,6 +701,10 @@ class Capabilities:
     # Run profile registered with the session. ``"evals"`` is accepted only by a
     # gateway built with ``allow_eval_sessions=True`` (apps/evals); see open_session.
     runtime_profile: str = ""
+    # Highest data class in this run's context (area data ceiling seam, 10 §6 /
+    # 13 §4). Fed to agent_policy's ``llm_call`` rule: ``restricted`` data may
+    # only go to a local engine. Empty = not classified (the rule does not fire).
+    data_classification: str = ""
 
 
 @dataclass(frozen=True)
@@ -712,6 +752,7 @@ class GatewayAction:
             args=args,
             method=method,
             write_roots=caps.write_roots,
+            egress_host=egress_host,
         )
         return cls(
             caller=caller,
@@ -1055,6 +1096,7 @@ class Gateway:
             command=action.command_summary,
             method=action.method,
             write_roots=caps.write_roots,
+            egress_host=action.egress_host,
         )
         if recomputed > action.risk:
             action = replace(action, risk=recomputed)
@@ -1254,6 +1296,13 @@ def agent_policy_input(
     }
     if action.kind == "network_egress":
         payload["target"] = action.target
+    if action.kind == "model_call":
+        # The gateway derives "local" from the egress host itself; the caller's
+        # provider label never makes a hosted call look local.
+        provider = action.tool.split(":", 1)[1] if ":" in action.tool else action.tool
+        payload["provider"] = "local" if is_loopback_host(action.egress_host) else provider
+        if caps.data_classification:
+            payload["classification"] = caps.data_classification
     if caps.max_tool_calls > 0:
         payload["max_tool_calls"] = caps.max_tool_calls
         payload["tool_calls_used"] = tool_calls_used
