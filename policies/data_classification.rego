@@ -2,20 +2,21 @@ package lattix.data_classification
 
 import rego.v1
 
-default classification = "internal"
+# Highest matching label wins: restricted > confidential > internal.
+# Each label is decided once, so overlapping matches can't conflict.
+default classification := "internal"
 
-classification := "restricted" if {
-  contains(lower(input.text), "ssn")
-}
+restricted if contains(lower(input.text), "ssn")
 
-classification := "restricted" if {
-  regex.match("(social security|api[_-]?key|bearer|private key)", lower(input.text))
-}
+restricted if regex.match("(social security|api[_-]?key|bearer|private key)", lower(input.text))
+
+confidential if contains(lower(input.text), "customer")
+
+confidential if regex.match("(password|phone|email)", lower(input.text))
+
+classification := "restricted" if restricted
 
 classification := "confidential" if {
-  contains(lower(input.text), "customer")
-}
-
-classification := "confidential" if {
-  regex.match("(password|phone|email)", lower(input.text))
+  not restricted
+  confidential
 }
