@@ -14,12 +14,14 @@ inject a fake, production uses :class:`GhCliLoopGitHub`.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
 import shutil
 import stat
 import subprocess
+import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,17 +49,101 @@ def branch_name(issue_key: str, title: str, *, prefix: str = "loop/") -> str:
 # --------------------------------------------------------------------------- #
 # Git
 # --------------------------------------------------------------------------- #
+#: Git control files inside a working copy's ``.git`` that make *host* git run
+#: code or redirect data: config (filter/diff/textconv drivers, fsmonitor,
+#: sshCommand, credential helpers, insteadOf, remote URLs, include.path), hooks,
+#: info/ (attributes, excludes) and object alternates. The agent can write the
+#: working copy (its ``.git`` is inside the run's write root), so host git only
+#: touches it while these are unchanged since provisioning.
+_SEALED_GIT_FILES = (
+    "config",
+    "config.worktree",
+    "commondir",
+    "HEAD",
+    "objects/info/alternates",
+    "objects/info/http-alternates",
+)
+_SEALED_GIT_DIRS = ("hooks", "info")
+_SEAL_SUFFIX = ".gitseal"
+_NO_HOOKS_DIR: str | None = None
+
+
+def _no_hooks_dir() -> str:
+    """An empty, runner-owned directory used as ``core.hooksPath`` (no hooks run)."""
+    global _NO_HOOKS_DIR
+    if _NO_HOOKS_DIR is None or not os.path.isdir(_NO_HOOKS_DIR):
+        _NO_HOOKS_DIR = tempfile.mkdtemp(prefix="locus-nohooks-")
+    return _NO_HOOKS_DIR
+
+
+def _hardening_args() -> list[str]:
+    return ["-c", f"core.hooksPath={_no_hooks_dir()}", "-c", "core.fsmonitor=false"]
+
+
+def git_metadata_digest(worktree: Path) -> str:
+    """Digest of the sealed git control files of ``worktree`` (absent files count)."""
+    git_dir = worktree / ".git"
+    h = hashlib.sha256()
+    names = list(_SEALED_GIT_FILES)
+    for sub in _SEALED_GIT_DIRS:
+        root = git_dir / sub
+        if root.is_dir():
+            names.extend(
+                sorted(p.relative_to(git_dir).as_posix() for p in root.rglob("*") if p.is_file())
+            )
+        elif root.exists():
+            names.append(sub)
+    for name in names:
+        target = git_dir / name
+        h.update(name.encode("utf-8") + b"\0")
+        if target.is_symlink():
+            h.update(b"L" + os.readlink(target).encode("utf-8", "replace"))
+        elif target.is_file():
+            h.update(b"F" + target.read_bytes())
+        elif target.exists():
+            h.update(b"D")
+        else:
+            h.update(b"-")
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def _seal_path(worktree: Path) -> Path:
+    # A sibling of the working copy: outside the run's write root.
+    return worktree.parent / (worktree.name + _SEAL_SUFFIX)
+
+
 @dataclass
 class GitOps:
-    """Host ``git`` for provisioning and delivery (argv only, bounded by timeouts)."""
+    """Host ``git`` for provisioning and delivery (argv only, bounded by timeouts).
+
+    Every invocation runs with hooks and fsmonitor disabled, and a working copy
+    provisioned by :meth:`add_worktree` is sealed: before host git touches it
+    again, its git control files must match the seal (see
+    :data:`_SEALED_GIT_FILES`), or the call is refused.
+    """
 
     git: str = "git"
     timeout: int = 300
 
+    def seal(self, worktree: Path) -> None:
+        _seal_path(worktree).write_text(git_metadata_digest(worktree), encoding="utf-8")
+
+    def verify_seal(self, worktree: Path) -> None:
+        seal = _seal_path(worktree)
+        if not seal.is_file():
+            return
+        if seal.read_text(encoding="utf-8").strip() != git_metadata_digest(worktree):
+            raise DeliveryError(
+                "workspace_git_tampered: the working copy's git configuration, hooks or "
+                "info files changed during the run; refusing to run host git on it"
+            )
+
     def run(self, cwd: Path, *args: str, timeout: int | None = None) -> str:
+        self.verify_seal(cwd)
         try:
             done = subprocess.run(
-                [self.git, "-C", str(cwd), *args],
+                [self.git, *_hardening_args(), "-C", str(cwd), *args],
                 capture_output=True,
                 text=True,
                 timeout=timeout or self.timeout,
@@ -106,6 +192,7 @@ class GitOps:
             if value:
                 self.run(path, "config", key, value)
         self.run(path, "checkout", "--quiet", "-B", branch, sha)
+        self.seal(path)
         return sha
 
     def remove_worktree(self, repo: Path, path: Path) -> None:  # noqa: ARG002 - same seam
@@ -115,17 +202,35 @@ class GitOps:
 
         if path.exists():
             shutil.rmtree(path, onexc=_force)
+        _seal_path(path).unlink(missing_ok=True)
 
     def has_changes(self, worktree: Path) -> bool:
         return bool(self.run(worktree, "status", "--porcelain").strip())
 
+    def changed_paths(self, worktree: Path) -> list[str]:
+        """Paths the run added, modified or deleted vs ``HEAD`` (stages the change).
+
+        ``--renormalize`` re-applies this host's line-ending rules to every tracked
+        file: git inside the jail may stage files with a different ``core.autocrlf``
+        (no user config there), which would otherwise list every file as changed.
+        """
+        self.run(worktree, "add", "-A")
+        self.run(worktree, "add", "--renormalize", "--", ".")
+        out = self.run(worktree, "diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD")
+        return [p for p in out.split("\0") if p]
+
+    def tracked_files(self, worktree: Path) -> list[str]:
+        """Every file in the index (after :meth:`changed_paths`, includes new files)."""
+        return [p for p in self.run(worktree, "ls-files", "-z").split("\0") if p]
+
     def commit_all(self, worktree: Path, message: str) -> str:
         self.run(worktree, "add", "-A")
-        self.run(worktree, "commit", "--quiet", "-m", message)
+        self.run(worktree, "commit", "--quiet", "--no-verify", "-m", message)
         return self.run(worktree, "rev-parse", "HEAD").strip()
 
     def push(self, worktree: Path, remote: str, branch: str) -> None:
-        self.run(worktree, "push", "--quiet", "-u", remote, f"HEAD:refs/heads/{branch}")
+        # No ``-u``: an upstream entry would rewrite the sealed .git/config.
+        self.run(worktree, "push", "--quiet", "--no-verify", remote, f"HEAD:refs/heads/{branch}")
 
 
 # --------------------------------------------------------------------------- #

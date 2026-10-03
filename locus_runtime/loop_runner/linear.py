@@ -290,7 +290,27 @@ mutation LocusLoopLink($issueId: String!, $url: String!, $title: String) {
 }
 """
 
+_FIND_BY_TEXT = """
+query LocusLoopFindByText($text: String!) {
+  issues(first: 1, filter: { description: { contains: $text } }) { nodes { identifier } }
+}
+"""
+
+_PROJECT_QUERY = """
+query LocusLoopProject($slug: String!) {
+  projects(first: 1, filter: { slugId: { eq: $slug } }) { nodes { id } }
+}
+"""
+
+_CREATE_ISSUE = """
+mutation LocusLoopCreateIssue($input: IssueCreateInput!) {
+  issueCreate(input: $input) { success issue { identifier } }
+}
+"""
+
 _MAX_PAGES = 10
+_ISSUE_TITLE_MAX = 200
+_ISSUE_BODY_MAX = 8000
 
 
 def _issue_from_node(node: dict[str, Any]) -> LinearIssue:
@@ -491,3 +511,32 @@ class LinearClient:
         result = data.get(field_name) or {}
         if result.get("success") is not True:
             raise LinearError(f"Linear {field_name} did not succeed")
+
+    # -- failure-pattern filing (LOCUS-339) ----------------------------------------
+    def find_issue_with_text(self, text: str) -> str | None:
+        """The identifier of an issue whose description contains ``text`` (dedupe marker)."""
+        data = self.graphql(_FIND_BY_TEXT, {"text": str(text)[:200]})
+        nodes = (data.get("issues") or {}).get("nodes") or []
+        return str(nodes[0].get("identifier") or "") or None if nodes else None
+
+    def create_issue(
+        self, *, team_id: str, title: str, description: str, project_slug: str = ""
+    ) -> str:
+        """Create an issue (no labels: it is triaged by a human). Returns its identifier."""
+        if not str(team_id or "").strip():
+            raise LinearError("cannot create an issue without a team")
+        payload: dict[str, Any] = {
+            "teamId": team_id,
+            "title": str(title)[:_ISSUE_TITLE_MAX],
+            "description": str(description)[:_ISSUE_BODY_MAX],
+        }
+        if project_slug:
+            data = self.graphql(_PROJECT_QUERY, {"slug": project_slug})
+            nodes = (data.get("projects") or {}).get("nodes") or []
+            if nodes and nodes[0].get("id"):
+                payload["projectId"] = str(nodes[0]["id"])
+        data = self.graphql(_CREATE_ISSUE, {"input": payload})
+        result = data.get("issueCreate") or {}
+        if result.get("success") is not True:
+            raise LinearError("Linear issueCreate did not succeed")
+        return str((result.get("issue") or {}).get("identifier") or "")
