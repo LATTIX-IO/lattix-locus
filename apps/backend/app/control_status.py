@@ -99,6 +99,10 @@ class PostureFacts:
     # locus_runtime.loop_runner.loop_status(): the self-improvement loop's kill-switch
     # state and last run (LOCUS-338). Operational status, not a security control.
     self_improvement_loop: Mapping[str, Any] | None = None
+    # locus_runtime.computer_use.controller_installed(): a computer-use controller
+    # is wired in this process, so browser / desktop tools run under its panic
+    # latch and authorize every UI action at the gateway -- LOCUS-341.
+    computer_use_installed: bool = False
 
 
 def _policy_engine(facts: PostureFacts) -> ControlStatus:
@@ -191,6 +195,37 @@ def _model_calls(facts: PostureFacts) -> ControlStatus:
         "off",
         "No model gate is installed in this process; model calls are not authorized by "
         "the gateway.",
+    )
+
+
+def _computer_use(facts: PostureFacts) -> ControlStatus:
+    label = "Computer use containment"
+    if facts.computer_use_installed and facts.gateway_enforcing:
+        return ControlStatus(
+            "computer_use",
+            label,
+            "enforced",
+            "Every browser / desktop action is a gateway ui_* / browser_* action classified "
+            "from the perceived element (secret-field typing R4, send/pay/delete R3, taint "
+            "gate: no grant turns an ask into allow), app allow/deny lists and http(s)-only "
+            "navigation in the computer_use policy, egress allowlist at navigation, request "
+            "interception and a loopback egress proxy, panic latch (tests/unit/"
+            "test_computer_use_*.py, tests/policy/test_computer_use_opa.py). Verified on "
+            "Windows (UIA) and Chromium; macOS (AX) is unverified.",
+        )
+    if facts.computer_use_installed:
+        return ControlStatus(
+            "computer_use",
+            label,
+            "unverified",
+            "A computer-use controller is installed, but no gateway with a running policy "
+            "engine is; every UI action is denied until one is.",
+        )
+    return ControlStatus(
+        "computer_use",
+        label,
+        "off",
+        "Computer use is not wired in this process; no browser or desktop actions run here.",
     )
 
 
@@ -551,6 +586,7 @@ _CONTROL_BUILDERS = (
     _policy_engine,
     _capability_tokens,
     _model_calls,
+    _computer_use,
     _vault,
     _envoy,
     _nats,
@@ -673,6 +709,15 @@ def _self_improvement_loop_status() -> Mapping[str, Any] | None:
         return None
 
 
+def _computer_use_installed() -> bool:
+    try:
+        from locus_runtime.computer_use.controller import controller_installed
+
+        return bool(controller_installed())
+    except Exception:  # noqa: BLE001 - reported as not enforced
+        return False
+
+
 def _detect_secret_storage_mode() -> str | None:
     try:
         from locus_tooling.native_secrets import secret_storage_mode
@@ -720,4 +765,5 @@ def collect_posture_facts(
         grants_enforcing=_grants_enforcing(),
         model_gate_installed=_model_gate_installed(),
         self_improvement_loop=_self_improvement_loop_status(),
+        computer_use_installed=_computer_use_installed(),
     )

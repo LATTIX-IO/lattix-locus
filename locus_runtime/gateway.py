@@ -64,7 +64,23 @@ tool_call /           name contains only a read verb (get, list, search, ...) R0
 mcp_tool_call         or the HTTP method is GET/HEAD
 tool_call /           anything else (external effect, unknown semantics)     R2
 mcp_tool_call
+ui_* / browser_*      typing / keys / select into a password, card, CVV,    R4
+                      SSN or one-time-code field (never grantable)
+ui_* / browser_*      activating a control labelled send / submit / pay /   R3
+                      buy / delete / confirm / transfer / ..., submitting a
+                      form holding a secret or payment field, Win/Cmd chord
+ui_click / ui_type /  anything else                                          R2
+ui_key / browser_act
+browser_navigate      any URL (host must also pass network_egress)           R2
+browser_read          screenshot stored under the run dir                    R1
+ui_observe /          accessibility tree / page text                         R0
+browser_read
 ====================  =====================================================  =====
+
+Computer-use kinds (LOCUS-341, :func:`classify_ui`) are classified from the
+:class:`UiFacts` the tool perceived, not from model claims. They are always
+tainted (13 §6): the taint gate skips standing grants for them, so only a
+single-use human approval of the exact action turns their ``ask`` into ``allow``.
 
 Decision table (tiered autonomy is the default, D-05):
 
@@ -85,6 +101,10 @@ Policy mapping (inputs are documented on each builder below):
 * ``filesystem_access`` -- ``file_read`` / ``file_write``.
 * ``network_egress`` -- ``network_egress`` and tool/MCP calls with an egress host.
 * ``budget_policy`` -- when the session carries numeric budget figures.
+* ``computer_use`` (LOCUS-341) -- every ``ui_*`` / ``browser_*`` action: app
+  allow/deny lists for desktop actions, no data entry into secret fields, and
+  ``http(s)`` only for ``browser_navigate`` (whose host also goes to
+  ``network_egress``).
 * ``model_call`` (LOCUS-336) -- ``agent_policy`` with operation ``llm_call``
   (``provider`` is ``local`` for a loopback engine; ``classification`` is the
   session's data ceiling, so ``restricted`` data never reaches a hosted engine),
@@ -136,7 +156,27 @@ ActionKind = Literal[
     "process_exec",
     "mcp_tool_call",
     "model_call",
+    "ui_observe",
+    "ui_click",
+    "ui_type",
+    "ui_key",
+    "browser_navigate",
+    "browser_read",
+    "browser_act",
 ]
+#: Computer-use action kinds (LOCUS-341, doc 12). Each is its own agent_policy
+#: operation, so a run's envelope must list the kinds it may use.
+COMPUTER_USE_KINDS: frozenset[str] = frozenset(
+    {
+        "ui_observe",
+        "ui_click",
+        "ui_type",
+        "ui_key",
+        "browser_navigate",
+        "browser_read",
+        "browser_act",
+    }
+)
 ACTION_KINDS: frozenset[str] = frozenset(
     {
         "tool_call",
@@ -147,6 +187,7 @@ ACTION_KINDS: frozenset[str] = frozenset(
         "mcp_tool_call",
         "model_call",
     }
+    | COMPUTER_USE_KINDS
 )
 Outcome = Literal["allow", "ask", "deny"]
 AutonomyTier = Literal["tiered", "supervised", "envelope-autonomous"]
@@ -163,6 +204,7 @@ REASON_APPROVED = "gateway.approved_by_human"
 REASON_GRANT = "gateway.grant_covers_action"
 REASON_GRANT_ID_PREFIX = "gateway.grant:"
 REASON_GRANT_ERROR = "gateway.grant_verifier_error"
+REASON_TAINT_NO_GRANT = "gateway.taint_gate_grant_not_applicable"
 
 #: Canonical agent_policy operation per action kind (tool/MCP calls use the tool name).
 CANONICAL_OPERATION: Mapping[str, str] = {
@@ -172,6 +214,7 @@ CANONICAL_OPERATION: Mapping[str, str] = {
     "network_egress": "network_egress",
     # agent_policy already carries the data-ceiling rule for ``llm_call``.
     "model_call": "llm_call",
+    **{kind: kind for kind in COMPUTER_USE_KINDS},
 }
 
 #: Hosts that keep a model call on this machine (risk R1 instead of R2).
@@ -581,6 +624,168 @@ def classify_command(command: str) -> RiskClass:
     return RiskClass.R1
 
 
+# --------------------------------------------------------------------------- #
+# Computer use (LOCUS-341): perceived UI facts and their risk class
+# --------------------------------------------------------------------------- #
+#: Controls that put data into the UI (typing, key presses, choosing an option).
+UI_ENTRY_CONTROLS = frozenset({"fill", "type", "press", "key", "select"})
+UI_CONTROLS = frozenset(
+    {"observe", "read", "screenshot", "navigate", "click", "fill", "type", "press", "select", "key"}
+)
+#: autocomplete tokens of secret-bearing inputs (WHATWG autofill field names).
+_SECRET_AUTOCOMPLETE = frozenset(
+    {
+        "current-password",
+        "new-password",
+        "one-time-code",
+        "cc-number",
+        "cc-csc",
+        "cc-exp",
+        "cc-exp-month",
+        "cc-exp-year",
+    }
+)
+# Matched against the normalised (lower-case, word-split) name / label / field id.
+_SECRET_FIELD_TEXT = re.compile(
+    r"\b(password|passwd|passcode|passphrase|pwd|pin|cvv2?|cvc2?|csc|security code|"
+    r"card number|credit card|debit card|ccnum|cc num(ber)?|cc csc|cc cvv|ssn|"
+    r"social security|otp|one time (password|passcode|code)|verification code|2fa|mfa|totp|"
+    r"auth(entication)? code)\b"
+)
+# Words on a control that make activating it outbound or irreversible (R3).
+_UI_R3_WORDS = _R3_VERBS | frozenset(
+    {
+        "confirm",
+        "checkout",
+        "withdraw",
+        "donate",
+        "subscribe",
+        "unsubscribe",
+        "erase",
+        "trash",
+        "empty",
+        "reset",
+        "format",
+        "download",
+        "authorize",
+        "authorise",
+        "allow",
+        "grant",
+    }
+)
+# Chord modifiers that reach the OS shell rather than the focused app.
+_OS_LEVEL_KEYS = frozenset({"win", "windows", "meta", "cmd", "command", "super", "os"})
+_ENTER_KEYS = frozenset({"enter", "return", "numpadenter"})
+_UI_TEXT_MAX = 300
+
+
+def _norm_ui_text(*parts: str) -> str:
+    spaced = _CAMEL.sub(" ", " ".join(str(part or "") for part in parts))
+    return " ".join(token for token in _TOKEN_SPLIT.split(spaced.lower()) if token)
+
+
+@dataclass(frozen=True)
+class UiFacts:
+    """What a computer-use tool perceived about an action's UI target.
+
+    Collected by the tool from the live DOM or accessibility tree immediately
+    before acting (``locus_runtime.computer_use``), never taken from the model's
+    claims. Every text field here comes from the screen and is **untrusted**
+    (13 §6): it can only raise the risk class, and an action carrying it never
+    has an ``ask`` turned into ``allow`` by a standing grant (taint gate, P8).
+    """
+
+    surface: str  # "browser" | "desktop"
+    control: str  # one of UI_CONTROLS
+    app: str = ""  # desktop: executable / bundle id; browser: the agent browser
+    role: str = ""
+    name: str = ""
+    label: str = ""  # other descriptive text: placeholder, title, label element
+    input_type: str = ""
+    autocomplete: str = ""
+    field_id: str = ""  # name / id / automation id
+    is_password: bool = False
+    submits_form: bool = False  # a submit control, or Enter in a form field
+    form_sensitive: bool = False  # the enclosing form holds a secret / payment field
+    form_text: str = ""  # text of the enclosing form's submit controls
+    key: str = ""  # key chord for press / key
+    url_scheme: str = ""  # browser_navigate: the URL scheme
+
+    @classmethod
+    def create(cls, **kwargs: Any) -> UiFacts:
+        """Normalised, bounded facts (text truncated, flags coerced to bool)."""
+        clean: dict[str, Any] = {}
+        for key, value in kwargs.items():
+            if key in {"is_password", "submits_form", "form_sensitive"}:
+                clean[key] = bool(value)
+            else:
+                clean[key] = str(value or "").strip()[:_UI_TEXT_MAX]
+        return cls(**clean)
+
+    @property
+    def sensitive_field(self) -> bool:
+        """The target holds a password, payment card, CVV, SSN or one-time code."""
+        if self.is_password or self.input_type.lower() == "password":
+            return True
+        if set(self.autocomplete.lower().split()) & _SECRET_AUTOCOMPLETE:
+            return True
+        return bool(_SECRET_FIELD_TEXT.search(_norm_ui_text(self.name, self.label, self.field_id)))
+
+    def as_summary(self) -> dict[str, str]:
+        """Redacted, bounded description for audit (typed values are never held here)."""
+        pairs = (
+            ("ui_surface", self.surface),
+            ("ui_control", self.control),
+            ("ui_app", self.app),
+            ("ui_role", self.role),
+            ("ui_name", self.name),
+            ("ui_key", self.key),
+        )
+        return {key: redact_text(value, limit=120) for key, value in pairs if value}
+
+
+def classify_ui(kind: str, ui: UiFacts | None) -> RiskClass:
+    """Risk class of a computer-use action from its perceived UI facts.
+
+    * observe / read → R0; a stored screenshot → R1
+    * navigate → R2 (the egress host must also pass ``network_egress``)
+    * entering data (fill / type / press / key / select) into a password,
+      payment-card, CVV, SSN or one-time-code field → R4, never grantable
+    * a chord with an OS-level modifier (Win / Cmd / Meta) → R3
+    * activating a control (click, select, Enter) whose text says send /
+      submit / pay / buy / delete / confirm / transfer / ... → R3; submitting a
+      form that holds a secret or payment field, or whose submit control says
+      so → R3
+    * any other click / fill / type / press / select / key → R2
+    * missing facts or an unknown control → R4 (fail closed)
+
+    Screen text can only *raise* the class: a page that labels its Delete
+    button "OK" gets the default R2, never less.
+    """
+    if kind in {"ui_observe", "browser_read"}:
+        return RiskClass.R1 if ui is not None and ui.control == "screenshot" else RiskClass.R0
+    if kind == "browser_navigate":
+        return RiskClass.R2
+    if ui is None or ui.control not in UI_CONTROLS:
+        return RiskClass.R4
+    control = ui.control
+    if control in {"observe", "read", "screenshot", "navigate"}:
+        return RiskClass.R4  # a read-shaped control on an acting kind is malformed
+    if control in UI_ENTRY_CONTROLS and ui.sensitive_field:
+        return RiskClass.R4
+    chord = _name_tokens(ui.key.replace("+", " "))
+    if chord & _OS_LEVEL_KEYS:
+        return RiskClass.R3
+    if control in {"click", "select"} or chord & _ENTER_KEYS:
+        if _name_tokens(_norm_ui_text(ui.name, ui.label)) & _UI_R3_WORDS:
+            return RiskClass.R3
+        if ui.submits_form and (
+            ui.form_sensitive or _name_tokens(_norm_ui_text(ui.form_text)) & _UI_R3_WORDS
+        ):
+            return RiskClass.R3
+    return RiskClass.R2
+
+
 def classify_risk(
     *,
     kind: str,
@@ -592,8 +797,11 @@ def classify_risk(
     write_roots: Sequence[str] = (),
     policy_dir: str | None = None,
     egress_host: str = "",
+    ui: UiFacts | None = None,
 ) -> RiskClass:
     """Deterministic risk class for an action (table in the module docstring)."""
+    if kind in COMPUTER_USE_KINDS:
+        return classify_ui(kind, ui)
     if kind == "file_read":
         return RiskClass.R0
     if kind == "file_write":
@@ -705,6 +913,14 @@ class Capabilities:
     # 13 §4). Fed to agent_policy's ``llm_call`` rule: ``restricted`` data may
     # only go to a local engine. Empty = not classified (the rule does not fire).
     data_classification: str = ""
+    # Computer use (LOCUS-341): desktop apps this run may drive (executable or
+    # bundle id, case-insensitive). Empty = no desktop app. The computer_use
+    # policy's built-in deny list (password managers, banking, OS security and
+    # credential prompts, shells, the user's own browsers, Locus) always wins.
+    allowed_apps: tuple[str, ...] = ()
+    # Extra apps denied for this run, on top of the built-in list and
+    # ``LOCUS_COMPUTER_USE_DENIED_APPS``. Deny lists only ever widen.
+    denied_apps: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -725,6 +941,13 @@ class GatewayAction:
     method: str = ""
     # Grant-matching facts derived from the real arguments (see grant_facets).
     facets: Mapping[str, str] = field(default_factory=dict)
+    # Computer use: what the tool perceived about the UI target (LOCUS-341).
+    ui: UiFacts | None = None
+    # Arguments derive from untrusted content (screen / page text, 13 §6). A
+    # tainted action's ask is never turned into allow by a standing grant; only
+    # a single-use human approval of this exact action can. Computer-use kinds
+    # are always treated as tainted by the gateway.
+    tainted: bool = False
 
     @classmethod
     def create(
@@ -741,6 +964,8 @@ class GatewayAction:
         egress_host: str = "",
         method: str = "",
         capabilities: Capabilities | None = None,
+        ui: UiFacts | None = None,
+        tainted: bool = False,
     ) -> GatewayAction:
         caps = capabilities or Capabilities()
         command_text = redact_text(command, limit=400) if command else ""
@@ -753,21 +978,29 @@ class GatewayAction:
             method=method,
             write_roots=caps.write_roots,
             egress_host=egress_host,
+            ui=ui,
         )
+        summary = summarize_args(args)
+        digest_material: dict[str, Any] = {"args": args, "command": command, "target": target}
+        if ui is not None:
+            summary = {**summary, **ui.as_summary()}
+            digest_material["ui"] = ui
         return cls(
             caller=caller,
             kind=kind,
             tool=str(tool or ""),
             target=redact_text(target, limit=400),
-            args_summary=summarize_args(args),
+            args_summary=summary,
             risk=risk,
-            args_digest=args_digest({"args": args, "command": command, "target": target}),
+            args_digest=args_digest(digest_material),
             command_summary=command_text,
             executable=str(executable or ""),
             jail=jail,
             egress_host=str(egress_host or "").strip().lower(),
             method=str(method or "").upper(),
             facets=grant_facets(kind, args, command_text),
+            ui=ui,
+            tainted=bool(tainted) or kind in COMPUTER_USE_KINDS,
         )
 
     @property
@@ -1122,6 +1355,7 @@ class Gateway:
             method=action.method,
             write_roots=caps.write_roots,
             egress_host=action.egress_host,
+            ui=action.ui,
         )
         if recomputed > action.risk:
             action = replace(action, risk=recomputed)
@@ -1180,7 +1414,15 @@ class Gateway:
             action.risk == RiskClass.R2 and caps.autonomy_tier == "supervised"
         )
         if needs_ask:
-            grant_id = self._covering_grant(action, caps, reasons)
+            # Taint gate (13 §6, P8): screen / page text never justifies turning an
+            # ask into allow, so standing grants do not apply to tainted actions.
+            # Only a human approval of this exact action can (_ask_or_approved).
+            tainted = action.tainted or action.kind in COMPUTER_USE_KINDS
+            grant_id = None
+            if tainted:
+                reasons.append(REASON_TAINT_NO_GRANT)
+            else:
+                grant_id = self._covering_grant(action, caps, reasons)
             if grant_id is not None:
                 reasons.append(REASON_GRANT)
                 if grant_id:
@@ -1325,9 +1567,47 @@ def policy_inputs(
     egress_host = action.egress_host or (action.target if action.kind == "network_egress" else "")
     if action.kind == "network_egress" or egress_host:
         plan.append(("network_egress", network_egress_input(egress_host, caps)))
+    if action.kind in COMPUTER_USE_KINDS:
+        plan.append(("computer_use", computer_use_input(action, caps)))
     if caps.budget is not None:
         plan.append(("budget_policy", caps.budget.as_input()))
     return plan
+
+
+def configured_denied_apps() -> tuple[str, ...]:
+    """Extra denied apps from ``LOCUS_COMPUTER_USE_DENIED_APPS`` (comma-separated)."""
+    raw = str(os.getenv("LOCUS_COMPUTER_USE_DENIED_APPS") or "")
+    return tuple(item.strip().lower() for item in raw.split(",") if item.strip())
+
+
+def computer_use_input(action: GatewayAction, caps: Capabilities) -> dict[str, Any]:
+    """``computer_use`` policy input: surface, control, app and the app lists.
+
+    The surface comes from the action kind (``browser_*`` → browser, ``ui_*`` →
+    desktop), never from the tool's facts, so a desktop action cannot present
+    itself as a browser one to skip the app allowlist.
+    """
+    ui = action.ui
+    surface = "browser" if action.kind.startswith("browser_") else "desktop"
+    default_control = {
+        "ui_observe": "observe",
+        "browser_read": "read",
+        "browser_navigate": "navigate",
+    }.get(action.kind, "")
+    return {
+        "action": action.kind,
+        "surface": surface,
+        "control": (ui.control if ui is not None else "") or default_control,
+        "app": (ui.app if ui is not None else "").strip().lower(),
+        "allowed_apps": sorted({str(app).strip().lower() for app in caps.allowed_apps if app}),
+        "denied_apps": sorted(
+            {str(app).strip().lower() for app in caps.denied_apps if app}
+            | set(configured_denied_apps())
+        ),
+        "sensitive_field": bool(ui is not None and ui.sensitive_field),
+        "url_scheme": (ui.url_scheme if ui is not None else "").lower(),
+        "egress_host": action.egress_host,
+    }
 
 
 def agent_policy_input(

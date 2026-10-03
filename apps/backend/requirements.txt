@@ -5,6 +5,12 @@ PyJWT[crypto]>=2.10.1
 # Biscuit capability grants (LOCUS-334; Apache-2.0, Eclipse Biscuit).
 biscuit-python==0.4.0
 click>=8.1.7
+# Computer use (LOCUS-341): UI Automation on Windows (comtypes, MIT), macOS
+# Accessibility (PyObjC, MIT), the agent browser (Playwright, Microsoft,
+# Apache-2.0; imported lazily, and its Chromium is fetched separately).
+comtypes==1.4.17; sys_platform == 'win32'
+playwright==1.63.0
+pyobjc-framework-ApplicationServices==12.2.2; sys_platform == 'darwin'
 fastapi>=0.115.0
 httpx>=0.28.0
 presidio-analyzer>=2.2.355
