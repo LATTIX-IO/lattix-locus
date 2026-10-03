@@ -34,6 +34,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, Protocol
 
+from locus_runtime.computer_use.operations import computer_use_operations
 from locus_runtime.gateway import (
     AutonomyTier,
     BudgetFigures,
@@ -207,6 +208,8 @@ class EnvelopeCapabilities:
     write_roots: tuple[str, ...] = ()
     executables: tuple[str, ...] = ()
     egress_hosts: tuple[str, ...] = ()
+    # Desktop apps computer-use tools may drive (LOCUS-341); empty = none.
+    apps: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -251,11 +254,18 @@ class RunEnvelope:
         that opens the run's :class:`~locus_runtime.gateway.GatewaySession`)."""
         executables = self.capabilities.executables or default_allowed_executables()
         return Capabilities(
-            allowed_tools=frozenset({*GATEWAY_OPERATIONS, *self.capabilities.tools}),
+            allowed_tools=frozenset(
+                {
+                    *GATEWAY_OPERATIONS,
+                    *self.capabilities.tools,
+                    *computer_use_operations(self.capabilities.tools),
+                }
+            ),
             read_roots=tuple(self.capabilities.read_roots or self.capabilities.write_roots),
             write_roots=tuple(self.capabilities.write_roots),
             allowed_executables=tuple(executables),
             allowed_egress_hosts=tuple(self.capabilities.egress_hosts),
+            allowed_apps=tuple(self.capabilities.apps),
             autonomy_tier=self.autonomy_tier,
             max_tool_calls=self.budget.max_actions,
             budget=budget

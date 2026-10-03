@@ -178,6 +178,25 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         RouteAccessCategory.AUTHENTICATED_MUTATE,
         "platform.settings.save",
     ),
+    # Computer use (LOCUS-341): the handlers always require authentication.
+    RouteAccessRule(
+        ("POST",),
+        "/computer-use/panic",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "computer_use.panic",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/computer-use/reset",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "computer_use.reset",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/computer-use/status",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "computer_use.status.read",
+    ),
     # Composer capabilities (per-user settings, working folders, MCP, escalations).
     RouteAccessRule(
         ("GET",), "/user/settings", RouteAccessCategory.AUTHENTICATED_READ, "user.settings.read"

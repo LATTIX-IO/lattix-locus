@@ -41,11 +41,12 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# The seven repository policies. Names map to the Rego package ``lattix.<name>``.
+# The repository policies. Names map to the Rego package ``lattix.<name>``.
 KNOWN_POLICIES: frozenset[str] = frozenset(
     {
         "agent_policy",
         "budget_policy",
+        "computer_use",
         "data_classification",
         "filesystem_access",
         "network_egress",

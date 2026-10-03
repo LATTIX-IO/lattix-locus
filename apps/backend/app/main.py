@@ -21331,6 +21331,40 @@ def get_platform_security_policy(request: Request) -> dict[str, Any]:
     return resolved
 
 
+# --- Computer use: panic / status / reset (LOCUS-341, doc 12 §5, P5) -----------
+# The desktop app's global panic hotkey calls POST /computer-use/panic. Panic is
+# always authenticated (whatever the runtime profile), idempotent, and latches:
+# every in-flight UI action is cancelled and new ones are refused until reset.
+@app.post("/computer-use/panic")
+def computer_use_panic(request: Request) -> dict[str, Any]:
+    from locus_runtime.computer_use.controller import get_controller
+
+    actor = _enforce_request_authn(request, action="computer_use.panic", required=True)
+    controller = get_controller()
+    report = controller.panic(source=f"api:{actor}"[:64])
+    _append_audit_event("computer_use.panic", actor, "allowed", report.as_dict())
+    return {**report.as_dict(), "status": controller.status()}
+
+
+@app.get("/computer-use/status")
+def computer_use_status(request: Request) -> dict[str, Any]:
+    from locus_runtime.computer_use.controller import controller_installed, get_controller
+
+    _enforce_request_authn(request, action="computer_use.status.read")
+    return {**get_controller().status(), "installed": controller_installed()}
+
+
+@app.post("/computer-use/reset")
+def computer_use_reset(request: Request) -> dict[str, Any]:
+    from locus_runtime.computer_use.controller import get_controller
+
+    actor = _enforce_request_authn(request, action="computer_use.reset", required=True)
+    controller = get_controller()
+    controller.reset(actor)
+    _append_audit_event("computer_use.reset", actor, "allowed", {"mode": controller.mode})
+    return controller.status()
+
+
 @app.post("/platform/settings")
 def save_platform_settings(
     request: Request, payload: dict[str, Any] = Body(default_factory=dict)

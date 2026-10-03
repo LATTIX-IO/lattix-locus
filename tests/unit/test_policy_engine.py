@@ -232,7 +232,7 @@ def test_policy_bundle_hash_is_stable_and_content_addressed() -> None:
     assert compute_policy_bundle_hash([a, b + " "]) != first
 
 
-def test_repo_policy_version_covers_the_seven_policies_and_excludes_tests() -> None:
+def test_repo_policy_version_covers_the_known_policies_and_excludes_tests() -> None:
     policy_dir = Path(pe.__file__).resolve().parents[1] / "policies"
     files = pe.policy_files(policy_dir)
     assert {path.stem for path in files} == KNOWN_POLICIES

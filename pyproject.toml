@@ -16,10 +16,14 @@ dependencies = [
   "PyJWT[crypto]>=2.10.1",
   "biscuit-python==0.4.0",
   "click>=8.1.7",
+  # Computer use (LOCUS-341). Playwright: Microsoft, Apache-2.0. comtypes: MIT
+  # (UI Automation COM on Windows). PyObjC: MIT (macOS Accessibility).
+  "comtypes==1.4.17; sys_platform == 'win32'",
   "fastapi>=0.115.0",
   "httpx>=0.28.0",
   "keyring>=25.0.0",
   "presidio-analyzer>=2.2.355",
+  "pyobjc-framework-ApplicationServices==12.2.2; sys_platform == 'darwin'",
   "hvac>=2.3.0",
   "langgraph>=0.3.0",
   "langgraph-checkpoint-postgres>=2.0.0",
@@ -29,6 +33,7 @@ dependencies = [
   "opentelemetry-sdk>=1.30.0",
   "opa-python-client>=0.2.3",
   "openai>=1.50.0",
+  "playwright==1.63.0",
   "psycopg[binary]>=3.2.0",
   "pydantic>=2.10.0",
   "pydantic-settings>=2.7.0",

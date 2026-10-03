@@ -1,6 +1,6 @@
 """Policy parity suite (LOCUS-328, THREAT-MODEL T9).
 
-Representative inputs for all seven repository policies, evaluated by the real
+Representative inputs for every repository policy, evaluated by the real
 Rego engine through ``PolicyEngine``. Expected outcomes come from the
 ``policies/tests/*.rego`` cases, plus the cases the removed Python rule copy
 (``OPAClient``) used to assert, so nothing that copy promised is silently lost.
@@ -93,6 +93,22 @@ def _eval_container(**overrides: Any) -> dict[str, Any]:
 
 
 # (case id, policy, input, expected allow)
+def _cu(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "action": "ui_click",
+        "surface": "desktop",
+        "control": "click",
+        "app": "notepad.exe",
+        "allowed_apps": ["notepad.exe"],
+        "denied_apps": [],
+        "sensitive_field": False,
+        "url_scheme": "",
+        "egress_host": "",
+    }
+    base.update(overrides)
+    return base
+
+
 ALLOW_CASES: list[tuple[str, str, dict[str, Any], bool]] = [
     # --- agent_policy (policies/tests/agent_policy_test.rego) ---
     ("agent.registered_tool", "agent_policy", _agent(), True),
@@ -467,6 +483,40 @@ ALLOW_CASES: list[tuple[str, str, dict[str, Any], bool]] = [
         _eval_container(allow_network=True, require_egress_mediation=True),
         False,
     ),
+    # --- computer_use (policies/tests/computer_use_test.rego, LOCUS-341) ---
+    ("cu.allow_allowlisted_app", "computer_use", _cu(), True),
+    ("cu.deny_unlisted_app", "computer_use", _cu(allowed_apps=[]), False),
+    (
+        "cu.deny_password_manager",
+        "computer_use",
+        _cu(app="1password.exe", allowed_apps=["1password.exe"]),
+        False,
+    ),
+    ("cu.deny_shell", "computer_use", _cu(app="cmd.exe", allowed_apps=["cmd.exe"]), False),
+    (
+        "cu.deny_secret_field_entry",
+        "computer_use",
+        _cu(action="ui_type", control="type", sensitive_field=True),
+        False,
+    ),
+    (
+        "cu.allow_browser_navigate_https",
+        "computer_use",
+        _cu(
+            action="browser_navigate",
+            surface="browser",
+            control="navigate",
+            url_scheme="https",
+            egress_host="example.com",
+        ),
+        True,
+    ),
+    (
+        "cu.deny_browser_navigate_file",
+        "computer_use",
+        _cu(action="browser_navigate", surface="browser", control="navigate", url_scheme="file"),
+        False,
+    ),
 ]
 
 # Rules the .rego tests assert on directly (``agent_policy.deny``).
@@ -488,7 +538,7 @@ CLASSIFICATION_CASES: list[tuple[str, str]] = [
 ]
 
 
-def test_parity_table_covers_all_seven_policies() -> None:
+def test_parity_table_covers_all_policies() -> None:
     covered = {policy for _, policy, _, _ in ALLOW_CASES} | {"data_classification"}
     assert covered == KNOWN_POLICIES
 
