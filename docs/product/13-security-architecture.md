@@ -88,6 +88,7 @@ Rules:
 ## 7. Secrets
 
 - Stored in the OS keychain (Windows Credential Manager/DPAPI, macOS Keychain). Vault becomes optional, for users who already run one, behind the same secret-broker interface.
+- Native install resolution (`locus_tooling/native_secrets.py`, LOCUS-315): environment → OS keychain (`keyring`, service `lattix-locus`) → platform fallback. Windows falls back to a user-scope DPAPI-encrypted file; macOS has no fallback and fails closed; Linux without a Secret Service fails closed unless the operator sets `LOCUS_SECRETS_ALLOW_FILE=1`, which stores a 0600 plaintext file (accepted security debt LOCUS-317). Plaintext is never written by default. Legacy `<app_home>/.secrets/<NAME>.secret` files are migrated into the protected store, verified and deleted. Posture reports the `secret_storage` control: keychain → enforced, DPAPI file or plaintext opt-in → degraded, env-only → unverified, unavailable → off.
 - Referenced as `secret://area/name`; resolved only inside the gateway at execution time.
 - Never present in engine context, run logs, audit payloads or frames. Output scanning catches accidental echoes (gitleaks-style patterns plus known secret values) and redacts them.
 - Vendor CLI credentials stay in the vendor's own store; Locus never reads them.

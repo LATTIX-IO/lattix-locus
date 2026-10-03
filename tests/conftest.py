@@ -53,3 +53,28 @@ def auth_headers() -> dict[str, str]:
         "Authorization": "Bearer unit-test-bearer",
         "x-locus-actor": "test-admin",
     }
+
+
+class InMemoryKeychain:
+    """Stand-in for a keyring backend: tests never touch the real OS keychain."""
+
+    priority = 5
+
+    def __init__(self) -> None:
+        self.store: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self.store.get((service, username))
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self.store[(service, username)] = password
+
+
+@pytest.fixture(autouse=True)
+def in_memory_keychain(monkeypatch: pytest.MonkeyPatch) -> InMemoryKeychain:
+    from locus_tooling import native_secrets
+
+    keychain = InMemoryKeychain()
+    monkeypatch.setattr(native_secrets, "_keychain_backend", lambda: keychain)
+    monkeypatch.setattr(native_secrets, "_RESOLVED", {})
+    return keychain

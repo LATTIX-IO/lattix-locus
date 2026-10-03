@@ -58,6 +58,7 @@ def _facts(**overrides: object) -> PostureFacts:
         vault_addr_configured=False,
         envoy_authz_filters=False,
         nats_loaded=False,
+        secret_storage_mode="keychain",
     )
     return replace(base, **overrides)  # type: ignore[arg-type]
 
@@ -174,6 +175,54 @@ def test_collect_posture_facts_reads_real_runtime(monkeypatch: pytest.MonkeyPatc
     assert facts.nats_loaded is False
     # The shipped Envoy config has no authz filters.
     assert facts.envoy_authz_filters is False
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected", "evidence"),
+    [
+        ("keychain", "enforced", "OS keychain"),
+        ("dpapi_file", "degraded", "DPAPI-encrypted file"),
+        ("plaintext_file_opt_in", "degraded", "plaintext file (opt-in, LOCUS-317)"),
+        ("env_only", "unverified", "environment"),
+        ("unavailable", "off", "fail closed"),
+        (None, "unverified", "could not be determined"),
+        ("bogus", "unverified", "could not be determined"),
+    ],
+)
+def test_secret_storage_control_follows_storage_mode(
+    mode: str | None, expected: str, evidence: str
+) -> None:
+    controls = {c.id: c for c in evaluate_controls(_facts(secret_storage_mode=mode))}
+    assert controls["secret_storage"].state == expected
+    assert evidence in controls["secret_storage"].evidence
+
+
+def test_collect_posture_facts_reads_secret_storage_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from locus_tooling import native_secrets
+
+    monkeypatch.setattr(native_secrets, "_RESOLVED", {})
+    monkeypatch.setenv(native_secrets.STORAGE_MODE_ENV, "dpapi_file")
+    facts = control_status.collect_posture_facts(
+        auth_required=True,
+        a2a_signed_messages=True,
+        a2a_trusted_subject_count=1,
+        a2a_replay_protection=True,
+        egress_allowlist=True,
+        guardrail_signals_enabled=True,
+        guardrail_signal_enforcement="block_high",
+        presidio_flag=False,
+        presidio_state="not_loaded",
+        audit_durable=False,
+    )
+    assert facts.secret_storage_mode == "dpapi_file"
+    # A launcher "keychain" claim is not trusted without a usable keychain backend.
+    monkeypatch.setenv(native_secrets.STORAGE_MODE_ENV, "keychain")
+    monkeypatch.setattr(native_secrets, "_keychain_backend", lambda: None)
+    assert control_status._detect_secret_storage_mode() == "env_only"
+    monkeypatch.delenv(native_secrets.STORAGE_MODE_ENV)
+    assert control_status._detect_secret_storage_mode() == "env_only"
 
 
 def _patch_sandbox(monkeypatch: pytest.MonkeyPatch, requested: bool, strategy: str) -> None:

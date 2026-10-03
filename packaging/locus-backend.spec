@@ -16,7 +16,7 @@
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
 _ROOT = Path(SPECPATH).resolve().parent  # repo root (packaging/ is one level down)
 _ENTRY = _ROOT / "locus_tooling" / "desktop_main.py"
@@ -50,6 +50,31 @@ for pkg in _DYNAMIC_PKGS:
     except Exception:
         # Optional/absent package — keep going; build warnings will flag gaps.
         hiddenimports += collect_submodules(pkg) if pkg in {"app", "locus_runtime"} else []
+
+# OS keychain for native secrets (LOCUS-315; keyring is MIT). keyring discovers
+# its backends through the "keyring.backends" entry points, so the dist-info
+# metadata must ship too, and every platform backend is imported dynamically.
+hiddenimports += [
+    "keyring.backends.Windows",
+    "keyring.backends.macOS",
+    "keyring.backends.macOS.api",
+    "keyring.backends.SecretService",
+    "keyring.backends.libsecret",
+    "keyring.backends.kwallet",
+    "keyring.backends.chainer",
+    "keyring.backends.fail",
+    "keyring.backends.null",
+    "jaraco.classes",
+    "jaraco.context",
+    "jaraco.functools",
+]
+datas += copy_metadata("keyring")
+# Platform-specific backend dependencies (absent on other OSes — skip quietly).
+for _pkg in ("win32ctypes", "secretstorage", "jeepney"):
+    try:
+        hiddenimports += collect_submodules(_pkg)
+    except Exception:
+        pass
 
 # Ship the seed agents + workflows so they auto-seed (published, with inlined
 # prompts and full graphs) on first launch — no manual import needed. The backend

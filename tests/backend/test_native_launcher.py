@@ -222,16 +222,26 @@ def test_secret_env_first(monkeypatch, tmp_path):
     assert ns.get_secret("MY_TEST_SECRET", app_home=tmp_path) == "from-env"
 
 
-def test_secret_generate_and_persist_file_fallback(monkeypatch, tmp_path):
+def test_secret_generate_and_persist(monkeypatch, tmp_path):
+    # tests/conftest.py swaps in an in-memory keychain; nothing touches the real one.
     monkeypatch.delenv("GEN_SECRET_X", raising=False)
-    # Force the file backend by making keyring unavailable.
-    monkeypatch.setattr(ns, "_keyring_set", lambda name, value: False)
-    monkeypatch.setattr(ns, "_keyring_get", lambda name: None)
     first = ns.ensure_secret("GEN_SECRET_X", app_home=tmp_path)
     assert first
     # Second call returns the SAME persisted value (idempotent).
     second = ns.ensure_secret("GEN_SECRET_X", app_home=tmp_path)
     assert first == second
+    assert not list((tmp_path / ".secrets").glob("*.secret"))
+
+
+def test_plan_exports_secret_storage_mode(monkeypatch, tmp_path):
+    for name in ("LOCUS_API_BEARER_TOKEN", "POSTGRES_PASSWORD", "A2A_JWT_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+    plan = nl.build_native_plan(_config(tmp_path), which=_which_factory(_ALL))
+    assert plan.env[ns.STORAGE_MODE_ENV] == "keychain"
+    # An operator-supplied env secret is weaker evidence: report the weakest.
+    monkeypatch.setenv("A2A_JWT_SECRET", "from-env")
+    plan = nl.build_native_plan(_config(tmp_path / "b"), which=_which_factory(_ALL))
+    assert plan.env[ns.STORAGE_MODE_ENV] == "env_only"
 
 
 # --- B3: multi-process A2A agent subprocesses -------------------------------
