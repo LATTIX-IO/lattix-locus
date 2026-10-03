@@ -53,7 +53,7 @@ def _facts(**overrides: object) -> PostureFacts:
         audit_durable=False,
         sandbox_requested=True,
         sandbox_strategy="kernel-bwrap",
-        rego_engine_loaded=False,
+        policy_engine_available=False,
         biscuit_loaded=False,
         vault_addr_configured=False,
         envoy_authz_filters=False,
@@ -80,7 +80,7 @@ def test_declared_only_controls_never_report_enforced(
 ) -> None:
     states = _states(
         _facts(
-            rego_engine_loaded=rego,
+            policy_engine_available=rego,
             biscuit_loaded=biscuit,
             vault_addr_configured=vault,
             envoy_authz_filters=envoy,
@@ -270,3 +270,23 @@ def test_atf_report_and_health_details_share_the_control_status(
         item["id"]: item["state"] for item in health.json()["control_status"]["controls"]
     }
     assert health_states == atf_states
+
+
+def test_policy_engine_is_unverified_when_available_and_off_otherwise() -> None:
+    # LOCUS-328: the engine exists but no execution-path gateway calls it yet.
+    assert _states(_facts(policy_engine_available=True))["policy_engine_rego"] == "unverified"
+    assert _states(_facts(policy_engine_available=False))["policy_engine_rego"] == "off"
+
+
+def test_policy_engine_availability_is_a_runtime_fact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import locus_runtime.policy_engine as policy_engine
+
+    monkeypatch.setattr(policy_engine, "find_opa_binary", lambda: None)
+    monkeypatch.delenv("LOCUS_OPA_URL", raising=False)
+    assert control_status._policy_engine_available() is False
+    monkeypatch.setenv("LOCUS_OPA_URL", "http://10.0.0.5:8181")
+    assert control_status._policy_engine_available() is False
+    monkeypatch.setenv("LOCUS_OPA_URL", "http://127.0.0.1:8181")
+    assert control_status._policy_engine_available() is True

@@ -75,7 +75,8 @@ class PostureFacts:
     audit_durable: bool
     sandbox_requested: bool | None
     sandbox_strategy: str | None
-    rego_engine_loaded: bool
+    # locus_runtime.policy_engine.policy_engine_available(): an engine can run here.
+    policy_engine_available: bool
     biscuit_loaded: bool
     vault_addr_configured: bool
     envoy_authz_filters: bool | None
@@ -85,20 +86,22 @@ class PostureFacts:
 
 
 def _policy_engine(facts: PostureFacts) -> ControlStatus:
-    if facts.rego_engine_loaded:
+    # Never "enforced" until an execution-path gateway calls the engine and this
+    # check is updated to prove it (P9). The Python copy of the rules is gone.
+    if facts.policy_engine_available:
         return ControlStatus(
             "policy_engine_rego",
             "Policy engine (Rego)",
             "unverified",
-            "A Rego evaluator module is loaded but no request path is proven to call it.",
+            "locus_runtime.policy_engine can evaluate policies/*.rego with OPA "
+            "(loopback sidecar, fail closed), but no execution-path gateway calls it yet.",
         )
     return ControlStatus(
         "policy_engine_rego",
         "Policy engine (Rego)",
         "off",
-        "No Rego evaluator is loaded and the OPA server is never called; "
-        "locus_runtime.security.OPAClient is a hand-written Python copy of the rules "
-        "and is not on the backend request path.",
+        "No Rego engine is available (no OPA binary found and LOCUS_OPA_URL is unset); "
+        "no request path evaluates policies/*.rego.",
     )
 
 
@@ -503,6 +506,15 @@ def _sandbox_executor_requested() -> bool | None:
         return None
 
 
+def _policy_engine_available() -> bool:
+    try:
+        from locus_runtime.policy_engine import policy_engine_available
+
+        return bool(policy_engine_available())
+    except Exception:  # noqa: BLE001 - reported as "off", never as enforced
+        return False
+
+
 def _detect_secret_storage_mode() -> str | None:
     try:
         from locus_tooling.native_secrets import secret_storage_mode
@@ -540,7 +552,7 @@ def collect_posture_facts(
         audit_durable=audit_durable,
         sandbox_requested=_sandbox_executor_requested(),
         sandbox_strategy=_detect_sandbox_strategy(),
-        rego_engine_loaded=_module_loaded("regorus"),
+        policy_engine_available=_policy_engine_available(),
         biscuit_loaded=_module_loaded("biscuit_auth", "biscuit"),
         vault_addr_configured=bool(str(os.getenv("VAULT_ADDR") or "").strip()),
         envoy_authz_filters=_envoy_authz_filters(envoy_config_path),

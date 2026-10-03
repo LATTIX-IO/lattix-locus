@@ -67,6 +67,7 @@ typecheck:      ## Type check
 
 policy-test:    ## Test OPA policies
 	$(OPA_RUNNER) test policies/ -v
+	$(PYTEST) tests/policy -v
 
 helm-validate:  ## Validate Helm chart manifests (requires helm)
 	helm lint ./helm/lattix-locus
