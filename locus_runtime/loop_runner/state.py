@@ -12,6 +12,11 @@ Everything the runner persists lives under ``LOCUS_LOOP_HOME`` (default
   one). Either stops the loop before the next step.
 * ``runs/<run_id>/`` -- checkpoint, trajectory, gateway audit and result per run.
 * ``worktrees/<run_id>/`` -- the isolated git worktree of each run.
+* ``runs.jsonl`` -- one line per finished run (outcome, usage, gate failures, eval);
+  ``lattix loop report`` is built from it (LOCUS-339).
+* ``perf-baseline.json`` / ``perf-history.jsonl`` -- the performance budget gate.
+* ``eval-history.jsonl`` -- eval gate resolve rates.
+* ``failure-patterns.json`` -- failure fingerprints already filed to Linear.
 """
 
 from __future__ import annotations
@@ -55,6 +60,21 @@ def _env_float(name: str, default: float) -> float:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in _TRUE
+
+
+def _env_fraction(name: str, default: float) -> float:
+    try:
+        value = float(str(os.getenv(name) or "").strip() or default)
+    except ValueError:
+        return default
+    return value if 0.0 <= value <= 1.0 else default
 
 
 def _env_list(name: str) -> tuple[str, ...]:
@@ -108,6 +128,22 @@ class LoopConfig:
     #: Replacement commands for detected repo checks, by check id (tests | lint | typecheck),
     #: from ``LOCUS_LOOP_{TEST,LINT,TYPECHECK}_COMMAND``. A check is replaced, never dropped.
     check_commands: tuple[tuple[str, str], ...] = ()
+    # -- LOCUS-339 quality gates and feedback. The dataclass defaults are the
+    # conservative ones (nothing writes outside the loop home); ``load`` turns the
+    # feedback steps on unless the environment turns them off.
+    quality_gates: bool = True
+    perf_gate: bool = True
+    perf_iterations: int = 30
+    gate_python: str = "python"
+    typecheck_roots: tuple[str, ...] = ("locus_runtime", "locus_tooling")
+    typecheck_args: tuple[str, ...] = ()
+    eval_gate: str = "off"  # off | advisory | required
+    eval_threshold: float = 0.30
+    eval_max_steps: int = 20
+    propose_skills: bool = False
+    file_failure_issues: bool = False
+    max_failure_issues_per_day: int = 3
+    failure_issue_min_occurrences: int = 2
 
     @property
     def runs_dir(self) -> Path:
@@ -155,7 +191,27 @@ class LoopConfig:
                 )
                 if str(os.getenv(env) or "").strip()
             ),
+            quality_gates=_env_bool("LOCUS_LOOP_QUALITY_GATES", True),
+            perf_gate=_env_bool("LOCUS_LOOP_PERF_GATE", True),
+            perf_iterations=_env_int("LOCUS_LOOP_PERF_ITERATIONS", 30),
+            gate_python=str(os.getenv("LOCUS_LOOP_GATE_PYTHON") or "").strip() or "python",
+            typecheck_roots=_env_list("LOCUS_LOOP_TYPECHECK_ROOTS")
+            or ("locus_runtime", "locus_tooling"),
+            typecheck_args=tuple(str(os.getenv("LOCUS_LOOP_TYPECHECK_ARGS") or "").split()),
+            eval_gate=_eval_mode(os.getenv("LOCUS_LOOP_EVAL_GATE")),
+            eval_threshold=_env_fraction("LOCUS_LOOP_EVAL_THRESHOLD", 0.30),
+            eval_max_steps=_env_int("LOCUS_LOOP_EVAL_MAX_STEPS", 20),
+            propose_skills=_env_bool("LOCUS_LOOP_PROPOSE_SKILLS", True),
+            file_failure_issues=_env_bool("LOCUS_LOOP_FILE_FAILURE_ISSUES", True),
+            max_failure_issues_per_day=_env_int("LOCUS_LOOP_MAX_FAILURE_ISSUES_PER_DAY", 3),
+            failure_issue_min_occurrences=_env_int("LOCUS_LOOP_FAILURE_ISSUE_MIN_OCCURRENCES", 2),
         )
+
+
+def _eval_mode(value: str | None) -> str:
+    from locus_runtime.loop_runner.eval_gate import parse_eval_mode
+
+    return parse_eval_mode(value, "advisory")
 
 
 # --------------------------------------------------------------------------- #
@@ -312,6 +368,37 @@ class Ledger:
 
     def set_last(self, record: dict[str, Any]) -> None:
         self.data["last_run"] = record
+
+
+# --------------------------------------------------------------------------- #
+# Run history (LOCUS-339)
+# --------------------------------------------------------------------------- #
+RUN_HISTORY_FILE = "runs.jsonl"
+
+
+def append_run_history(home: Path, record: dict[str, Any]) -> None:
+    """Append one finished run to ``runs.jsonl`` (the report's source of truth)."""
+    path = home / RUN_HISTORY_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+
+
+def read_run_history(home: Path, limit: int = 5000) -> list[dict[str, Any]]:
+    """The last ``limit`` finished runs (unreadable lines are skipped)."""
+    try:
+        lines = (home / RUN_HISTORY_FILE).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out: list[dict[str, Any]] = []
+    for line in lines[-limit:]:
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            out.append(item)
+    return out
 
 
 def today_utc(now: datetime | None = None) -> str:

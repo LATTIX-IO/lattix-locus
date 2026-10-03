@@ -16,9 +16,12 @@ One tick (:meth:`LoopRunner.run_once`)::
     pick the highest-priority eligible issue ── none ─▶ idle
     claim (comment marker + In Progress; earliest live claim wins)
     worktree from <remote>/<base> → envelope → gateway session → VerifiedLoop
-    done    ─▶ commit, push, PR with evidence, issue → In Review
+    done    ─▶ pre-PR verifier suite from the diff (LOCUS-339) ── fail ─▶ stopped
+            ─▶ eval gate (optional) ─▶ commit, push, PR with evidence, issue → In Review
+            ─▶ propose a quarantined SKILL.md from the trajectory (P24)
     blocked ─▶ comment + agent:human-review-required, issue → Blocked | Todo
     stopped ─▶ comment, issue → Todo (second failure → agent:human-review-required)
+    blocked/stopped/error ─▶ cluster failures; file one Linear issue per new pattern
 
 Trust boundaries:
 
@@ -31,10 +34,15 @@ Trust boundaries:
   reachable by the agent.
 * The loop never runs unless the gateway is enforcing (a real ``Gateway`` whose
   policy engine is running). It never merges unless the D-22 guard says so.
+* The pre-PR verifier suite runs the agent-authored code, so it runs through a
+  gateway session and the run's executor (the jail), never on the host. Its
+  baseline and history files, the eval history, skill proposals and failure
+  filing are runner-side steps the agent cannot reach.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
@@ -76,6 +84,35 @@ from locus_runtime.harness.verified_loop import (
     read_checkpoint,
 )
 from locus_runtime.harness.workspace import Workspace
+from locus_runtime.loop_runner.eval_gate import (
+    EvalGateResult,
+    EvalHistory,
+    EvalRequest,
+    EvalRunner,
+    default_eval_runner,
+    eval_merge_hold_reason,
+    parse_eval_mode,
+)
+from locus_runtime.loop_runner.feedback import (
+    FailureRegistry,
+    FailureTracker,
+    build_skill_proposal,
+    cluster_failures,
+    failure_issue,
+    failure_marker,
+    plan_failure_issues,
+    propose_skill,
+    tool_counts,
+)
+from locus_runtime.loop_runner.perf_budget import PerfSettings, PerfStore, make_perf_evaluator
+from locus_runtime.loop_runner.quality_gates import (
+    GateReport,
+    GateSettings,
+    gate_executables,
+    parse_command,
+    run_gate_suite,
+    select_gate_checks,
+)
 from locus_runtime.loop_runner.delivery import (
     DeliveryError,
     GitOps,
@@ -101,7 +138,9 @@ from locus_runtime.loop_runner.state import (
     LoopBusy,
     LoopConfig,
     RunLock,
+    append_run_history,
     kill_switch_reason,
+    read_run_history,
     today_utc,
 )
 from locus_runtime.model_client import (
@@ -112,6 +151,7 @@ from locus_runtime.model_client import (
     build_client,
     default_agent_chain,
 )
+from locus_runtime.skills import SkillStore
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +312,8 @@ def pr_body(
     fallbacks: list[FallbackEvent],
     model: str,
     trajectory_ref: str,
+    gate: GateReport | None = None,
+    eval_result: EvalGateResult | None = None,
 ) -> str:
     env = result.envelope
     evidence = result.evidence or {}
@@ -310,6 +352,10 @@ def pr_body(
             lines.append(f"- `{verdict.get('id')}` {status}: {_safe(verdict.get('reason'), 300)}")
     else:
         lines.append("- (no free-text criteria)")
+    lines += ["", "## Quality gates (pre-PR verifier suite, selected from the diff)"]
+    lines += gate.markdown() if gate is not None else ["- disabled (LOCUS_LOOP_QUALITY_GATES=0)"]
+    lines += ["", "## Eval gate (synthetic DeepSWE on the model chain)"]
+    lines += eval_result.markdown() if eval_result is not None else ["- off"]
     lines += [
         "",
         "## Usage",
@@ -354,6 +400,11 @@ class LoopRunner:
     loop_options: dict[str, Any] = field(default_factory=dict)
     sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], datetime] = _now
+    #: LOCUS-339 seams: the eval gate implementation (apps/evals by default), extra
+    #: ``run_eval`` keyword arguments (tests), and the skill store for proposals.
+    eval_runner: EvalRunner = default_eval_runner
+    eval_run_kwargs: dict[str, Any] = field(default_factory=dict)
+    skill_store_factory: Callable[[], SkillStore] = SkillStore
 
     # ------------------------------------------------------------------ tick
     def run_once(self) -> TickResult:
@@ -468,6 +519,7 @@ class LoopRunner:
             "worktree": str(self.config.worktrees_dir / run_id),
             "started_at": _iso(self.clock()),
             "base_sha": "",
+            "team_id": issue.team_id,
         }
         ledger.set_active(record)
         ledger.save()
@@ -586,7 +638,7 @@ class LoopRunner:
                 ledger.set_active(record)
                 ledger.save()
             result, model = self._execute(gateway, lock, issue, record, fallbacks)
-            return self._deliver(ledger, issue, record, result, fallbacks, model)
+            return self._deliver(ledger, gateway, issue, record, result, fallbacks, model)
         except (DeliveryError, LinearError, OSError, ValueError, RuntimeError) as exc:
             return self._fail(ledger, issue, record, exc)
 
@@ -676,6 +728,7 @@ class LoopRunner:
     def _deliver(
         self,
         ledger: Ledger,
+        gateway: Gateway,
         issue: LinearIssue,
         record: dict[str, Any],
         result: RunResult,
@@ -684,6 +737,7 @@ class LoopRunner:
     ) -> TickResult:
         run_id = str(record["run_id"])
         worktree = Path(record["worktree"])
+        record["usage"] = result.usage.to_dict()
         if result.end_state is EndState.DONE:
             if not self.git.has_changes(worktree):
                 return self._blocked(
@@ -694,6 +748,23 @@ class LoopRunner:
                     "the done criteria passed but the run produced no change",
                     "confirm whether the issue is already resolved, then close or re-scope it",
                 )
+            changed = self.git.changed_paths(worktree)
+            gate = self._quality_gate(gateway, record, result.envelope, changed, worktree)
+            if gate is not None and not gate.passed:
+                record["gate_failures"] = gate.failing_ids
+                detail = "pre-PR verifier suite failed: " + gate.summary()
+                if gate.failed:
+                    return self._stopped(ledger, issue, record, "quality_gate", detail)
+                return self._blocked(
+                    ledger,
+                    issue,
+                    record,
+                    "quality_gate",
+                    detail,
+                    "make the gate commands runnable in the run's sandbox (gateway grant or "
+                    "missing tool), then re-queue the issue",
+                )
+            eval_result = self._eval_gate(gateway, issue, record, result.envelope)
             branch = str(record["branch"])
             title = f"{issue.identifier}: {issue.title}"[:120]
             self.git.commit_all(
@@ -707,11 +778,14 @@ class LoopRunner:
                 fallbacks=fallbacks,
                 model=model,
                 trajectory_ref=f"runs/{run_id}/trajectory.jsonl",
+                gate=gate,
+                eval_result=eval_result,
             )
             pr = self._retry(
                 lambda: self.github.open_pr(branch, self.config.base_branch, title, body)
             )
             self._after_pr(ledger, issue, record, pr)
+            self._propose_skill(issue, record, result, changed, gate, pr)
             return TickResult("done", "PR opened", issue.identifier, run_id, pr.url)
         if result.end_state is EndState.BLOCKED and result.blocker is not None:
             b = result.blocker
@@ -745,6 +819,7 @@ class LoopRunner:
                 "issue_id": issue.id,
                 "issue_key": issue.identifier,
                 "opened_at": _iso(self.clock()),
+                "eval_status": (record.get("eval") or {}).get("status"),
             }
         )
         self._finish(ledger, record, "done", pr_url=pr.url)
@@ -773,7 +848,8 @@ class LoopRunner:
             else self.config.todo_state
         )
         self.tracker.transition(issue.id, target)
-        self._finish(ledger, record, "blocked", detail=f"{kind}: {detail}")
+        self._finish(ledger, record, "blocked", detail=f"{kind}: {detail}", kind=kind)
+        self._file_failure_patterns(issue)
         return TickResult("blocked", _safe(detail, 300), issue.identifier, run_id)
 
     def _stopped(
@@ -792,7 +868,9 @@ class LoopRunner:
         if failures >= self.config.max_failures:
             self.tracker.add_label(issue.id, HUMAN_REVIEW_LABEL)
         self.tracker.transition(issue.id, self.config.todo_state)
-        self._finish(ledger, record, "stopped", detail=f"{kind}: {detail}")
+        self._finish(ledger, record, "stopped", detail=f"{kind}: {detail}", kind=kind)
+        if kind != "user":
+            self._file_failure_patterns(issue)
         return TickResult("stopped", _safe(detail, 300), issue.identifier, run_id)
 
     def _fail(
@@ -813,7 +891,8 @@ class LoopRunner:
             self.tracker.transition(issue.id, self.config.todo_state)
         except LinearError:
             logger.exception("loop.report_failure_error", extra={"run_id": run_id})
-        self._finish(ledger, record, "error", detail=detail)
+        self._finish(ledger, record, "error", detail=detail, kind=type(exc).__name__)
+        self._file_failure_patterns(issue)
         return TickResult("error", detail, issue.identifier, run_id)
 
     def _finish(
@@ -824,21 +903,39 @@ class LoopRunner:
         *,
         detail: str = "",
         pr_url: str = "",
+        kind: str = "",
     ) -> None:
         self._save_diff(record)
         self._cleanup_worktree(record)
         ledger.set_active(None)
-        ledger.set_last(
-            {
-                "run_id": record["run_id"],
-                "issue": record["issue_key"],
-                "outcome": outcome,
-                "detail": _safe(detail, 300),
-                "pr_url": pr_url,
-                "finished_at": _iso(self.clock()),
-            }
-        )
+        last = {
+            "run_id": record["run_id"],
+            "issue": record["issue_key"],
+            "outcome": outcome,
+            "detail": _safe(detail, 300),
+            "pr_url": pr_url,
+            "finished_at": _iso(self.clock()),
+        }
+        ledger.set_last(last)
         ledger.save()
+        prefix = f"{kind}: "
+        reason = detail[len(prefix) :] if kind and detail.startswith(prefix) else detail
+        try:
+            append_run_history(
+                self.config.home,
+                {
+                    **last,
+                    "kind": _safe(kind, 40),
+                    "reason": _safe(reason, 300),
+                    "started_at": record.get("started_at", ""),
+                    "team_id": record.get("team_id", ""),
+                    "usage": record.get("usage") or {},
+                    "gate_failures": list(record.get("gate_failures") or []),
+                    "eval": record.get("eval"),
+                },
+            )
+        except OSError:
+            logger.exception("loop.history_write_error", extra={"run_id": record["run_id"]})
 
     def _save_diff(self, record: dict[str, Any]) -> None:
         worktree = Path(record["worktree"])
@@ -918,7 +1015,11 @@ class LoopRunner:
             config_versions=versions,
         )
         issue_id = str(pr.get("issue_id") or "")
-        if decision.merge:
+        reasons_all = list(decision.reasons)
+        eval_hold = eval_merge_hold_reason(self.config.eval_gate, pr.get("eval_status"))
+        if eval_hold:
+            reasons_all.append(eval_hold)
+        if decision.merge and not eval_hold:
             # The head must still be the one evaluated (merge_pr also pins it).
             if self.github.pr_info(number).head_sha != info.head_sha:
                 return {"number": number, "action": "waiting", "detail": "head changed"}
@@ -932,9 +1033,203 @@ class LoopRunner:
             return {"number": number, "action": "merged", "detail": ""}
         ledger.remove_open_pr(number)
         if issue_id:
-            reasons = "\n".join(f"- {_safe(r, 200)}" for r in decision.reasons[:20])
+            reasons = "\n".join(f"- {_safe(r, 200)}" for r in reasons_all[:20])
             self.tracker.add_comment(
                 issue_id,
                 f"{info.url} needs principal review (not auto-merged, D-22):\n\n{reasons}",
             )
-        return {"number": number, "action": "hold", "detail": "; ".join(decision.reasons)[:500]}
+        return {"number": number, "action": "hold", "detail": "; ".join(reasons_all)[:500]}
+
+    # ------------------------------------------------------------------ gates (LOCUS-339)
+    def _gate_settings(self) -> GateSettings:
+        from locus_runtime.policy_engine import find_opa_binary
+
+        return GateSettings(
+            python=self.config.gate_python,
+            opa=find_opa_binary() or "opa",
+            typecheck_roots=self.config.typecheck_roots,
+            typecheck_args=self.config.typecheck_args,
+            perf_enabled=self.config.perf_gate,
+            perf_iterations=self.config.perf_iterations,
+        )
+
+    def _quality_gate(
+        self,
+        gateway: Gateway,
+        record: dict[str, Any],
+        envelope: RunEnvelope,
+        changed: list[str],
+        worktree: Path,
+    ) -> GateReport | None:
+        """Select the suite from the diff and run it in the jail, under its own session."""
+        if not self.config.quality_gates:
+            return None
+        run_id = str(record["run_id"])
+        selection = select_gate_checks(
+            changed,
+            self.git.tracked_files(worktree),
+            settings=self._gate_settings(),
+            overrides={cid: parse_command(cmd) for cid, cmd in self.config.check_commands},
+        )
+        report = GateReport(results=[], skipped=list(selection.skipped))
+        if selection.checks:
+            caps = envelope.gateway_capabilities()
+            # The runner's fixed gate argv may need executables the agent was not given
+            # (npm, opa); this session exists only after the agent's last action.
+            caps = replace(
+                caps,
+                allowed_executables=tuple(
+                    dict.fromkeys((*caps.allowed_executables, *gate_executables(selection)))
+                ),
+            )
+            session = gateway.open_session(
+                run_id=f"{run_id}-gate", principal=PRINCIPAL, engine=ENGINE, capabilities=caps
+            )
+            try:
+                report = run_gate_suite(
+                    self.executor_factory(worktree, session),
+                    selection,
+                    perf_evaluator=make_perf_evaluator(
+                        PerfStore(self.config.home), run_id=run_id, settings=PerfSettings.from_env()
+                    ),
+                    should_stop=lambda: bool(kill_switch_reason(self.config.home)),
+                )
+            finally:
+                session.close()
+        try:
+            (Path(record["run_dir"]) / "quality-gate.json").write_text(
+                json.dumps(
+                    {"selection": selection.to_dict(), "report": report.to_dict()}, indent=2
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            logger.exception("loop.gate_report_write_error", extra={"run_id": run_id})
+        return report
+
+    def _eval_gate(
+        self, gateway: Gateway, issue: LinearIssue, record: dict[str, Any], envelope: RunEnvelope
+    ) -> EvalGateResult | None:
+        """The synthetic DeepSWE run on the model chain (None when the gate is off)."""
+        if parse_eval_mode(self.config.eval_gate, "off") == "off":
+            return None
+        run_id = str(record["run_id"])
+        caps = envelope.gateway_capabilities()
+        caps = replace(caps, allowed_tools=caps.allowed_tools | {MODEL_CALL_TOOL})
+        session = gateway.open_session(
+            run_id=f"{run_id}-eval", principal=PRINCIPAL, engine=ENGINE, capabilities=caps
+        )
+        threshold = self.config.eval_threshold
+        try:
+            request = EvalRequest(
+                client_factory=lambda: self.chat_client_factory(
+                    session, f"{run_id}-eval", lambda _event: None
+                ),
+                output_dir=Path(record["run_dir"]) / "eval",
+                repo_path=self.config.repo_path,
+                threshold=threshold,
+                max_steps=self.config.eval_max_steps,
+                run_kwargs=dict(self.eval_run_kwargs),
+            )
+            try:
+                result = self.eval_runner(request)
+            except Exception as exc:  # noqa: BLE001 - a crashing eval is reported, never a pass
+                logger.exception("loop.eval_gate_error", extra={"run_id": run_id})
+                result = EvalGateResult(
+                    "error", f"the eval gate failed ({type(exc).__name__})", threshold=threshold
+                )
+        finally:
+            session.close()
+        record["eval"] = {
+            "status": result.status,
+            "resolve_rate": result.resolve_rate,
+            "threshold": result.threshold,
+        }
+        try:
+            EvalHistory(self.config.home).append(
+                result, run_id=run_id, issue=issue.identifier, now=self.clock()
+            )
+        except OSError:
+            logger.exception("loop.eval_history_write_error", extra={"run_id": run_id})
+        return result
+
+    # ------------------------------------------------------------------ feedback (LOCUS-339)
+    def _propose_skill(
+        self,
+        issue: LinearIssue,
+        record: dict[str, Any],
+        result: RunResult,
+        changed: list[str],
+        gate: GateReport | None,
+        pr: PullRequestInfo,
+    ) -> None:
+        """A done run's trajectory as a quarantined SKILL.md proposal (never trusted, P24)."""
+        if not self.config.propose_skills:
+            return
+        try:
+            proposal = build_skill_proposal(
+                issue_key=issue.identifier,
+                issue_title=issue.title,
+                run_id=str(record["run_id"]),
+                pr_url=pr.url,
+                plan_steps=list((result.plan or {}).get("steps") or []),
+                tools=tool_counts(result.messages),
+                changed_paths=changed,
+                checks_passed=[r.id for r in gate.results if r.status == "pass"] if gate else [],
+                verification_attempts=len(result.verification),
+            )
+            stored = propose_skill(self.skill_store_factory(), proposal)
+            if stored is not None:
+                logger.info(
+                    "loop.skill_proposed",
+                    extra={
+                        "run_id": record["run_id"],
+                        "skill_id": stored.id,
+                        "state": stored.state,
+                    },
+                )
+        except Exception:  # noqa: BLE001 - feedback is best effort; the PR is already open
+            logger.exception("loop.skill_proposal_error", extra={"run_id": record["run_id"]})
+
+    def _file_failure_patterns(self, issue: LinearIssue) -> None:
+        """At most one Linear issue per new failure pattern (dedupe marker, daily cap)."""
+        if not self.config.file_failure_issues:
+            return
+        tracker = self.tracker
+        if not isinstance(tracker, FailureTracker):
+            return
+        home = self.config.home
+        try:
+            registry = FailureRegistry(home)
+            today = today_utc(self.clock())
+            planned = plan_failure_issues(
+                cluster_failures(read_run_history(home)),
+                known=registry.known,
+                filed_today=registry.filed_on(today),
+                daily_cap=self.config.max_failure_issues_per_day,
+                min_occurrences=self.config.failure_issue_min_occurrences,
+            )
+            for cluster in planned:
+                marker_text = failure_marker(cluster.fingerprint)
+                existing = with_retry(
+                    functools.partial(tracker.find_issue_with_text, marker_text), sleep=self.sleep
+                )
+                if existing:
+                    registry.remember(cluster.fingerprint, issue=existing, day=today, filed=False)
+                    registry.save()
+                    continue
+                team_id = cluster.team_id or issue.team_id
+                if not team_id:
+                    continue
+                title, body = failure_issue(cluster)
+                identifier = tracker.create_issue(
+                    team_id=team_id,
+                    title=title,
+                    description=body,
+                    project_slug=self.config.project_slug,
+                )
+                # Persist each filing at once: a later error must not lead to a re-file.
+                registry.remember(cluster.fingerprint, issue=identifier, day=today, filed=True)
+                registry.save()
+        except Exception:  # noqa: BLE001 - feedback is best effort; the run outcome stands
+            logger.exception("loop.failure_filing_error", extra={"issue": issue.identifier})

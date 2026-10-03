@@ -476,6 +476,20 @@ def loop_status_command() -> None:
     print_json(loop_status())
 
 
+@loop.command("report")
+@click.option("--json", "as_json", is_flag=True, help="Print the report as JSON.")
+@click.option("--days", type=click.IntRange(1, 3650), default=30, help="Window in days.")
+def loop_report_command(as_json: bool, days: int) -> None:
+    """Throughput, success rate, cost, gate failures, eval and perf trends (LOCUS-339)."""
+    from locus_runtime.loop_runner.report import load_report, render_text
+
+    report = load_report(days=days)
+    if as_json:
+        print_json(report)
+    else:
+        click.echo(render_text(report))
+
+
 @loop.command("disable")
 def loop_disable() -> None:
     """Set the file kill switch (the loop stops before its next step)."""

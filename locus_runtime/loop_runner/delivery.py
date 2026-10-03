@@ -119,6 +119,22 @@ class GitOps:
     def has_changes(self, worktree: Path) -> bool:
         return bool(self.run(worktree, "status", "--porcelain").strip())
 
+    def changed_paths(self, worktree: Path) -> list[str]:
+        """Paths the run added, modified or deleted vs ``HEAD`` (stages the change).
+
+        ``--renormalize`` re-applies this host's line-ending rules to every tracked
+        file: git inside the jail may stage files with a different ``core.autocrlf``
+        (no user config there), which would otherwise list every file as changed.
+        """
+        self.run(worktree, "add", "-A")
+        self.run(worktree, "add", "--renormalize", "--", ".")
+        out = self.run(worktree, "diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD")
+        return [p for p in out.split("\0") if p]
+
+    def tracked_files(self, worktree: Path) -> list[str]:
+        """Every file in the index (after :meth:`changed_paths`, includes new files)."""
+        return [p for p in self.run(worktree, "ls-files", "-z").split("\0") if p]
+
     def commit_all(self, worktree: Path, message: str) -> str:
         self.run(worktree, "add", "-A")
         self.run(worktree, "commit", "--quiet", "-m", message)
