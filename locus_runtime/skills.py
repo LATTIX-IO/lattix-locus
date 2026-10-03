@@ -888,7 +888,13 @@ class SkillStore:
     def _skill_dir(self, skill_id: str) -> Path:
         if not _SKILL_ID_RE.fullmatch(str(skill_id or "")):
             raise SkillError("invalid_id", "invalid skill id")
-        return self.root / skill_id
+        # Defence in depth on top of the id allowlist: the directory must resolve
+        # inside the store root.
+        root = os.path.realpath(str(self.root))
+        candidate = os.path.realpath(os.path.join(root, skill_id))
+        if not candidate.startswith(root + os.sep):
+            raise SkillError("invalid_id", "invalid skill id")
+        return Path(candidate)
 
     def _bundle_path(self, skill_id: str, rel: str) -> Path:
         bundle = self._skill_dir(skill_id) / "bundle"

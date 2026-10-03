@@ -405,8 +405,15 @@ class SkillUrlPlan:
     subdir: str = ""
 
 
-_GITHUB_TREE = re.compile(r"^/([^/]+)/([^/]+)/tree/([^/]+)/?(.*)$")
-_GITHUB_BLOB = re.compile(r"^/([^/]+)/([^/]+)/blob/([^/]+)/(.+)$")
+def _github_path_parts(path: str, kind: str) -> tuple[str, str, str, str] | None:
+    """Split ``/<owner>/<repo>/<kind>/<ref>[/<rest>]`` in linear time (no regex)."""
+    segments = path.split("/")
+    if len(segments) < 5 or segments[0] != "" or segments[3] != kind:
+        return None
+    owner, repo, ref = segments[1], segments[2], segments[4]
+    if not owner or not repo or not ref:
+        return None
+    return owner, repo, ref, "/".join(segments[5:])
 
 
 def plan_skill_url(url: str, *, subdir: str = "") -> SkillUrlPlan:
@@ -434,16 +441,16 @@ def plan_skill_url(url: str, *, subdir: str = "") -> SkillUrlPlan:
     host = (parts.hostname or "").lower()
     path = parts.path or ""
     if host == "github.com":
-        tree = _GITHUB_TREE.match(path)
+        tree = _github_path_parts(path, "tree")
         if tree:
-            owner, repo, ref, folder = tree.groups()
+            owner, repo, ref, folder = tree
             selected = "/".join(p for p in (folder.strip("/"), subdir.strip("/")) if p)
             return SkillUrlPlan(
                 "archive", f"https://codeload.github.com/{owner}/{repo}/zip/{ref}", selected
             )
-        blob = _GITHUB_BLOB.match(path)
-        if blob:
-            owner, repo, ref, file_path = blob.groups()
+        blob = _github_path_parts(path, "blob")
+        if blob and blob[3]:
+            owner, repo, ref, file_path = blob
             return SkillUrlPlan(
                 "markdown",
                 f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{file_path}",
