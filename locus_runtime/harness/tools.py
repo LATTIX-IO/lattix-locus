@@ -199,6 +199,8 @@ def tool_schemas(edit_format: str = "search-replace") -> list[dict[str, Any]]:
 
 
 CODING_TOOL_NAMES = {"execute_bash", "search", "str_replace_editor", "run_tests", "submit"}
+#: Skill tools (LOCUS-340); offered only when the toolset has ``skills``.
+SKILL_TOOL_NAMES = frozenset({"use_skill", "run_skill_script"})
 
 
 @dataclass
@@ -221,6 +223,10 @@ class CodingToolset:
     # `view` (no create/str_replace/insert). Used by analyzer agents (security,
     # QA, performance) that read code + run tests/scanners but never mutate it.
     allow_edits: bool = True
+    # Agent Skills (LOCUS-340): ``use_skill`` / ``run_skill_script`` when set
+    # (a :class:`locus_runtime.skills.SkillTools`); the envelope still decides
+    # whether the loop offers them.
+    skills: Any = None
 
     submitted: bool = False
     submission: dict[str, Any] | None = None
@@ -230,7 +236,10 @@ class CodingToolset:
     _failed_submits: int = 0
 
     def schemas(self) -> list[dict[str, Any]]:
-        return tool_schemas(self.edit_format)
+        base = tool_schemas(self.edit_format)
+        if self.skills is not None:
+            base = [*base, *self.skills.schemas()]
+        return base
 
     # -- dispatch -----------------------------------------------------------
     def dispatch(self, name: str, arguments: dict[str, Any]) -> str:
@@ -277,7 +286,17 @@ class CodingToolset:
             return self._editor(arguments)
         if name == "run_tests":
             return self._run_tests(arguments)
+        if self.skills is not None and name in SKILL_TOOL_NAMES:
+            return self._skill_tool(name, arguments)
         return f"[error] unknown tool: {name}"
+
+    def _skill_tool(self, name: str, arguments: dict[str, Any]) -> str:
+        out = str(self.skills.dispatch(name, arguments))
+        if out.startswith("[permission required]"):
+            self.telemetry.gateway_asked += 1
+        elif out.startswith("[denied by policy]"):
+            self.telemetry.gateway_denied += 1
+        return out
 
     # -- individual tools ---------------------------------------------------
     def _bash(self, args: dict[str, Any]) -> str:

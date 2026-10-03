@@ -521,13 +521,14 @@ class VerifiedLoop:
         tools = self._tool_schemas()
         schemas = schema_by_name(tools)
         if not st.started:
+            system_prompt = self._system_prompt_with_skills()
             rec.header(
                 agent_id=self.agent_id,
                 model=getattr(self.client, "model", "unknown"),
                 provider=getattr(self.client, "provider", "unknown"),
                 sampler={"temperature": self.profile.temperature, "top_p": self.profile.top_p},
                 budgets=asdict(self.envelope.budget),
-                system_prompt=self.system_prompt,
+                system_prompt=system_prompt,
                 task={**self.task_meta, "envelope": self.envelope.to_dict()},
                 harness={
                     "version": HARNESS_VERSION,
@@ -537,7 +538,7 @@ class VerifiedLoop:
                 },
             )
             st.messages = [
-                {"role": "system", "content": self.system_prompt},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": self._initial_user_message()},
             ]
             rec.message(st.messages[0], step=0)
@@ -1149,6 +1150,15 @@ class VerifiedLoop:
         allowed = set(self.envelope.capabilities.tools) | {SUBMIT_TOOL}
         base = [t for t in self.toolset.schemas() if t["function"]["name"] in allowed]
         return [*base, *loop_tool_schemas()]
+
+    def _system_prompt_with_skills(self) -> str:
+        """Progressive disclosure (LOCUS-340): when the envelope offers ``use_skill``,
+        append only the names + descriptions of the few relevant trusted skills."""
+        skills = getattr(self.toolset, "skills", None)
+        if skills is None or "use_skill" not in self.envelope.capabilities.tools:
+            return self.system_prompt
+        block = skills.discovery_block(f"{self.envelope.goal}\n{self.user_prompt}")
+        return f"{self.system_prompt.rstrip()}\n\n{block}" if block else self.system_prompt
 
     def _initial_user_message(self) -> str:
         env = self.envelope

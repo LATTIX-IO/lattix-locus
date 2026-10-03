@@ -47,3 +47,11 @@ def permissive_gateway():
 
     with installed(AllowAllAuthorizer()) as authorizer:
         yield authorizer
+
+
+@pytest.fixture(autouse=True)
+def isolated_skill_store(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """Imported skill folders (LOCUS-340) land in a per-test store, never the app home."""
+    skills_dir = tmp_path / "skills"
+    monkeypatch.setenv("LOCUS_SKILLS_DIR", str(skills_dir))
+    return skills_dir
