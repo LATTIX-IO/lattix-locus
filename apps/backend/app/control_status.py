@@ -96,6 +96,9 @@ class PostureFacts:
     # gateway-bound model gate, so every ModelClient authorizes a ``model_call``
     # (engine, egress host, data ceiling, budget) before each request -- LOCUS-336.
     model_gate_installed: bool = False
+    # locus_runtime.loop_runner.loop_status(): the self-improvement loop's kill-switch
+    # state and last run (LOCUS-338). Operational status, not a security control.
+    self_improvement_loop: Mapping[str, Any] | None = None
 
 
 def _policy_engine(facts: PostureFacts) -> ControlStatus:
@@ -501,6 +504,40 @@ def _sandbox(facts: PostureFacts) -> ControlStatus:
     )
 
 
+def _self_improvement_loop(facts: PostureFacts) -> ControlStatus:
+    # Operational status only: an enabled loop is never reported as "enforced". Its
+    # safety rests on the gateway, the sandbox and the D-22 merge guard reported above.
+    status = facts.self_improvement_loop
+    label = "Self-improvement loop"
+    if not status:
+        return ControlStatus(
+            "self_improvement_loop", label, "off", "Loop status is unavailable in this process."
+        )
+    last = status.get("last_run") or {}
+    last_text = (
+        f"last run {last.get('run_id')} on {last.get('issue')}: {last.get('outcome')} "
+        f"at {last.get('finished_at')}"
+        if isinstance(last, Mapping) and last.get("run_id")
+        else "no run recorded yet"
+    )
+    if not status.get("enabled"):
+        return ControlStatus(
+            "self_improvement_loop",
+            label,
+            "off",
+            f"Disabled ({status.get('disabled_reason') or 'kill switch'}); {last_text}.",
+        )
+    return ControlStatus(
+        "self_improvement_loop",
+        label,
+        "unverified",
+        "Enabled (operational status, not a security control): it runs only while the "
+        "gateway is enforcing and auto-merges only per D-22; "
+        f"{status.get('runs_today', 0)}/{status.get('max_runs_per_day', '?')} runs today; "
+        f"{last_text}.",
+    )
+
+
 _CONTROL_BUILDERS = (
     _authentication,
     _a2a_signing,
@@ -517,6 +554,7 @@ _CONTROL_BUILDERS = (
     _vault,
     _envoy,
     _nats,
+    _self_improvement_loop,
 )
 
 
@@ -626,6 +664,15 @@ def _model_gate_installed() -> bool:
         return False
 
 
+def _self_improvement_loop_status() -> Mapping[str, Any] | None:
+    try:
+        from locus_runtime.loop_runner import loop_status
+
+        return loop_status()
+    except Exception:  # noqa: BLE001 - reported as "off"
+        return None
+
+
 def _detect_secret_storage_mode() -> str | None:
     try:
         from locus_tooling.native_secrets import secret_storage_mode
@@ -672,4 +719,5 @@ def collect_posture_facts(
         gateway_enforcing=_gateway_enforcing(),
         grants_enforcing=_grants_enforcing(),
         model_gate_installed=_model_gate_installed(),
+        self_improvement_loop=_self_improvement_loop_status(),
     )

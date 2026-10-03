@@ -1,5 +1,7 @@
 # OpenAI Symphony with OmniRoute
 
+> **Locus now has a native runner.** `lattix loop run --once` / `lattix loop serve` does the same Linear → workspace → agent → PR loop inside Locus, behind the policy gateway, with the verified run loop, the NIM → Ollama model chain and the D-22 auto-merge guard. See [self-improvement-loop.md](self-improvement-loop.md). Symphony remains available for the Codex lane described below; do not run both against the same project at once.
+
 This repository runs OpenAI Symphony against the Linear **Locus** project (`3b160e533200`). Symphony polls eligible `FRONT-*` issues, creates isolated workspaces, and starts Codex app-server through the checked-in `WORKFLOW.md` contract.
 
 Native Codex and OmniRoute are intentionally separate inference lanes. The OmniRoute lane uses the existing local Responses-compatible endpoint at `http://127.0.0.1:20128/v1`; it does not expose the dashboard key to repository files or child prompts.
