@@ -102,6 +102,11 @@ jobs:
         run: make typecheck
       - name: Policy tests
         run: python scripts/run_opa.py test policies/ -v
+      - name: Policy engine parity and latency (real OPA sidecar)
+        env:
+          # Fail, never skip, if the OPA binary is missing (LOCUS-328).
+          LOCUS_REQUIRE_OPA: "1"
+        run: pytest tests/policy -v
       - name: Helm validation
         run: |
           helm lint ./helm/lattix-locus

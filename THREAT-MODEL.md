@@ -220,7 +220,7 @@ Use severity: Critical, High, Medium, Low.
 | T6 | A2A replay protection: TTL-based nonce expiry with bounded pruning; signed `X-Locus-Subject`/`Nonce`/`Signature` headers verified at receiver | **Implemented** | `apps/backend/app/a2a_replay.py`, worker A2A client in `apps/workers/` |
 | T7 | Capability tokens carry `exp` (10-min TTL), `allowed_tools`, `max_tool_calls`, canonical read/write path scopes; shared verifier enforces all claims | **Implemented** | `locus_runtime/capability_tokens.py`, filter-chain enforcement |
 | T8 | Memory reads/writes enforce actor, tenant, collaboration-session, or internal-service authorization per scope; scope-to-bucket validation | **Implemented** | `apps/backend/app/memory.py`, worker runtime envelope auth middleware |
-| T9 | Normalized evaluation contract shared by Python fallback and Rego; parity tests for path access, dynamic tool allowlists, tool budgets | **Implemented** | `policies/agent.rego`, `locus_runtime/policy_fallback.py`, `tests/unit/test_*_parity.py` |
+| T9 | Python copy of the rules removed (LOCUS-328); `policies/*.rego` evaluated only by a real Rego engine behind `PolicyEngine` (OPA loopback sidecar, fail closed); parity suite over all 7 policies. Not yet on an execution-path gateway (posture: unverified) | **Partial** | `locus_runtime/policy_engine.py`, `tests/policy/test_policy_parity.py`, `tests/unit/test_policy_engine.py` |
 | T10 | Central route classification marks /healthz public (minimal), diagnostics authenticated; secure local mode serves minimal public healthz | **Implemented** | `apps/backend/app/request_security.py` access classes |
 | T11 | CORS uses explicit local origins/methods/headers instead of wildcards; localhost-only in local profiles | **Implemented** | `apps/backend/app/main.py` CORS middleware config |
 | T12 | Gitleaks secret scanning in CI; Semgrep SAST; Trivy SCA for vuln/misconfig; SBOM via Syft; pinned dependencies in `pyproject.toml`/`package-lock.json` | **Implemented** | `.github/workflows/security-lifecycle.yml`, `precommit.ps1` |
@@ -242,7 +242,7 @@ The following tests provide regression coverage for the threats and mitigations 
 | A2A replay protection & nonce expiry | \	ests/unit/test_event_signing.py\, \pps/backend/tests/test_a2a_replay.py\ | T6 | Every PR |
 | Capability token verification (TTL, tools, budgets, scopes) | \	ests/unit/test_biscuit_tokens.py\, \	ests/unit/test_tool_jail.py\ | T7, T14 | Every PR |
 | Memory scope authorization (actor, tenant, collaboration, internal) | \pps/backend/tests/test_memory_scope.py\ | T8 | Every PR |
-| Policy parity (Rego vs Python fallback) | \policies/tests/agent_test.rego\, \	ests/unit/test_policy_parity.py\ | T9 | Every PR |
+| Policy parity (PolicyEngine vs expected Rego decisions) | `policies/tests/*.rego`, `tests/policy/test_policy_parity.py` (CI: quality-policy-helm, real OPA) | T9 | Every PR |
 | Health/diagnostic endpoint visibility | \pps/backend/tests/test_endpoint_visibility.py\ | T10 | Every PR |
 | CORS configuration | \pps/backend/tests/test_cors.py\ | T11 | Every PR |
 | Secret scanning (Gitleaks), SAST (Semgrep), SCA (Trivy) | CI-only: \.github/workflows/security-lifecycle.yml\ | T12 | Every PR + scheduled |
@@ -572,7 +572,7 @@ Implemented:
 
 - Python fallback policy and `policies/agent_policy.rego` now both honor explicit per-request `allowed_tools`
 - Python fallback policy and Rego policy now both enforce `max_tool_calls` budgets
-- shared policy evaluation now flows through a normalized `PolicyEvaluationRequest` / `PolicyDecision` contract
+- policy evaluation now flows through `locus_runtime.policy_engine.PolicyEngine` (Rego via OPA sidecar); the `PolicyEvaluationRequest` / `OPAClient` Python rule copy was removed (LOCUS-328)
 - capability verification now enforces canonical read/write path scopes and tool-call budgets rather than only tool-name membership
 - guardrail filter-chain enforcement now evaluates richer capability claims before targeted runtime actions proceed
 - regression coverage now exercises dynamic allowlists, capability budgets, canonical path containment, and structured policy decisions
