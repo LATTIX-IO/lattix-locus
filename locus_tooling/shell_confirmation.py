@@ -25,18 +25,35 @@ Proof
 -----
 The shell sends ``X-Locus-Shell-Proof: v1:<unix ts>:<nonce hex>:<hmac hex>``
 where the HMAC-SHA256 (keyed by the secret) covers a canonical message bound
-to the exact request (:func:`tier_message`, :func:`pairing_message`). Proofs
-expire after :data:`MAX_SKEW_S` seconds and each nonce is accepted once.
+to the exact request. Proofs expire after :data:`MAX_SKEW_S` seconds and each
+nonce is accepted once, across every message format.
 
-The webview UI never sees the secret: it asks the shell (Tauri command
-``confirm_browser_tier`` / ``confirm_browser_pairing``), the shell shows the
-dialog and, only on the human's confirm, signs and sends the request itself.
+Message formats:
+
+* generic (LOCUS-357), for every capability-widening route classified in
+  ``apps/backend/app/request_security.py``::
+
+      locus-shell-proof/v1|<action id>|<request digest>|<nonce>|<ts>
+
+  where the digest is SHA-256 (hex) over ``METHOD + "\\n" + PATH + "\\n" +
+  CANONICAL_BODY`` (:func:`request_digest`): the canonical body is the JSON body with sorted
+  keys, compact separators and non-ASCII characters kept as they are, or the
+  empty string for an empty body (:func:`canonical_body`). Non-integer numbers
+  are refused, so both sides serialise every accepted body identically;
+* browser tier and pairing (LOCUS-350): :func:`tier_message`,
+  :func:`pairing_message`.
+
+The webview UI never sees the secret: it asks the shell (Tauri commands
+``confirm_action``, ``confirm_browser_tier``, ``confirm_browser_pairing``), the
+shell shows the dialog and, only on the human's confirm, signs and sends the
+request itself.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import re
 import sys
@@ -44,7 +61,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
-from typing import IO
+from typing import IO, Any
 
 SHELL_CONFIRMATION_ENV = "LOCUS_SHELL_CONFIRMATION"
 SECRET_LINE_PREFIX = "locus-shell-secret:v1:"
@@ -56,6 +73,11 @@ READ_TIMEOUT_S = 10.0
 _MAX_NONCES = 4096
 _NONCE = re.compile(r"^[0-9a-f]{32,128}$")
 _MAC = re.compile(r"^[0-9a-f]{64}$")
+_ACTION_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,99}$")
+_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+#: Largest request body a generic proof may cover (the shell refuses larger).
+MAX_PROVEN_BODY_BYTES = 256 * 1024
 # Characters a list item may not contain (they delimit the canonical message).
 _FORBIDDEN_ITEM = re.compile(r"[|,~\r\n\x00-\x1f]")
 
@@ -211,6 +233,62 @@ def pairing_message(*, nonce: str, timestamp: int) -> str:
     return "|".join((MESSAGE_PREFIX, "browser-pair", nonce, str(int(timestamp))))
 
 
+def _reject_floats(value: Any) -> None:
+    if isinstance(value, float):
+        raise ShellProofError("unsupported_body")
+    if isinstance(value, dict):
+        for item in value.values():
+            _reject_floats(item)
+    elif isinstance(value, list):
+        for item in value:
+            _reject_floats(item)
+
+
+def canonical_body(body: bytes | str | None) -> str:
+    """The canonical JSON text of a request body (the empty string for none).
+
+    Sorted keys, ``,``/``:`` separators, non-ASCII kept as is (the Tauri shell
+    builds the same text with an explicit key sort). Invalid JSON, non-integer
+    numbers, NaN and lone surrogates are refused (``unsupported_body``).
+    """
+    raw = body.encode("utf-8") if isinstance(body, str) else bytes(body or b"")
+    if len(raw) > MAX_PROVEN_BODY_BYTES:
+        raise ShellProofError("unsupported_body")
+    if not raw.strip():
+        return ""
+    try:
+        value = json.loads(raw.decode("utf-8"))
+        _reject_floats(value)
+        text = json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        )
+        text.encode("utf-8")
+    except (UnicodeError, ValueError, RecursionError) as exc:
+        raise ShellProofError("unsupported_body") from exc
+    return text
+
+
+def request_digest(method: str, path: str, body: bytes | str | None) -> str:
+    """SHA-256 (hex) of ``METHOD + "\\n" + PATH + "\\n" + CANONICAL_BODY``.
+
+    ``path`` is the request path, plus ``?<query>`` when the request has one
+    (the shell never sends a query, so a proof never covers one).
+    """
+    verb = str(method or "").upper()
+    target = str(path or "")
+    if verb not in _METHODS or not target.startswith("/") or _CONTROL.search(target):
+        raise ShellProofError("unsupported_request")
+    material = "\n".join((verb, target, canonical_body(body)))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def action_message(*, action: str, digest: str, nonce: str, timestamp: int) -> str:
+    """The generic, request-bound message (LOCUS-357)."""
+    if not _ACTION_ID.fullmatch(str(action)) or not _MAC.fullmatch(str(digest)):
+        raise ShellProofError("unsupported_request")
+    return "|".join((MESSAGE_PREFIX, str(action), str(digest), nonce, str(int(timestamp))))
+
+
 def sign(secret: bytes, message: str) -> str:
     return hmac.new(secret, message.encode("utf-8"), hashlib.sha256).hexdigest()
 
@@ -261,20 +339,48 @@ def verify(
             _SEEN.popitem(last=False)
 
 
+def verify_request(
+    header: str | None,
+    *,
+    action: str,
+    method: str,
+    path: str,
+    body: bytes | str | None,
+    now: float | None = None,
+) -> None:
+    """Verify a generic proof for this exact request (method, path, body) and
+    action; consume its nonce. Raises :class:`ShellProofError`."""
+    with _LOCK:
+        installed = _BOX._value is not None  # noqa: SLF001
+    if not installed:
+        raise ShellProofError("no_shell")
+    digest = request_digest(method, path, body)
+    verify(
+        header,
+        lambda nonce, ts: action_message(action=action, digest=digest, nonce=nonce, timestamp=ts),
+        now=now,
+    )
+
+
 __all__ = [
+    "MAX_PROVEN_BODY_BYTES",
     "MAX_SKEW_S",
     "PROOF_HEADER",
     "SECRET_LINE_PREFIX",
     "SHELL_CONFIRMATION_ENV",
     "ShellProofError",
+    "action_message",
+    "canonical_body",
     "install_secret",
     "pairing_message",
     "parse_proof",
     "parse_secret_line",
     "proof_header",
     "receive_from_stdin",
+    "request_digest",
     "secret_installed",
     "sign",
     "tier_message",
     "verify",
+    "verify_request",
 ]

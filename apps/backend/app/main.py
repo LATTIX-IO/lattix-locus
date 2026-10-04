@@ -52,6 +52,7 @@ try:  # optional — YAML export/import; JSON always works without it
 except Exception:  # noqa: BLE001
     _yaml = None
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from app import capability_widening
 from app import cron as app_cron
 from app import knowledge as app_knowledge
 from app import local_models, mcp_client, policy_gateway, skills_catalog
@@ -116,10 +117,15 @@ except Exception:  # pragma: no cover - optional dependency in some local test p
     Fernet = None
     InvalidToken = Exception
 from app.request_security import (
+    CapabilityEffect,
     RouteAccessCategory,
     RouteAccessRule,
+    ShellProofFormat,
+    ShellProofRule,
     classify_route_access,
+    classify_shell_proof,
     validate_route_inventory,
+    validate_shell_proof_inventory,
 )
 from locus_runtime.assembly_runner import (
     AssemblyRunner,
@@ -14112,7 +14118,77 @@ async def enforce_route_access_policy(request: Request, call_next: Any) -> Any:
             return apply_security_headers(
                 JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
             )
+    proof_rule = classify_shell_proof(request.method, request.url.path)
+    if proof_rule is not None and await _shell_proof_due_before_handler(request, proof_rule):
+        try:
+            _require_shell_proof(request, action=proof_rule.action)
+        except HTTPException as exc:
+            return apply_security_headers(
+                JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+            )
     return await call_next(request)
+
+
+# --- Desktop shell proof for capability-widening requests (LOCUS-357) ---------
+# On the desktop profile every loopback request is the operator (local-operator
+# bootstrap), so a widening request also needs the Tauri shell's out-of-band
+# proof: the human confirmed it in a native dialog and the shell signed this
+# exact request. ``request_security.shell_proof_rules()`` classifies every
+# mutating route; this middleware enforces ``widening`` routes and body-decided
+# ``conditional`` ones, and handlers call ``_require_shell_proof`` for
+# state-decided ones right before they commit. Narrowing never needs a proof;
+# other profiles are unchanged.
+def _shell_proof_profile_active() -> bool:
+    return app_user_browser.shell_proof_required(_active_runtime_profile().name)
+
+
+async def _shell_proof_due_before_handler(request: Request, rule: ShellProofRule) -> bool:
+    if rule.proof != ShellProofFormat.REQUEST or not _shell_proof_profile_active():
+        return False
+    if rule.effect == CapabilityEffect.WIDENING:
+        return True
+    predicate = capability_widening.BODY_PREDICATES.get(rule.predicate)
+    if rule.effect != CapabilityEffect.CONDITIONAL or predicate is None:
+        return False  # narrowing, neutral, or decided by the handler
+    raw_body = getattr(request.state, "locus_raw_body", None)
+    if not isinstance(raw_body, bytes):
+        raw_body = await request.body()
+        request.state.locus_raw_body = raw_body
+    try:
+        body = json.loads(raw_body.decode("utf-8")) if raw_body.strip() else {}
+    except (UnicodeDecodeError, ValueError):
+        body = {}
+    return predicate(body if isinstance(body, dict) else {})
+
+
+def _require_shell_proof(request: Request, *, action: str, actor: str | None = None) -> None:
+    """Refuse (403, audited) unless the request carries the desktop shell's proof
+    for ``action`` over this exact method, path and body. No-op off the desktop."""
+    if not _shell_proof_profile_active():
+        return
+    from locus_tooling.shell_confirmation import PROOF_HEADER, ShellProofError, verify_request
+
+    raw_body = getattr(request.state, "locus_raw_body", None)
+    query = request.url.query
+    try:
+        verify_request(
+            request.headers.get(PROOF_HEADER),
+            action=action,
+            method=request.method,
+            path=request.url.path + (f"?{query}" if query else ""),
+            body=raw_body if isinstance(raw_body, bytes) else b"",
+        )
+    except ShellProofError as exc:
+        _append_audit_event(
+            action,
+            actor or _extract_actor_from_request(request),
+            "blocked",
+            {"reason": exc.code, "shell_proof": "required"},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=f"Confirm this change in the Locus desktop app ({exc.code})",
+        ) from exc
 
 
 def _now_iso() -> str:
@@ -16957,6 +17033,7 @@ def _startup_initialize_state() -> None:
     _ensure_definition_history_seeded()
     _validate_runtime_security_configuration()
     validate_route_inventory(app)
+    validate_shell_proof_inventory(app)
 
     # Pre-warm the (lazy) Presidio analyzer off the request path: first-call
     # engine construction can take minutes and must never block a run create.
@@ -20698,9 +20775,13 @@ def save_user_skills(payload: UserSkillsPayload, request: Request) -> dict[str, 
     actor = _enforce_request_authn(request, action="skills.user.write")
     principal = _resolve_auth_context_principal(request, actor)
     current = _user_skills(principal["principal_id"])
+    skills = _validated_skill_paths(payload.skills, field_name="skills")
+    # Adding a skill installs it for the principal's agents (LOCUS-357).
+    if capability_widening.user_skills_widening(current.skills if current else [], skills):
+        _require_shell_proof(request, action="skills.user.write", actor=actor)
     now = _now_iso()
     stored = StoredUserSkills(
-        skills=_validated_skill_paths(payload.skills, field_name="skills"),
+        skills=skills,
         created_at=current.created_at if current else now,
         updated_at=now,
     )
@@ -21047,6 +21128,10 @@ def save_user_settings(
 ) -> dict[str, Any]:
     actor = _enforce_request_authn(request, payload=payload, action="user.settings.save")
     normalized = _normalize_user_settings(payload)
+    # Only a higher default chat mode widens; the other fields are UI defaults
+    # (each run states its own workspace and model) (LOCUS-357).
+    if capability_widening.user_settings_widening(_user_settings_for(actor), normalized):
+        _require_shell_proof(request, action="user.settings.save", actor=actor)
     store.user_settings[str(actor)] = normalized
     _persist_store_state()
     _append_audit_event("user.settings.save", actor, "allowed")
@@ -21857,6 +21942,13 @@ def save_platform_settings(
     _validate_platform_settings_update(
         current_settings, candidate_settings, payload=payload, actor=actor
     )
+    # Widening (allowlists grow, approvals or guardrails off, limits raised,
+    # runtime / endpoint / key changes) needs the desktop shell's proof; a
+    # narrowing save does not (LOCUS-357).
+    if capability_widening.is_widening(
+        current, candidate_settings.model_dump()
+    ) or capability_widening.provider_key_writes_widen(key_writes, _PROVIDER_CLEAR_SENTINEL):
+        _require_shell_proof(request, action="platform.settings.save", actor=actor)
     for provider_id, key_value in key_writes.items():
         _store_provider_key(provider_id, key_value, actor=actor)
     store.platform_settings = candidate_settings

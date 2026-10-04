@@ -1102,11 +1102,490 @@ def validate_route_inventory(app: FastAPI) -> None:
         raise RuntimeError(f"Unclassified backend routes detected: {formatted}")
 
 
+# --------------------------------------------------------------------------- #
+# Capability effect of every mutating route (LOCUS-357)
+# --------------------------------------------------------------------------- #
+# On the desktop profile (``local-native``) the local-operator bootstrap
+# authenticates every loopback request as the operator, so an un-jailed local
+# process could otherwise widen what the agents may do. Every mutating route is
+# classified here; widening needs the Tauri shell's out-of-band confirmation
+# proof (``X-Locus-Shell-Proof``, ``locus_tooling/shell_confirmation.py``):
+#
+# * ``widening``    -- always needs the proof on the desktop;
+# * ``conditional`` -- needs it when the named predicate says the change widens
+#                      (``app/capability_widening.py``): body predicates are
+#                      decided before the handler, state predicates by the
+#                      handler right before it commits;
+# * ``narrowing`` / ``neutral`` -- never need it (deny, revoke, panic, disable,
+#                      remove; builder content whose effect is bounded by the
+#                      proof-protected settings, gateway policy and grants).
+#
+# ``title`` and ``risk`` are what the shell's native dialog shows; the Rust
+# table in ``apps/desktop-tauri/src-tauri/src/shell_actions.rs`` mirrors them
+# byte for byte (``tests/backend/test_desktop_packaging.py``). ``current`` is a
+# GET path the shell reads to show what changes. Startup refuses a mutating
+# route missing from this table (``validate_shell_proof_inventory``).
+class CapabilityEffect(str, Enum):
+    WIDENING = "widening"
+    NARROWING = "narrowing"
+    CONDITIONAL = "conditional"
+    NEUTRAL = "neutral"
+
+
+class ShellProofFormat(str, Enum):
+    #: Generic request-bound proof, verified centrally (LOCUS-357).
+    REQUEST = "request"
+    #: LOCUS-350 formats, verified by the user-browser handlers.
+    BROWSER_TIER = "browser-tier"
+    BROWSER_PAIR = "browser-pair"
+
+
+@dataclass(frozen=True)
+class ShellProofRule:
+    method: str
+    path_template: str
+    effect: CapabilityEffect
+    action: str = ""
+    predicate: str = ""
+    title: str = ""
+    risk: str = ""
+    current: str = ""
+    proof: ShellProofFormat = ShellProofFormat.REQUEST
+
+    @property
+    def may_need_proof(self) -> bool:
+        return self.effect in {CapabilityEffect.WIDENING, CapabilityEffect.CONDITIONAL}
+
+
+def _neutral(method: str, path: str) -> ShellProofRule:
+    return ShellProofRule(method, path, CapabilityEffect.NEUTRAL)
+
+
+def _narrowing(method: str, path: str) -> ShellProofRule:
+    return ShellProofRule(method, path, CapabilityEffect.NARROWING)
+
+
+def _widening(
+    method: str,
+    path: str,
+    action: str,
+    title: str = "",
+    risk: str = "",
+    *,
+    current: str = "",
+    proof: ShellProofFormat = ShellProofFormat.REQUEST,
+) -> ShellProofRule:
+    return ShellProofRule(
+        method, path, CapabilityEffect.WIDENING, action, "", title, risk, current, proof
+    )
+
+
+def _conditional(
+    method: str,
+    path: str,
+    action: str,
+    predicate: str,
+    title: str = "",
+    risk: str = "",
+    *,
+    current: str = "",
+    proof: ShellProofFormat = ShellProofFormat.REQUEST,
+) -> ShellProofRule:
+    return ShellProofRule(
+        method, path, CapabilityEffect.CONDITIONAL, action, predicate, title, risk, current, proof
+    )
+
+
+_RISK_PROVIDER_KEY = "Agents may send your prompts and data to this model provider using this key."
+_RISK_GUARDRAIL_CHANGE = (
+    "Changes the guardrails the agents run under. The rules that become active "
+    "may be weaker than the current ones."
+)
+_RISK_GUARDRAIL_REMOVE = (
+    "Removes this ruleset from the active guardrails. Workflows that use it lose its rules."
+)
+_RISK_SCHEDULE = "The workflow will start on its own on this schedule, without you."
+
+_SHELL_PROOF_RULES: tuple[ShellProofRule, ...] = (
+    # --- auth / system -------------------------------------------------------
+    _neutral("POST", "/auth/login"),
+    _neutral("POST", "/auth/register"),
+    _narrowing("POST", "/auth/logout"),
+    _neutral("POST", "/system/update/prepare"),  # signed update bundles only
+    _neutral("POST", "/system/update/cancel"),
+    _narrowing("POST", "/system/shutdown"),
+    # --- builder content (bounded by settings, gateway policy and grants) ----
+    _neutral("POST", "/agent-definitions/import"),
+    _neutral("POST", "/workflow-definitions/import"),
+    _neutral("POST", "/playbooks/import"),
+    _neutral("POST", "/bundle/import"),
+    # --- skills ---------------------------------------------------------------
+    _conditional(
+        "PUT",
+        "/skills/user",
+        "skills.user.write",
+        "user_skills_widening",
+        "Add skills to your agents",
+        "The added skills will be loaded into your agents.",
+        current="/skills/user",
+    ),
+    _conditional(
+        "POST",
+        "/skills",
+        "skill.save",
+        "skill_save_enables",
+        "Enable or change a skill",
+        "The instructions of this skill will be given to the agents.",
+    ),
+    _neutral("POST", "/skills/{skill_id}/eval"),
+    _widening(
+        "POST",
+        "/skills/{skill_id}/promote",
+        "skill.promote",
+        "Trust and promote a skill",
+        "Signs the skill as trusted and raises its tier. Its scripts may then run.",
+    ),
+    _widening(
+        "POST",
+        "/skills/import",
+        "skill.import",
+        "Install a skill",
+        "Fetches the skill and installs it in quarantine. It cannot run until it is "
+        "scanned and promoted.",
+    ),
+    _neutral("POST", "/skills/{skill_id}/scan"),
+    _neutral("POST", "/skills/{skill_id}/test"),
+    _narrowing("DELETE", "/skills/{skill_id}"),
+    _narrowing("POST", "/skills/{skill_id}/revoke"),
+    # --- model providers ------------------------------------------------------
+    _widening(
+        "PUT",
+        "/runtime/user-providers/{provider}",
+        "runtime.user_providers.write",
+        "Set a model provider key",
+        _RISK_PROVIDER_KEY,
+    ),
+    _narrowing("DELETE", "/runtime/user-providers/{provider}"),
+    _widening(
+        "PUT",
+        "/models/providers/{provider_id}/key",
+        "models.provider.key.set",
+        "Set a model provider key",
+        _RISK_PROVIDER_KEY,
+    ),
+    _narrowing("DELETE", "/models/providers/{provider_id}/key"),
+    _neutral("POST", "/models/local/pull"),
+    _narrowing("DELETE", "/models/local/{model_id}"),
+    # --- settings -------------------------------------------------------------
+    _conditional(
+        "PUT",
+        "/user/settings",
+        "user.settings.save",
+        "user_settings_widening",
+        "Change your default chat mode",
+        "New chats will start in a mode that lets the agent do more, without you switching modes.",
+        current="/user/settings",
+    ),
+    _conditional(
+        "POST",
+        "/platform/settings",
+        "platform.settings.save",
+        "platform_settings_widening",
+        "Loosen platform settings",
+        "These changes loosen platform security for every agent: allowlists, "
+        "approvals, limits, guardrail enforcement, runtimes or model providers.",
+        current="/platform/settings",
+    ),
+    # --- approvals and grants -------------------------------------------------
+    _widening(
+        "POST",
+        "/workflow-runs/{run_id}/escalations/{escalation_id}/approve",
+        "workflow.run.escalations.approve",
+        "Approve an agent request",
+        "The agent may perform this action. A run or standing scope also mints a "
+        "grant, so matching actions stop asking.",
+        current="/workflow-runs/{run_id}/escalations",
+    ),
+    _narrowing("POST", "/gateway/grants/{grant_id}/revoke"),
+    _conditional(
+        "POST",
+        "/approvals",
+        "approval.submit",
+        "approval_decision_approves",
+        "Approve a run",
+        "Marks the result of the run as approved and the run as done.",
+    ),
+    # --- computer use and the user's browser ----------------------------------
+    _narrowing("POST", "/computer-use/panic"),
+    _widening(
+        "POST",
+        "/computer-use/reset",
+        "computer_use.reset",
+        "Resume computer use",
+        "Clears the panic stop: the agent may control the desktop and browsers again.",
+    ),
+    _widening(
+        "POST",
+        "/user-browser/pairing",
+        "user_browser.pair",
+        proof=ShellProofFormat.BROWSER_PAIR,
+    ),
+    _narrowing("DELETE", "/user-browser/pairing"),
+    _conditional(
+        "PUT",
+        "/user-browser/tier",
+        "user_browser.tier.set",
+        "browser_tier_widening",
+        proof=ShellProofFormat.BROWSER_TIER,
+    ),
+    # Native-messaging host only (loopback, no browser headers, pairing key).
+    _neutral("POST", "/user-browser/relay/hello"),
+    _neutral("POST", "/user-browser/relay/next"),
+    _neutral("POST", "/user-browser/relay/result"),
+    _neutral("POST", "/user-browser/relay/event"),
+    _neutral("POST", "/user-browser/relay/bye"),
+    # --- memory and internal services -----------------------------------------
+    _narrowing("DELETE", "/memory/{session_id}"),
+    _neutral("POST", "/internal/memory/consolidation/run"),
+    _neutral("POST", "/internal/memory/world-graph/project"),
+    _neutral("POST", "/internal/cognition/assemblies/run"),
+    _neutral("POST", "/internal/cognition/messages/admit"),
+    # --- runs (every action is checked by the gateway) ------------------------
+    _neutral("POST", "/workflow-runs"),
+    _neutral("POST", "/workflow-runs/{run_id}/messages"),
+    _neutral("POST", "/workflow-runs/{run_id}/rename"),
+    _neutral("PATCH", "/workflow-runs/{run_id}"),
+    _neutral("POST", "/workflow-runs/{run_id}/archive"),
+    _neutral("POST", "/artifacts/{artifact_id}/versions"),
+    _neutral("POST", "/graph/validate"),
+    _neutral("POST", "/graph/runs"),
+    # --- triggers and schedules -----------------------------------------------
+    _widening(
+        "POST",
+        "/workflow-definitions/{item_id}/triggers",
+        "workflow.trigger.create",
+        "Create a webhook trigger",
+        "Anyone who has the webhook URL can start this workflow, without you.",
+    ),
+    _narrowing("DELETE", "/triggers/{token}"),
+    _neutral("POST", "/triggers/webhook/{token}"),  # authenticated by the trigger token
+    _conditional(
+        "POST",
+        "/workflow-definitions/{item_id}/schedules",
+        "workflow.schedule.create",
+        "schedule_enabled",
+        "Schedule a workflow",
+        _RISK_SCHEDULE,
+    ),
+    _conditional(
+        "POST",
+        "/schedules/{schedule_id}/toggle",
+        "workflow.schedule.toggle",
+        "schedule_toggle_enables",
+        "Turn on a schedule",
+        _RISK_SCHEDULE,
+    ),
+    _narrowing("DELETE", "/schedules/{schedule_id}"),
+    # --- knowledge --------------------------------------------------------------
+    _neutral("POST", "/knowledge/collections"),
+    _narrowing("DELETE", "/knowledge/collections/{collection_id}"),
+    _neutral("POST", "/knowledge/collections/{collection_id}/documents"),
+    _neutral("POST", "/knowledge/collections/{collection_id}/search"),
+    # --- integrations and MCP ---------------------------------------------------
+    _widening(
+        "POST",
+        "/integrations/catalog/{catalog_id}/install",
+        "integration.catalog.install",
+        "Install an integration",
+        "Adds this integration to the services the agents may use.",
+    ),
+    _widening(
+        "POST",
+        "/integrations/mcp",
+        "integration.mcp.save",
+        "Add or change an MCP server",
+        "Registers this MCP server. Once approved, the agents may call its tools.",
+    ),
+    _neutral("POST", "/integrations/mcp/{connection_id}/validate"),
+    _widening(
+        "POST",
+        "/integrations/mcp/{connection_id}/approve",
+        "integration.mcp.approve",
+        "Approve an MCP server",
+        "The agents may call the tools of this MCP server.",
+    ),
+    _widening(
+        "POST",
+        "/integrations/{integration_id}/oauth/connect",
+        "integration.oauth.connect",
+        "Connect an account",
+        "Starts sign-in so the agents may act with the access of this account.",
+    ),
+    _neutral("POST", "/integrations/{integration_id}/oauth/refresh"),
+    _narrowing("POST", "/integrations/{integration_id}/oauth/disconnect"),
+    _widening(
+        "POST",
+        "/integrations",
+        "integration.save",
+        "Add or change an integration",
+        "The agents may call this service with the credentials stored for it.",
+    ),
+    _neutral("POST", "/integrations/{integration_id}/test"),
+    _narrowing("DELETE", "/integrations/{integration_id}"),
+    # --- inbox, templates, playbooks, collaboration ----------------------------
+    _neutral("POST", "/inbox/groups"),
+    _neutral("POST", "/inbox/groups/{group_id}"),
+    _neutral("DELETE", "/inbox/groups/{group_id}"),
+    _neutral("POST", "/templates/agents/{template_id}/instantiate"),
+    _neutral("POST", "/templates/workflows/{workflow_id}/instantiate"),
+    _neutral("POST", "/playbooks"),
+    _neutral("POST", "/playbooks/{playbook_id}/publish"),
+    _narrowing("POST", "/playbooks/{playbook_id}/unpublish"),
+    _narrowing("POST", "/playbooks/{playbook_id}/archive"),
+    _neutral("POST", "/playbooks/{playbook_id}/instantiate"),
+    _neutral("POST", "/collab/sessions/join"),
+    _neutral("POST", "/collab/sessions/{session_id}/sync"),
+    _neutral("POST", "/collab/sessions/{session_id}/permissions"),  # human roles
+    # --- workflow and agent definitions ----------------------------------------
+    _neutral("POST", "/workflow-definitions"),
+    _neutral("POST", "/workflow-definitions/{item_id}/publish"),
+    _narrowing("POST", "/workflow-definitions/{item_id}/unpublish"),
+    _narrowing("POST", "/workflow-definitions/{item_id}/archive"),
+    _narrowing("DELETE", "/workflow-definitions/{item_id}"),
+    _neutral("POST", "/workflow-definitions/{item_id}/rollback"),
+    _neutral("POST", "/workflow-definitions/{item_id}/activate"),
+    _neutral("POST", "/agent-definitions"),
+    _neutral("POST", "/agent-definitions/{item_id}/publish"),
+    _narrowing("POST", "/agent-definitions/{item_id}/unpublish"),
+    _narrowing("POST", "/agent-definitions/{item_id}/archive"),
+    _narrowing("DELETE", "/agent-definitions/{item_id}"),
+    _neutral("POST", "/agent-definitions/{item_id}/rollback"),
+    _neutral("POST", "/agent-definitions/{item_id}/activate"),
+    _neutral("DELETE", "/node-definitions/{_item_id:path}"),
+    # --- guardrails: a draft is inert; anything that changes or removes the
+    # active rules can weaken them -----------------------------------------------
+    _neutral("POST", "/guardrail-rulesets"),
+    _widening(
+        "POST",
+        "/guardrail-rulesets/{item_id}/publish",
+        "guardrail.ruleset.publish",
+        "Publish a guardrail ruleset",
+        _RISK_GUARDRAIL_CHANGE,
+    ),
+    _widening(
+        "POST",
+        "/guardrail-rulesets/{item_id}/activate",
+        "guardrail.ruleset.activate",
+        "Activate a guardrail ruleset revision",
+        _RISK_GUARDRAIL_CHANGE,
+    ),
+    _widening(
+        "POST",
+        "/guardrail-rulesets/{item_id}/rollback",
+        "guardrail.ruleset.rollback",
+        "Roll back a guardrail ruleset",
+        _RISK_GUARDRAIL_CHANGE,
+    ),
+    _widening(
+        "POST",
+        "/guardrail-rulesets/{item_id}/archive",
+        "guardrail.ruleset.archive",
+        "Archive a guardrail ruleset",
+        _RISK_GUARDRAIL_REMOVE,
+    ),
+    _widening(
+        "DELETE",
+        "/guardrail-rulesets/{item_id}",
+        "guardrail.ruleset.delete",
+        "Delete a guardrail ruleset",
+        _RISK_GUARDRAIL_REMOVE,
+    ),
+)
+
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_UNSAFE_DIALOG_TEXT = re.compile(r"[\"\\\x00-\x1f\x7f-￿]")
+
+
+def shell_proof_rules() -> tuple[ShellProofRule, ...]:
+    return _SHELL_PROOF_RULES
+
+
+def classify_shell_proof(method: str, path: str) -> ShellProofRule | None:
+    """The capability-effect rule for a concrete request (``None``: unclassified)."""
+    normalized_method = str(method or "").upper()
+    normalized_path = str(path or "").strip() or "/"
+    for rule in _SHELL_PROOF_RULES:
+        if rule.method != normalized_method:
+            continue
+        if _compiled_rule_pattern(rule.path_template).match(normalized_path):
+            return rule
+    return None
+
+
+def shell_proof_table_errors() -> list[str]:
+    """Internal consistency of the table (also checked at startup)."""
+    from app.capability_widening import BODY_PREDICATES, STATE_PREDICATES
+
+    errors: list[str] = []
+    seen_routes: set[tuple[str, str]] = set()
+    seen_actions: set[str] = set()
+    for rule in _SHELL_PROOF_RULES:
+        key = (rule.method, rule.path_template)
+        if key in seen_routes:
+            errors.append(f"duplicate rule {rule.method} {rule.path_template}")
+        seen_routes.add(key)
+        if rule.method not in _MUTATING_METHODS:
+            errors.append(f"not a mutating method: {rule.method} {rule.path_template}")
+        if not rule.may_need_proof:
+            continue
+        if not rule.action or rule.action in seen_actions:
+            errors.append(f"missing or duplicate action id: {rule.method} {rule.path_template}")
+        seen_actions.add(rule.action)
+        if rule.effect == CapabilityEffect.CONDITIONAL and (
+            rule.predicate not in BODY_PREDICATES and rule.predicate not in STATE_PREDICATES
+        ):
+            errors.append(f"unknown predicate {rule.predicate!r} for {rule.action}")
+        if rule.proof == ShellProofFormat.REQUEST and not (rule.title and rule.risk):
+            errors.append(f"dialog title and risk text required for {rule.action}")
+        if any(_UNSAFE_DIALOG_TEXT.search(text) for text in (rule.title, rule.risk, rule.current)):
+            errors.append(f"dialog texts must be plain ASCII without quotes: {rule.action}")
+    return errors
+
+
+def validate_shell_proof_inventory(app: FastAPI) -> None:
+    """Every mutating route must have its own capability-effect rule."""
+    problems = shell_proof_table_errors()
+    routes: set[tuple[str, str]] = set()
+    for route in app.routes:
+        if not isinstance(route, APIRoute) or route.path in _FRAMEWORK_MANAGED_PATHS:
+            continue
+        for method in sorted((route.methods or set()) & _MUTATING_METHODS):
+            routes.add((method, route.path))
+            rule = classify_shell_proof(method, route.path)
+            if rule is None or rule.path_template != route.path:
+                problems.append(f"{method} {route.path}")
+    problems.extend(
+        f"stale rule {rule.method} {rule.path_template}"
+        for rule in _SHELL_PROOF_RULES
+        if (rule.method, rule.path_template) not in routes
+    )
+    if problems:
+        formatted = ", ".join(sorted(problems))
+        raise RuntimeError(f"Unclassified capability effect for backend routes: {formatted}")
+
+
 __all__ = [
+    "CapabilityEffect",
     "RouteAccessCategory",
     "RouteAccessRule",
+    "ShellProofFormat",
+    "ShellProofRule",
     "classify_route_access",
+    "classify_shell_proof",
     "describe_route_inventory",
     "route_access_rules",
+    "shell_proof_rules",
+    "shell_proof_table_errors",
     "validate_route_inventory",
+    "validate_shell_proof_inventory",
 ]

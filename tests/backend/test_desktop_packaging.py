@@ -246,3 +246,73 @@ def test_shell_confirmation_is_wired_from_rust_and_matches_python():
     assert desktop_main.index("receive_from_stdin()") < desktop_main.index(
         "run_desktop_supervisor()"
     )
+
+
+# --- out-of-band confirmation for every widening request (LOCUS-357) ---------
+def _shell_rules():  # type: ignore[no-untyped-def]
+    backend = str(_REPO_ROOT / "apps" / "backend")
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    from app.request_security import ShellProofFormat, shell_proof_rules
+
+    return [
+        rule
+        for rule in shell_proof_rules()
+        if rule.may_need_proof and rule.proof == ShellProofFormat.REQUEST
+    ]
+
+
+def test_shell_actions_mirror_the_backend_rules_byte_for_byte():
+    actions_rs = (_TAURI_DIR / "src" / "shell_actions.rs").read_text(encoding="utf-8")
+    rules = _shell_rules()
+    assert rules
+    for rule in rules:
+        current = f'Some("{rule.current}")' if rule.current else "None"
+        block = (
+            "    ShellAction {\n"
+            f'        id: "{rule.action}",\n'
+            f'        method: "{rule.method}",\n'
+            f'        path: "{rule.path_template}",\n'
+            f'        title: "{rule.title}",\n'
+            f'        risk: "{rule.risk}",\n'
+            f"        current: {current},\n"
+            "    },\n"
+        )
+        assert block in actions_rs, rule.action
+    # No action in the shell that the backend does not classify.
+    assert actions_rs.count("    ShellAction {\n        id: ") == len(rules)
+
+
+def test_shell_actions_sign_the_generic_request_bound_message():
+    from locus_tooling import shell_confirmation as sc
+
+    actions_rs = (_TAURI_DIR / "src" / "shell_actions.rs").read_text(encoding="utf-8")
+    # Message, digest input and canonical body match locus_tooling/shell_confirmation.py.
+    assert sc.MESSAGE_PREFIX == "locus-shell-proof/v1"
+    assert 'format!("{MESSAGE_PREFIX}|{action}|{digest}|{nonce}|{ts}")' in actions_rs
+    assert 'format!("{method}\\n{path}\\n{canonical_body}")' in actions_rs
+    assert "entries.sort_by(|a, b| a.0.cmp(b.0));" in actions_rs
+    assert "only whole numbers can be confirmed" in actions_rs
+    # The shell sends the request itself; the proof never goes back to the webview.
+    assert "send(method, &path, &canonical, Some(header.as_str()))" in actions_rs
+    assert "Ok(response)" in actions_rs and "Ok(header" not in actions_rs
+    # Dialog text comes from the request and the backend's state, never from
+    # text the webview supplies; secrets are masked.
+    signature = actions_rs[actions_rs.index("pub async fn confirm_action(") :]
+    signature = signature[: signature.index(")")]
+    assert signature.split("(", 1)[1].split() == [
+        "app:",
+        "tauri::AppHandle,",
+        "action:",
+        "String,",
+        "path:",
+        "String,",
+        "body:",
+        "Option<Value>,",
+    ]
+    assert "fn masked(" in actions_rs and "fn clean(" in actions_rs
+    main_rs = (_TAURI_DIR / "src" / "main.rs").read_text(encoding="utf-8")
+    assert "mod shell_actions;" in main_rs
+    assert "shell_actions::confirm_action" in main_rs
+    cap = json.loads((_TAURI_DIR / "capabilities" / "default.json").read_text(encoding="utf-8"))
+    assert not any(str(p).startswith("dialog:") for p in cap["permissions"])

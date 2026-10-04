@@ -122,6 +122,119 @@ def test_no_secret_means_no_proof_can_pass() -> None:
         sc.install_secret(b"short")
 
 
+# --------------------------------------------------------------------------- #
+# Generic request-bound proofs (LOCUS-357)
+# --------------------------------------------------------------------------- #
+APPROVE = "/workflow-runs/r1/escalations/e1/approve"
+VECTOR = {"scope": "run", "pin": False, "note": 'café \n\t"q"\x01', "n": [3, {"b": None, "a": -1}]}
+
+
+def _request_header(
+    action: str, method: str, path: str, body: bytes | str, *, ts: int | None = None
+) -> str:
+    digest = sc.request_digest(method, path, body)
+    return _header(
+        lambda nonce, stamp: sc.action_message(
+            action=action, digest=digest, nonce=nonce, timestamp=stamp
+        ),
+        ts=ts,
+    )
+
+
+def test_canonical_body_and_digest_known_answers() -> None:
+    """The Tauri shell (shell_actions.rs) builds the same text: sorted keys,
+    compact separators, non-ASCII kept, serde_json's string escapes."""
+    canonical = sc.canonical_body(json.dumps(VECTOR))
+    assert canonical == (
+        '{"n":[3,{"a":-1,"b":null}],"note":"café \\n\\t\\"q\\"\\u0001","pin":false,"scope":"run"}'
+    )
+    # Key order, whitespace and escaping in the request do not matter.
+    assert sc.canonical_body(json.dumps(VECTOR, indent=2, ensure_ascii=True)) == canonical
+    assert sc.canonical_body(b"") == sc.canonical_body(None) == sc.canonical_body(b"  ") == ""
+    assert sc.canonical_body("{}") == "{}"
+    assert (
+        sc.request_digest("POST", APPROVE, json.dumps(VECTOR))
+        == "bddb08be579eb465c4f780b45cdc8511c121aeacd46cc00660faf6427ccd1061"
+    )
+    assert (
+        sc.request_digest("post", "/computer-use/reset", b"")
+        == "025e98a868f4eab1dfd6745f1958dcc8bd9a833a76e86afcae6b383dfb04f2ba"
+    )
+    assert sc.action_message(
+        action="computer_use.reset", digest="ab" * 32, nonce="n", timestamp=7
+    ) == ("locus-shell-proof/v1|computer_use.reset|" + "ab" * 32 + "|n|7")
+
+
+@pytest.mark.parametrize(
+    "body", [b"{not json", b'{"x": 1.5}', b'{"x": NaN}', b'"\\ud800"', b"\xff\xfe"]
+)
+def test_unsupported_bodies_are_refused(body: bytes) -> None:
+    with pytest.raises(sc.ShellProofError) as refused:
+        sc.canonical_body(body)
+    assert refused.value.code == "unsupported_body"
+
+
+@pytest.mark.parametrize(
+    ("method", "path"), [("GET", "/x"), ("POST", "x"), ("POST", "/x\n/y"), ("TRACE", "/x")]
+)
+def test_unsupported_requests_are_refused(method: str, path: str) -> None:
+    with pytest.raises(sc.ShellProofError):
+        sc.request_digest(method, path, b"")
+
+
+def test_request_proof_is_bound_to_action_method_path_and_body() -> None:
+    sc.install_secret(SECRET)
+    action = "workflow.run.escalations.approve"
+    body = json.dumps({"scope": "once"})
+    header = _request_header(action, "POST", APPROVE, body)
+    for other in (
+        ("computer_use.reset", "POST", APPROVE, body),
+        (action, "PUT", APPROVE, body),
+        (action, "POST", APPROVE.replace("e1", "e2"), body),
+        (action, "POST", APPROVE, json.dumps({"scope": "standing"})),
+        (action, "POST", APPROVE + "?scope=standing", body),
+    ):
+        with pytest.raises(sc.ShellProofError) as refused:
+            sc.verify_request(
+                header, action=other[0], method=other[1], path=other[2], body=other[3]
+            )
+        assert refused.value.code == "bad_proof", other
+    # The same request with keys reordered / re-spaced is the same request.
+    sc.verify_request(
+        header, action=action, method="POST", path=APPROVE, body='{ "scope" : "once" }'
+    )
+    with pytest.raises(sc.ShellProofError) as replay:
+        sc.verify_request(header, action=action, method="POST", path=APPROVE, body=body)
+    assert replay.value.code == "replayed_proof"
+
+
+def test_request_proofs_and_browser_proofs_never_cross() -> None:
+    sc.install_secret(SECRET)
+    reset = {"action": "computer_use.reset", "method": "POST", "path": "/computer-use/reset"}
+    pairing = _header(lambda nonce, ts: sc.pairing_message(nonce=nonce, timestamp=ts))
+    with pytest.raises(sc.ShellProofError) as refused:
+        sc.verify_request(pairing, body=b"", **reset)
+    assert refused.value.code == "bad_proof"
+    generic = _request_header("computer_use.reset", "POST", "/computer-use/reset", b"")
+    with pytest.raises(sc.ShellProofError):
+        sc.verify(generic, lambda nonce, ts: sc.pairing_message(nonce=nonce, timestamp=ts))
+
+
+def test_request_proof_needs_a_shell_secret_and_a_fresh_timestamp() -> None:
+    reset = {"action": "computer_use.reset", "method": "POST", "path": "/computer-use/reset"}
+    header = _request_header("computer_use.reset", "POST", "/computer-use/reset", b"")
+    with pytest.raises(sc.ShellProofError) as refused:
+        sc.verify_request(header, body=b"", **reset)
+    assert refused.value.code == "no_shell"
+    sc.install_secret(SECRET)
+    stale = _request_header(
+        "computer_use.reset", "POST", "/computer-use/reset", b"", ts=int(time.time()) - 61
+    )
+    with pytest.raises(sc.ShellProofError) as expired:
+        sc.verify_request(stale, body=b"", **reset)
+    assert expired.value.code == "expired_proof"
+
+
 def test_secret_line_parsing_and_repr_never_shows_it() -> None:
     line = sc.SECRET_LINE_PREFIX + SECRET.hex() + "\n"
     assert sc.parse_secret_line(line) == SECRET
