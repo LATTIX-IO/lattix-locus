@@ -68,7 +68,9 @@ describe("RunEscalations", () => {
 
     await waitFor(() => expect(api.approveRunEscalation).toHaveBeenCalledWith("run-1", "esc-1"));
     expect(api.allowSiteInBrowserTier).not.toHaveBeenCalled();
-    expect(await screen.findByText(/allowed once/i)).toBeInTheDocument();
+    // The reload settles the request; its outcome stays visible.
+    await waitFor(() => expect(screen.queryByRole("article")).not.toBeInTheDocument());
+    expect(screen.getByRole("status")).toHaveTextContent(/allowed once/i);
   });
 
   it("on the web, shows the risk, then adds the site to the tier's list and allows the action", async () => {
