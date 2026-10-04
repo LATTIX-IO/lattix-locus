@@ -207,6 +207,7 @@ Use severity: Critical, High, Medium, Low.
 | T13 | Container escape via sandbox breakout | Low | Runtime → sandbox/tool jail | Attacker breaks out of seccomp/bubblewrap/Docker isolation to host kernel |
 | T14 | Denial of service via unbounded queues/retries | Low | Orchestrator/worker → policy engine / Runtime → sandbox | Unbounded work queues, retries, or tool calls exhaust memory/CPU |
 | T15 | Configuration drift between local and hosted profiles | Low | Deployment/configuration → running services | Secure/full and lightweight modes diverge, leading to wrong operator assumptions |
+| T16 | Local process widens capability through the desktop loopback bootstrap | High | Local process → backend API (desktop `local-native`) | On the desktop every loopback request is authenticated as the operator, so an un-jailed local process (or a confused page) approves its own agent asks, clears panic, loosens settings or guardrails, adds integrations, skills, keys, triggers or schedules, or widens the browser tier |
 
 ## Mitigations
 
@@ -227,6 +228,7 @@ Use severity: Critical, High, Medium, Low.
 | T13 | Three-tier sandbox: seccomp BPF, read-only rootfs, network namespace, non-root, resource limits, IPC isolation, gVisor/Kata RuntimeClasses for K8s | **Implemented** | `docker/sandbox/seccomp-strict.json`, `locus_runtime/sandbox.py`, Helm chart `locus-sandbox` RuntimeClass |
 | T14 | Bounded pids-limit (256), memory (512m), CPU (1.0); capability token `max_tool_calls` budget; sandbox resource limits | **Implemented** | `locus_runtime/sandbox.py`, capability token claims |
 | T15 | Explicit `LOCUS_RUNTIME_PROFILE` values (`local-lightweight`, `local-secure`, `hosted`); Helm values-prod.yaml codifies hosted posture; CI validates Helm render | **Implemented** | `locus_tooling/common.py`, `helm/lattix-locus/values-prod.yaml`, CI Helm lint |
+| T16 | Every mutating route is classified `widening` / `narrowing` / `conditional` / `neutral` in one table (startup refuses an unclassified route). On the desktop profile a widening request also needs the Tauri shell's single-use HMAC proof (per-launch secret over stdin, ±60 s, bound to action, method, path and canonical body), produced only after the human confirms a native dialog whose text the shell builds from the request and the backend's state; refusals are audited; narrowing needs none; no shell secret means no widening (LOCUS-350, LOCUS-357). **Residual:** same-OS-user code can read process memory or fake input to the dialog; only jailed runs (no loopback) are excluded. In the desktop shell the UI sends these calls through `confirm_action` (`apps/frontend/src/lib/desktop-confirmation.ts`). | **Implemented** (Rust shell compiled in CI only) | `apps/backend/app/request_security.py`, `apps/backend/app/capability_widening.py`, `locus_tooling/shell_confirmation.py`, `apps/desktop-tauri/src-tauri/src/shell_actions.rs`, `browser_tier.rs` |
 
 ## Required Tests
 
@@ -252,6 +254,7 @@ The following tests provide regression coverage for the threats and mitigations 
 | Compose config validation (both compose files) | \docker compose config --quiet\ in CI | T5, T13, T15 | Every PR |
 | Helm lint & template render (prod values) | \make helm-validate\ in CI | T15 | Every PR |
 | OPA policy tests | \make policy-test\ | T4, T9 | Every PR |
+| Desktop shell proof for widening endpoints (refused + audited, valid, replay, bound to the request, narrowing free, route inventory complete, `is_widening`, Rust/Python sync) | `apps/backend/tests/test_shell_proof_endpoints.py`, `apps/backend/tests/test_capability_widening.py`, `apps/backend/tests/test_user_browser_endpoint.py`, `tests/unit/test_shell_confirmation.py`, `tests/backend/test_desktop_packaging.py` | T16 | Every PR |
 
 ---
 ## Service-level zero trust expectations

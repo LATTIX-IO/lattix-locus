@@ -32,7 +32,20 @@ import {
   WorkflowRunSummary,
 } from "@/types/locus";
 import { RunStreamInterruptedError } from "@/lib/run-stream";
+import {
+  confirmViaDesktopShell,
+  getDesktopInvoke,
+  isShellProofRefusal,
+  matchShellAction,
+  needsConfirmationUpfront,
+  requestBodyObject,
+} from "@/lib/desktop-confirmation";
 export type { ObservabilityRunTrace } from "@/types/locus";
+export {
+  CONFIRMATION_CANCELLED_MESSAGE,
+  DesktopConfirmationCancelledError,
+  DesktopConfirmationError,
+} from "@/lib/desktop-confirmation";
 
 /* ------------------------------------------------------------------ */
 /*  Configuration helpers                                              */
@@ -475,6 +488,20 @@ async function safeFetch<T>(path: string, fallback: T, init?: RequestInit): Prom
 }
 
 async function strictFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  // Inside the desktop shell, a capability-widening call is confirmed in a
+  // native dialog and sent by the shell (LOCUS-357); elsewhere it is a plain
+  // request. Narrowing calls never match a shell action.
+  const shellAction = matchShellAction(init?.method ?? "GET", path);
+  const invoke = shellAction ? getDesktopInvoke() : null;
+  if (shellAction && invoke) {
+    const body = requestBodyObject(init?.body);
+    if (needsConfirmationUpfront(shellAction, body)) {
+      const confirmed = await confirmViaDesktopShell<T>(invoke, shellAction, path, body);
+      setApiConnected(true);
+      return confirmed;
+    }
+  }
+
   let res: Response;
   try {
     const requestHeaders = await getRequestAuthHeaders();
@@ -504,6 +531,13 @@ async function strictFetch<T>(path: string, init?: RequestInit): Promise<T> {
       details = await res.text();
     } catch {
       details = "";
+    }
+    // The backend decides from stored state that this change widens (for
+    // example a settings save that adds an egress host): confirm it in the
+    // shell's dialog. Not a silent retry: the human sees the dialog, and a
+    // cancel raises DesktopConfirmationCancelledError.
+    if (shellAction && invoke && isShellProofRefusal(res.status, details)) {
+      return confirmViaDesktopShell<T>(invoke, shellAction, path, requestBodyObject(init?.body));
     }
     throw new Error(`Request failed (${res.status})${details ? `: ${details}` : ""}`);
   }

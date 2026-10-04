@@ -13,6 +13,7 @@
 
 mod browser_tier;
 mod computer_use;
+mod shell_actions;
 mod updates;
 
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -89,8 +90,9 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        // Native confirmation dialogs for widening the user-browser tier
-        // (LOCUS-350). Used from Rust only; the webview gets no dialog permission.
+        // Native confirmation dialogs for widening the user-browser tier (LOCUS-350)
+        // and every other capability-widening request (LOCUS-357, shell_actions.rs).
+        // Used from Rust only; the webview gets no dialog permission.
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             quit_now,
@@ -99,7 +101,8 @@ fn main() {
             updates::get_update_status,
             updates::set_update_channel,
             browser_tier::confirm_browser_tier,
-            browser_tier::confirm_browser_pairing
+            browser_tier::confirm_browser_pairing,
+            shell_actions::confirm_action
         ])
         // Closing the window hides to the tray instead of quitting; real quit is
         // the tray "Quit" item, which runs the agent-running validation first.

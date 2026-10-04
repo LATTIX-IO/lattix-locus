@@ -246,3 +246,118 @@ def test_shell_confirmation_is_wired_from_rust_and_matches_python():
     assert desktop_main.index("receive_from_stdin()") < desktop_main.index(
         "run_desktop_supervisor()"
     )
+
+
+# --- out-of-band confirmation for every widening request (LOCUS-357) ---------
+def _shell_rules():  # type: ignore[no-untyped-def]
+    backend = str(_REPO_ROOT / "apps" / "backend")
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    from app.request_security import ShellProofFormat, shell_proof_rules
+
+    return [
+        rule
+        for rule in shell_proof_rules()
+        if rule.may_need_proof and rule.proof == ShellProofFormat.REQUEST
+    ]
+
+
+def test_shell_actions_mirror_the_backend_rules_byte_for_byte():
+    actions_rs = (_TAURI_DIR / "src" / "shell_actions.rs").read_text(encoding="utf-8")
+    rules = _shell_rules()
+    assert rules
+    for rule in rules:
+        current = f'Some("{rule.current}")' if rule.current else "None"
+        block = (
+            "    ShellAction {\n"
+            f'        id: "{rule.action}",\n'
+            f'        method: "{rule.method}",\n'
+            f'        path: "{rule.path_template}",\n'
+            f'        title: "{rule.title}",\n'
+            f'        risk: "{rule.risk}",\n'
+            f"        current: {current},\n"
+            "    },\n"
+        )
+        assert block in actions_rs, rule.action
+    # No action in the shell that the backend does not classify.
+    assert actions_rs.count("    ShellAction {\n        id: ") == len(rules)
+
+
+def test_shell_actions_sign_the_generic_request_bound_message():
+    from locus_tooling import shell_confirmation as sc
+
+    actions_rs = (_TAURI_DIR / "src" / "shell_actions.rs").read_text(encoding="utf-8")
+    # Message, digest input and canonical body match locus_tooling/shell_confirmation.py.
+    assert sc.MESSAGE_PREFIX == "locus-shell-proof/v1"
+    assert 'format!("{MESSAGE_PREFIX}|{action}|{digest}|{nonce}|{ts}")' in actions_rs
+    assert 'format!("{method}\\n{path}\\n{canonical_body}")' in actions_rs
+    assert "entries.sort_by(|a, b| a.0.cmp(b.0));" in actions_rs
+    assert "only whole numbers can be confirmed" in actions_rs
+    # The shell sends the request itself; the proof never goes back to the webview.
+    assert "send(method, &path, &canonical, Some(header.as_str()))" in actions_rs
+    assert "Ok(response)" in actions_rs and "Ok(header" not in actions_rs
+    # Dialog text comes from the request and the backend's state, never from
+    # text the webview supplies; secrets are masked.
+    signature = actions_rs[actions_rs.index("pub async fn confirm_action(") :]
+    signature = signature[: signature.index(")")]
+    assert signature.split("(", 1)[1].split() == [
+        "app:",
+        "tauri::AppHandle,",
+        "action:",
+        "String,",
+        "path:",
+        "String,",
+        "body:",
+        "Option<Value>,",
+    ]
+    assert "fn masked(" in actions_rs and "fn clean(" in actions_rs
+    main_rs = (_TAURI_DIR / "src" / "main.rs").read_text(encoding="utf-8")
+    assert "mod shell_actions;" in main_rs
+    assert "shell_actions::confirm_action" in main_rs
+    cap = json.loads((_TAURI_DIR / "capabilities" / "default.json").read_text(encoding="utf-8"))
+    assert not any(str(p).startswith("dialog:") for p in cap["permissions"])
+
+
+def test_webview_can_invoke_confirm_action_like_the_other_app_commands():
+    # App commands (quit_now, check_for_update, confirm_browser_tier, ...) are
+    # not ACL-gated while the app defines no ACL manifest: Tauri only checks the
+    # capability for plugin commands, so the UI at http://127.0.0.1:3000 can
+    # invoke confirm_action exactly as it invokes quit_now. Defining an app
+    # manifest would make every app command, confirm_action included, need an
+    # explicit permission; this test then fails so the capability gets one.
+    build_rs = (_TAURI_DIR / "build.rs").read_text(encoding="utf-8")
+    assert "app_manifest" not in build_rs and "AppManifest" not in build_rs
+    cap = json.loads((_TAURI_DIR / "capabilities" / "default.json").read_text(encoding="utf-8"))
+    # Nothing broader: no dialog permission and no extra plugin grants.
+    assert not any(str(p).startswith("dialog:") for p in cap["permissions"])
+    names = {p if isinstance(p, str) else p.get("identifier") for p in cap["permissions"]}
+    assert names == {"core:default", "global-shortcut:allow-is-registered", "shell:allow-spawn"}
+
+
+def test_frontend_shell_actions_mirror_the_backend_rules():
+    import re
+
+    rules = _shell_rules()  # also puts apps/backend on sys.path
+    from app.capability_widening import BODY_PREDICATES
+    from app.request_security import CapabilityEffect
+
+    source = (
+        _REPO_ROOT / "apps" / "frontend" / "src" / "lib" / "desktop-confirmation.ts"
+    ).read_text(encoding="utf-8")
+    entries = re.findall(
+        r'\{ id: "([^"]+)", method: "([A-Z]+)", path: "([^"]+)", when: "([a-z_-]+)" \}', source
+    )
+    expected = []
+    for rule in rules:
+        if rule.effect == CapabilityEffect.WIDENING:
+            when = "always"
+        elif rule.predicate in BODY_PREDICATES:
+            when = rule.predicate
+        else:
+            when = "on-refusal"  # decided by the backend from stored state
+        expected.append((rule.action, rule.method, rule.path_template, when))
+    assert sorted(entries) == sorted(expected)
+    # The UI recognises the backend's refusal for a missing shell proof.
+    assert "Locus desktop app (missing_proof)" in source
+    main_py = (_REPO_ROOT / "apps" / "backend" / "app" / "main.py").read_text(encoding="utf-8")
+    assert 'detail=f"Confirm this change in the Locus desktop app ({exc.code})"' in main_py

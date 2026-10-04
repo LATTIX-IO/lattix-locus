@@ -22,6 +22,10 @@
 // locus_tooling/shell_confirmation.py and
 // locus_runtime/computer_use/user_browser/tiers.py::TIER_RISKS byte for byte
 // (tests/backend/test_desktop_packaging.py checks the texts).
+//
+// The secret, proof, dialog and request helpers here are shared with
+// shell_actions.rs, which confirms every other capability-widening request
+// (LOCUS-357) with the generic request-bound message format.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -38,7 +42,7 @@ const BACKEND_ADDR: &str = "127.0.0.1:8000";
 const TIER_PATH: &str = "/user-browser/tier";
 const PAIRING_PATH: &str = "/user-browser/pairing";
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
-const MESSAGE_PREFIX: &str = "locus-shell-proof/v1";
+pub(crate) const MESSAGE_PREFIX: &str = "locus-shell-proof/v1";
 const SECRET_LINE_PREFIX: &str = "locus-shell-secret:v1:";
 /// Flag (not the secret) telling the backend to read the secret from stdin.
 pub const SHELL_CONFIRMATION_ENV: &str = "LOCUS_SHELL_CONFIRMATION";
@@ -53,7 +57,7 @@ const RISK_OPEN: &str = "The agent acts in every tab and site of your signed-in 
 /// The per-launch secret. Set once at sidecar spawn; never logged or exposed.
 static SHELL_SECRET: OnceLock<[u8; 32]> = OnceLock::new();
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
@@ -123,7 +127,7 @@ fn pairing_message(nonce: &str, ts: u64) -> String {
 }
 
 /// `v1:<ts>:<nonce>:<hmac>` for the canonical message built by `message_for`.
-fn proof(message_for: impl Fn(&str, u64) -> String) -> Result<String, String> {
+pub(crate) fn proof(message_for: impl Fn(&str, u64) -> String) -> Result<String, String> {
     let secret = SHELL_SECRET
         .get()
         .ok_or_else(|| "the backend was not started by this shell".to_string())?;
@@ -147,18 +151,28 @@ fn bearer_header() -> String {
     }
 }
 
-/// One loopback request with a JSON body; returns (status, body). Never logs
-/// the request (it carries the proof and possibly a bearer token).
-fn send(method: &str, path: &str, body: &str, proof_header: &str) -> Result<(u16, String), String> {
+/// One loopback request with a JSON body (possibly empty) and, for a
+/// confirmed change, the proof header; returns (status, body). Never logs the
+/// request (it may carry the proof and a bearer token).
+pub(crate) fn send(
+    method: &str,
+    path: &str,
+    body: &str,
+    proof_header: Option<&str>,
+) -> Result<(u16, String), String> {
     let addr: SocketAddr = BACKEND_ADDR.parse().map_err(|_| "bad backend address".to_string())?;
     let mut stream = TcpStream::connect_timeout(&addr, IO_TIMEOUT)
         .map_err(|_| "the Locus backend is not reachable".to_string())?;
     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+    let proof_line = match proof_header {
+        Some(proof_header) => format!("X-Locus-Shell-Proof: {proof_header}\r\n"),
+        None => String::new(),
+    };
     let head = format!(
         "{method} {path} HTTP/1.1\r\nHost: {BACKEND_ADDR}\r\nUser-Agent: locus-desktop-shell\r\n\
          Accept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-         X-Locus-Shell-Proof: {proof_header}\r\nConnection: close\r\n{}\r\n",
+         {proof_line}Connection: close\r\n{}\r\n",
         body.len(),
         bearer_header()
     );
@@ -168,18 +182,56 @@ fn send(method: &str, path: &str, body: &str, proof_header: &str) -> Result<(u16
         .map_err(|_| "could not send the request to the backend".to_string())?;
     let mut raw = Vec::new();
     let _ = stream.read_to_end(&mut raw);
-    let text = String::from_utf8_lossy(&raw).to_string();
-    let status = text
+    parse_response(&raw)
+}
+
+/// Status and body of a raw HTTP/1.1 response (`Connection: close`). Chunked
+/// transfer encoding is undone on the bytes, before UTF-8 decoding.
+fn parse_response(raw: &[u8]) -> Result<(u16, String), String> {
+    let split = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| "the backend sent no HTTP response".to_string())?;
+    let head = String::from_utf8_lossy(&raw[..split]).to_string();
+    let status = head
         .lines()
         .next()
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|code| code.parse::<u16>().ok())
         .ok_or_else(|| "the backend sent no HTTP status".to_string())?;
-    let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-    Ok((status, body))
+    let chunked = head.lines().any(|line| {
+        let line = line.to_ascii_lowercase();
+        line.starts_with("transfer-encoding:") && line.contains("chunked")
+    });
+    let payload = &raw[split + 4..];
+    let body = if chunked {
+        dechunk(payload).ok_or_else(|| "the backend sent a malformed response".to_string())?
+    } else {
+        payload.to_vec()
+    };
+    Ok((status, String::from_utf8_lossy(&body).to_string()))
 }
 
-async fn ask_human(app: tauri::AppHandle, title: &'static str, text: String) -> bool {
+fn dechunk(mut rest: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    loop {
+        let line_end = rest.windows(2).position(|window| window == b"\r\n")?;
+        let size_text = std::str::from_utf8(&rest[..line_end]).ok()?;
+        let size = usize::from_str_radix(size_text.split(';').next()?.trim(), 16).ok()?;
+        rest = &rest[line_end + 2..];
+        if size == 0 {
+            return Some(out);
+        }
+        let end = size.checked_add(2)?;
+        if rest.len() < end {
+            return None;
+        }
+        out.extend_from_slice(&rest[..size]);
+        rest = &rest[end..];
+    }
+}
+
+pub(crate) async fn ask_human(app: tauri::AppHandle, title: String, text: String) -> bool {
     // blocking_show must not run on the main thread: use a blocking worker.
     tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
@@ -225,7 +277,7 @@ pub async fn confirm_browser_tier(
         list_text(&allowlisted_sites),
         list_text(&granted_sites),
     );
-    if !ask_human(app, "Lattix Locus: confirm browser access", text).await {
+    if !ask_human(app, "Lattix Locus: confirm browser access".to_string(), text).await {
         return Err("cancelled".to_string());
     }
     let header = proof(|nonce, ts| {
@@ -239,7 +291,7 @@ pub async fn confirm_browser_tier(
     })
     .to_string();
     let (status, response) = tauri::async_runtime::spawn_blocking(move || {
-        send("PUT", TIER_PATH, &body, &header)
+        send("PUT", TIER_PATH, &body, Some(header.as_str()))
     })
     .await
     .map_err(|_| "request task failed".to_string())??;
@@ -260,12 +312,12 @@ pub async fn confirm_browser_pairing(app: tauri::AppHandle) -> Result<String, St
                 else). Pairing again replaces the previous pairing.\n\nOnly allow this if \
                 you asked for it."
         .to_string();
-    if !ask_human(app, "Lattix Locus: pair browser", text).await {
+    if !ask_human(app, "Lattix Locus: pair browser".to_string(), text).await {
         return Err("cancelled".to_string());
     }
     let header = proof(pairing_message)?;
     let (status, response) = tauri::async_runtime::spawn_blocking(move || {
-        send("POST", PAIRING_PATH, "{}", &header)
+        send("POST", PAIRING_PATH, "{}", Some(header.as_str()))
     })
     .await
     .map_err(|_| "request task failed".to_string())??;
