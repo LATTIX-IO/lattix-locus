@@ -43,6 +43,12 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from concurrent.futures import ThreadPoolExecutor
 
+# LangSmith tracing is never on (LOCUS-361): scrub its switches before any
+# LangChain / LangGraph import can read and cache them.
+from locus_runtime.hosted_tracing import force_langsmith_off
+
+force_langsmith_off()
+
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware

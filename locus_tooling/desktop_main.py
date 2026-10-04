@@ -112,6 +112,11 @@ def _looks_like_native_messaging(argv: list[str]) -> bool:
 
 
 def main() -> int | None:
+    # LangSmith tracing is never on (LOCUS-361): scrub its environment switches
+    # first, so no child or in-process LangChain import can turn it on.
+    from locus_runtime.hosted_tracing import force_langsmith_off
+
+    force_langsmith_off()
     # A browser launched us as the Locus native-messaging host (LOCUS-350): the
     # host manifest points at this binary, and browsers pass the caller's
     # extension origin as an argument. Dispatch before anything prints to stdout;
