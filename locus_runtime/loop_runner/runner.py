@@ -17,7 +17,10 @@ One tick (:meth:`LoopRunner.run_once`)::
     claim (comment marker + In Progress; earliest live claim wins)
     worktree from <remote>/<base> → envelope → gateway session → VerifiedLoop
     done    ─▶ pre-PR verifier suite from the diff (LOCUS-339) ── fail ─▶ stopped
-            ─▶ eval gate (optional) ─▶ commit, push, PR with evidence, issue → In Review
+            ─▶ eval gate (optional) ─▶ commit
+            ─▶ RSI scorecard on the candidate commit vs the base branch's baseline
+               (LOCUS-351; off | advisory | required) ─▶ variant archived
+            ─▶ push, PR with evidence (incl. scorecard + comparison), issue → In Review
             ─▶ propose a quarantined SKILL.md from the trajectory (P24)
     blocked ─▶ comment + agent:human-review-required, issue → Blocked | Todo
     stopped ─▶ comment, issue → Todo (second failure → agent:human-review-required)
@@ -38,6 +41,10 @@ Trust boundaries:
   gateway session and the run's executor (the jail), never on the host. Its
   baseline and history files, the eval history, skill proposals and failure
   filing are runner-side steps the agent cannot reach.
+* The RSI scorecard runs the candidate commit in a separate, secret-free
+  candidate instance (:mod:`locus_runtime.rsi.candidate`); its suite, graders
+  and held-out split come from the runner's own checkout, sealed and
+  hash-verified, never from the run's working copy.
 """
 
 from __future__ import annotations
@@ -136,6 +143,19 @@ from locus_runtime.loop_runner.linear import (
     with_retry,
 )
 from locus_runtime.loop_runner.merge_guard import evaluate_auto_merge
+from locus_runtime.loop_runner.scorecard_gate import (
+    DEFAULT_MODEL as SCORECARD_DEFAULT_MODEL,
+)
+from locus_runtime.loop_runner.scorecard_gate import (
+    ScorecardGateResult,
+    ScorecardHistory,
+    ScorecardRequest,
+    ScorecardRunner,
+    default_scorecard_runner,
+    evaluate_candidate,
+    parse_scorecard_mode,
+    scorecard_merge_hold_reason,
+)
 from locus_runtime.loop_runner.state import (
     Ledger,
     LoopBusy,
@@ -146,6 +166,7 @@ from locus_runtime.loop_runner.state import (
     read_run_history,
     today_utc,
 )
+from locus_runtime.rsi.variants import VariantArchive, variant_tag
 from locus_runtime.model_client import (
     EnvProviderSettings,
     FallbackEvent,
@@ -317,6 +338,7 @@ def pr_body(
     trajectory_ref: str,
     gate: GateReport | None = None,
     eval_result: EvalGateResult | None = None,
+    scorecard: ScorecardGateResult | None = None,
 ) -> str:
     env = result.envelope
     evidence = result.evidence or {}
@@ -359,6 +381,8 @@ def pr_body(
     lines += gate.markdown() if gate is not None else ["- disabled (LOCUS_LOOP_QUALITY_GATES=0)"]
     lines += ["", "## Eval gate (synthetic DeepSWE on the model chain)"]
     lines += eval_result.markdown() if eval_result is not None else ["- off"]
+    lines += ["", "## RSI scorecard (LOCUS-351: candidate vs the base branch's baseline)"]
+    lines += scorecard.markdown() if scorecard is not None else ["- off (LOCUS_LOOP_SCORECARD=off)"]
     lines += [
         "",
         "## Usage",
@@ -408,6 +432,10 @@ class LoopRunner:
     eval_runner: EvalRunner = default_eval_runner
     eval_run_kwargs: dict[str, Any] = field(default_factory=dict)
     skill_store_factory: Callable[[], SkillStore] = SkillStore
+    #: LOCUS-351 seams: the RSI scorecard implementation (apps/evals suite by
+    #: default) and extra ``SuiteRunConfig`` keyword arguments (tests).
+    scorecard_runner: ScorecardRunner = default_scorecard_runner
+    scorecard_run_kwargs: dict[str, Any] = field(default_factory=dict)
 
     # ------------------------------------------------------------------ tick
     def run_once(self) -> TickResult:
@@ -795,6 +823,7 @@ class LoopRunner:
                 worktree,
                 f"chore(loop): {title}\n\nResolves {issue.identifier}\nLocus-Run: {run_id}",
             )
+            scorecard = self._scorecard_gate(issue, record, worktree, gate)
             self._retry(lambda: self.git.push(worktree, self.config.remote, branch))
             body = pr_body(
                 issue,
@@ -804,6 +833,7 @@ class LoopRunner:
                 trajectory_ref=f"runs/{run_id}/trajectory.jsonl",
                 gate=gate,
                 eval_result=eval_result,
+                scorecard=scorecard,
             )
             pr = self._retry(
                 lambda: self.github.open_pr(branch, self.config.base_branch, title, body)
@@ -844,6 +874,7 @@ class LoopRunner:
                 "issue_key": issue.identifier,
                 "opened_at": _iso(self.clock()),
                 "eval_status": (record.get("eval") or {}).get("status"),
+                "scorecard_status": (record.get("scorecard") or {}).get("status"),
             }
         )
         self._finish(ledger, record, "done", pr_url=pr.url)
@@ -956,6 +987,7 @@ class LoopRunner:
                     "usage": record.get("usage") or {},
                     "gate_failures": list(record.get("gate_failures") or []),
                     "eval": record.get("eval"),
+                    "scorecard": record.get("scorecard"),
                 },
             )
         except OSError:
@@ -1043,7 +1075,12 @@ class LoopRunner:
         eval_hold = eval_merge_hold_reason(self.config.eval_gate, pr.get("eval_status"))
         if eval_hold:
             reasons_all.append(eval_hold)
-        if decision.merge and not eval_hold:
+        scorecard_hold = scorecard_merge_hold_reason(
+            self.config.scorecard_mode, pr.get("scorecard_status")
+        )
+        if scorecard_hold:
+            reasons_all.append(scorecard_hold)
+        if decision.merge and not eval_hold and not scorecard_hold:
             # The head must still be the one evaluated (merge_pr also pins it).
             if self.github.pr_info(number).head_sha != info.head_sha:
                 return {"number": number, "action": "waiting", "detail": "head changed"}
@@ -1229,6 +1266,89 @@ class LoopRunner:
         except OSError:
             logger.exception("loop.eval_history_write_error", extra={"run_id": run_id})
         return result
+
+    # ------------------------------------------------------------------ scorecard (LOCUS-351)
+    def _scorecard_gate(
+        self,
+        issue: LinearIssue,
+        record: dict[str, Any],
+        worktree: Path,
+        gate: GateReport | None,
+    ) -> ScorecardGateResult | None:
+        """Evaluate the committed candidate with the RSI suite (None when off)."""
+        if parse_scorecard_mode(self.config.scorecard_mode, "off") == "off":
+            return None
+        run_id = str(record["run_id"])
+        branch = str(record["branch"])
+        sha = ""
+        try:
+            sha = self.git.run(worktree, "rev-parse", "HEAD").strip()
+        except DeliveryError as exc:
+            result = ScorecardGateResult.skipped(f"no candidate commit ({_safe(exc, 120)})")
+        else:
+            request = ScorecardRequest(
+                candidate_checkout=worktree,
+                repo_path=self.config.repo_path,
+                output_dir=self.config.home / "scorecards" / run_id,
+                git_sha=sha,
+                branch=branch,
+                # Only reached when every selected pre-PR check passed.
+                gate_failures=list(gate.failing_ids) if gate is not None else None,
+                trials=self.config.scorecard_trials,
+                splits=self.config.scorecard_splits,
+                model=self.config.scorecard_model or SCORECARD_DEFAULT_MODEL,
+                python=self.config.scorecard_python,
+                run_kwargs=dict(self.scorecard_run_kwargs),
+            )
+            with telemetry.gate("scorecard", run_id=run_id) as span:
+                result = evaluate_candidate(
+                    request,
+                    self.scorecard_runner,
+                    VariantArchive(self.config.home),
+                    base_branch=self.config.base_branch,
+                    now=self.clock(),
+                )
+                summary = result.summary()
+                span.set_many(
+                    {
+                        "locus.gate.status": result.status,
+                        "locus.rsi.heldout_pass_rate": summary.get("heldout_pass_rate"),
+                    }
+                )
+                telemetry.record_score(
+                    "rsi_scorecard",
+                    summary.get("heldout_pass_rate"),
+                    label=result.status,
+                    comment=result.reason,
+                    source="loop_runner",
+                    run_id=run_id,
+                )
+        record["scorecard"] = result.summary()
+        try:
+            ScorecardHistory(self.config.home).append(
+                result, run_id=run_id, issue=issue.identifier, now=self.clock()
+            )
+        except OSError:
+            logger.exception("loop.scorecard_history_write_error", extra={"run_id": run_id})
+        if self.config.tag_variants and sha and result.scorecard is not None:
+            self._tag_variant(worktree, branch, sha)
+        return result
+
+    def _tag_variant(self, worktree: Path, branch: str, sha: str) -> None:
+        """``variant/<sha12>`` in the runner's repository (local only, never pushed)."""
+        try:
+            tag = variant_tag(sha)
+            self.git.verify_seal(worktree)
+            self.git.run(
+                self.config.repo_path,
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                str(worktree),
+                f"+refs/heads/{branch}:refs/tags/{tag}",
+            )
+        except (DeliveryError, ValueError):
+            logger.warning("loop.variant_tag_failed", extra={"sha": sha[:12]})
 
     # ------------------------------------------------------------------ feedback (LOCUS-339)
     def _propose_skill(

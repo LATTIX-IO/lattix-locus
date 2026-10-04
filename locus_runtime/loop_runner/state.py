@@ -16,6 +16,8 @@ Everything the runner persists lives under ``LOCUS_LOOP_HOME`` (default
   ``lattix loop report`` is built from it (LOCUS-339).
 * ``perf-baseline.json`` / ``perf-history.jsonl`` -- the performance budget gate.
 * ``eval-history.jsonl`` -- eval gate resolve rates.
+* ``scorecard-history.jsonl`` / ``variants/`` -- RSI scorecards and the variant
+  archive (LOCUS-351); ``scorecards/<run_id>/`` -- each scorecard run's output.
 * ``failure-patterns.json`` -- failure fingerprints already filed to Linear.
 """
 
@@ -144,6 +146,13 @@ class LoopConfig:
     file_failure_issues: bool = False
     max_failure_issues_per_day: int = 3
     failure_issue_min_occurrences: int = 2
+    # -- LOCUS-351 RSI scorecard (dataclass default off; ``load`` defaults to advisory).
+    scorecard_mode: str = "off"  # off | advisory | required
+    scorecard_trials: int = 1
+    scorecard_splits: tuple[str, ...] = ("dev", "heldout")
+    scorecard_model: str = ""
+    scorecard_python: str = ""
+    tag_variants: bool = False
 
     @property
     def runs_dir(self) -> Path:
@@ -205,6 +214,12 @@ class LoopConfig:
             file_failure_issues=_env_bool("LOCUS_LOOP_FILE_FAILURE_ISSUES", True),
             max_failure_issues_per_day=_env_int("LOCUS_LOOP_MAX_FAILURE_ISSUES_PER_DAY", 3),
             failure_issue_min_occurrences=_env_int("LOCUS_LOOP_FAILURE_ISSUE_MIN_OCCURRENCES", 2),
+            scorecard_mode=_scorecard_mode(os.getenv("LOCUS_LOOP_SCORECARD")),
+            scorecard_trials=_env_int("LOCUS_LOOP_SCORECARD_TRIALS", 1),
+            scorecard_splits=_env_list("LOCUS_LOOP_SCORECARD_SPLITS") or ("dev", "heldout"),
+            scorecard_model=str(os.getenv("LOCUS_LOOP_SCORECARD_MODEL") or "").strip(),
+            scorecard_python=str(os.getenv("LOCUS_LOOP_SCORECARD_PYTHON") or "").strip(),
+            tag_variants=_env_bool("LOCUS_LOOP_TAG_VARIANTS", False),
         )
 
 
@@ -212,6 +227,12 @@ def _eval_mode(value: str | None) -> str:
     from locus_runtime.loop_runner.eval_gate import parse_eval_mode
 
     return parse_eval_mode(value, "advisory")
+
+
+def _scorecard_mode(value: str | None) -> str:
+    from locus_runtime.loop_runner.scorecard_gate import parse_scorecard_mode
+
+    return parse_scorecard_mode(value, "advisory")
 
 
 # --------------------------------------------------------------------------- #
