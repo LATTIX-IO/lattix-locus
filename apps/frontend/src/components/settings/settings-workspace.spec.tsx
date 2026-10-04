@@ -28,6 +28,9 @@ const api = vi.hoisted(() => ({
   resetComputerUse: vi.fn(),
   getUserBrowserTier: vi.fn(),
   setUserBrowserTier: vi.fn(),
+  getUserBrowserStatus: vi.fn(),
+  pairUserBrowser: vi.fn(),
+  unpairUserBrowser: vi.fn(),
   getPlatformVersionStatus: vi.fn(),
   getSystemUpdateStatus: vi.fn(),
   getMcpConnections: vi.fn(),
@@ -114,6 +117,7 @@ beforeEach(() => {
     tier_risks: { assisted: "Assisted risk text from the backend." },
   });
   api.getPlatformVersionStatus.mockResolvedValue({ current_version: "1.0.0", status: "up_to_date" });
+  api.getUserBrowserStatus.mockResolvedValue({ paired: false, connected: false });
 });
 
 describe("SettingsWorkspace", () => {
@@ -233,6 +237,41 @@ describe("Computer use", () => {
     await waitFor(() => expect(api.setUserBrowserTier).toHaveBeenCalledTimes(1));
     expect(api.setUserBrowserTier.mock.calls[0][2]).toEqual({ acknowledgeRisk: false });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("pairs and unpairs the browser from Operating system access", async () => {
+    api.pairUserBrowser.mockResolvedValue({ paired: true, connected: false, rotated: false });
+    api.unpairUserBrowser.mockResolvedValue({ paired: false, connected: false });
+    render(<ComputerUseSection />);
+
+    const group = await screen.findByRole("group", { name: /operating system access/i });
+    expect(await within(group).findByText(/not paired/i)).toBeInTheDocument();
+    const pair = within(group).getByRole("button", { name: /pair browser/i });
+    expect(pair).toBeEnabled();
+    fireEvent.click(pair);
+
+    await waitFor(() => expect(api.pairUserBrowser).toHaveBeenCalledTimes(1));
+    expect(await within(group).findByText(/browser paired/i)).toBeInTheDocument();
+    fireEvent.click(within(group).getByRole("button", { name: /^unpair$/i }));
+    await waitFor(() => expect(api.unpairUserBrowser).toHaveBeenCalledTimes(1));
+    expect(await within(group).findByText(/^not paired\.$/i)).toBeInTheDocument();
+  });
+
+  it("reports a cancelled pairing dialog without claiming success", async () => {
+    api.pairUserBrowser.mockRejectedValue(new DesktopConfirmationCancelledError());
+    render(<ComputerUseSection />);
+
+    const group = await screen.findByRole("group", { name: /operating system access/i });
+    fireEvent.click(await within(group).findByRole("button", { name: /pair browser/i }));
+    expect(await within(group).findByRole("alert")).toHaveTextContent(/cancelled in the confirmation dialog/i);
+  });
+
+  it("offers a recheck when desktop control is not enforced", async () => {
+    render(<ComputerUseSection />);
+
+    const group = await screen.findByRole("group", { name: /operating system access/i });
+    fireEvent.click(await within(group).findByRole("button", { name: /check again/i }));
+    await waitFor(() => expect(api.getPlatformSecurityPolicy).toHaveBeenCalledTimes(2));
   });
 
   it("stops computer use from the panic button", async () => {

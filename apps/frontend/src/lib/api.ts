@@ -2135,19 +2135,17 @@ export function isBrowserTierWidening(current: UserBrowserTierSettings, next: Br
 
 const TIER_CONFIRMATION_REFUSAL = "needs confirmation in the Locus desktop app";
 
-async function confirmBrowserTierInShell(next: BrowserTierChange): Promise<UserBrowserTierSettings> {
+/** Run one of the shell's own confirmation commands (confirm_browser_tier,
+ * confirm_browser_pairing): the shell shows its native dialog, signs and sends
+ * the request itself, then relays the backend's JSON response. */
+async function invokeShellConfirmation<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const invoke = getDesktopInvoke();
   if (!invoke) {
     throw new DesktopConfirmationError("the desktop shell is not available");
   }
   let relayed: unknown;
   try {
-    // Tauri passes command arguments in camelCase (confirm_browser_tier, LOCUS-350).
-    relayed = await invoke("confirm_browser_tier", {
-      tier: next.tier,
-      allowlistedSites: next.allowlisted_sites,
-      grantedSites: next.granted_sites,
-    });
+    relayed = await invoke(command, args);
   } catch (error) {
     const reason = typeof error === "string" ? error : error instanceof Error ? error.message : String(error);
     if (reason === "cancelled") {
@@ -2157,7 +2155,16 @@ async function confirmBrowserTierInShell(next: BrowserTierChange): Promise<UserB
   }
   const text = typeof relayed === "string" ? relayed : "";
   setApiConnected(true);
-  return (text.trim() ? JSON.parse(text) : {}) as UserBrowserTierSettings;
+  return (text.trim() ? JSON.parse(text) : {}) as T;
+}
+
+async function confirmBrowserTierInShell(next: BrowserTierChange): Promise<UserBrowserTierSettings> {
+  // Tauri passes command arguments in camelCase (confirm_browser_tier, LOCUS-350).
+  return invokeShellConfirmation<UserBrowserTierSettings>("confirm_browser_tier", {
+    tier: next.tier,
+    allowlistedSites: next.allowlisted_sites,
+    grantedSites: next.granted_sites,
+  });
 }
 
 /**
@@ -2193,6 +2200,37 @@ export async function setUserBrowserTier(
     }
     throw error;
   }
+}
+
+export type UserBrowserStatus = {
+  paired: boolean;
+  connected: boolean;
+  clients?: unknown[];
+  native_host?: string;
+  extension_ids?: { chromium?: string; firefox?: string };
+  tier?: UserBrowserTierSettings;
+  rotated?: boolean;
+};
+
+export async function getUserBrowserStatus(): Promise<UserBrowserStatus> {
+  return strictFetch<UserBrowserStatus>("/user-browser/status");
+}
+
+/**
+ * Pair (or re-pair) the principal's browser (LOCUS-350). Widening: on the
+ * desktop the shell's native dialog confirms it (`confirm_browser_pairing`) and
+ * the shell sends the signed request; the web profile sends it directly.
+ */
+export async function pairUserBrowser(): Promise<UserBrowserStatus> {
+  if (getDesktopInvoke() !== null) {
+    return invokeShellConfirmation<UserBrowserStatus>("confirm_browser_pairing");
+  }
+  return strictFetch<UserBrowserStatus>("/user-browser/pairing", { method: "POST", body: JSON.stringify({}) });
+}
+
+/** Remove the pairing (narrowing: a plain request). */
+export async function unpairUserBrowser(): Promise<UserBrowserStatus> {
+  return strictFetch<UserBrowserStatus>("/user-browser/pairing", { method: "DELETE" });
 }
 
 export type SystemUpdateStatus = {
