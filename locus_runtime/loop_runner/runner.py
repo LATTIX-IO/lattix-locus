@@ -116,6 +116,7 @@ from locus_runtime.loop_runner.quality_gates import (
 from locus_runtime.loop_runner.delivery import (
     DeliveryError,
     GitOps,
+    HostWorkspaceGit,
     LoopGitHub,
     PullRequestInfo,
     branch_name,
@@ -671,8 +672,13 @@ class LoopRunner:
             profile = resolve_profile(
                 str(getattr(client, "provider", "")), str(getattr(client, "model", ""))
             )
+            # The diff for submit / the verify gate is taken host-side (fixed argv,
+            # hardened, sealed .git): git cannot run inside the Windows AppContainer.
             workspace = Workspace(
-                run_id=run_id, executor=executor, base_ref=str(record.get("base_sha") or "HEAD")
+                run_id=run_id,
+                executor=executor,
+                base_ref=str(record.get("base_sha") or "HEAD"),
+                host_git=HostWorkspaceGit(self.git, worktree),
             )
             # Computer-use tools when the envelope lists them (LOCUS-346), on this
             # run's session (its capabilities came from the envelope).

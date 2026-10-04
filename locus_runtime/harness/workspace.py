@@ -7,15 +7,31 @@ the agent uses, so it works identically for host repos and container repos.
 Git operations run through the executor; for the local sandbox the ``.git``
 directory is read-only inside the sandbox by design, so diffs are taken via a
 host-side direct executor when one is supplied.
+
+``host_git`` (LOCUS-362): git cannot run inside the Windows AppContainer
+("Unable to read current working directory"), so a diff taken through the jail
+is empty there and the verify gate would judge an empty patch. A platform
+caller (the loop runner) supplies a :class:`HostGit` that computes the diff on
+the host with fixed argv and the GitOps hardening (hooks off, fsmonitor off,
+sealed ``.git``); the agent never controls its arguments.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 from locus_runtime.harness.executor import Executor
+
+
+class HostGit(Protocol):
+    """Platform-side git for a workspace: fixed operations, never agent input."""
+
+    def diff(self, base: str, pathspecs: Sequence[str]) -> str: ...
+
+    def has_uncommitted_changes(self) -> bool: ...
 
 
 @dataclass
@@ -28,6 +44,8 @@ class Workspace:
     # executor sandboxes .git read-only).
     git_executor: Executor | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Host-side git with fixed argv (preferred for diff when set; see module doc).
+    host_git: HostGit | None = None
 
     def _git_exec(self) -> Executor:
         return self.git_executor or self.executor
@@ -37,15 +55,17 @@ class Workspace:
 
     #: Build artefacts / caches that must never appear in a graded patch — they
     #: pollute the prediction and can break ``git apply`` during SWE-bench grading.
-    DIFF_EXCLUDES = (
-        "':(exclude)**/__pycache__/**'",
-        "':(exclude)*.pyc'",
-        "':(exclude)**/*.pyc'",
-        "':(exclude).pytest_cache/**'",
-        "':(exclude)**/.pytest_cache/**'",
-        "':(exclude)**/*.egg-info/**'",
-        "':(exclude).mypy_cache/**'",
+    DIFF_EXCLUDE_PATHSPECS = (
+        ":(exclude)**/__pycache__/**",
+        ":(exclude)*.pyc",
+        ":(exclude)**/*.pyc",
+        ":(exclude).pytest_cache/**",
+        ":(exclude)**/.pytest_cache/**",
+        ":(exclude)**/*.egg-info/**",
+        ":(exclude).mypy_cache/**",
     )
+    #: Shell-quoted form for git run through an executor's shell.
+    DIFF_EXCLUDES = tuple(f"'{spec}'" for spec in DIFF_EXCLUDE_PATHSPECS)
 
     def diff(self) -> str:
         """Clean unified diff of source changes vs base_ref/HEAD.
@@ -56,7 +76,12 @@ class Workspace:
         Defensive against git's stat-cache missing a change under heavy
         concurrent load: refreshes the index and tries staged then working-tree
         diffs, returning the first non-empty result.
+
+        With ``host_git`` the diff is taken on the host (fixed argv, hardened);
+        its errors (e.g. a tampered ``.git``) propagate and fail the run closed.
         """
+        if self.host_git is not None:
+            return self.host_git.diff(self.base_ref or "HEAD", self.DIFF_EXCLUDE_PATHSPECS)
         ex = self._git_exec()
         excludes = " ".join(self.DIFF_EXCLUDES)
         base = self.base_ref or "HEAD"
@@ -151,6 +176,8 @@ class Workspace:
 
     def has_uncommitted_changes(self) -> bool:
         """True if git sees any tracked-file change (used to detect a lost diff)."""
+        if self.host_git is not None:
+            return self.host_git.has_uncommitted_changes()
         ex = self._git_exec()
         res = ex.run_shell("git status --porcelain --untracked-files=no", timeout=30)
         return bool(res.stdout.strip())
