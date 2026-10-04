@@ -141,7 +141,23 @@ def _import_suite_runner(repo_path: Path) -> Any:
         return importlib.import_module("locus_evals.suite.runner")
 
 
+def candidate_python(configured: str) -> str:
+    """The interpreter for the candidate instance: the configured one, else this one.
+
+    A frozen build (the desktop backend sidecar) has no usable ``python`` of its own,
+    so it needs ``LOCUS_LOOP_SCORECARD_PYTHON``; without it the scorecard is skipped.
+    """
+    if configured:
+        return configured
+    if getattr(sys, "frozen", False):
+        raise ScorecardUnavailable(
+            "no candidate interpreter in a frozen build (set LOCUS_LOOP_SCORECARD_PYTHON)"
+        )
+    return sys.executable
+
+
 def default_scorecard_runner(request: ScorecardRequest) -> Scorecard:
+    python = candidate_python(request.python)
     try:
         suite = _import_suite_runner(request.repo_path)
     except ImportError as exc:
@@ -149,7 +165,7 @@ def default_scorecard_runner(request: ScorecardRequest) -> Scorecard:
     config = suite.SuiteRunConfig(
         candidate_checkout=request.candidate_checkout,
         output_dir=request.output_dir,
-        candidate_python=request.python or sys.executable,
+        candidate_python=python,
         splits=tuple(request.splits),
         trials=max(1, int(request.trials)),
         model=request.model,

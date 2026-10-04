@@ -66,3 +66,54 @@ def test_toolchain_home_switch_only_applies_without_an_explicit_home(
     monkeypatch.setenv(TOOLCHAIN_HOME_ENV, str(tmp_path / "installed"))
     assert toolchain_for().root.parent == tmp_path / "installed"
     assert toolchain_for(tmp_path / "explicit").root.parent == tmp_path / "explicit"
+
+
+def test_candidate_python_needs_configuration_in_a_frozen_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+
+    from locus_runtime.loop_runner.scorecard_gate import ScorecardUnavailable, candidate_python
+
+    assert candidate_python("C:/venv/python.exe") == "C:/venv/python.exe"
+    assert candidate_python("") == sys.executable
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    with pytest.raises(ScorecardUnavailable, match="LOCUS_LOOP_SCORECARD_PYTHON"):
+        candidate_python("")
+
+
+def test_default_runner_maps_an_unavailable_suite_to_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from locus_runtime.loop_runner import scorecard_gate as sg
+    from locus_runtime.rsi.variants import VariantArchive
+
+    class Suite:
+        class SuiteUnavailable(RuntimeError):
+            pass
+
+        class SuiteRunConfig:
+            def __init__(self, **kw: object) -> None:
+                self.kw = kw
+
+        @staticmethod
+        def run_suite(config: object) -> object:
+            raise Suite.SuiteUnavailable("model endpoint unreachable (ConnectError)")
+
+    monkeypatch.setattr(sg, "_import_suite_runner", lambda _repo: Suite)
+    request = sg.ScorecardRequest(
+        candidate_checkout=tmp_path,
+        repo_path=tmp_path,
+        output_dir=tmp_path / "o",
+        git_sha="a" * 40,
+        branch="b",
+    )
+    result = sg.evaluate_candidate(request, sg.default_scorecard_runner, VariantArchive(tmp_path))
+    assert result.status == "skipped" and "unreachable" in result.reason
+
+    def missing(_repo: Path) -> object:
+        raise ImportError("no locus_evals")
+
+    monkeypatch.setattr(sg, "_import_suite_runner", missing)
+    result = sg.evaluate_candidate(request, sg.default_scorecard_runner, VariantArchive(tmp_path))
+    assert result.status == "skipped" and "not installed" in result.reason
