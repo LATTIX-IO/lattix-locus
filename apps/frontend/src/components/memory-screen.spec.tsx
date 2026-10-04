@@ -5,8 +5,9 @@ const api = vi.hoisted(() => ({ getMemoryLayers: vi.fn(), getMemorySession: vi.f
 vi.mock("@/lib/api", () => api);
 
 import { MemoryScreen } from "@/components/memory-screen";
+import type { WorkflowRunSummary } from "@/types/locus";
 
-const runs = [{ id: "run-1", title: "Draft follow-up", status: "Done", updatedAt: "now", progressLabel: "done" }];
+const runs: WorkflowRunSummary[] = [{ id: "run-1", title: "Draft follow-up", status: "Done", updatedAt: "now", progressLabel: "done" }];
 
 beforeEach(() => {
   api.getMemoryLayers.mockReset();
