@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { getAgentDefinitions, publishWorkflowDefinition, saveWorkflowDefinition } from "@/lib/api";
 import { SecurityScopeEditor } from "@/components/security-scope-editor";
 import type { GraphLink, GraphNode } from "@/components/reactflow-canvas";
-import type { AgentDefinition, GeneratedCodeArtifact, SecurityScopeConfig } from "@/types/locus";
+import type { AgentDefinition, SecurityScopeConfig } from "@/types/locus";
 
 const StudioFullCanvas = dynamic(
   () => import("@/components/studio-full-canvas").then((m) => m.StudioFullCanvas),
@@ -21,10 +21,9 @@ type Props = {
     links?: GraphLink[];
   };
   initialSecurity?: SecurityScopeConfig;
-  initialGeneratedArtifacts?: GeneratedCodeArtifact[];
 };
 
-export function WorkflowStudioClient({ workflowId, workflowName, initialGraph, initialSecurity, initialGeneratedArtifacts }: Props) {
+export function WorkflowStudioClient({ workflowId, workflowName, initialGraph, initialSecurity }: Props) {
   const router = useRouter();
   const [securityConfig, setSecurityConfig] = useState<SecurityScopeConfig>(initialSecurity ?? {});
   const [agentDefinitions, setAgentDefinitions] = useState<AgentDefinition[]>([]);
@@ -154,7 +153,6 @@ export function WorkflowStudioClient({ workflowId, workflowName, initialGraph, i
       description="Compose multiple agents, tools, retrieval, and controls into one outcome-focused workflow. This graph is the execution contract persisted by the orchestration runtime."
       initialNodes={initialNodes}
       initialLinks={initialLinks}
-      initialGeneratedArtifacts={initialGeneratedArtifacts}
       rightSidebarSlot={nodeInspector}
       externalWidgetOptionOverrides={{ agent: { agent_id: agentIdOptions } }}
       onNodeSelected={setSelectedNode}

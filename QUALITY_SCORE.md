@@ -15,7 +15,7 @@ Quality here means a reviewer can tell what changed, what enforced it, what evid
 | Contract stability | `packages/contracts/templates/*.schema.json`, `tests/unit/test_docs_contract.py`, `test_version_contract.py`, `test_tooling_contract.py` | Schema/API/CLI changes carry compatibility evidence |
 | Deployment integrity | `make helm-validate`, `docker compose config`, `tests/unit/test_helm_security_contract.py`, `test_compose_auth_contract.py`, `test_container_image_contract.py` | Compose and Helm stay renderable and keep their security contract |
 | Installer safety | `tests/unit/test_installer.py`, `test_public_installer.py`, `test_install_diagnostics.py`, `docs/INSTALLER.md` | Update/remove paths stay non-destructive; state manifest versioning preserved |
-| Observability | `structlog`, OpenTelemetry exporters, `/observability/*`, `/audit/*` | New failure modes get structured logs, spans, or audit events |
+| Observability | `locus_runtime/telemetry` (OpenTelemetry), `/observability/*`, `/audit/*` | New failure modes get structured logs, spans, or audit events |
 | Documentation coverage | `README.md`, `docs/`, `.ai-memory/repo-profile.md` | Behavior, config, and operational changes update docs in the same change set |
 
 ## Current measured signals
@@ -44,7 +44,6 @@ Track these; do not treat a green gate as full coverage.
 - **Control-plane persistence swallows failures.** `_persist_store_state()` wraps its work in a bare `try`, so a missing or unreachable Postgres can lose definitions on restart without a signal. The A2A nonce path is the one place that correctly returns `503`.
 - **`budget_policy.rego` has no test file**; every other policy does.
 - **Two isolation strategies are enum-only.** `k8s-gvisor` and `k8s-kata` have no implementing strategy class.
-- **Microsoft Agent Framework is code generation, not execution.** `generated_artifacts.py` emits `agent_framework` source; nothing imports or runs it.
 
 ## Review cadence
 

@@ -15,7 +15,7 @@ Active plan areas and the evidence each must produce before it counts as done. I
 | Run streaming | Landed | SSE (`text/event-stream`); clients still need explicit stream-drop handling |
 | Windows isolation | Landed | `_WindowsAppContainerStrategy` / `windows-appcontainer` tier, fail-closed |
 | Kubernetes isolation tiers | Planned | `k8s-gvisor` and `k8s-kata` are enum values with no implementing strategy |
-| MAF integration | Undecided | Currently a code emitter in `generated_artifacts.py`, not an execution engine — either wire it or restate the architecture |
+| MAF integration | Dropped | The LangGraph/MAF code scaffolds (`generated_artifacts.py`) and the framework chat adapters were removed (LOCUS-352 phase 1) |
 | Memory feature rollout | Feature-flagged | Consolidation, hybrid retrieval, decay, vector/file dedup, WAL, and world-graph projection all default off; needs a staged enablement plan |
 | Policy coverage | Planned | `budget_policy.rego` has no test file; every other policy does |
 | Format gating | Planned | Add `ruff format --check` to CI |

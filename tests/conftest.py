@@ -9,7 +9,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from locus_runtime.events import reset_event_bus
-from locus_runtime.orchestrator import reset_approval_store
 from locus_runtime.persistence import reset_shared_state_backend
 from locus_runtime.security import reset_token_caches
 
@@ -31,13 +30,11 @@ def security_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     previous_authn = backend_store.platform_settings.require_authenticated_requests
     backend_store.platform_settings.require_authenticated_requests = True
     reset_shared_state_backend()
-    reset_approval_store()
     reset_event_bus()
     reset_token_caches()
     yield
     backend_store.platform_settings.require_authenticated_requests = previous_authn
     reset_shared_state_backend()
-    reset_approval_store()
     reset_event_bus()
     reset_token_caches()
 

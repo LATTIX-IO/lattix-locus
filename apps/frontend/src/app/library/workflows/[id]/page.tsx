@@ -18,7 +18,6 @@ export default async function WorkflowStudioPage({
       workflowName={workflowName}
       initialGraph={selectedWorkflow?.graph_json}
       initialSecurity={selectedWorkflow?.security_config}
-      initialGeneratedArtifacts={selectedWorkflow?.generated_artifacts}
     />
   );
 }

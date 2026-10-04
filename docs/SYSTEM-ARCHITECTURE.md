@@ -216,7 +216,7 @@ Locus’s multi-agent model is ecosystem-based rather than single-loop. Agents a
 
 ### 5.1 Agent registry and discovery
 
-Agent discovery begins with the registry layer. `locus_runtime/agents.py` builds a registry from discovered agent records and ensures a baseline catalog of roles such as:
+Agent discovery begins with the registry layer. `locus_tooling.common.discover_agent_records()` (`lattix agent list`) builds the catalog from discovered agent records, and the worker runtime trusts a baseline set of roles (`apps/workers/runtime/layer2/security.py`) such as:
 
 - `research`
 - `code`
@@ -326,7 +326,7 @@ The `StudioFullCanvas` component lets operators:
 - assemble workflow graphs from typed nodes and links
 - validate graph wiring before execution
 - run the graph through the backend
-- inspect runtime engine selection and hybrid routing
+- inspect the model runtime (provider, model, temperature, session)
 - inspect memory counts
 - manage collaboration state
 - view observability summaries

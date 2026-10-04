@@ -82,9 +82,9 @@ This section is the Lattix-standard architecture record for this repo. `DESIGN.m
 
 | Layer | Responsibility | Where |
 | --- | --- | --- |
-| 1 — Orchestration | Graph validation and execution, run lifecycle, checkpointing | `apps/backend/app/main.py`, `locus_runtime/orchestrator.py`, LangGraph + Postgres checkpoint |
+| 1 — Orchestration | Graph validation and execution, run lifecycle, checkpointing | `apps/backend/app/main.py`, `apps/backend/app/graph_compiler.py` (LangGraph) |
 | 2 — Guardrails | Prompt render, DLP/redaction, capability enforcement, policy gates | `locus_runtime/guardrails.py`, `policies/` via OPA |
-| 3 — Agent execution | Node executors, pluggable engines, A2A transport, tool invocation | `_execute_node` and `_run_framework_*`, `apps/workers/runtime/` |
+| 3 — Agent execution | Node executors, A2A transport, tool invocation; every model call through the gated model client | `_execute_node`, `locus_runtime/model_client.py`, `apps/workers/runtime/` |
 | 4 — Infrastructure | Isolation, secrets, policy, transport, storage, tracing | `locus_runtime/sandbox.py`, Vault, OPA, Envoy, NATS, Postgres/pgvector, Redis, Neo4j, Jaeger |
 
 ### Canonical surfaces
@@ -122,5 +122,5 @@ Fourteen executable node types: `trigger`, `agent`, `prompt`, `tool-call`, `retr
 - New control-plane features land in `apps/backend/` or `apps/workers/`; the removed `lattix_locus/` package is not revived.
 - `apps/backend/app/main.py` is a 21,228-LOC monolith. Prefer extracting a cohesive router or service over appending to it.
 - Cognitive columns are additive. Existing `locus/agent` semantics and legacy graphs must keep validating and running.
-- Execution engines are optional imports reported through `/runtime/providers`, never hard dependencies.
-- Microsoft Agent Framework is currently a **code emitter** in `generated_artifacts.py`, not an execution engine. Describe it accurately until that changes.
+- One execution engine: native. The LangChain, LangGraph, Semantic Kernel and AutoGen chat adapters and the LangGraph/MAF code scaffolds were removed (LOCUS-352); stored engine settings resolve to native.
+- Model providers are reached only through `locus_runtime/model_client.py` (and the Deep Agents runtime behind the same gate). `tests/unit/test_model_client_bypass.py` fails on a provider client built anywhere else (LOCUS-376).

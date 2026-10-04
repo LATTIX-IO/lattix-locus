@@ -5,7 +5,6 @@ from threading import Thread
 
 import locus_runtime.security as security_module
 from locus_runtime.events import AgentEvent, get_event_bus, reset_event_bus
-from locus_runtime.orchestrator import get_approval_store, reset_approval_store
 from locus_runtime.persistence import (
     load_state,
     mutate_state,
@@ -19,22 +18,6 @@ from locus_runtime.security import (
     token_identity_from_claims,
     verify_token,
 )
-
-
-def test_approval_store_persists_across_singleton_reset(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("LOCUS_STATE_STORE", str(tmp_path / "state.db"))
-    reset_shared_state_backend()
-    reset_approval_store()
-
-    created = get_approval_store().create("confidential", "approve me")
-
-    reset_shared_state_backend()
-    reset_approval_store()
-    restored = get_approval_store().get(created.id)
-
-    assert restored is not None
-    assert restored.task == "approve me"
-    assert restored.status == "pending"
 
 
 def test_event_bus_fallback_persists_events_across_singleton_reset(

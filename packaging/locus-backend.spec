@@ -8,7 +8,7 @@
 # Output: dist/locus-backend(.exe)
 #
 # NOTE: the backend has a large dependency graph (FastAPI, LangGraph, psycopg,
-# neo4j, structlog, OpenTelemetry, …). `collect_all` pulls data/hidden imports
+# neo4j, OpenTelemetry, …). `collect_all` pulls data/hidden imports
 # for the packages most likely to be missed; expand `_DYNAMIC_PKGS` as build
 # warnings surface missing modules. This spec is a vetted starting point, not a
 # guaranteed one-shot build — it must be exercised on each target OS in CI.
@@ -43,7 +43,6 @@ _DYNAMIC_PKGS = [
     "uvicorn",
     "psycopg",
     "neo4j",
-    "structlog",
     "pydantic",
     "yaml",
     # Agent browser (computer use, LOCUS-346): collect_all ships playwright's

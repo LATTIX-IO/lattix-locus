@@ -40,7 +40,6 @@ Locus exists so an operator can build, run, and audit multi-agent work on infras
 State these rather than papering over them:
 
 - The **cognitive slice is 4 columns** (goal, evidence, assembly, commitment). The system is still agent-centric and sequential.
-- **Microsoft Agent Framework is code generation, not execution.** `generated_artifacts.py` emits `agent_framework` source; nothing imports or runs it.
 - **Control-plane definitions can be lost on restart** if Postgres is unconfigured or unreachable, silently.
 - **`k8s-gvisor` and `k8s-kata` are enum values with no implementation.**
 - **Quality gates are currently red** — `pytest` does not collect, `ruff` reports 24 errors including a latent `NameError`, and the gated `mypy` scope reports 38. See `QUALITY_SCORE.md`.

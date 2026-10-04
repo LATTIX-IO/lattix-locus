@@ -32,7 +32,6 @@ def no_provider_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     """No usable provider: no OpenAI key (env or settings) and no user providers."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(main_module, "_openai_api_key", lambda: "")
-    monkeypatch.setattr(main_module, "_OPENAI_CLIENT", None)
     monkeypatch.setattr(main_module, "_user_provider_configs", lambda _principal: {})
 
 
@@ -129,16 +128,6 @@ def test_streaming_provider_error_is_typed_and_redacts_url_key(
     assert exc.provider == "gemini"
     assert "AIzaSECRET" not in exc.message
     assert "403" in exc.message
-
-
-def test_framework_chat_without_key_raises_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    with pytest.raises(main_module.ProviderUnavailableError) as caught:
-        main_module._run_langchain_chat(
-            system_prompt="", user_prompt=PROMPT, model="gpt-test-model", temperature=0.2
-        )
-    assert caught.value.code == "provider_not_configured"
-    assert caught.value.model == "gpt-test-model"
 
 
 def test_runtime_providers_reports_not_configured(no_provider_credentials: None) -> None:

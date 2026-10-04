@@ -22,8 +22,6 @@ import { getGuardrailRulesets, getUserSkills, saveUserSkills } from "@/lib/api";
 import { useIsDesktopShell } from "@/lib/desktop-shell";
 import type { GuardrailRuleSet, PlatformSettings, PlatformSignalEnforcement } from "@/types/locus";
 
-const RUNTIME_ENGINES = ["native", "langgraph", "langchain", "semantic-kernel", "autogen"] as const;
-
 const SIGNAL_OPTIONS: Array<{ value: PlatformSignalEnforcement; label: string }> = [
   { value: "off", label: "Off" },
   { value: "audit", label: "Audit only" },
@@ -49,9 +47,6 @@ type PolicyDraft = {
   max_tool_calls_per_run: string;
   max_retrieval_items: string;
   collaboration_max_agents: string;
-  default_runtime_engine: string;
-  allowed_runtime_engines: string;
-  allow_runtime_engine_override: boolean;
   emergency_read_only_mode: boolean;
   block_new_runs: boolean;
   block_graph_runs: boolean;
@@ -83,9 +78,6 @@ function toDraft(settings: PlatformSettings): PolicyDraft {
     max_tool_calls_per_run: String(settings.max_tool_calls_per_run ?? 8),
     max_retrieval_items: String(settings.max_retrieval_items ?? 8),
     collaboration_max_agents: String(settings.collaboration_max_agents ?? 8),
-    default_runtime_engine: settings.default_runtime_engine ?? "native",
-    allowed_runtime_engines: toListText(settings.allowed_runtime_engines),
-    allow_runtime_engine_override: Boolean(settings.allow_runtime_engine_override),
     emergency_read_only_mode: Boolean(settings.emergency_read_only_mode),
     block_new_runs: Boolean(settings.block_new_runs),
     block_graph_runs: Boolean(settings.block_graph_runs),
@@ -119,9 +111,6 @@ function toPatch(draft: PolicyDraft, settings: PlatformSettings, includeHosted: 
     max_tool_calls_per_run: positiveNumber(draft.max_tool_calls_per_run, settings.max_tool_calls_per_run ?? 8),
     max_retrieval_items: positiveNumber(draft.max_retrieval_items, settings.max_retrieval_items ?? 8),
     collaboration_max_agents: positiveNumber(draft.collaboration_max_agents, settings.collaboration_max_agents ?? 8),
-    default_runtime_engine: draft.default_runtime_engine as PlatformSettings["default_runtime_engine"],
-    allowed_runtime_engines: parseList(draft.allowed_runtime_engines),
-    allow_runtime_engine_override: draft.allow_runtime_engine_override,
     emergency_read_only_mode: draft.emergency_read_only_mode,
     block_new_runs: draft.block_new_runs,
     block_graph_runs: draft.block_graph_runs,
@@ -349,27 +338,10 @@ export function PoliciesSection() {
       </SettingsGroup>
 
       <SettingsGroup title="Runtime limits" description="How far a single run may go.">
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-3 md:grid-cols-3">
           <TextField id="policy-max-tool-calls" label="Tool calls per run" inputMode="numeric" value={draft.max_tool_calls_per_run} onChange={(value) => update("max_tool_calls_per_run", value)} />
           <TextField id="policy-max-retrieval" label="Retrieval items" inputMode="numeric" value={draft.max_retrieval_items} onChange={(value) => update("max_retrieval_items", value)} />
           <TextField id="policy-max-agents" label="Collaborating agents" inputMode="numeric" value={draft.collaboration_max_agents} onChange={(value) => update("collaboration_max_agents", value)} />
-          <SelectField
-            id="policy-default-engine"
-            label="Default runtime"
-            value={draft.default_runtime_engine}
-            onValueChange={(value) => update("default_runtime_engine", value)}
-            options={RUNTIME_ENGINES.map((engine) => ({ value: engine, label: engine }))}
-          />
-        </div>
-        <div className="grid gap-3 lg:grid-cols-2">
-          <ListField
-            id="policy-allowed-engines"
-            label="Allowed runtimes"
-            value={draft.allowed_runtime_engines}
-            onChange={(value) => update("allowed_runtime_engines", value)}
-            placeholder={"native\nlanggraph"}
-          />
-          {toggle("allow_runtime_engine_override", "Let agents and workflows pick a runtime", "Only from the allowed list.")}
         </div>
       </SettingsGroup>
 

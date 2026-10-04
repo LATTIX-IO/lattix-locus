@@ -177,9 +177,10 @@ Re-inspect too when a finding is reported against an attested dependency (D-29 t
 | pyasn1-modules | 0.4.2 | not listed (DE, CA; medium) | conditional | agent-prepared, sign-off pending |
 | sqlite-vec | 0.1.9 | not listed (US; medium) | conditional | agent-prepared, sign-off pending; native binaries need principal review |
 
-`origins.json` covers 51 packages: 46 not listed, 5 unknown (httpx, presidio-analyzer,
-opa-python-client, psycopg, filetype), all on the allowlist pending sign-off. None is
-P28-listed.
+`origins.json` covers 47 packages: 43 not listed, 4 unknown (httpx, presidio-analyzer,
+psycopg, filetype), all on the allowlist pending sign-off. None is P28-listed. The
+never-imported nats-py, opa-python-client, structlog and zeroconf were dropped with their
+records (LOCUS-352).
 
 ## 9. Known limits
 

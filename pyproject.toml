@@ -36,13 +36,11 @@ dependencies = [
   "langgraph==1.2.12",
   "langgraph-checkpoint==4.2.0",
   "langgraph-checkpoint-sqlite==3.1.1",
-  "nats-py>=2.10.0",
   # AI observability (LOCUS-375): imported by locus_runtime.telemetry; pinned
   # together (the OTLP exporter requires the matching SDK). Apache-2.0.
   "opentelemetry-api==1.40.0",
   "opentelemetry-exporter-otlp-proto-http==1.40.0",
   "opentelemetry-sdk==1.40.0",
-  "opa-python-client>=0.2.3",
   "openai>=1.50.0",
   "playwright==1.63.0",
   "psycopg[binary]>=3.2.0",
@@ -51,12 +49,10 @@ dependencies = [
   "python-dotenv>=1.0.1",
   "PyYAML>=6.0",
   "redis>=5.2.1",
-  "structlog>=24.4.0",
   # User-browser sites (LOCUS-350): Public Suffix List, BSD-3-Clause; already a
   # presidio-analyzer dependency, declared because we import it directly.
   "tldextract>=5.1.0",
-  "uvicorn[standard]>=0.34.0",
-  "zeroconf>=0.145.0"
+  "uvicorn[standard]>=0.34.0"
 ]
 
 [project.optional-dependencies]

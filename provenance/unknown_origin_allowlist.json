@@ -21,15 +21,6 @@
       "tracking": "LOCUS-358"
     },
     {
-      "name": "opa-python-client",
-      "ecosystem": "pypi",
-      "version": "*",
-      "reason": "Small pure-Python OPA REST client with a single maintainer (Tural Muradov) who states no location. Allowed until origin evidence is recorded; candidate for a D-29 inspection or for replacing with a few lines over httpx (P30).",
-      "reviewed_by": "agent-prepared, principal sign-off pending",
-      "date": "2026-10-04",
-      "tracking": "LOCUS-358"
-    },
-    {
       "name": "presidio-analyzer",
       "ecosystem": "pypi",
       "version": "*",
