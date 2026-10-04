@@ -248,3 +248,6 @@ apps/desktop-tauri/src-tauri/resources/
 locus_tooling/_build_stamp.py
 # CI-only Tauri overlay written by desktop-dev.yml (LOCUS-349)
 apps/desktop-tauri/src-tauri/dev-channel.conf.json
+
+# D-29 provenance inspection caches (OSV answers, screening downloads)
+provenance/.cache/

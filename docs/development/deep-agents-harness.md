@@ -134,16 +134,16 @@ New transitive packages (resolved 2026-10-03):
 | langchain-protocol | 0.0.19 | MIT | LangChain Inc. (US) | langchain-core, langgraph-sdk | |
 | langgraph-checkpoint-sqlite | 3.1.1 | MIT | LangChain Inc. (US) | platform | durable checkpointer |
 | aiosqlite | 0.22.1 | MIT | Amethyst Reese (individual; omnilib project) | checkpoint-sqlite | async saver only; unused |
-| sqlite-vec | 0.1.9 | MIT OR Apache-2.0 | Alex Garcia (individual, US); wheel metadata says "TODO" | checkpoint-sqlite | **D-29 inspection**: native SQLite extension with placeholder metadata; loaded only by LangGraph's `SqliteStore`, which Locus does not use |
+| sqlite-vec | 0.1.9 | MIT OR Apache-2.0 | Alex Garcia (individual, US); wheel metadata says "TODO" | checkpoint-sqlite | D-29 inspection done (LOCUS-358): [attestation](../../provenance/attestations/pypi/sqlite-vec@0.1.9.md), conditional, principal sign-off pending; loaded only by LangGraph's `SqliteStore`, which Locus does not use |
 | langchain-anthropic | 1.7.5 | MIT | LangChain Inc. (US) | deepagents | imported, unused |
 | anthropic | 1.11.0 | MIT | Anthropic (US) | langchain-anthropic | imported, unused |
 | docstring-parser | 0.18.0 | MIT | individual (PL) | anthropic | |
 | langchain-google-genai | 4.4.0 | MIT | LangChain Inc. (US) | deepagents | not imported by Locus paths |
 | google-genai | 2.28.0 | Apache-2.0 | Google LLC (US) | langchain-google-genai | |
 | google-auth | 2.59.1 | Apache-2.0 | Google LLC (US) | google-genai | |
-| pyasn1 | 0.6.4 | BSD-2-Clause | Ilya Etingof (individual) per metadata | google-auth | **D-29 inspection** (flagged in LOCUS-348): maintainer origin not established from metadata |
-| pyasn1-modules | 0.4.2 | BSD-2-Clause | as pyasn1 | google-auth | **D-29 inspection**, with pyasn1 |
-| filetype | 1.2.0 | MIT | Tomas Aparicio (individual, ES) | langchain-google-genai | |
+| pyasn1 | 0.6.4 | BSD-2-Clause | pyasn1 maintenance organization (Christian Heimes, DE; Simon Pichugin, CA; original author Ilya Etingof) | google-auth | D-29 inspection done (LOCUS-358): [attestation](../../provenance/attestations/pypi/pyasn1@0.6.4.md), conditional, principal sign-off pending |
+| pyasn1-modules | 0.4.2 | BSD-2-Clause | as pyasn1 | google-auth | D-29 inspection done (LOCUS-358): [attestation](../../provenance/attestations/pypi/pyasn1-modules@0.4.2.md), conditional, principal sign-off pending |
+| filetype | 1.2.0 | MIT | Tomas Aparicio (individual; origin unknown: the profile says "Decentralized") | langchain-google-genai | on the unknown-origin allowlist |
 | truststore | 0.10.4 | MIT | Seth Larson, David Glick (individuals, US) | google-genai | |
 | httpx2, httpcore2 | 2.13.1 | BSD-3-Clause | encode / Tom Christie (UK) | anthropic, langsmith, openai | |
 
@@ -151,7 +151,8 @@ Required bumps of packages already present: langchain-core 0.3.83 -> 1.6.6, lang
 1.2.12, langgraph-checkpoint 3.0.1 -> 4.2.0, langgraph-prebuilt 0.6.5 -> 1.1.0, langgraph-sdk
 0.2.15 -> 0.4.5, langsmith 0.7.22 -> 0.14.4 (all MIT, LangChain Inc.). All licenses are
 permissive and AGPL-compatible. No package is from an excluded jurisdiction as far as the
-metadata shows; pyasn1/pyasn1-modules and sqlite-vec need the D-29 inspection.
+evidence shows. Origins are recorded in `provenance/origins.json` and gated in CI; see
+[PROVENANCE](../PROVENANCE.md).
 
 Upgrading an existing dev venv (the old `langgraph-checkpoint-postgres` and the undeclared
 `langchain-openai` 0.3 cannot coexist with langchain-core 1.x):

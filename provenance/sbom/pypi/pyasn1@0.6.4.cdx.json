@@ -1,0 +1,42 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "author": "Ilya Etingof <etingof@gmail.com>",
+      "bom-ref": "pkg:pypi/pyasn1@0.6.4",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "deda9277cfd454080ec40b207fb6df82206a3a2688735233cdcd8d3d565f088b"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD-2-Clause"
+          }
+        }
+      ],
+      "name": "pyasn1",
+      "purl": "pkg:pypi/pyasn1@0.6.4",
+      "type": "library",
+      "version": "0.6.4"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "name": "pyasn1",
+      "type": "library",
+      "version": "0.6.4"
+    },
+    "tools": [
+      {
+        "name": "locus-provenance",
+        "version": "1"
+      }
+    ]
+  },
+  "serialNumber": "urn:uuid:a7a890a1-5d54-5f40-bbc5-3c2379385a9c",
+  "specVersion": "1.5",
+  "version": 1
+}

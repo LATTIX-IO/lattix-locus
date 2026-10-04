@@ -1,0 +1,180 @@
+{
+  "prepared_by": "Claude Code (agent) for LOCUS-358, 2026-10-04",
+  "origin": {
+    "p28_status": "not-listed",
+    "countries": [
+      "US"
+    ],
+    "organizations": [
+      "Alex Garcia (individual; GitHub user asg017)",
+      "Mozilla Builders (main sponsor, per the README and Mozilla's announcement)"
+    ],
+    "summary": "Written and released by Alex Garcia (GitHub asg017, profile: Los Angeles, California; account since 2015), who is the only PyPI owner and made 441 of the repository's commits. The main sponsor is Mozilla through Mozilla Builders; Fly.io, Turso, SQLite Cloud and Shinkai are named as additional sponsors. The PyPI files' native binaries are byte-identical to the npm packages of the same release, whose SLSA provenance names the v0.1.9 tag and release workflow run 23786847732. The location is self-reported. No evidence ties the author or a sponsor to a P28-listed country; the sponsors' own origins were not individually established.",
+    "confidence": "medium",
+    "evidence": [
+      {
+        "claim": "PyPI 0.1.9 metadata has placeholder values (author 'TODO', home page https://TODO.com); licence 'MIT License, Apache License, Version 2.0'. The placeholders come from the sqlite-dist packaging tool.",
+        "url": "https://pypi.org/pypi/sqlite-vec/0.1.9/json",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "PyPI XML-RPC package_roles('sqlite-vec') returned a single Owner, alex.garcia.",
+        "url": "https://pypi.org/pypi",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "GitHub user asg017: Alex Garcia, Los Angeles, California, https://alexgarcia.xyz/, account created 2015-10-18; top contributor to asg017/sqlite-vec (441 commits).",
+        "url": "https://github.com/asg017",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "Release v0.1.9 (tag at commit e9f598ab) was published 2026-03-31T08:00:23Z by asg017; workflow 'Release' run 23786847732 started 08:00:25Z on that commit, and the PyPI files were uploaded 08:02:31-08:02:36Z.",
+        "url": "https://github.com/asg017/sqlite-vec/actions/runs/23786847732",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "release.yaml builds vec0 from source in GitHub Actions (make loadable / cl.exe), packages with sqlite-dist (action pinned to a commit) and uploads to PyPI with twine and a PyPI API token; there is no PEP 740 provenance on PyPI.",
+        "url": "https://github.com/asg017/sqlite-vec/blob/main/.github/workflows/release.yaml",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "npm packages sqlite-vec-{linux-x64,linux-arm64,darwin-x64,darwin-arm64,windows-x64}@0.1.9 carry SLSA v1 provenance naming refs/tags/v0.1.9, .github/workflows/release.yaml and run 23786847732; each tarball's sha512 equals the attestation subject, and its vec0 binary is byte-identical to the one in the matching PyPI wheel (e.g. vec0.dll sha256 fcf98662a7ad9dce394b96a88f91032047823831b951c76636787c312a6476e6). The Sigstore signatures themselves were not re-verified here; the npm registry checks them at publish.",
+        "url": "https://registry.npmjs.org/-/npm/v1/attestations/sqlite-vec-windows-x64@0.1.9",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "README: sqlite-vec is a Mozilla Builders project, with additional sponsorship from Fly.io, Turso, SQLite Cloud and Shinkai.",
+        "url": "https://github.com/asg017/sqlite-vec/blob/main/README.md",
+        "retrieved": "2026-10-04"
+      }
+    ]
+  },
+  "maintainers": [
+    {
+      "name": "Alex Garcia",
+      "handle": "asg017 (GitHub), alex.garcia (PyPI)",
+      "role": "author, sole PyPI owner, release manager",
+      "affiliation": "independent; Mozilla Builders project",
+      "location": "Los Angeles, California, US",
+      "location_basis": "self-reported GitHub profile",
+      "evidence": [
+        "https://github.com/asg017",
+        "https://alexgarcia.xyz/"
+      ]
+    }
+  ],
+  "funding": {
+    "summary": "Sponsored mainly by Mozilla (Mozilla Builders), with additional sponsorship from Fly.io, Turso, SQLite Cloud and Shinkai, as stated in the README. The sponsors' countries of origin were not individually established in this inspection; Mozilla's sponsorship is confirmed by Mozilla's own announcement.",
+    "sources": [
+      {
+        "name": "Mozilla (Mozilla Builders)",
+        "evidence": "https://hacks.mozilla.org/2024/06/sponsoring-sqlite-vec-to-enable-more-powerful-local-ai-applications/",
+        "verified": true
+      },
+      {
+        "name": "Fly.io",
+        "evidence": "https://github.com/asg017/sqlite-vec/blob/main/README.md",
+        "verified": false
+      },
+      {
+        "name": "Turso",
+        "evidence": "https://github.com/asg017/sqlite-vec/blob/main/README.md",
+        "verified": false
+      },
+      {
+        "name": "SQLite Cloud",
+        "evidence": "https://github.com/asg017/sqlite-vec/blob/main/README.md",
+        "verified": false
+      },
+      {
+        "name": "Shinkai",
+        "evidence": "https://github.com/asg017/sqlite-vec/blob/main/README.md",
+        "verified": false
+      }
+    ]
+  },
+  "screening_queries": [
+    {
+      "name": "Alex Garcia",
+      "kind": "person"
+    },
+    {
+      "name": "Mozilla",
+      "kind": "org"
+    },
+    {
+      "name": "Fly.io",
+      "kind": "org"
+    },
+    {
+      "name": "Turso",
+      "kind": "org"
+    },
+    {
+      "name": "SQLite Cloud",
+      "kind": "org"
+    },
+    {
+      "name": "Shinkai",
+      "kind": "org"
+    }
+  ],
+  "entity_reviews": [
+    {
+      "list": "other",
+      "query": "Alex Garcia",
+      "listed_name": "MATA GARCIA, Americo Alex",
+      "resolution": "different-entity",
+      "reason": "SDN (VENEZUELA program) entry for Americo Alex Mata Garcia, born 1976-01-02, address Miranda, VE; the overlap is two very common name tokens with a different family name (Mata Garcia) and first given name (Americo). The sqlite-vec author is Alex Garcia, a software developer with a public GitHub history since 2015, a Los Angeles profile and Mozilla sponsorship"
+    },
+    {
+      "list": "other",
+      "query": "Alex Garcia",
+      "listed_name": "GIL GARCIA, Jose Alejandro",
+      "resolution": "different-entity",
+      "reason": "SDN (SDNTK) entry for Jose Alejandro Gil Garcia, born 1952-01-22, Tijuana address; different family and given names. The sqlite-vec author is Alex Garcia, a software developer with a public GitHub history since 2015, a Los Angeles profile and Mozilla sponsorship"
+    },
+    {
+      "list": "other",
+      "query": "Alex Garcia",
+      "listed_name": "GARCIA VELAZCO, Jorge Alejandro",
+      "resolution": "different-entity",
+      "reason": "SDN (ILLICIT-DRUGS) entry for Jorge Alejandro Garcia Velazco, MX national, born 1987-01-12, Sonora address; different family and given names. The sqlite-vec author is Alex Garcia, a software developer with a public GitHub history since 2015, a Los Angeles profile and Mozilla sponsorship"
+    },
+    {
+      "list": "other",
+      "query": "Alex Garcia",
+      "listed_name": "LOZA GARCIA, Rodolfo Alejandro",
+      "resolution": "different-entity",
+      "reason": "SDN (ILLICIT-DRUGS/SDGT) entry for Rodolfo Alejandro Loza Garcia, MX national, born 1983-06-11, Colima address; different family and given names. The sqlite-vec author is Alex Garcia, a software developer with a public GitHub history since 2015, a Los Angeles profile and Mozilla sponsorship"
+    }
+  ],
+  "finding_notes": [
+    {
+      "rule": "native-extension",
+      "path_regex": "sqlite_vec/vec0\\.(dll|so|dylib)$",
+      "disposition": "needs-review",
+      "note": "Agent review: built in GitHub Actions from tag v0.1.9 (byte-identical to the npm packages with SLSA provenance for run 23786847732); the networking-import scan found nothing; the win_amd64 build was loaded and exercised in the AppContainer with no connection attempt. Not reverse-engineered and the build was not reproduced, so the principal decides whether this level of review is enough."
+    }
+  ],
+  "modules": [
+    "sqlite_vec"
+  ],
+  "exercise": "import sqlite3\nimport sqlite_vec\n\ndb = sqlite3.connect(':memory:')\ndb.enable_load_extension(True)\nsqlite_vec.load(db)\ndb.enable_load_extension(False)\nversion = db.execute('select vec_version()').fetchone()[0]\nassert version.startswith('v0.1.9'), version\ndb.execute('create virtual table items using vec0(embedding float[4])')\nfor rowid, vector in ((1, [0.1, 0.2, 0.3, 0.4]), (2, [0.9, 0.8, 0.7, 0.6])):\n    db.execute('insert into items(rowid, embedding) values (?, ?)', [rowid, sqlite_vec.serialize_float32(vector)])\nrows = db.execute(\n    'select rowid, distance from items where embedding match ? order by distance limit 1',\n    [sqlite_vec.serialize_float32([0.1, 0.2, 0.3, 0.41])],\n).fetchall()\nassert rows[0][0] == 1, rows\n",
+  "exercise_summary": "import sqlite_vec; load the vec0 native extension into SQLite, check vec_version(), create a vec0 table, insert two vectors and run a KNN query",
+  "notes": [
+    "sqlite-vec is pulled by langgraph-checkpoint-sqlite (requires sqlite-vec>=0.1.6, so unpinned). Its Python module is imported only by langgraph.store.sqlite (SqliteStore: base.py and aio.py), which also loads the native extension; Locus imports only langgraph.checkpoint.sqlite (SqliteSaver), so neither the module nor vec0 is loaded by Locus today.",
+    "Native binaries are the substance of this package. They were checked statically (networking-import scan) and dynamically (loaded and exercised in the AppContainer with egress denied), and their build was tied to the v0.1.9 tag through the npm SLSA provenance cross-check. They were not reverse-engineered and the build was not reproduced.",
+    "The sqlite-vec build vendors the SQLite amalgamation 3.45.3 headers from sqlite.org (scripts/vendor.sh, curl without a hash check); SQLite itself is public domain (D. Richard Hipp, US)."
+  ],
+  "decision": {
+    "outcome": "conditional",
+    "conditions": [
+      "Principal accepts the native vec0 binaries at the review level recorded in the static findings (provenance-linked CI build, networking-import scan, sandboxed load; no reverse engineering or reproducible build).",
+      "Locus does not load sqlite-vec today (only langgraph.store.sqlite / SqliteStore imports it, and Locus uses SqliteSaver). If Locus starts using SqliteStore or loads the extension, re-inspect and exercise that code path.",
+      "Install pinned by version and hash once Locus has a hash-locked dependency set (D-29 step 5); langgraph-checkpoint-sqlite only requires sqlite-vec>=0.1.6.",
+      "Re-inspect on any version change."
+    ],
+    "rationale": "No P28-listed origin found: the sole author and PyPI owner self-reports Los Angeles, and the main sponsor is Mozilla. The Entity List and the 1260H notice show no match; four informational SDN name hits are resolved as different people (reasons in the 'other' check). The five native binaries in the PyPI wheels are byte-identical to the npm packages of the same release, whose SLSA provenance names the v0.1.9 tag and release workflow run, and no networking imports were found in them. The Python wrapper only computes the extension path and serializes vectors. The win_amd64 wheel loaded vec0 and ran a KNN query in the AppContainer with egress denied and made no connection attempt; OSV lists no vulnerabilities for 0.1.9. The wheel metadata carries placeholder values ('TODO') from the packaging tool, which is cosmetic."
+  }
+}

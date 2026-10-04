@@ -1,0 +1,59 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "author": "TODO",
+      "bom-ref": "pkg:pypi/sqlite-vec@0.1.9",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4a28dc12fa4b53d7b1dced22da2488fade444e96b5d16fd2d698cd670675cf32"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT License, Apache License, Version 2.0"
+          }
+        }
+      ],
+      "name": "sqlite-vec",
+      "purl": "pkg:pypi/sqlite-vec@0.1.9",
+      "type": "library",
+      "version": "0.1.9"
+    },
+    {
+      "bom-ref": "pkg:pypi/sqlite-vec@0.1.9#sqlite_vec/vec0.dll",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "fcf98662a7ad9dce394b96a88f91032047823831b951c76636787c312a6476e6"
+        }
+      ],
+      "name": "sqlite_vec/vec0.dll",
+      "properties": [
+        {
+          "name": "locus:native",
+          "value": "true"
+        }
+      ],
+      "type": "file"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "name": "sqlite-vec",
+      "type": "library",
+      "version": "0.1.9"
+    },
+    "tools": [
+      {
+        "name": "locus-provenance",
+        "version": "1"
+      }
+    ]
+  },
+  "serialNumber": "urn:uuid:61120454-44ae-55e3-99cc-d69411ec49ad",
+  "specVersion": "1.5",
+  "version": 1
+}

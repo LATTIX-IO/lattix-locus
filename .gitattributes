@@ -1,3 +1,5 @@
 *.sh text eol=lf
 *.bash text eol=lf
 docker/casdoor/start-casdoor.sh text eol=lf
+# D-29 provenance records: hashed byte for byte (SBOM sha256), keep LF everywhere
+provenance/** text eol=lf
