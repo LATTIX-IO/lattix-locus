@@ -66,7 +66,7 @@ describe("GuardrailEditor", () => {
         detect_secrets: false,
       }),
     }));
-    expect(replaceMock).toHaveBeenCalledWith("/builder/guardrails/guardrail-123");
+    expect(replaceMock).toHaveBeenCalledWith("/library/guardrails/guardrail-123");
   });
 
   it("surfaces publish failures for existing guardrail rulesets", async () => {

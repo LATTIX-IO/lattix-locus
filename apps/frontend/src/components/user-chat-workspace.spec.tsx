@@ -362,7 +362,7 @@ describe("UserChatWorkspace", () => {
     expect(screen.getByText(/follow-up activity/i)).toBeInTheDocument();
     expect(screen.getByText("Follow-up sent. Opening run run-2...")).toBeInTheDocument();
     expect(screen.getByText("Run created:")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "run-2" })).toHaveAttribute("href", "/inbox?session=run-2");
+    expect(screen.getByRole("link", { name: "run-2" })).toHaveAttribute("href", "/activity?session=run-2");
     expect(screen.getByText("openai")).toBeInTheDocument();
     expect(screen.getByText("gpt-5.4")).toBeInTheDocument();
   });

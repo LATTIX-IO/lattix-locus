@@ -23,8 +23,8 @@ export function RunArchiveButton({ runId, buttonClassName, label, ariaLabel, ico
     try {
       await archiveWorkflowRun(runId);
       const activeSessionId = searchParams?.get("session");
-      if (pathname === "/inbox" && activeSessionId === runId) {
-        router.replace("/inbox");
+      if (pathname === "/activity" && activeSessionId === runId) {
+        router.replace("/activity");
       }
       router.refresh();
     } finally {

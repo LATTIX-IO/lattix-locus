@@ -383,7 +383,7 @@ function buildOauthPresetMetadata(provider: OAuthProvider, grantType: OAuthGrant
       audience: preset.audience,
       resource: preset.resource,
       tenant: preset.tenant,
-      redirect_path: "/builder/integrations?oauth_panel=1",
+      redirect_path: "/library/connections?oauth_panel=1",
     },
   };
 }
@@ -416,6 +416,7 @@ function oauthPresetDriftLabel(metadata: Record<string, unknown> | undefined): s
 export function IntegrationsManager() {
   const [items, setItems] = useState<IntegrationDefinition[]>([]);
   const [loading, setLoading] = useState(true);
+  const [listError, setListError] = useState<string | null>(null);
   const [starterTemplates, setStarterTemplates] = useState<IntegrationStarterTemplate[]>([]);
   const [starterTemplatesLoading, setStarterTemplatesLoading] = useState(true);
   const [starterCatalogError, setStarterCatalogError] = useState("");
@@ -445,7 +446,7 @@ export function IntegrationsManager() {
   const [oauthAudience, setOauthAudience] = useState("");
   const [oauthResource, setOauthResource] = useState("");
   const [oauthTenant, setOauthTenant] = useState("");
-  const [oauthRedirectPath, setOauthRedirectPath] = useState("/builder/integrations?oauth_panel=1");
+  const [oauthRedirectPath, setOauthRedirectPath] = useState("/library/connections?oauth_panel=1");
   const [oauthClientSecretRef, setOauthClientSecretRef] = useState("");
   const [oauthTokenSecretRef, setOauthTokenSecretRef] = useState("");
   const [oauthRefreshTokenSecretRef, setOauthRefreshTokenSecretRef] = useState("");
@@ -520,7 +521,7 @@ export function IntegrationsManager() {
     setOauthAudience(preset.audience);
     setOauthResource(preset.resource);
     setOauthTenant(preset.tenant);
-    setOauthRedirectPath("/builder/integrations?oauth_panel=1");
+    setOauthRedirectPath("/library/connections?oauth_panel=1");
     setOauthAccountLabel((current) => (current.trim() ? current : preset.accountLabelPlaceholder));
     setOauthClientSecretRef((current) => (current.trim() ? current : preset.clientSecretPlaceholder));
     setOauthTokenSecretRef((current) => (current.trim() ? current : preset.tokenSecretPlaceholder));
@@ -533,6 +534,9 @@ export function IntegrationsManager() {
     try {
       const integrations = await getIntegrations();
       setItems(integrations);
+      setListError(null);
+    } catch (error) {
+      setListError(error instanceof Error ? error.message : "Unable to load integrations.");
     } finally {
       setLoading(false);
     }
@@ -631,7 +635,7 @@ export function IntegrationsManager() {
       audience: oauthAudience.trim(),
       resource: oauthResource.trim(),
       tenant: oauthTenant.trim(),
-      redirect_path: oauthRedirectPath.trim() || "/builder/integrations?oauth_panel=1",
+      redirect_path: oauthRedirectPath.trim() || "/library/connections?oauth_panel=1",
       client_secret_ref: oauthClientSecretRef.trim() || secretRef.trim(),
       token_secret_ref: oauthTokenSecretRef.trim(),
       refresh_token_secret_ref: oauthRefreshTokenSecretRef.trim(),
@@ -661,7 +665,7 @@ export function IntegrationsManager() {
     setOauthAudience("");
     setOauthResource("");
     setOauthTenant("");
-    setOauthRedirectPath("/builder/integrations?oauth_panel=1");
+    setOauthRedirectPath("/library/connections?oauth_panel=1");
     setOauthClientSecretRef("");
     setOauthTokenSecretRef("");
     setOauthRefreshTokenSecretRef("");
@@ -692,7 +696,7 @@ export function IntegrationsManager() {
     setOauthAudience(String(auth.audience ?? ""));
     setOauthResource(String(auth.resource ?? ""));
     setOauthTenant(String(auth.tenant ?? ""));
-    setOauthRedirectPath(String(auth.redirect_path ?? "/builder/integrations?oauth_panel=1"));
+    setOauthRedirectPath(String(auth.redirect_path ?? "/library/connections?oauth_panel=1"));
     setOauthClientSecretRef(String(auth.client_secret_ref ?? template.secret_ref ?? ""));
     setOauthTokenSecretRef(String(auth.token_secret_ref ?? ""));
     setOauthRefreshTokenSecretRef(String(auth.refresh_token_secret_ref ?? ""));
@@ -723,7 +727,7 @@ export function IntegrationsManager() {
     setOauthAudience(String(auth.audience ?? ""));
     setOauthResource(String(auth.resource ?? ""));
     setOauthTenant(String(auth.tenant ?? ""));
-    setOauthRedirectPath(String(auth.redirect_path ?? "/builder/integrations?oauth_panel=1"));
+    setOauthRedirectPath(String(auth.redirect_path ?? "/library/connections?oauth_panel=1"));
     setOauthClientSecretRef(String(auth.client_secret_ref ?? item.secret_ref ?? ""));
     setOauthTokenSecretRef(String(auth.token_secret_ref ?? ""));
     setOauthRefreshTokenSecretRef(String(auth.refresh_token_secret_ref ?? ""));
@@ -823,7 +827,7 @@ export function IntegrationsManager() {
     setOauthBusyKey(`connect:${item.id}`);
     try {
       const response = await connectIntegrationOAuth(item.id, {
-        return_to: "/builder/integrations?oauth_panel=1",
+        return_to: "/library/connections?oauth_panel=1",
       });
       setOauthStatuses((current) => ({ ...current, [item.id]: response.status }));
       setOauthPanelIntegrationId(item.id);
@@ -1486,7 +1490,7 @@ export function IntegrationsManager() {
                   className="fx-field mt-1 w-full px-2 py-2 text-sm"
                   value={oauthRedirectPath}
                   onChange={(event) => setOauthRedirectPath(event.target.value)}
-                  placeholder="/builder/integrations?oauth_panel=1"
+                  placeholder="/library/connections?oauth_panel=1"
                 />
                 <span className="mt-1 block text-[11px] fx-muted">
                   The callback now returns to a dedicated OAuth status panel in the integrations manager instead of relying on a transient page-level toast.
@@ -1645,6 +1649,10 @@ export function IntegrationsManager() {
             {loading ? (
               <tr>
                 <td className="px-3 py-3 text-xs text-[var(--foreground)]" colSpan={8}>Loading integrations...</td>
+              </tr>
+            ) : listError ? (
+              <tr>
+                <td role="alert" className="px-3 py-3 text-xs text-[var(--fx-danger)]" colSpan={8}>Could not load integrations: {listError}</td>
               </tr>
             ) : items.length === 0 ? (
               <tr>

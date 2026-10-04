@@ -500,13 +500,13 @@ describe("StudioFullCanvas", () => {
       initialLinks: [],
       onSave,
       onPublish: async () => {},
-      returnAction: { label: "Save & Return", href: "/builder/workflows/wf-1" },
+      returnAction: { label: "Save & Return", href: "/library/workflows/wf-1" },
     });
 
     fireEvent.click(screen.getByRole("button", { name: /save & return/i }));
 
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(routerPushSpy).toHaveBeenCalledWith("/builder/workflows/wf-1"));
+    await waitFor(() => expect(routerPushSpy).toHaveBeenCalledWith("/library/workflows/wf-1"));
   });
 
   it("does not navigate when save and return fails", async () => {
@@ -523,7 +523,7 @@ describe("StudioFullCanvas", () => {
       initialLinks: [],
       onSave,
       onPublish: async () => {},
-      returnAction: { label: "Save & Return", href: "/builder/workflows/wf-1" },
+      returnAction: { label: "Save & Return", href: "/library/workflows/wf-1" },
     });
 
     fireEvent.click(screen.getByRole("button", { name: /save & return/i }));

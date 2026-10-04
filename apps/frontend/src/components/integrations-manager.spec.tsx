@@ -69,7 +69,7 @@ describe("IntegrationsManager", () => {
     validateMcpConnectionMock.mockReset();
     deleteIntegrationMock.mockReset();
 
-    window.history.replaceState({}, "", "/builder/integrations");
+    window.history.replaceState({}, "", "/library/connections");
 
     getIntegrationStarterTemplatesMock.mockResolvedValue([
       {
@@ -146,7 +146,7 @@ describe("IntegrationsManager", () => {
             scopes: ["User.Read", "Mail.ReadWrite", "offline_access"],
             tenant: "common",
             audience: "https://graph.microsoft.com",
-            redirect_path: "/builder/integrations?oauth_panel=1",
+            redirect_path: "/library/connections?oauth_panel=1",
             client_secret_ref: "secret/integrations/microsoft/client-secret",
             token_secret_ref: "secret/integrations/microsoft/access-token",
             refresh_token_secret_ref: "secret/integrations/microsoft/refresh-token",
@@ -714,7 +714,7 @@ describe("IntegrationsManager", () => {
             tenant: "common",
             audience: "https://graph.microsoft.com",
             resource: "",
-            redirect_path: "/builder/integrations?oauth_panel=1",
+            redirect_path: "/library/connections?oauth_panel=1",
             client_secret_ref: "secret/integrations/microsoft/client-secret",
             token_secret_ref: "secret/integrations/microsoft/access-token",
             refresh_token_secret_ref: "secret/integrations/microsoft/refresh-token",
@@ -733,7 +733,7 @@ describe("IntegrationsManager", () => {
               audience: "https://graph.microsoft.com",
               resource: "",
               tenant: "common",
-              redirect_path: "/builder/integrations?oauth_panel=1",
+              redirect_path: "/library/connections?oauth_panel=1",
             },
           },
         },
@@ -760,7 +760,7 @@ describe("IntegrationsManager", () => {
             authorize_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
             token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
             client_id: "locus-microsoft-client",
-            redirect_path: "/builder/integrations?oauth_panel=1",
+            redirect_path: "/library/connections?oauth_panel=1",
           },
           oauth_preset: {
             source: "provider-default",
@@ -773,7 +773,7 @@ describe("IntegrationsManager", () => {
               audience: "",
               resource: "",
               tenant: "",
-              redirect_path: "/builder/integrations?oauth_panel=1",
+              redirect_path: "/library/connections?oauth_panel=1",
             },
           },
         },
@@ -808,7 +808,7 @@ describe("IntegrationsManager", () => {
 
     await waitFor(() => {
       expect(connectIntegrationOAuthMock).toHaveBeenCalledWith("integration-1", {
-        return_to: "/builder/integrations?oauth_panel=1",
+        return_to: "/library/connections?oauth_panel=1",
       });
     });
     expect(await screen.findByText("Microsoft Graph OAuth connection established.")).toBeInTheDocument();
@@ -833,7 +833,7 @@ describe("IntegrationsManager", () => {
             authorize_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
             token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
             client_id: "locus-microsoft-client",
-            redirect_path: "/builder/integrations?oauth_panel=1",
+            redirect_path: "/library/connections?oauth_panel=1",
           },
           oauth_preset: {
             source: "provider-default",
@@ -846,7 +846,7 @@ describe("IntegrationsManager", () => {
               audience: "",
               resource: "",
               tenant: "",
-              redirect_path: "/builder/integrations?oauth_panel=1",
+              redirect_path: "/library/connections?oauth_panel=1",
             },
           },
         },
@@ -902,7 +902,7 @@ describe("IntegrationsManager", () => {
             audience: "https://graph.microsoft.com",
             resource: "",
             tenant: "organizations",
-            redirect_path: "/builder/integrations?oauth_panel=1",
+            redirect_path: "/library/connections?oauth_panel=1",
           },
           oauth_preset: {
             source: "provider-default",
@@ -915,7 +915,7 @@ describe("IntegrationsManager", () => {
               audience: "https://graph.microsoft.com",
               resource: "",
               tenant: "common",
-              redirect_path: "/builder/integrations?oauth_panel=1",
+              redirect_path: "/library/connections?oauth_panel=1",
             },
           },
         },
@@ -946,7 +946,7 @@ describe("IntegrationsManager", () => {
   });
 
   it("reopens the dedicated OAuth status panel from callback query params", async () => {
-    window.history.replaceState({}, "", "/builder/integrations?oauth_panel=1&oauth=connected&integration_id=integration-1");
+    window.history.replaceState({}, "", "/library/connections?oauth_panel=1&oauth=connected&integration_id=integration-1");
     getIntegrationsMock.mockResolvedValue([
       {
         id: "integration-1",

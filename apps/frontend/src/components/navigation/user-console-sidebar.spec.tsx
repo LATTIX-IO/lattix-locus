@@ -107,47 +107,23 @@ beforeEach(() => {
 });
 
 describe("UserConsoleSidebar", () => {
-  it("renders lightweight workspace navigation without session kind chips", async () => {
-    render(
-      <UserConsoleSidebar
-        pathname="/inbox"
-        selectedSessionId="run-playbook"
-        expanded
-        platformVersion={{
-          current_version: "0.2.0",
-          latest_version: "0.2.1",
-          update_available: true,
-          status: "update_available",
-          install_mode: "wheel",
-          update_command: "lattix update",
-          checked_at: "2026-04-04T10:00:00Z",
-          summary: "Update available.",
-          release_notes_url: "",
-          source: "",
-        }}
-      />,
-    );
+  it("lists sessions linking into Activity, without kind chips", async () => {
+    render(<UserConsoleSidebar pathname="/activity" selectedSessionId="run-playbook" />);
 
-    expect(await screen.findByRole("link", { name: /^conversations$/i })).toHaveAttribute("href", "/inbox");
-    expect(screen.getByRole("link", { name: /^workflows$/i })).toHaveAttribute("href", "/workflows/start");
-    expect(screen.getByRole("link", { name: /^artifacts$/i })).toHaveAttribute("href", "/artifacts");
-
-    expect(screen.getByRole("link", { name: /security playbook review/i })).toHaveAttribute("href", "/inbox?session=run-playbook");
+    expect(await screen.findByRole("link", { name: /security playbook review/i })).toHaveAttribute("href", "/activity?session=run-playbook");
+    // Navigation lives in the left nav now: no duplicate workspace links here.
+    expect(screen.queryByRole("link", { name: /^conversations$/i })).not.toBeInTheDocument();
     expect(screen.queryByText("chat")).not.toBeInTheDocument();
     expect(screen.queryByText("playbook")).not.toBeInTheDocument();
     expect(screen.queryByText("task")).not.toBeInTheDocument();
     expect(screen.getAllByText("1")).toHaveLength(2);
-    expect(screen.getByText(/v0\.2\.0/i)).toBeInTheDocument();
-    expect(screen.getByText(/update 0\.2\.1/i)).toBeInTheDocument();
   });
 
   it("filters the session list from the compact search box", async () => {
     render(
       <UserConsoleSidebar
-        pathname="/inbox"
+        pathname="/activity"
         selectedSessionId={null}
-        expanded
-        platformVersion={null}
       />,
     );
 
@@ -164,10 +140,8 @@ describe("UserConsoleSidebar", () => {
   it("renames a session from the sidebar", async () => {
     render(
       <UserConsoleSidebar
-        pathname="/inbox"
+        pathname="/activity"
         selectedSessionId="run-chat"
-        expanded
-        platformVersion={null}
       />,
     );
 
@@ -186,10 +160,8 @@ describe("UserConsoleSidebar", () => {
   it("opens session actions from a conversation right-click", async () => {
     render(
       <UserConsoleSidebar
-        pathname="/inbox"
+        pathname="/activity"
         selectedSessionId="run-chat"
-        expanded
-        platformVersion={null}
       />,
     );
 
@@ -204,10 +176,8 @@ describe("UserConsoleSidebar", () => {
   it("archives the active session from the sidebar actions", async () => {
     render(
       <UserConsoleSidebar
-        pathname="/inbox"
+        pathname="/activity"
         selectedSessionId="run-chat"
-        expanded
-        platformVersion={null}
       />,
     );
 
@@ -221,17 +191,15 @@ describe("UserConsoleSidebar", () => {
     await waitFor(() => {
       expect(screen.queryByText("Quarterly conversation")).not.toBeInTheDocument();
     });
-    expect(replaceMock).toHaveBeenCalledWith("/inbox");
+    expect(replaceMock).toHaveBeenCalledWith("/activity");
     expect(refreshMock).toHaveBeenCalled();
   });
 
   it("reloads sessions when the selected inbox session changes", async () => {
     const view = render(
       <UserConsoleSidebar
-        pathname="/inbox"
+        pathname="/activity"
         selectedSessionId={null}
-        expanded
-        platformVersion={null}
       />,
     );
 
@@ -241,10 +209,8 @@ describe("UserConsoleSidebar", () => {
 
     view.rerender(
       <UserConsoleSidebar
-        pathname="/inbox"
+        pathname="/activity"
         selectedSessionId="run-chat"
-        expanded
-        platformVersion={null}
       />,
     );
 

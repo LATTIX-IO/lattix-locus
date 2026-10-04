@@ -7,13 +7,11 @@ import { StatusChip } from "@/components/status-chip";
 import { resolveFloatingMenuPosition } from "@/lib/floating-menu";
 import { useKeyboardShortcuts } from "@/lib/keyboard-shortcuts";
 import { archiveWorkflowRun, getInbox, getWorkflowRuns, updateWorkflowRunTitle } from "@/lib/api";
-import type { InboxItem, PlatformVersionStatus, WorkflowRunSummary } from "@/types/locus";
+import type { InboxItem, WorkflowRunSummary } from "@/types/locus";
 
 type UserConsoleSidebarProps = {
   pathname: string;
   selectedSessionId: string | null;
-  expanded: boolean;
-  platformVersion?: PlatformVersionStatus | null;
 };
 
 type SessionRow = WorkflowRunSummary & {
@@ -33,69 +31,14 @@ const FALLBACK_MENU_WIDTH = 144;
 const FALLBACK_MENU_HEIGHT = 84;
 
 function sessionHref(runId: string): string {
-  return `/inbox?session=${encodeURIComponent(runId)}`;
+  return `/activity?session=${encodeURIComponent(runId)}`;
 }
 
 function formatSessionSearchText(run: SessionRow): string {
   return [run.title, run.status, run.progressLabel, ...run.inboxReasons].join(" ").toLowerCase();
 }
 
-type NavIconName = "home" | "workflow" | "playbooks" | "memory" | "tasks" | "settings";
-
-function NavIcon({ name, active }: { name: NavIconName; active: boolean }) {
-  const cls = `h-4 w-4 flex-shrink-0 ${active ? "text-[var(--fx-primary-strong)]" : "text-[var(--fx-muted)]"}`;
-  if (name === "home") {
-    return (
-      <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="3" y="11" width="18" height="10" rx="1" />
-        <path d="M3 11L12 3l9 8" />
-      </svg>
-    );
-  }
-  if (name === "workflow") {
-    return (
-      <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-        <circle cx="5" cy="12" r="2" />
-        <circle cx="12" cy="6" r="2" />
-        <circle cx="19" cy="12" r="2" />
-        <circle cx="12" cy="18" r="2" />
-        <path d="M7 11l3-3M14 8l3 3M14 16l3-3M10 16l-3-3" />
-      </svg>
-    );
-  }
-  if (name === "playbooks") {
-    return (
-      <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="4" y="3" width="16" height="5" rx="1" />
-        <rect x="4" y="10" width="16" height="5" rx="1" />
-        <rect x="4" y="17" width="10" height="4" rx="1" />
-      </svg>
-    );
-  }
-  if (name === "memory") {
-    return (
-      <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-        <ellipse cx="12" cy="6" rx="8" ry="3" />
-        <path d="M4 6v4c0 1.66 3.58 3 8 3s8-1.34 8-3V6M4 10v4c0 1.66 3.58 3 8 3s8-1.34 8-3v-4" />
-      </svg>
-    );
-  }
-  if (name === "tasks") {
-    return (
-      <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M4 4h16v11H4z" />
-        <path d="M4 15h5l2 3h2l2-3h5" />
-      </svg>
-    );
-  }
-  return (
-    <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-      <circle cx="12" cy="12" r="3" />
-    </svg>
-  );
-}
-
-export function UserConsoleSidebar({ pathname, selectedSessionId, expanded, platformVersion }: UserConsoleSidebarProps) {
+export function UserConsoleSidebar({ pathname, selectedSessionId }: UserConsoleSidebarProps) {
   const router = useRouter();
   const [runs, setRuns] = useState<WorkflowRunSummary[]>([]);
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
@@ -204,14 +147,6 @@ export function UserConsoleSidebar({ pathname, selectedSessionId, expanded, plat
     return sessions.filter((s) => formatSessionSearchText(s).includes(query));
   }, [search, sessions]);
 
-  const versionLabel = platformVersion?.current_version ? `v${platformVersion.current_version}` : "No version";
-  const updateLabel = platformVersion?.status === "update_available" && platformVersion.latest_version
-    ? `Update ${platformVersion.latest_version}`
-    : platformVersion?.status === "up_to_date"
-      ? "Current"
-      : "Unchecked";
-
-  if (!expanded) return null;
 
   async function handleRenameSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -288,8 +223,8 @@ export function UserConsoleSidebar({ pathname, selectedSessionId, expanded, plat
         setEditingTitle("");
         setRenameError(null);
       }
-      if (pathname.startsWith("/inbox") && selectedSessionId === runId) {
-        router.replace("/inbox");
+      if (pathname.startsWith("/activity") && selectedSessionId === runId) {
+        router.replace("/activity");
       }
       router.refresh();
     } catch (error) {
@@ -321,21 +256,6 @@ export function UserConsoleSidebar({ pathname, selectedSessionId, expanded, plat
         </div>
       </div>
 
-      <div className="border-b border-[var(--ui-border)] px-3 pb-3 pt-3">
-        <p className="text-[0.67rem] font-medium tracking-[0.05em] text-[var(--fx-muted)]">Workspace</p>
-        <div className="mt-2 space-y-1">
-          <Link href="/inbox" className={pathname.startsWith("/inbox") ? "fx-nav-item fx-nav-item-active min-h-0 justify-start px-2.5 py-2 text-[0.78rem]" : "fx-nav-item min-h-0 justify-start px-2.5 py-2 text-[0.78rem]"}>
-            Conversations
-          </Link>
-          <Link href="/workflows/start" className={pathname.startsWith("/workflows") ? "fx-nav-item fx-nav-item-active min-h-0 justify-start px-2.5 py-2 text-[0.78rem]" : "fx-nav-item min-h-0 justify-start px-2.5 py-2 text-[0.78rem]"}>
-            Workflows
-          </Link>
-          <Link href="/artifacts" className={pathname.startsWith("/artifacts") ? "fx-nav-item fx-nav-item-active min-h-0 justify-start px-2.5 py-2 text-[0.78rem]" : "fx-nav-item min-h-0 justify-start px-2.5 py-2 text-[0.78rem]"}>
-            Artifacts
-          </Link>
-        </div>
-      </div>
-
       <div className="flex-1 overflow-y-auto px-2.5 py-3">
         <div className="mb-2 flex items-center justify-between px-1">
           <p className="text-[0.67rem] font-medium tracking-[0.05em] text-[var(--fx-muted)]">Sessions</p>
@@ -353,7 +273,7 @@ export function UserConsoleSidebar({ pathname, selectedSessionId, expanded, plat
             </div>
           ) : (
             filteredSessions.map((run: SessionRow) => {
-              const active = pathname.startsWith("/inbox") && selectedSessionId === run.id;
+              const active = pathname.startsWith("/activity") && selectedSessionId === run.id;
               const editing = editingRunId === run.id;
               return (
                 <div
@@ -420,16 +340,6 @@ export function UserConsoleSidebar({ pathname, selectedSessionId, expanded, plat
             })
           )}
         </div>
-      </div>
-
-      <div className="border-t border-[var(--ui-border)] px-3 py-3">
-        <div className="flex items-center justify-between gap-2 text-[0.72rem] text-[var(--fx-muted)]">
-          <span>{versionLabel}</span>
-          <span>{updateLabel}</span>
-        </div>
-        <Link href="/settings" className="mt-2 inline-flex text-[0.72rem] font-medium text-[var(--fx-primary-strong)] no-underline hover:underline">
-          Preferences
-        </Link>
       </div>
 
       {sessionMenu ? (

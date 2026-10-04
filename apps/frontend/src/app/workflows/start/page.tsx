@@ -13,9 +13,12 @@ export default function WorkflowStartPage() {
   const [startingId, setStartingId] = useState<string | null>(null);
   const [lastRunId, setLastRunId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    getPublishedWorkflows().then(setWorkflows);
+    getPublishedWorkflows()
+      .then(setWorkflows)
+      .catch((error: unknown) => setLoadError(error instanceof Error ? error.message : "Unable to load workflows."));
   }, []);
 
   async function onStart(workflowId: string) {
@@ -24,7 +27,7 @@ export default function WorkflowStartPage() {
     try {
       const result = await createWorkflowRun({ workflow_definition_id: workflowId, session_kind: "workflow" });
       setLastRunId(result.id);
-      router.push(`/runs/${result.id}`);
+      router.push(`/activity?session=${encodeURIComponent(result.id)}`);
     } catch (error) {
       const detail = error instanceof Error && error.message ? ` (${error.message})` : "";
       setStartError(`Unable to start workflow run.${detail}`);
@@ -39,6 +42,12 @@ export default function WorkflowStartPage() {
         <h1 className="text-2xl font-semibold">Workflow Catalog</h1>
         <p className="fx-muted">Start a published workflow with guided intake and approval-aware execution.</p>
       </header>
+
+      {loadError ? (
+        <p role="alert" className="text-sm text-[var(--fx-danger)]">
+          Could not load published workflows: {loadError}
+        </p>
+      ) : null}
 
       <div className="fx-panel overflow-hidden">
         <table className="w-full text-sm">
@@ -81,7 +90,7 @@ export default function WorkflowStartPage() {
       {lastRunId ? (
         <div className="fx-panel flex items-center justify-between p-3 text-sm">
           <p className="fx-muted">Workflow run started: <span className="font-mono text-[var(--foreground)]">{lastRunId}</span></p>
-          <Link className="fx-btn-secondary px-3 py-1.5 text-xs" href={`/inbox?session=${encodeURIComponent(lastRunId)}`}>
+          <Link className="fx-btn-secondary px-3 py-1.5 text-xs" href={`/activity?session=${encodeURIComponent(lastRunId)}`}>
             Open run
           </Link>
         </div>

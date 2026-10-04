@@ -250,6 +250,8 @@ export function StudioFullCanvas({
   const [runResult, setRunResult] = useState<GraphRunResponse | null>(null);
   const [providerStatus, setProviderStatus] = useState<RuntimeProvider | null>(null);
   const [runtimeLoadError, setRuntimeLoadError] = useState<string | null>(null);
+  const [catalogLoadError, setCatalogLoadError] = useState<string | null>(null);
+  const [memoryError, setMemoryError] = useState<string | null>(null);
   const [frameworkAdapters, setFrameworkAdapters] = useState<Record<string, RuntimeFrameworkAdapterProbe>>({});
   const [runtimePolicy, setRuntimePolicy] = useState<PlatformRuntimePolicySettings>({
     default_runtime_engine: "native",
@@ -488,7 +490,13 @@ export function StudioFullCanvas({
     let cancelled = false;
 
     async function loadNodeDefinitions() {
-      const nodeDefinitions = await getNodeDefinitions({ includeInternal: isInternalBuilderMode });
+      let nodeDefinitions: Awaited<ReturnType<typeof getNodeDefinitions>>;
+      try {
+        nodeDefinitions = await getNodeDefinitions({ includeInternal: isInternalBuilderMode });
+      } catch (error) {
+        if (!cancelled) setCatalogLoadError(error instanceof Error ? `Node catalog: ${error.message}` : "Node catalog unavailable.");
+        return;
+      }
       if (cancelled) {
         return;
       }
@@ -673,11 +681,18 @@ export function StudioFullCanvas({
     let cancelled = false;
 
     async function loadGuardrailOptions() {
-      const [rulesets, modelsOverview] = await Promise.all([
-        getGuardrailRulesets(),
-        // Wrapped so a synchronous throw also degrades to the static model options.
-        Promise.resolve().then(() => getModelsOverview()).catch(() => null),
-      ]);
+      let rulesets: Awaited<ReturnType<typeof getGuardrailRulesets>>;
+      let modelsOverview: Awaited<ReturnType<typeof getModelsOverview>> | null;
+      try {
+        [rulesets, modelsOverview] = await Promise.all([
+          getGuardrailRulesets(),
+          // Wrapped so a synchronous throw also degrades to the static model options.
+          Promise.resolve().then(() => getModelsOverview()).catch(() => null),
+        ]);
+      } catch (error) {
+        if (!cancelled) setCatalogLoadError(error instanceof Error ? `Guardrail rulesets: ${error.message}` : "Guardrail rulesets unavailable.");
+        return;
+      }
       if (cancelled) {
         return;
       }
@@ -1005,6 +1020,9 @@ export function StudioFullCanvas({
     try {
       const memory = await getMemorySession(sessionId);
       setMemoryCount(memory.count);
+      setMemoryError(null);
+    } catch (error) {
+      setMemoryError(error instanceof Error ? error.message : "Could not read session memory.");
     } finally {
       setMemoryBusy(false);
     }
@@ -1025,7 +1043,7 @@ export function StudioFullCanvas({
   }
 
   const title = entityType === "agent" ? "Agent Studio" : entityType === "workflow" ? "Workflow Studio" : "Playbook Studio";
-  const backHref = entityType === "agent" ? "/builder/agents" : entityType === "workflow" ? "/builder/workflows" : "/builder/playbooks";
+  const backHref = entityType === "agent" ? "/library/agents" : entityType === "workflow" ? "/library/workflows" : "/library/playbooks";
 
   return (
     <section className="-m-5 h-[calc(100vh-var(--fx-content-top,57px))] overflow-hidden md:-m-6">
@@ -1301,6 +1319,7 @@ export function StudioFullCanvas({
                 openai={providerStatus?.configured ? "configured" : "not-configured"} mode={providerStatus?.mode ?? "unknown"}
               </div>
               {runtimeLoadError ? <div className="mb-1 text-[9px] text-[var(--fx-danger)]">{runtimeLoadError}</div> : null}
+              {catalogLoadError ? <div role="alert" className="mb-1 text-[9px] text-[var(--fx-danger)]">{catalogLoadError}</div> : null}
               <div className="mb-1 flex items-center justify-between gap-2 text-[9px]">
                 <span className="fx-muted">engine_override={runtimePolicy.allow_runtime_engine_override ? "enabled" : "disabled"}</span>
                 <span className="fx-muted">effective={effectiveRuntimeEngine}</span>
@@ -1484,6 +1503,7 @@ export function StudioFullCanvas({
               )}
               <div className="mt-1 flex items-center justify-between">
                 <span className="fx-muted">memory entries: {memoryCount}</span>
+                {memoryError ? <span role="alert" className="text-[var(--fx-danger)]">{memoryError}</span> : null}
                 <div className="flex items-center gap-1">
                   <button
                     onClick={handleRefreshMemory}

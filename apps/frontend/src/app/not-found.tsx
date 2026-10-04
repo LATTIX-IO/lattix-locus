@@ -21,8 +21,8 @@ export default function NotFound() {
         The page you are looking for does not exist or has been moved.
       </p>
 
-      <Link href="/inbox" className="fx-btn-primary mt-2 px-4 py-2 text-sm font-medium no-underline">
-        Go to Inbox
+      <Link href="/home" className="fx-btn-primary mt-2 px-4 py-2 text-sm font-medium no-underline">
+        Go to Home
       </Link>
     </div>
   );

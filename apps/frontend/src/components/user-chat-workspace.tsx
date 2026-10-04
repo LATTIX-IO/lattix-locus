@@ -1003,7 +1003,7 @@ export function UserChatWorkspace({
                           </p>
                           {followupStatus.createdRunId ? (
                             <p className="mt-2 text-[0.78rem] text-[hsl(var(--foreground))]">
-                              Run created: <Link href={`/inbox?session=${encodeURIComponent(followupStatus.createdRunId)}`} className="underline decoration-dotted underline-offset-2">{followupStatus.createdRunId}</Link>
+                              Run created: <Link href={`/activity?session=${encodeURIComponent(followupStatus.createdRunId)}`} className="underline decoration-dotted underline-offset-2">{followupStatus.createdRunId}</Link>
                             </p>
                           ) : null}
                           <p className="mt-2 text-[0.72rem] font-medium tracking-[0.02em] text-[var(--fx-muted)]">

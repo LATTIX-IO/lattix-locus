@@ -56,7 +56,11 @@ describe("getApiBase", () => {
   });
 });
 
-describe("safeFetch", () => {
+describe("reads surface failures (no silent fallbacks)", () => {
+  function failed(status: number) {
+    return { ok: false, status, text: async () => `{"detail":"status ${status}"}` };
+  }
+
   it("returns parsed JSON on success", async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
@@ -69,22 +73,46 @@ describe("safeFetch", () => {
     expect(result).toEqual([{ id: "wf-1", name: "Test" }]);
   });
 
-  it("returns fallback on network error for non-critical reads", async () => {
-    fetchMock.mockRejectedValue(new Error("Network failure"));
-
-    const { getPublishedWorkflows } = await import("@/lib/api");
-    const result = await getPublishedWorkflows();
-
-    expect(Array.isArray(result)).toBe(true);
-  });
-
-  it("returns fallback on non-ok response", async () => {
-    fetchMock.mockResolvedValue({ ok: false, status: 500 });
+  it("throws on a failed list read instead of returning an empty list", async () => {
+    fetchMock.mockResolvedValue(failed(500));
 
     const { getArtifacts } = await import("@/lib/api");
-    const result = await getArtifacts();
+    await expect(getArtifacts()).rejects.toThrow(/Request failed \(500\)/);
+  });
 
-    expect(Array.isArray(result)).toBe(true);
+  it("never invents platform settings, a security policy or a node catalog", async () => {
+    fetchMock.mockResolvedValue(failed(500));
+
+    const { getPlatformSettings, getPlatformSecurityPolicy, getNodeDefinitions } = await import("@/lib/api");
+    await expect(getPlatformSettings()).rejects.toThrow(/500/);
+    await expect(getPlatformSecurityPolicy()).rejects.toThrow(/500/);
+    await expect(getNodeDefinitions()).rejects.toThrow(/500/);
+  });
+
+  it("never reports a graph as valid when validation fails", async () => {
+    fetchMock.mockResolvedValue(failed(503));
+
+    const { validateGraph } = await import("@/lib/api");
+    await expect(validateGraph({ nodes: [], links: [] })).rejects.toThrow();
+  });
+
+  it("treats 404 as 'not found' for single-item reads", async () => {
+    fetchMock.mockResolvedValue(failed(404));
+
+    const { getArtifact, getWorkflowDefinition } = await import("@/lib/api");
+    await expect(getArtifact("missing")).resolves.toBeNull();
+    await expect(getWorkflowDefinition("missing")).resolves.toBeNull();
+  });
+
+  it("reads 401 from /auth/session as signed out, and throws on other failures", async () => {
+    fetchMock.mockResolvedValueOnce(failed(401));
+    const first = await import("@/lib/api");
+    await expect(first.getOperatorSession()).resolves.toMatchObject({ authenticated: false });
+
+    vi.resetModules();
+    fetchMock.mockResolvedValue(failed(500));
+    const second = await import("@/lib/api");
+    await expect(second.getOperatorSession()).rejects.toThrow(/500/);
   });
 });
 
@@ -553,7 +581,8 @@ describe("onApiStatusChange", () => {
 
     // Force a network error to set connected=false
     fetchMock.mockRejectedValue(new Error("offline"));
-    await getPublishedWorkflows();
+    // The failure surfaces to the caller (no silent fallback) and the banner hears it.
+    await expect(getPublishedWorkflows()).rejects.toThrow("offline");
 
     expect(listener).toHaveBeenCalledWith(false);
 

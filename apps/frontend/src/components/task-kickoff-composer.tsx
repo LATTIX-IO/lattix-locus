@@ -120,6 +120,7 @@ export function TaskKickoffComposer({
   const [createdRunId, setCreatedRunId] = useState<string | null>(null);
   const [submitInfo, setSubmitInfo] = useState<string | null>(null);
   const [cursorPosition, setCursorPosition] = useState(0);
+  const [mentionLoadError, setMentionLoadError] = useState<string | null>(null);
   const [publishedAgents, setPublishedAgents] = useState<AgentDefinition[]>([]);
   const [publishedWorkflows, setPublishedWorkflows] = useState<WorkflowDefinition[]>([]);
   const [activePlaybooks, setActivePlaybooks] = useState<PlaybookDefinition[]>([]);
@@ -133,18 +134,24 @@ export function TaskKickoffComposer({
     let cancelled = false;
 
     async function loadMentions() {
-      const [agentDefs, workflowDefs, playbookDefs] = await Promise.all([
-        getAgentDefinitions(),
-        getPublishedWorkflows(),
-        // Wrapped so a synchronous throw also degrades to "no playbooks".
-        Promise.resolve().then(() => getPlaybooks()).catch(() => [] as PlaybookDefinition[]),
+      // Each list loads on its own; a failure is reported, never shown as "none".
+      const [agentDefs, workflowDefs, playbookDefs] = await Promise.allSettled([
+        Promise.resolve().then(() => getAgentDefinitions()),
+        Promise.resolve().then(() => getPublishedWorkflows()),
+        Promise.resolve().then(() => getPlaybooks()),
       ]);
       if (cancelled) {
         return;
       }
-      setPublishedAgents(agentDefs.filter((agent) => agent.status === "published"));
-      setPublishedWorkflows(workflowDefs.filter((workflow) => workflow.status === "published"));
-      setActivePlaybooks(playbookDefs.filter((playbook) => playbook.status === "published"));
+      if (agentDefs.status === "fulfilled") setPublishedAgents(agentDefs.value.filter((agent) => agent.status === "published"));
+      if (workflowDefs.status === "fulfilled") setPublishedWorkflows(workflowDefs.value.filter((workflow) => workflow.status === "published"));
+      if (playbookDefs.status === "fulfilled") setActivePlaybooks(playbookDefs.value.filter((playbook: PlaybookDefinition) => playbook.status === "published"));
+      const failed = [
+        agentDefs.status === "rejected" ? "agents" : "",
+        workflowDefs.status === "rejected" ? "workflows" : "",
+        playbookDefs.status === "rejected" ? "playbooks" : "",
+      ].filter(Boolean);
+      setMentionLoadError(failed.length ? `Could not load ${failed.join(", ")} for suggestions.` : null);
     }
 
     void loadMentions();
@@ -338,7 +345,7 @@ export function TaskKickoffComposer({
       setDraft("");
       // Tell the nav chat tree (and any listeners) to refetch the run list.
       window.dispatchEvent(new CustomEvent("locus:runs-changed"));
-      router.push(`/inbox?session=${encodeURIComponent(result.id)}`);
+      router.push(`/activity?session=${encodeURIComponent(result.id)}`);
       router.refresh();
     } catch (error) {
       const messageText = error instanceof Error ? error.message : "Unable to start task run.";
@@ -420,7 +427,7 @@ export function TaskKickoffComposer({
             {isSubmitting ? "Starting..." : "Start task"}
           </button>
           {createdRunId ? (
-            <Link className="fx-btn-secondary px-3 py-2 text-sm" href={`/inbox?session=${encodeURIComponent(createdRunId)}`}>
+            <Link className="fx-btn-secondary px-3 py-2 text-sm" href={`/activity?session=${encodeURIComponent(createdRunId)}`}>
               Open run
             </Link>
           ) : null}
@@ -448,6 +455,11 @@ export function TaskKickoffComposer({
         </div>
 
         {submitInfo ? <p className="text-xs text-[var(--fx-muted)]">{submitInfo}</p> : null}
+        {mentionLoadError ? (
+          <p role="status" className="text-xs text-[var(--fx-danger)]">
+            {mentionLoadError}
+          </p>
+        ) : null}
         {submitError ? <p className="text-xs text-[var(--fx-danger)]">{submitError}</p> : null}
       </form>
     </div>

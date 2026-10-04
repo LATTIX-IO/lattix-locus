@@ -1,297 +1,332 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { DownloadIcon } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { getSystemUpdateStatus } from "@/lib/api";
+import {
+  checkDesktopUpdate,
+  getDesktopUpdateStatus,
+  getTauriGlobal,
+  installDesktopUpdate,
+  setDesktopUpdateChannel,
+  useIsDesktopShell,
+  type DesktopUpdateState,
+  type DesktopUpdateStatus,
+  type UpdateChannel,
+} from "@/lib/desktop-shell";
 import type { PlatformVersionStatus } from "@/types/locus";
 
 /**
- * Bottom-of-sidebar platform version, update channel and update control.
+ * Platform version, update channel and update control (LOCUS-349, D-26).
  *
- * In the **desktop (Tauri) shell** the Tauri updater is the source of truth
- * (LOCUS-349, D-26). The shell has two channels, persisted in its config dir:
+ * In the **desktop shell** the Tauri updater is the source of truth. Two
+ * channels, persisted by the shell: **Stable** (default; the shell checks in the
+ * background and installs only on click) and **Dev** (every merge to main; the
+ * shell installs on its own once no agent run is active and the loop is held).
+ * The channel maps to the shell's compiled-in feeds, never a URL from here.
  *
- * - **Stable** (default): the shell checks in the background and emits
- *   `update-status`; when an update is available we show an "Update & Restart"
- *   banner and install only on click (`install_update_and_restart`).
- * - **Dev** (every merge to main): the shell downloads updates itself, waits
- *   until no agent run is active and the self-improvement loop is held, then
- *   installs and restarts. Here we only show its status.
- *
- * The channel select calls `set_update_channel` with "dev" or "stable"; the
- * shell maps those to its two compiled-in GitHub URLs (never a URL from here).
- *
- * In the **hosted / browser** context there is no Tauri shell, so we fall back
- * to the backend version manifest (`lattix update` guidance for the Docker
- * install). A full Settings page is LOCUS-353.
+ * In the **web / hosted** context the backend version manifest applies
+ * (`lattix update` guidance).
  */
-type Channel = "dev" | "stable";
-
-type UpdateState =
-  | "idle"
-  | "checking"
-  | "up_to_date"
-  | "available"
-  | "downloading"
-  | "waiting_for_idle"
-  | "installing"
-  | "error";
-
-type UpdateStatus = {
-  channel: Channel;
-  state: UpdateState;
-  current_version: string;
-  version?: string | null;
-  detail?: string;
-};
-
-type TauriApi = {
-  core?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
-  app?: { getVersion?: () => Promise<string> };
-  event?: {
-    listen?: (
-      event: string,
-      handler: (event: { payload: unknown }) => void,
-    ) => Promise<() => void>;
-  };
-};
-
-function noopSubscribe(): () => void {
-  return () => {};
-}
-
-function getTauri(): TauriApi | null {
-  if (typeof window === "undefined") return null;
-  return (window as unknown as { __TAURI__?: TauriApi }).__TAURI__ ?? null;
-}
-
-const DEV_STATE_LABEL: Record<UpdateState, string> = {
-  idle: "Dev channel",
-  checking: "Dev: checking",
-  up_to_date: "Dev: up to date",
-  available: "Dev: update found",
-  downloading: "Dev: downloading",
-  waiting_for_idle: "Dev: waiting for runs to finish",
-  installing: "Dev: installing",
-  error: "Dev: update check failed",
+const STATE_LABEL: Record<DesktopUpdateState, string> = {
+  idle: "Idle",
+  checking: "Checking",
+  up_to_date: "Up to date",
+  available: "Update found",
+  downloading: "Downloading",
+  waiting_for_idle: "Waiting for runs to finish",
+  installing: "Installing",
+  error: "Update check failed",
 };
 
 /** A warning line for the confirm dialog when runs would be interrupted. */
 async function activeRunWarning(): Promise<string> {
   try {
-    const res = await fetch("/api/system/update/status", { credentials: "include" });
-    if (!res.ok) return "";
-    const data = (await res.json()) as {
-      active_runs?: number;
-      loop?: { lock_owner?: string | null };
-    };
+    const data = await getSystemUpdateStatus();
     const runs = Number(data?.active_runs) || 0;
     const parts: string[] = [];
     if (runs > 0) parts.push(`${runs} agent run${runs === 1 ? "" : "s"} in progress`);
     if (data?.loop?.lock_owner) parts.push("a self-improvement loop run in progress");
-    return parts.length
-      ? `\n\nWarning: ${parts.join(" and ")}. Restarting now interrupts them.`
-      : "";
+    return parts.length ? `\n\nWarning: ${parts.join(" and ")}. Restarting now interrupts them.` : "";
   } catch {
-    return "";
+    return "\n\nCould not check for runs in progress.";
   }
 }
 
-export function PlatformUpdatePanel({
-  platformVersion,
-}: {
-  platformVersion?: PlatformVersionStatus | null;
-}) {
-  // Server render and first client render agree on "not desktop"; the Tauri bridge is client-only.
-  const isDesktop = useSyncExternalStore(
-    noopSubscribe,
-    () => Boolean(getTauri()?.core?.invoke),
-    () => false,
-  );
+export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | null) {
+  const isDesktop = useIsDesktopShell();
   const [appVersion, setAppVersion] = useState<string | null>(null);
-  const [status, setStatus] = useState<UpdateStatus | null>(null);
+  const [status, setStatus] = useState<DesktopUpdateStatus | null>(null);
   // undefined = not yet checked, null = up to date, string = update available.
   const [checkedUpdate, setCheckedUpdate] = useState<string | null | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const tauri = getTauri();
-    if (!tauri?.core?.invoke) return;
-    const invoke = tauri.core.invoke;
+    if (!isDesktop) return;
+    const tauri = getTauriGlobal();
     let cancelled = false;
     const unlisteners: Array<() => void> = [];
 
-    tauri.app
+    tauri?.app
       ?.getVersion?.()
-      .then((v) => {
-        if (!cancelled) setAppVersion(v);
+      .then((version) => {
+        if (!cancelled) setAppVersion(version);
       })
       .catch(() => {
-        /* ignore — fall back to backend-reported version */
+        /* fall back to the backend-reported version */
       });
-    invoke("get_update_status")
-      .then((s) => {
-        if (!cancelled && s) setStatus(s as UpdateStatus);
+    getDesktopUpdateStatus()
+      .then((next) => {
+        if (!cancelled && next) setStatus(next);
       })
       .catch(() => {
-        /* older shell without channels — the check below still works */
+        /* older shell without channels: the check below still works */
       });
-    invoke("check_for_update")
-      .then((v) => {
-        if (!cancelled) setCheckedUpdate((v as string | null) ?? null);
+    checkDesktopUpdate()
+      .then((version) => {
+        if (!cancelled) setCheckedUpdate(version);
       })
       .catch(() => {
-        // No signed metadata published yet / offline — treat as up to date, stay quiet.
+        // No signed metadata published yet, or offline: nothing to install.
         if (!cancelled) setCheckedUpdate(null);
       });
-    tauri.event
+    tauri?.event
       ?.listen?.("update-status", (event) => {
-        if (!cancelled) setStatus(event.payload as UpdateStatus);
+        if (!cancelled) setStatus(event.payload as DesktopUpdateStatus);
       })
       .then((unlisten) => {
         if (cancelled) unlisten();
         else unlisteners.push(unlisten);
       })
       .catch(() => {
-        /* events unavailable — the status from mount stays */
+        /* events unavailable: the status from mount stays */
       });
 
     return () => {
       cancelled = true;
       unlisteners.forEach((unlisten) => unlisten());
     };
+  }, [isDesktop]);
+
+  const channel: UpdateChannel = status?.channel ?? "stable";
+
+  const changeChannel = useCallback(
+    async (next: UpdateChannel, { confirm = true }: { confirm?: boolean } = {}) => {
+      if (!isDesktop || next === channel) return;
+      if (
+        confirm &&
+        next === "dev" &&
+        !window.confirm(
+          "Switch to the Dev channel?\n\nDev builds are published on every merge to main and install automatically: the app waits until no agent run is active, then restarts.",
+        )
+      ) {
+        return;
+      }
+      setError(null);
+      try {
+        const updated = await setDesktopUpdateChannel(next);
+        if (updated) setStatus(updated);
+        setCheckedUpdate(undefined);
+      } catch (reason) {
+        setError(`Could not change the update channel: ${String(reason)}`);
+      }
+    },
+    [channel, isDesktop],
+  );
+
+  const checkNow = useCallback(async () => {
+    setError(null);
+    try {
+      setCheckedUpdate(await checkDesktopUpdate());
+    } catch (reason) {
+      setError(`Update check failed: ${String(reason)}`);
+    }
   }, []);
 
-  const channel: Channel = status?.channel ?? "stable";
-
-  async function changeChannel(next: Channel) {
-    const tauri = getTauri();
-    if (!tauri?.core?.invoke || next === channel) return;
-    if (
-      next === "dev" &&
-      !window.confirm(
-        "Switch to the Dev channel?\n\n" +
-          "Dev builds are published on every merge to main and install automatically: " +
-          "the app waits until no agent run is active, then restarts.",
-      )
-    ) {
-      return;
-    }
-    try {
-      const updated = await tauri.core.invoke("set_update_channel", { channel: next });
-      if (updated) setStatus(updated as UpdateStatus);
-      setCheckedUpdate(undefined);
-    } catch (err) {
-      window.alert(`Could not change the update channel: ${String(err)}`);
-    }
-  }
-
-  async function updateNow(version: string) {
-    const tauri = getTauri();
-    if (!tauri?.core?.invoke) return;
+  const updateNow = useCallback(async (version: string) => {
     const warning = await activeRunWarning();
     if (
       !window.confirm(
-        `Update Lattix Locus to v${version}?\n\n` +
-          `The app will close, install the update, and restart automatically.\n` +
-          `Your workflows, agents, and settings stay intact.` +
-          warning,
+        `Update Lattix Locus to v${version}?\n\nThe app will close, install the update, and restart automatically.\nYour workflows, agents, and settings stay intact.${warning}`,
       )
     ) {
       return;
     }
     setBusy(true);
+    setError(null);
     try {
-      await tauri.core.invoke("install_update_and_restart");
+      await installDesktopUpdate();
       // On success the app relaunches; this line is typically never reached.
-    } catch (err) {
+    } catch (reason) {
       setBusy(false);
-      window.alert(`Update failed: ${String(err)}`);
+      setError(`Update failed: ${String(reason)}`);
     }
-  }
+  }, []);
 
   const currentLabel = appVersion
     ? `v${appVersion}`
     : platformVersion?.current_version
       ? `v${platformVersion.current_version}`
       : "Version unavailable";
-
-  const backendUpdate =
-    !isDesktop && platformVersion?.status === "update_available" ? platformVersion : null;
-  // Stable banner: from the background check's event, or the check on mount.
+  const backendUpdate = !isDesktop && platformVersion?.status === "update_available" ? platformVersion : null;
   let stableUpdate: string | null = null;
   if (isDesktop && channel === "stable") {
     if (status?.state === "available" && status.version) stableUpdate = status.version;
     else if (typeof checkedUpdate === "string") stableUpdate = checkedUpdate;
   }
 
-  const devTitle =
-    status && channel === "dev"
-      ? [status.version ? `v${status.version}` : "", status.detail ?? ""].filter(Boolean).join(" — ")
-      : "";
+  return {
+    isDesktop,
+    status,
+    channel,
+    checkedUpdate,
+    stableUpdate,
+    backendUpdate,
+    currentLabel,
+    busy,
+    error,
+    changeChannel,
+    checkNow,
+    updateNow,
+  };
+}
 
-  const channelSelect = isDesktop ? (
-    <label className="flex items-center gap-1.5 px-1.5 text-[10px] text-[var(--fx-muted)]">
-      <span>Updates</span>
-      <select
-        aria-label="Update channel"
-        value={channel}
-        onChange={(e) => changeChannel(e.target.value === "dev" ? "dev" : "stable")}
-        className="rounded border border-[var(--ui-border)] bg-[hsl(var(--card))] px-1 py-0.5 text-[10px] text-[var(--foreground)]"
-      >
-        <option value="stable">Stable</option>
-        <option value="dev">Dev</option>
-      </select>
-      {channel === "dev" && status ? (
-        <span className="min-w-0 flex-1 truncate" title={devTitle}>
-          {DEV_STATE_LABEL[status.state] ?? "Dev channel"}
-          {status.version && status.state !== "up_to_date" ? ` v${status.version}` : ""}
-        </span>
-      ) : null}
-    </label>
-  ) : null;
+/** Bottom-of-sidebar version line, or a one-click "Update & Restart" banner. */
+export function PlatformUpdatePanel({ platformVersion }: { platformVersion?: PlatformVersionStatus | null }) {
+  const updates = usePlatformUpdates(platformVersion);
 
-  // Compact bottom-of-nav control: a single muted version line, or a one-click
-  // "Update & Restart" banner when a Stable update is available.
-  if (stableUpdate) {
+  if (updates.stableUpdate) {
+    const version = updates.stableUpdate;
     return (
-      <div className="space-y-1">
-        <button
-          type="button"
-          onClick={() => updateNow(stableUpdate)}
-          disabled={busy}
-          title={`Update to v${stableUpdate} — the app restarts and applies it silently`}
-          className="flex w-full items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--fx-primary-strong)_45%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-primary)_14%,var(--fx-sidebar))] px-2.5 py-2 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--fx-primary)_22%,var(--fx-sidebar))] disabled:opacity-60"
-        >
-          <svg viewBox="0 0 24 24" className="h-4 w-4 shrink-0 text-[var(--fx-primary-strong)]" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-            <path d="M12 4v10M8 10l4 4 4-4M5 19h14" />
-          </svg>
-          <span className="min-w-0 flex-1 leading-tight">
-            <span className="block text-[11px] font-semibold text-[var(--foreground)]">
-              {busy ? "Updating…" : "Update available: Update & Restart"}
-            </span>
-            <span className="block truncate text-[10px] text-[var(--fx-muted)]">
-              {currentLabel} → v{stableUpdate}
-            </span>
+      <button
+        type="button"
+        onClick={() => void updates.updateNow(version)}
+        disabled={updates.busy}
+        title={`Update to v${version}: the app restarts and applies it`}
+        className="flex w-full items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--fx-primary-strong)_45%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-primary)_14%,var(--fx-sidebar))] px-2.5 py-2 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--fx-primary)_22%,var(--fx-sidebar))] disabled:opacity-60"
+      >
+        <DownloadIcon aria-hidden="true" className="size-4 shrink-0 text-[var(--fx-primary-strong)]" />
+        <span className="min-w-0 flex-1 leading-tight">
+          <span className="block text-[11px] font-semibold text-[var(--foreground)]">
+            {updates.busy ? "Updating…" : "Update available: Update & Restart"}
           </span>
-        </button>
-        {channelSelect}
+          <span className="block truncate text-[10px] text-[var(--fx-muted)]">
+            {updates.currentLabel} → v{version}
+          </span>
+        </span>
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-2 px-1.5 py-1">
+      <span className="truncate text-[11px] text-[var(--fx-muted)]">
+        {updates.backendUpdate
+          ? `Update v${updates.backendUpdate.latest_version} available`
+          : updates.isDesktop && updates.channel === "dev"
+            ? `Dev: ${STATE_LABEL[updates.status?.state ?? "idle"]}`
+            : "Lattix Locus"}
+      </span>
+      <span
+        className="shrink-0 rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[var(--foreground)]"
+        title={updates.backendUpdate ? `Run: ${updates.backendUpdate.update_command}` : "Current build"}
+      >
+        {updates.currentLabel}
+      </span>
+    </div>
+  );
+}
+
+/** The full update control used by Settings → Updates and the setup wizard. */
+export function UpdatesPanel({ platformVersion }: { platformVersion?: PlatformVersionStatus | null }) {
+  const updates = usePlatformUpdates(platformVersion);
+
+  if (!updates.isDesktop) {
+    return (
+      <div className="flex flex-col gap-2 text-[13px]">
+        <p>
+          Running <span className="font-mono">{updates.currentLabel}</span>
+          {platformVersion?.latest_version ? (
+            <>
+              ; latest <span className="font-mono">v{platformVersion.latest_version}</span>
+            </>
+          ) : null}
+          .
+        </p>
+        {updates.backendUpdate ? (
+          <p className="text-muted-foreground">
+            Update with <code className="font-mono">{updates.backendUpdate.update_command}</code> on the host.
+          </p>
+        ) : (
+          <p className="text-muted-foreground">{platformVersion?.summary ?? "Version metadata is unavailable."}</p>
+        )}
+        <p className="text-xs text-muted-foreground">Update channels are managed by the desktop app.</p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between gap-2 px-1.5 py-1">
-        <span className="truncate text-[11px] text-[var(--fx-muted)]">
-          {backendUpdate ? `Update v${backendUpdate.latest_version} available` : "Lattix Locus"}
-        </span>
-        <span
-          className="shrink-0 rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[var(--foreground)]"
-          title={backendUpdate ? `Run: ${backendUpdate.update_command}` : "Current build"}
-        >
-          {currentLabel}
-        </span>
+    <div className="flex flex-col gap-3">
+      <fieldset className="flex flex-col gap-2">
+        <legend className="mb-1 text-[13px] font-medium">Channel</legend>
+        {(
+          [
+            { value: "stable", label: "Stable", hint: "Checked in the background; installs when you click Update & Restart. Recommended." },
+            { value: "dev", label: "Dev", hint: "Every merge to main. Installs on its own once no agent run is active." },
+          ] as const
+        ).map((option) => (
+          <label
+            key={option.value}
+            className="flex cursor-pointer items-start gap-3 rounded-[10px] border border-border px-3 py-2.5 has-[:checked]:border-primary has-[:checked]:bg-primary/5"
+          >
+            <input
+              type="radio"
+              name="update-channel"
+              value={option.value}
+              checked={updates.channel === option.value}
+              onChange={() => void updates.changeChannel(option.value)}
+              className="mt-1"
+            />
+            <span>
+              <span className="text-[13px] font-medium">{option.label}</span>
+              <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">{option.hint}</span>
+            </span>
+          </label>
+        ))}
+      </fieldset>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[13px]">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono">{updates.currentLabel}</span>
+          <Badge variant={updates.stableUpdate ? "warning" : "secondary"}>
+            {updates.stableUpdate
+              ? `v${updates.stableUpdate} available`
+              : updates.status
+                ? STATE_LABEL[updates.status.state]
+                : updates.checkedUpdate === null
+                  ? "Up to date"
+                  : "Not checked"}
+          </Badge>
+          {updates.status?.detail ? <span className="text-xs text-muted-foreground">{updates.status.detail}</span> : null}
+        </div>
+        <div className="flex gap-2">
+          <Button variant="secondary" size="sm" onClick={() => void updates.checkNow()}>
+            Check now
+          </Button>
+          {updates.stableUpdate ? (
+            <Button size="sm" disabled={updates.busy} onClick={() => void updates.updateNow(updates.stableUpdate as string)}>
+              {updates.busy ? "Updating…" : "Update & Restart"}
+            </Button>
+          ) : null}
+        </div>
       </div>
-      {channelSelect}
+      {updates.error ? (
+        <p role="alert" className="text-xs text-destructive">
+          {updates.error}
+        </p>
+      ) : null}
     </div>
   );
 }

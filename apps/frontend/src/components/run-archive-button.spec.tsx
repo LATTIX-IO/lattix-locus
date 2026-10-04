@@ -14,7 +14,7 @@ vi.mock("next/navigation", () => ({
     replace: replaceMock,
     refresh: refreshMock,
   }),
-  usePathname: () => "/inbox",
+  usePathname: () => "/activity",
   useSearchParams: () => new URLSearchParams("session=run-1"),
 }));
 
@@ -40,7 +40,7 @@ describe("RunArchiveButton", () => {
     await waitFor(() => {
       expect(archiveWorkflowRunMock).toHaveBeenCalledWith("run-1");
     });
-    expect(replaceMock).toHaveBeenCalledWith("/inbox");
+    expect(replaceMock).toHaveBeenCalledWith("/activity");
     expect(refreshMock).toHaveBeenCalledTimes(1);
   });
 });

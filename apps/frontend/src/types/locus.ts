@@ -376,6 +376,17 @@ export type PlatformSettings = {
     string,
     { api_key?: string; api_key_configured?: boolean; base_url?: string; default_model?: string }
   >;
+  // AI observability (LOCUS-375). Every exporter and content capture is off by
+  // default; *_ref fields name a native secret, never hold its value.
+  telemetry_capture_content?: boolean;
+  telemetry_payload_retention_days?: number;
+  telemetry_otlp_enabled?: boolean;
+  telemetry_otlp_endpoint?: string;
+  telemetry_otlp_auth_secret_ref?: string;
+  telemetry_langsmith_enabled?: boolean;
+  telemetry_langsmith_endpoint?: string;
+  telemetry_langsmith_project?: string;
+  telemetry_langsmith_api_key_ref?: string;
 };
 
 export type IntegrationDefinition = {
