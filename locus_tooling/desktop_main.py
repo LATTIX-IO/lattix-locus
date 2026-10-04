@@ -61,8 +61,57 @@ _SELF_CHECK_MODULES = (
 )
 
 
+def _check_policy_engine() -> dict[str, object]:
+    """The gateway's policy engine must ship and run (fail closed without it).
+
+    Frozen: the bundled ``locus-opa`` beside this executable must exist, report
+    the pinned OPA version (``opa version``) and start over the bundled
+    ``policies/*.rego`` (a loopback sidecar, stopped again at once). From a
+    checkout the usual discovery applies (LOCUS_OPA_BIN, .tools/opa, bin dir,
+    PATH) and any OPA version is accepted.
+    """
+    from locus_runtime.policy_engine import (
+        OpaSidecarEngine,
+        default_policy_dir,
+        find_opa_binary,
+        policy_files,
+    )
+    from locus_tooling.desktop import bundled_opa_binary, is_frozen
+    from locus_tooling.opa_release import OPA_VERSION, probe
+
+    frozen = is_frozen()
+    binary = bundled_opa_binary() if frozen else find_opa_binary()
+    result = probe(binary, expected_version=OPA_VERSION if frozen else None)
+    report: dict[str, object] = {"ok": False, "binary": result.binary, "version": result.version}
+    if not result.ok:
+        report["error"] = result.detail
+        return report
+    policy_dir = default_policy_dir()
+    try:
+        count = len(policy_files(policy_dir))
+    except OSError as exc:
+        report["error"] = f"cannot read policies in {policy_dir}: {exc}"
+        return report
+    report["policies"] = count
+    if not count:
+        report["error"] = f"no Rego policies bundled in {policy_dir}"
+        return report
+    engine = OpaSidecarEngine(opa_binary=result.binary, policy_dir=policy_dir)
+    try:
+        engine.start()
+        report["policy_version"] = engine.policy_version
+    except Exception as exc:  # noqa: BLE001 - report, then fail
+        report["error"] = f"policy engine did not start: {type(exc).__name__}: {exc}"
+        return report
+    finally:
+        engine.close()
+    report["ok"] = True
+    return report
+
+
 def self_check() -> int:
-    """Import every critical module and report the keychain backend; 0 = healthy."""
+    """Import every critical module, start the policy engine and report the
+    keychain backend; 0 = healthy."""
     import importlib
     import json
 
@@ -93,6 +142,22 @@ def self_check() -> int:
     except Exception as exc:  # noqa: BLE001
         report["agent_runtimes"] = f"error: {type(exc).__name__}: {exc}"
         report["ok"] = False
+    # The policy engine (OPA) must be bundled and runnable: without it the gateway
+    # denies every model and tool call, so a bundle that lacks it fails CI here.
+    try:
+        policy_engine = _check_policy_engine()
+    except Exception as exc:  # noqa: BLE001 - report, then fail
+        policy_engine = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    report["policy_engine"] = policy_engine
+    if policy_engine.get("ok") is not True:
+        report["ok"] = False
+    # The version the desktop shell compares with its own after every start.
+    try:
+        from locus_tooling.build_info import backend_build_version
+
+        report["build_version"] = backend_build_version()
+    except Exception as exc:  # noqa: BLE001
+        report["build_version"] = f"error: {type(exc).__name__}"
     try:
         import keyring
 
@@ -163,9 +228,19 @@ def main() -> int | None:
     from locus_tooling.shell_confirmation import receive_from_stdin
 
     receive_from_stdin()
-    from locus_tooling.desktop import run_desktop_supervisor
+    from locus_tooling.desktop import configure_bundled_opa, is_frozen, run_desktop_supervisor
 
     _prepend_bundled_bin_to_path()
+    # The gateway starts its policy engine when the backend is imported and denies
+    # everything without one, so point it at the bundled OPA first.
+    if configure_bundled_opa() is None and is_frozen():
+        print(
+            "[policy] Policy engine missing: the bundled OPA (locus-opa) was not found "
+            "beside the backend. Reinstall Lattix Locus; until then the gateway denies "
+            "every model and tool call.",
+            file=sys.stderr,
+            flush=True,
+        )
     # run_desktop_supervisor starts sidecars + frontend, runs first-run
     # provisioning in the background, and serves the backend in-process.
     run_desktop_supervisor()

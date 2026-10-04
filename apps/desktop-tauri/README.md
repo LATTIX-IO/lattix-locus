@@ -19,7 +19,9 @@ Tauri shell  ──spawns──▶  locus-backend (PyInstaller)  ──native_la
 | --- | --- |
 | `src-tauri/tauri.conf.json` | Bundle targets, `externalBin` sidecar, signing + updater config |
 | `src-tauri/src/main.rs` | Spawn the sidecar, wait for `/healthz`, navigate to the UI |
-| `src-tauri/capabilities/default.json` | v2 permissions (spawn sidecar, navigate, updater) |
+| `src-tauri/capabilities/default.json` | The bundled loading page (local origin): `core:default`, sidecar spawn, panic-hotkey status |
+| `src-tauri/capabilities/desktop-ui.json` | The UI at `http://127.0.0.1:3000` (a **remote** origin to Tauri): exactly the app commands it invokes, event listen/unlisten and the app version |
+| `src-tauri/build.rs` | App ACL manifest: one `allow-<command>` permission per command in `generate_handler!` |
 | `src-tauri/loading/index.html` | Splash shown while services start |
 | `../../packaging/locus-backend.spec` | PyInstaller spec for the backend sidecar |
 | `locus_tooling/desktop_main.py` | The sidecar entrypoint (runs the supervisor in the foreground) |
@@ -42,14 +44,46 @@ pyinstaller packaging/locus-backend.spec
 #    e.g. apps/desktop-tauri/src-tauri/bin/locus-backend-x86_64-pc-windows-msvc.exe
 #    (Tauri appends the triple; copy/rename accordingly per target.)
 
-# 3. Vendor the sidecar binaries the supervisor needs (nats/caddy/ollama/...):
+# 3. The policy engine (required: the gateway denies everything without it).
+#    The pinned OPA release, sha256-verified, beside the backend for the
+#    self-check, then as the externalBin `sidecars/locus-opa-<triple>(.exe)`:
+python -m locus_tooling.opa_release fetch --triple x86_64-pc-windows-msvc --dest dist/locus-opa.exe
+dist/locus-backend.exe --self-check   # fails unless OPA runs over the bundled policies
+#    copy to apps/desktop-tauri/src-tauri/sidecars/locus-opa-x86_64-pc-windows-msvc.exe
+
+# 4. Vendor the sidecar binaries the supervisor needs (nats/caddy/ollama/...):
 python -m locus_tooling.cli native-fetch        # → app-home/bin (dev)
 #    For a self-contained bundle, copy these into src-tauri/bin/ as resources.
 
-# 4. Build the desktop app
+# 5. Build the desktop app
 cd apps/desktop-tauri/src-tauri
 cargo tauri build       # produces MSI/NSIS (Win), .dmg/.app (mac), .deb/AppImage (Linux)
 ```
+
+## IPC permissions (Tauri ACL)
+
+Once the backend is healthy the shell navigates the window to the UI served by
+the bundled Next server at `http://127.0.0.1:3000`. Tauri treats that as a
+**remote** origin and rejects every IPC call from it that no capability covers,
+app commands included (`Command confirm_browser_tier not allowed by ACL`).
+`build.rs` therefore declares an app manifest (`tauri_build::AppManifest`) that
+generates `allow-<command>` for each command in `generate_handler!`, and
+`capabilities/desktop-ui.json` grants exactly those to the main window on that
+one origin, plus `core:event:allow-listen`/`allow-unlisten` and
+`core:app:allow-version`. No dialog, fs or other plugin permission: native
+confirmations are shown from Rust. Adding a command means adding it to both the
+manifest and the capability; `tests/backend/test_desktop_packaging.py` fails
+otherwise.
+
+## Policy engine (OPA)
+
+The gateway evaluates `policies/*.rego` with OPA and denies every model call,
+tool call and computer-use action when it cannot (fail closed). The bundle ships
+the pinned OPA release (`locus_tooling/opa_release.py`: version and one sha256
+per platform) as the externalBin `locus-opa`, installed beside the backend
+sidecar; the supervisor sets `LOCUS_OPA_BIN` to it before the backend starts, and
+the Rego policies ship inside the sidecar (`packaging/locus-backend.spec`). If it
+is missing anyway, chat shows "Policy engine missing: reinstall Lattix Locus".
 
 ## Code signing
 

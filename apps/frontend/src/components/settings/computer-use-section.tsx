@@ -30,6 +30,7 @@ import {
   type UserBrowserTierSettings,
 } from "@/lib/api";
 import { defaultPanicHotkeyLabel, useIsDesktopShell } from "@/lib/desktop-shell";
+import type { ControlStatusItem } from "@/types/locus";
 
 const TIER_LABEL: Record<BrowserTier, string> = {
   strict: "Strict",
@@ -226,6 +227,24 @@ export function BrowserTierControl({ onSaved }: { onSaved?: (settings: UserBrows
   );
 }
 
+/**
+ * Every computer-use and browser action is a gateway decision, and the gateway
+ * denies everything while its policy engine is not running (fail closed). Say
+ * so plainly instead of leaving two "Unverified" badges unexplained.
+ */
+function PolicyEngineNotice({ control }: { control: ControlStatusItem | undefined }) {
+  if (!control || control.state === "enforced") return null;
+  const text =
+    control.state === "off"
+      ? "Policy engine missing: reinstall Lattix Locus. Until it runs, the gateway denies every model call, computer-use action and browser action."
+      : "Policy engine not running: restart Lattix Locus, and reinstall if this persists. Until it runs, the gateway denies every model call, computer-use action and browser action.";
+  return (
+    <p role="alert" className="rounded-[10px] border border-destructive/40 px-3 py-2.5 text-[13px] text-destructive">
+      {text}
+    </p>
+  );
+}
+
 export function ComputerUseSection() {
   const isDesktop = useIsDesktopShell();
   const platform = usePlatformResource({ withPolicy: true });
@@ -318,13 +337,24 @@ export function ComputerUseSection() {
         ) : null}
       </SettingsGroup>
 
-      <SettingsGroup title="Operating system access" description="As the backend observes it: the desktop driver and OS permissions.">
+      <SettingsGroup
+        title="Operating system access"
+        description="Status only, as the backend reports it: the desktop driver, your browser and the policy engine that gates them. These are not switches; Re-check reads them again."
+      >
         {platform.loading || platform.error ? (
           <LoadState loading={platform.loading} error={platform.error} onRetry={platform.reload} />
         ) : (
-          <div className="grid gap-2 lg:grid-cols-2">
-            <ControlRow control={findControl(platform.policy, "computer_use")} fallbackLabel="Computer use" />
-            <ControlRow control={findControl(platform.policy, "user_browser")} fallbackLabel="Your browser" />
+          <div className="flex flex-col gap-3">
+            <PolicyEngineNotice control={findControl(platform.policy, "policy_engine_rego")} />
+            <div className="grid gap-2 lg:grid-cols-2">
+              <ControlRow control={findControl(platform.policy, "computer_use")} fallbackLabel="Computer use" />
+              <ControlRow control={findControl(platform.policy, "user_browser")} fallbackLabel="Your browser" />
+            </div>
+            <div className="flex justify-end">
+              <Button size="sm" variant="secondary" onClick={platform.reload}>
+                Re-check
+              </Button>
+            </div>
           </div>
         )}
       </SettingsGroup>

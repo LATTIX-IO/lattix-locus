@@ -101,3 +101,26 @@ def test_prepare_waits_for_agent_runs_and_a_running_loop(
     # A running loop run is never interrupted: its lock is untouched.
     assert json.loads((loop_home / "loop.lock").read_text(encoding="utf-8"))["owner"] == "tick-1a2b"
     assert client.post("/system/update/cancel", headers=HEADERS).json() == {"released": False}
+
+
+def test_platform_version_reports_the_full_dev_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The shell's LOCUS_APP_VERSION wins; the UI shows it, never the base 0.1.0.
+    monkeypatch.setattr(main_module, "_fetch_remote_release_manifest", lambda: None)
+    body = client.get("/platform/version").json()
+    assert body["current_version"] == "0.1.0-dev.9"
+
+
+def test_platform_version_falls_back_to_the_build_stamp(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A stamped sidecar reports its stamp, not the package metadata (0.1.0).
+    monkeypatch.delenv("LOCUS_APP_VERSION", raising=False)
+    monkeypatch.setattr(main_module, "_fetch_remote_release_manifest", lambda: None)
+    monkeypatch.setattr(main_module, "_stamped_build_version", lambda: "0.1.0-dev.16")
+    monkeypatch.setattr(main_module.importlib_metadata, "version", lambda _name: "0.1.0")
+    assert client.get("/platform/version").json()["current_version"] == "0.1.0-dev.16"
+
+
+def test_newer_dev_build_is_an_update_for_semver(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert main_module._version_is_newer("0.1.0-dev.17", "0.1.0-dev.16")
+    assert main_module._version_is_newer("0.1.0-dev.10", "0.1.0-dev.9")
+    assert main_module._version_is_newer("0.1.0", "0.1.0-dev.16")
+    assert not main_module._version_is_newer("0.1.0-dev.16", "0.1.0-dev.16")

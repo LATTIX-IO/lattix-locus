@@ -37,6 +37,11 @@ def _default_model_pull(ollama_bin: str, model: str) -> int:
     return subprocess.run([ollama_bin, "pull", model], check=False).returncode
 
 
+def _configured_opa_present() -> bool:
+    configured = str(os.getenv("LOCUS_OPA_BIN") or "").strip()
+    return bool(configured) and Path(configured).is_file()
+
+
 def ensure_sidecars(
     bin_dir: Path,
     *,
@@ -54,7 +59,14 @@ def ensure_sidecars(
     provision = provision or nb.provision
     model_pull = model_pull or _default_model_pull
     which = which or nb._which
-    targets = list(targets if targets is not None else nb.DEFAULT_TARGETS)
+    if targets is None:
+        targets = list(nb.DEFAULT_TARGETS)
+        # The desktop bundle ships OPA (LOCUS_OPA_BIN, set by desktop_main before
+        # the backend starts); fetch it only when no usable binary is configured.
+        if _configured_opa_present():
+            targets.remove("opa")
+    else:
+        targets = list(targets)
     bin_dir = Path(bin_dir)
     bin_dir.mkdir(parents=True, exist_ok=True)
 

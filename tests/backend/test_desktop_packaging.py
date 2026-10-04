@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -148,7 +149,8 @@ def test_serve_stops_when_required_service_dies():
 def test_tauri_conf_is_valid_and_complete():
     conf = json.loads((_TAURI_DIR / "tauri.conf.json").read_text(encoding="utf-8"))
     assert conf["identifier"] == "com.lattix.locus"
-    assert conf["bundle"]["externalBin"] == ["bin/locus-backend"]
+    # The backend sidecar and the policy engine it needs (OPA, see opa_release).
+    assert conf["bundle"]["externalBin"] == ["bin/locus-backend", "sidecars/locus-opa"]
     # The one-click updater pulls signed release manifests from GitHub releases.
     updater = conf.get("plugins", {}).get("updater", {})
     assert updater.get("pubkey")
@@ -318,20 +320,98 @@ def test_shell_actions_sign_the_generic_request_bound_message():
     assert not any(str(p).startswith("dialog:") for p in cap["permissions"])
 
 
-def test_webview_can_invoke_confirm_action_like_the_other_app_commands():
-    # App commands (quit_now, check_for_update, confirm_browser_tier, ...) are
-    # not ACL-gated while the app defines no ACL manifest: Tauri only checks the
-    # capability for plugin commands, so the UI at http://127.0.0.1:3000 can
-    # invoke confirm_action exactly as it invokes quit_now. Defining an app
-    # manifest would make every app command, confirm_action included, need an
-    # explicit permission; this test then fails so the capability gets one.
+def _capability(name: str) -> dict[str, Any]:
+    return json.loads((_TAURI_DIR / "capabilities" / name).read_text(encoding="utf-8"))
+
+
+def _permission_names(cap: dict[str, Any]) -> set[str]:
+    return {p if isinstance(p, str) else p["identifier"] for p in cap["permissions"]}
+
+
+def _handler_commands() -> list[str]:
+    import re
+
+    main_rs = (_TAURI_DIR / "src" / "main.rs").read_text(encoding="utf-8")
+    block = main_rs[main_rs.index("tauri::generate_handler![") :]
+    block = block[len("tauri::generate_handler![") : block.index("]")]
+    return [re.split(r"::", item.strip())[-1] for item in block.split(",") if item.strip()]
+
+
+_UI_COMMANDS = [
+    "quit_now",
+    "check_for_update",
+    "install_update_and_restart",
+    "get_update_status",
+    "set_update_channel",
+    "confirm_browser_tier",
+    "confirm_browser_pairing",
+    "confirm_action",
+]
+
+
+def test_app_manifest_declares_every_registered_command():
+    # Tauri rejects IPC from a remote origin that resolves to no capability, app
+    # commands included ("Command confirm_browser_tier not allowed by ACL"). The
+    # app manifest generates allow-<command> permissions for exactly the
+    # commands generate_handler! registers.
+    import re
+
     build_rs = (_TAURI_DIR / "build.rs").read_text(encoding="utf-8")
-    assert "app_manifest" not in build_rs and "AppManifest" not in build_rs
-    cap = json.loads((_TAURI_DIR / "capabilities" / "default.json").read_text(encoding="utf-8"))
-    # Nothing broader: no dialog permission and no extra plugin grants.
-    assert not any(str(p).startswith("dialog:") for p in cap["permissions"])
-    names = {p if isinstance(p, str) else p.get("identifier") for p in cap["permissions"]}
-    assert names == {"core:default", "global-shortcut:allow-is-registered", "shell:allow-spawn"}
+    assert "tauri_build::AppManifest::new().commands(APP_COMMANDS)" in build_rs
+    assert ".app_manifest(" in build_rs and "tauri_build::try_build(" in build_rs
+    block = build_rs[build_rs.index("const APP_COMMANDS: &[&str] = &[") :]
+    block = block[: block.index("];")]
+    declared = re.findall(r'"([a-z_]+)"', block)
+    assert declared == _handler_commands() == _UI_COMMANDS
+
+
+def test_ui_capability_grants_exactly_the_app_commands_to_the_ui_origin():
+    cap = _capability("desktop-ui.json")
+    assert cap["windows"] == ["main"]
+    # The UI is served by the bundled Next server and loaded with
+    # window.navigate, so Tauri treats it as a remote origin.
+    assert cap["remote"] == {"urls": ["http://127.0.0.1:3000"]}
+    assert cap["local"] is False
+    main_rs = (_TAURI_DIR / "src" / "main.rs").read_text(encoding="utf-8")
+    assert 'const FRONTEND_URL: &str = "http://127.0.0.1:3000";' in main_rs
+    app_permissions = {f"allow-{name.replace('_', '-')}" for name in _UI_COMMANDS}
+    # Plus what the UI itself calls: event listen/unlisten (app-quit-requested,
+    # update-status) and app version (the sidebar's version label). Nothing else.
+    assert _permission_names(cap) == app_permissions | {
+        "core:event:allow-listen",
+        "core:event:allow-unlisten",
+        "core:app:allow-version",
+    }
+    assert all(isinstance(p, str) for p in cap["permissions"])  # no scoped grants
+
+
+def test_no_capability_grants_dialog_fs_or_broad_plugin_permissions():
+    caps = sorted((_TAURI_DIR / "capabilities").glob("*.json"))
+    assert [c.name for c in caps] == ["default.json", "desktop-ui.json"]
+    for path in caps:
+        names = _permission_names(json.loads(path.read_text(encoding="utf-8")))
+        # Native confirmations are shown from Rust; the webview could fake them.
+        assert not any(
+            n.startswith(("dialog:", "fs:", "updater:", "process:", "opener:")) for n in names
+        )
+        assert not any(n.startswith("shell:") and n != "shell:allow-spawn" for n in names)
+        assert "core:default" not in names or path.name == "default.json"
+    # The loading page (local only) keeps its original, narrow set.
+    default = _capability("default.json")
+    assert default.get("local", True) is True and "remote" not in default
+    assert _permission_names(default) == {
+        "core:default",
+        "global-shortcut:allow-is-registered",
+        "shell:allow-spawn",
+    }
+    spawn = next(p for p in default["permissions"] if isinstance(p, dict))
+    assert spawn["allow"] == [{"name": "bin/locus-backend", "sidecar": True}]
+
+
+def test_generated_app_permissions_are_not_committed():
+    ignore = (_TAURI_DIR / ".gitignore").read_text(encoding="utf-8").split()
+    assert "/permissions/autogenerated" in ignore
+    assert "/sidecars" in ignore
 
 
 def test_frontend_shell_actions_mirror_the_backend_rules():

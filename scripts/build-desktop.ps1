@@ -67,6 +67,17 @@ Write-Host "== building backend sidecar (PyInstaller) =="
 CheckExit "PyInstaller backend build"
 Copy-Item (Join-Path $root "dist/locus-backend.exe") (Join-Path $bin "locus-backend-$triple.exe") -Force
 
+# 1b) Policy engine: the pinned OPA release, sha256-verified (fails closed), beside
+#     the backend for the self-check, then as the Tauri externalBin sidecars/locus-opa.
+Write-Host "== fetching the pinned OPA policy engine =="
+& $Py -m locus_tooling.opa_release fetch --triple $triple --dest (Join-Path $root "dist/locus-opa.exe")
+CheckExit "OPA fetch + sha256 verification"
+& (Join-Path $root "dist/locus-backend.exe") --self-check
+CheckExit "backend self-check (modules + policy engine)"
+$sidecars = Join-Path $tauri "sidecars"
+New-Item -ItemType Directory -Force -Path $sidecars | Out-Null
+Copy-Item (Join-Path $root "dist/locus-opa.exe") (Join-Path $sidecars "locus-opa-$triple.exe") -Force
+
 # 2) Frontend standalone + vendored Node
 Write-Host "== building frontend (Next.js standalone) =="
 Push-Location (Join-Path $root "apps/frontend")
