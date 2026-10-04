@@ -4,10 +4,14 @@ Used by ``.github/workflows/desktop-dev.yml`` (merge to main -> Dev release) and
 ``desktop-promote.yml`` (Dev version -> Stable release, no rebuild). Pure Python,
 standard library only, so it runs on any runner and in unit tests.
 
+The build version itself (``MAJOR.MINOR.PATCH``, PATCH = build counter) comes
+from ``locus_tooling/versioning.py`` (D-31, docs/VERSIONING.md). Channel
+comparisons here stay full SemVer: installs from before D-31 run pre-release
+versions such as ``0.1.0-dev.16`` and must still see ``0.2.N`` as newer.
+
 Subcommands::
 
-    version        --tauri-conf PATH --run-number N         -> prints <base>-dev.<N>
-    stage          --bundle-dir DIR --platform P --version V --out DIR
+    stage         --bundle-dir DIR --platform P --version V --out DIR
     manifest       --assets DIR --version V --repo O/R --tag T --out FILE
                    [--notes TEXT] [--pubkey-conf tauri.conf.json [--require-crypto]]
     should-advance --candidate V [--current FILE]           -> prints true|false
@@ -49,7 +53,6 @@ _SEMVER = re.compile(
     r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z"
 )
-_BASE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\Z")
 _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 _TAG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _ASSET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}\Z")
@@ -91,27 +94,6 @@ def compare_semver(a: str, b: str) -> int:
         if x != y:
             return -1 if _pre_key(x) < _pre_key(y) else 1
     return -1 if len(a_pre) < len(b_pre) else 1
-
-
-def read_base_version(tauri_conf: Path) -> str:
-    data = json.loads(Path(tauri_conf).read_text(encoding="utf-8"))
-    base = str(data.get("version") or "").strip()
-    if not _BASE.match(base):
-        raise ChannelError(f"tauri.conf.json version must be MAJOR.MINOR.PATCH, got {base!r}")
-    return base
-
-
-def dev_version(base: str, run_number: int | str) -> str:
-    """``<base>-dev.<run_number>``: numeric last identifier, so dev.10 > dev.9."""
-    if not _BASE.match(str(base or "").strip()):
-        raise ChannelError(f"base version must be MAJOR.MINOR.PATCH, got {base!r}")
-    try:
-        number = int(str(run_number).strip())
-    except ValueError as exc:
-        raise ChannelError(f"run number must be an integer, got {run_number!r}") from exc
-    if number <= 0:
-        raise ChannelError("run number must be positive")
-    return f"{base.strip()}-dev.{number}"
 
 
 def should_advance(candidate: str, current: str | None) -> bool:
@@ -389,10 +371,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="desktop_channel")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("version")
-    p.add_argument("--tauri-conf", required=True)
-    p.add_argument("--run-number", required=True)
-
     p = sub.add_parser("stage")
     p.add_argument("--bundle-dir", required=True)
     p.add_argument("--platform", required=True, choices=PLATFORMS)
@@ -422,9 +400,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     try:
-        if args.cmd == "version":
-            print(dev_version(read_base_version(Path(args.tauri_conf)), args.run_number))
-        elif args.cmd == "stage":
+        if args.cmd == "stage":
             record = stage_bundle(
                 Path(args.bundle_dir), args.platform, args.version, Path(args.out)
             )

@@ -101,6 +101,7 @@ class FakeGitHub:
         ]
         self.codeowners = (REPO_ROOT / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
         self.state = "OPEN"
+        self.contents: dict[tuple[str, str], str] = {}
 
     def open_pr(self, branch, base, title, body):
         self.opened.append({"branch": branch, "base": base, "title": title, "body": body})
@@ -118,6 +119,8 @@ class FakeGitHub:
         return list(self.files)
 
     def file_at(self, ref, path):
+        if (ref, path) in self.contents:
+            return self.contents[(ref, path)]
         return self.codeowners if path == ".github/CODEOWNERS" else None
 
     def merge_pr(self, number, method, head_sha):
@@ -261,6 +264,7 @@ def test_done_run_opens_pr_with_evidence_and_moves_issue_to_in_review(
         "## Judge verdicts",
         "Model fallbacks",
         "runs/" + result.run_id + "/trajectory.jsonl",
+        "\nRelease-Impact: patch\n",  # D-31 declaration (no VERSION change)
     ):
         assert fragment in body
     # pushed to origin with the fix
@@ -524,6 +528,72 @@ def test_reconcile_holds_protected_change_and_never_merges(repo: Path, tmp_path:
     assert github.merged == []
     assert "needs principal review" in _comments(tracker)[-1]
     assert Ledger.load(tmp_path / "home").open_prs == []
+
+
+# --------------------------------------------------------------------------- #
+# D-31: the PR declares its release impact; VERSION is judged on content
+# --------------------------------------------------------------------------- #
+def _with_version(repo: Path, text: str = "0.2\n") -> None:
+    (repo / "VERSION").write_text(text, encoding="utf-8", newline="\n")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.2.0"\n', encoding="utf-8", newline="\n"
+    )
+    _git(repo, "add", "VERSION", "pyproject.toml")
+    _git(repo, "commit", "-q", "-m", "version")
+    _git(repo, "push", "-q", "origin", "HEAD:main")
+
+
+def _bump(new: str) -> ChatResponse:
+    return tool_response(
+        "v1",
+        "str_replace_editor",
+        command="str_replace",
+        path="VERSION",
+        old_str="0.2",
+        new_str=new,
+    )
+
+
+def test_a_minor_bump_run_declares_minor_in_the_pr(repo: Path, tmp_path: Path) -> None:
+    _with_version(repo)
+    tracker = FakeTracker([_issue()])
+    github = FakeGitHub()
+    responses = [_plan(), _fix(), _bump("0.3"), _submit()]
+    result = _runner(repo, tmp_path, tracker, responses, github=github).run_once()
+    assert result.status == "done", result.detail
+    assert "\nRelease-Impact: minor\n" in github.opened[0]["body"]
+    # The runner (host side) synced the pinned manifest the agent may not write.
+    branch = github.opened[0]["branch"]
+    pushed = _git(tmp_path / "origin.git", "show", f"{branch}:pyproject.toml")
+    assert 'version = "0.3.0"' in pushed and 'name = "demo"' in pushed
+
+
+def test_an_out_of_step_version_change_stops_before_any_pr(repo: Path, tmp_path: Path) -> None:
+    _with_version(repo)
+    tracker = FakeTracker([_issue()])
+    github = FakeGitHub()
+    responses = [_plan(), _fix(), _bump("0.5"), _submit()]
+    result = _runner(repo, tmp_path, tracker, responses, github=github).run_once()
+    assert result.status == "stopped" and "invalid VERSION change" in result.detail
+    assert github.opened == []
+
+
+@pytest.mark.parametrize(
+    ("after", "action"), [("0.3\n", "merged"), ("1.0\n", "hold"), ("0.4\n", "hold")]
+)
+def test_reconcile_merges_a_minor_version_bump_and_holds_a_major_one(
+    repo: Path, tmp_path: Path, after: str, action: str
+) -> None:
+    github = FakeGitHub()
+    github.files = [*github.files, ChangedFile("VERSION", "modified", patch=f"-0.2\n+{after}")]
+    github.contents = {("basesha", "VERSION"): "0.2\n", ("headsha", "VERSION"): after}
+    tracker = FakeTracker([_issue(state="In Review")])
+    _with_open_pr(tmp_path)
+    result = _runner(repo, tmp_path, tracker, [], github=github, auto_merge=True).run_once()
+    assert result.merges[0]["action"] == action, result.merges
+    if action == "hold":
+        assert github.merged == []
+        assert "VERSION" in _comments(tracker)[-1]
 
 
 def test_reconcile_waits_for_pending_checks_and_skips_when_auto_merge_off(

@@ -4,6 +4,7 @@ import os
 import platform
 import re
 from collections.abc import Mapping
+from pathlib import Path
 
 import click
 
@@ -573,6 +574,67 @@ def loop_autostart(repo: str, off: bool) -> None:
     else:
         flag = read_loop_autostart(home)
     print_json(flag.model_dump())
+
+
+@cli.group("version")
+def version_group() -> None:
+    """Release versions (D-31): MAJOR.MINOR from VERSION, PATCH = build counter."""
+
+
+@version_group.command("next")
+@click.option(
+    "--tags-file",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Release tag names, one per line (or `git ls-remote --tags` output).",
+)
+def version_next(tags_file: str) -> None:
+    """Print the next build version: VERSION + (1 + the highest tagged PATCH, or 0)."""
+    from . import versioning
+
+    try:
+        click.echo(versioning.next_from_files(ROOT / versioning.VERSION_FILE, Path(tags_file)))
+    except versioning.VersionError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@version_group.command("sync")
+def version_sync() -> None:
+    """Set the pinned manifests (tauri.conf.json, Cargo.toml, package*.json, pyproject.toml)
+    to <VERSION>.0 after a VERSION edit."""
+    from . import versioning
+
+    try:
+        base = versioning.read_version_file(
+            (ROOT / versioning.VERSION_FILE).read_text(encoding="utf-8")
+        )
+        changed = versioning.sync_manifests(ROOT, base)
+    except (versioning.VersionError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    for path in changed:
+        click.echo(f"updated {path}")
+
+
+@version_group.command("check")
+@click.option("--base-ref", default=None, help="Git ref the change is compared with (PR base).")
+@click.option(
+    "--pr-body-file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="PR body holding the `Release-Impact: patch|minor|major` declaration.",
+)
+def version_check(base_ref: str | None, pr_body_file: str | None) -> None:
+    """Validate VERSION and, against --base-ref, the change's release impact."""
+    from . import versioning
+
+    body = Path(pr_body_file).read_text(encoding="utf-8") if pr_body_file else None
+    try:
+        result = versioning.run_check(ROOT, base_ref=base_ref, pr_body=body)
+    except versioning.VersionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(result.render())
+    if not result.ok:
+        raise SystemExit(1)
 
 
 @cli.command()

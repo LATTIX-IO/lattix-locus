@@ -524,6 +524,15 @@ section (the vector, the decision, the reasons). Scoring before the commit keeps
 commit-to-push window short: a crash during the long scorecard run resumes with the change
 still uncommitted, exactly as before.
 
+**Release impact (D-31).** Every loop PR declares `Release-Impact: patch|minor|major`,
+derived from the run's `VERSION` diff (unchanged = `patch`); CI rejects a mismatch, and a
+PATCH change that carries a "bump required" signal (a `PORT_VERSION` or schema version
+change, a new migration, a changed default). A run that raises MINOR by one also adds a
+`docs/release-notes/` fragment; the runner then sets the pinned manifests host-side and the
+D-22 guard may auto-merge it. A MAJOR bump, or an out-of-step `VERSION` change, always stops
+for the principal (an invalid change stops the run before a PR). What each digit means and
+the full rules: [docs/VERSIONING.md](../VERSIONING.md).
+
 * `advisory`: never blocks; skipped (no model endpoint, no OPA) and error are reported.
 * `required`: the D-22 auto-merge additionally holds unless the PR's scorecard said
   `promote` (hold, skipped, error and "not run" all hold, with the reason on the issue).

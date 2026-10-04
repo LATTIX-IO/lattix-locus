@@ -57,7 +57,9 @@ python -m locus_tooling.cli native-fetch        # → app-home/bin (dev)
 
 # 5. Build the desktop app
 cd apps/desktop-tauri/src-tauri
-cargo tauri build       # produces MSI/NSIS (Win), .dmg/.app (mac), .deb/AppImage (Linux)
+cargo tauri build       # produces NSIS .exe (Win), .dmg/.app (mac), .deb/AppImage (Linux)
+# No MSI: Windows Installer caps the third version field at 65535, below the
+# D-31 PATCH cap (99999); see docs/VERSIONING.md.
 ```
 
 ## IPC permissions (Tauri ACL)
@@ -89,7 +91,7 @@ is missing anyway, chat shows "Policy engine missing: reinstall Lattix Locus".
 
 - **Windows (Authenticode):** set `bundle.windows.certificateThumbprint` in
   `tauri.conf.json` (or the `TAURI_SIGNING_*` env) to your cert thumbprint; the
-  NSIS/MSI bundler signs the installer. `timestampUrl` is preconfigured.
+  NSIS bundler signs the installer. `timestampUrl` is preconfigured.
 - **macOS (notarization):** set `bundle.macOS.signingIdentity` to your Developer
   ID Application identity and provide notarization creds via env
   (`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`); `hardenedRuntime` is on.
@@ -148,10 +150,11 @@ The installers are produced by `.github/workflows/desktop-release.yml` — they 
 3. **Host the pgvector artifacts** once via `.github/workflows/pgvector-build.yml`
    so first-run fetch can install the extension (else vector search degrades to
    keyword; the relational world-graph is unaffected).
-4. **Tag the release:** `git tag v0.1.0 && git push origin v0.1.0` (or run the
-   workflow manually). The matrix builds Windows/macOS/Linux, signs the Windows
-   `.msi`/`.exe`, and uploads all installers as artifacts/release assets.
-5. **Verify Windows:** download the `.msi`, `signtool verify /pa <file>`, install
+4. **Tag the release:** `git tag v0.2.7 && git push origin v0.2.7` (or run the
+   workflow manually; versions follow docs/VERSIONING.md and must not reuse a
+   published Dev/Stable version). The matrix builds Windows/macOS/Linux, signs
+   the Windows `.exe`, and uploads all installers as artifacts/release assets.
+5. **Verify Windows:** download the `.exe`, `signtool verify /pa <file>`, install
    on a clean VM, launch → first-run fetch → working multi-agent run.
 
 ## Status / what's environment-gated

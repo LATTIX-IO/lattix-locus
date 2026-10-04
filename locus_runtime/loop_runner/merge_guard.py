@@ -34,6 +34,15 @@ Rules (each produces a reason on hold):
 4. **Tests not weakened.** No test file deleted (or renamed out of the test
    tree); no net deletion of test functions or assertions in test files; no
    added skip/xfail markers anywhere.
+5. **Release version (D-31).** The root ``VERSION`` file is judged on content,
+   not path (it is listed in CODEOWNERS, but the loop may bump MINOR): the PR
+   may leave it unchanged or raise MINOR by one. A MAJOR bump needs the
+   principal; an added, removed or renamed ``VERSION``, a malformed value, a
+   skipped or backwards step, or missing before/after contents also hold. With
+   a MINOR bump, the pinned manifests inside the protected desktop tree
+   (``tauri.conf.json``, ``Cargo.toml``) may change their version field to
+   ``<MAJOR>.<MINOR>.0`` and nothing else
+   (:func:`locus_tooling.versioning.manifest_only_version_changed`).
 """
 
 from __future__ import annotations
@@ -49,7 +58,15 @@ from typing import Literal
 from locus_runtime.gate_definitions import (
     MAKEFILE_GATE_TARGETS,
     PYPROJECT_GATE_TABLES,
+    RELEASE_VERSION_PATH,
     gate_config_reason,
+)
+from locus_tooling.versioning import (
+    PINNED_MANIFESTS,
+    VersionError,
+    classify_bump,
+    manifest_only_version_changed,
+    read_version_file,
 )
 
 MergeAction = Literal["merge", "hold"]
@@ -92,6 +109,10 @@ BASELINE_PROTECTED: tuple[str, ...] = (
     "/locus_tooling/update_contract.py",
     "/locus_tooling/desktop_update.py",
     "/locus_tooling/build_info.py",
+    # Release versions (D-31): the bump rules and the check that enforces them
+    # (VERSION itself is judged on content, rule 5).
+    "/docs/VERSIONING.md",
+    "/locus_tooling/versioning.py",
 )
 
 _SUCCESS = "success"
@@ -334,6 +355,77 @@ def _config_reasons(path: str, versions: Mapping[str, tuple[str | None, str | No
     return reasons
 
 
+#: Pinned manifests (D-31) that sit inside protected paths: with a MINOR bump in
+#: the same PR, their version field -- and nothing else -- may change (rule 5).
+_PINNED_PROTECTED: dict[str, str] = {
+    path.lower(): path
+    for path in PINNED_MANIFESTS
+    if path.lower().startswith("apps/desktop-tauri/src-tauri/")
+}
+
+
+def _content_pair(
+    versions: Mapping[str, tuple[str | None, str | None]], path: str
+) -> tuple[str | None, str | None] | None:
+    for key, value in versions.items():
+        try:
+            if normalize_path(key) == path:
+                return value
+        except UnsafePath:
+            continue
+    return None
+
+
+def _minor_bump_target(versions: Mapping[str, tuple[str | None, str | None]]) -> str:
+    """``"<MAJOR>.<MINOR>.0"`` when the PR's VERSION change is a MINOR bump, else ''."""
+    pair = _content_pair(versions, RELEASE_VERSION_PATH)
+    if pair is None or pair[0] is None or pair[1] is None:
+        return ""
+    try:
+        if classify_bump(pair[0], pair[1]) != "minor":
+            return ""
+        return f"{read_version_file(pair[1])}.0"
+    except VersionError:
+        return ""
+
+
+def _pinned_manifest_allowed(
+    path: str, status: str, versions: Mapping[str, tuple[str | None, str | None]], target: str
+) -> bool:
+    """Rule 5: a MINOR bump's pinned manifest that changed only its version field."""
+    original = _PINNED_PROTECTED.get(path)
+    if not original or not target or status != "modified":
+        return False
+    pair = _content_pair(versions, path)
+    if pair is None or pair[0] is None or pair[1] is None:
+        return False
+    return manifest_only_version_changed(original, pair[0], pair[1], target)
+
+
+def _release_version_reasons(
+    status: str, versions: Mapping[str, tuple[str | None, str | None]]
+) -> list[str]:
+    """Rule 5: hold unless ``VERSION`` is unchanged or one MINOR step up (D-31)."""
+    if status in {"removed", "deleted", "renamed", "copied"}:
+        return [f"VERSION {status}: release versions change only in place (principal review)"]
+    pair = _content_pair(versions, RELEASE_VERSION_PATH)
+    if pair is None:
+        return ["VERSION changed but its before/after contents were not provided"]
+    before, after = pair
+    if before is None or after is None:
+        return ["VERSION added or removed (principal review)"]
+    try:
+        kind = classify_bump(before, after)
+    except VersionError as exc:
+        return [f"VERSION change is not a single MINOR or MAJOR step: {exc}"]
+    if kind == "major":
+        return [
+            f"VERSION increments MAJOR ({before.strip()} -> {after.strip()}): a MAJOR release "
+            "needs principal approval (D-31, docs/VERSIONING.md)"
+        ]
+    return []
+
+
 def _patch_lines(patch: str) -> tuple[list[str], list[str]]:
     added: list[str] = []
     removed: list[str] = []
@@ -390,8 +482,9 @@ def evaluate_auto_merge(
 ) -> MergeDecision:
     """``merge`` only if every D-22 rule passes; otherwise ``hold`` with all reasons.
 
-    ``config_versions`` maps ``pyproject.toml`` / ``Makefile`` (when changed) to
-    their ``(base_text, head_text)``; ``None`` for an absent side.
+    ``config_versions`` maps ``pyproject.toml`` / ``Makefile`` / ``VERSION`` and
+    the pinned manifests under ``apps/desktop-tauri/src-tauri/`` (when changed)
+    to their ``(base_text, head_text)``; ``None`` for an absent side.
     """
     reasons: list[str] = []
     versions = config_versions or {}
@@ -407,6 +500,7 @@ def evaluate_auto_merge(
 
     if not changed_files:
         reasons.append("the PR changes no files")
+    minor_target = _minor_bump_target(versions)
 
     tests_removed = asserts_removed = 0
     tests_added = asserts_added = 0
@@ -423,8 +517,19 @@ def evaluate_auto_merge(
                 unsafe = True
         if unsafe:
             continue
+        if RELEASE_VERSION_PATH in paths:
+            # Rule 5: judged on content instead of the CODEOWNERS / baseline match.
+            reasons.extend(_release_version_reasons(status, versions))
         for path in paths:
+            if path == RELEASE_VERSION_PATH:
+                continue
             pattern = protected_match(path, owner_rules) or protected_match(path, baseline_rules)
+            if (
+                pattern
+                and len(paths) == 1
+                and _pinned_manifest_allowed(path, status, versions, minor_target)
+            ):
+                pattern = ""  # Rule 5: only the version field follows a MINOR bump.
             if pattern:
                 reasons.append(f"protected path changed: {path} (matches {pattern})")
             gate = _gate_config_reason(path)

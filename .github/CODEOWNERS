@@ -28,6 +28,13 @@
 # and candidate-isolation code; the loop must not grade or redefine itself.
 /apps/evals/locus_evals/suite/     @jmsbooth
 /locus_runtime/rsi/                @jmsbooth
+# Release versions (D-31, docs/VERSIONING.md): the bump rules and their check.
+# VERSION is special-cased by the loop's merge guard: a MINOR bump may
+# auto-merge, a MAJOR bump (or any malformed / out-of-step change) is held for
+# the principal. Every other path here is held outright.
+/VERSION                           @jmsbooth
+/docs/VERSIONING.md                @jmsbooth
+/locus_tooling/versioning.py       @jmsbooth
 # The private held-out split (LOCUS-382): its pinned source and the sync that
 # verifies and installs it.
 /locus_tooling/evals_sync.py       @jmsbooth

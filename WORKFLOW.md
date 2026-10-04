@@ -133,7 +133,7 @@ Use the local `git` command and the authenticated `gh` CLI for branch, pull-requ
 6. Never print, commit, or log secrets. `LINEAR_API_KEY` reaches Symphony through environment indirection only; do not read or echo it from `.env`.
 7. Use the repo's existing tooling. Add dependencies only when justified by purpose, license, risk, and alternatives.
 8. Commit with a Conventional Commit message referencing the issue identifier when practical.
-9. Push the branch and open or update a pull request.
+9. Push the branch and open or update a pull request. The PR body declares one `Release-Impact: patch|minor|major` line per [docs/VERSIONING.md](docs/VERSIONING.md) (D-31). A new user-visible capability or setting, a changed default, a port contract version, a migration or a core-dependency major upgrade is at least `minor`: edit `VERSION`, run `lattix version sync` and add a `docs/release-notes/` fragment in the same PR. Never edit the PATCH digit; a `major` bump needs the principal.
 10. Before handoff, run the repo-native validation gate plus the targeted checks below, and fix failures caused by the current change.
 11. Sweep reviewer feedback on existing or updated PRs; address actionable comments or document justified pushback.
 12. Move to `Human Review` only after code, tests, docs, PR metadata, validation evidence, and rollback notes are complete. `Done` means merged or explicitly marked complete by the workflow owner.

@@ -73,7 +73,7 @@ Download the signed installer for your OS from the project releases and run it:
 
 | OS | Installer |
 | --- | --- |
-| **Windows** | `.msi` or `.exe` (NSIS) — Authenticode-signed |
+| **Windows** | `.exe` (NSIS, per-user) — Authenticode-signed |
 | **macOS** | `.dmg` / `.app` — Developer ID signed + notarized |
 | **Linux** | `.deb` or `.AppImage` |
 

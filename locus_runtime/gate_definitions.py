@@ -53,12 +53,21 @@ GATE_CONFIG_PATHS: tuple[str, ...] = (
     # able to edit its own exam or its promotion rule.
     "apps/evals/locus_evals/suite/",
     "locus_runtime/rsi/",
+    # The release-version gate (D-31): the CI check of VERSION / Release-Impact
+    # and the bump classification the merge guard relies on to hold a MAJOR bump.
+    "locus_tooling/versioning.py",
     # The private held-out split (LOCUS-382): where it is fetched from (the pinned
     # repository and tag) and how it is verified and installed. Pointing the
     # evaluator at another repository or an older tag would change the exam.
     "locus_tooling/evals_sync.py",
     "locus_tooling/evals_heldout.py",
 )
+#: The release ``MAJOR.MINOR`` file (D-31, docs/VERSIONING.md). Deliberately NOT
+#: a gate definition: the loop may bump MINOR, so a write to it is not asked
+#: (the gateway sees only the path, never whether the change is MINOR or MAJOR).
+#: The D-22 merge guard compares its before/after content instead and holds a
+#: MAJOR bump, a malformed or out-of-step change, an addition and a removal.
+RELEASE_VERSION_PATH = "version"
 #: ``pyproject.toml`` tables that configure gates.
 PYPROJECT_GATE_TABLES: tuple[str, ...] = ("ruff", "mypy", "pytest", "coverage")
 #: ``Makefile`` targets that run gates.

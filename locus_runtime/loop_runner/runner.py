@@ -58,7 +58,7 @@ import logging
 import re
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -171,6 +171,14 @@ from locus_runtime.loop_runner.state import (
     today_utc,
 )
 from locus_runtime.rsi.variants import VariantArchive, variant_tag
+from locus_tooling.versioning import (
+    PINNED_MANIFESTS,
+    VERSION_FILE,
+    VersionError,
+    classify_bump,
+    read_version_file,
+    sync_manifests,
+)
 from locus_runtime.model_client import (
     EnvProviderSettings,
     FallbackEvent,
@@ -343,7 +351,10 @@ def pr_body(
     gate: GateReport | None = None,
     eval_result: EvalGateResult | None = None,
     scorecard: ScorecardGateResult | None = None,
+    release_impact: str = "patch",
 ) -> str:
+    if release_impact not in ("patch", "minor", "major"):
+        raise ValueError(f"unknown release impact {release_impact!r}")
     env = result.envelope
     evidence = result.evidence or {}
     usage = result.usage
@@ -352,6 +363,9 @@ def pr_body(
         "",
         f"Opened by the Locus self-improvement loop (run `{result.run_id}`). "
         "Merge only per D-22: every gate green and no protected path changed.",
+        "",
+        # D-31 declaration, checked by CI against the VERSION diff (docs/VERSIONING.md).
+        f"Release-Impact: {release_impact}",
         "",
         "## Envelope",
         f"- Goal: {_safe(env.goal, 300)}",
@@ -805,6 +819,18 @@ class LoopRunner:
                     "confirm whether the issue is already resolved, then close or re-scope it",
                 )
             changed = self.git.changed_paths(worktree)
+            try:
+                impact = self._release_impact(worktree, changed)
+                if impact != "patch":
+                    # Host side, not the agent: the agent cannot write pyproject.toml
+                    # (gateway ask) and the guard admits only the version field.
+                    base = read_version_file((worktree / VERSION_FILE).read_text(encoding="utf-8"))
+                    if sync_manifests(worktree, base):
+                        changed = self.git.changed_paths(worktree)
+            except (VersionError, OSError) as exc:
+                return self._stopped(
+                    ledger, issue, record, "release_version", f"invalid VERSION change: {exc}"
+                )
             gate = self._quality_gate(gateway, record, result.envelope, changed, worktree)
             if gate is not None and not gate.passed:
                 record["gate_failures"] = gate.failing_ids
@@ -841,6 +867,7 @@ class LoopRunner:
                 gate=gate,
                 eval_result=eval_result,
                 scorecard=scorecard,
+                release_impact=impact,
             )
             pr = self._retry(
                 lambda: self.github.open_pr(branch, self.config.base_branch, title, body)
@@ -1000,6 +1027,24 @@ class LoopRunner:
         except OSError:
             logger.exception("loop.history_write_error", extra={"run_id": record["run_id"]})
 
+    def _release_impact(self, worktree: Path, changed: Sequence[str]) -> str:
+        """The run's D-31 release impact from its ``VERSION`` diff (``patch`` if unchanged).
+
+        Raises :class:`VersionError` for a change CI and the merge guard would
+        reject anyway (added, removed, malformed, skipped or backwards).
+        """
+        if VERSION_FILE not in {str(p).replace("\\", "/") for p in changed}:
+            return "patch"
+        try:
+            before: str | None = self.git.run(worktree, "show", f"HEAD:{VERSION_FILE}")
+        except DeliveryError:
+            before = None
+        target = worktree / VERSION_FILE
+        after = target.read_text(encoding="utf-8") if target.is_file() else None
+        if before is None or after is None:
+            raise VersionError("VERSION was added or removed")
+        return classify_bump(before, after)
+
     def _save_diff(self, record: dict[str, Any]) -> None:
         worktree = Path(record["worktree"])
         if not worktree.exists():
@@ -1060,7 +1105,9 @@ class LoopRunner:
         versions: dict[str, tuple[str | None, str | None]] = {}
         for item in files:
             name = item.path.replace("\\", "/").rsplit("/", 1)[-1].lower()
-            if name in {"pyproject.toml", "makefile"}:
+            # D-31: VERSION and the pinned manifests are judged on content (rule 5).
+            is_version = item.path.replace("\\", "/") in {VERSION_FILE, *PINNED_MANIFESTS}
+            if name in {"pyproject.toml", "makefile"} or is_version:
                 base_path = item.previous_path or item.path
                 versions[item.path] = (
                     self.github.file_at(info.base_sha, base_path)

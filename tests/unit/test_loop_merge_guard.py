@@ -307,3 +307,129 @@ def test_adding_tests_merges() -> None:
 
 def test_empty_pr_holds() -> None:
     assert _held_for(_decide([]), "changes no files")
+
+
+# --------------------------------------------------------------------------- #
+# Rule 5: the release VERSION file (D-31) is judged on content
+# --------------------------------------------------------------------------- #
+VERSION_CHANGE = ChangedFile("VERSION", "modified", patch="-0.2\n+0.3\n")
+NOTE = ChangedFile("docs/release-notes/x.md", "added", patch="+Release-Impact: minor\n")
+
+
+def _version_decision(before: str | None, after: str | None, **kwargs):
+    files = kwargs.pop("files", [SAFE, VERSION_CHANGE, NOTE])
+    return _decide(files, config_versions={"VERSION": (before, after)}, **kwargs)
+
+
+def test_version_is_listed_in_codeowners() -> None:
+    patterns = {rule.pattern for rule in parse_codeowners(CODEOWNERS)}
+    assert {"/VERSION", "/docs/VERSIONING.md", "/locus_tooling/versioning.py"} <= patterns
+
+
+@pytest.mark.parametrize("text", [CODEOWNERS, "/policies/ @o\n/VERSION @o\n"])
+def test_a_minor_bump_may_auto_merge(text: str) -> None:
+    decision = _version_decision("0.2\n", "0.3\n", codeowners_text=text)
+    assert decision.merge, decision.reasons
+    assert _version_decision("0.9\r\n", "0.10\n").merge
+
+
+def test_a_major_bump_holds_for_the_principal() -> None:
+    assert _held_for(_version_decision("0.2\n", "1.0\n"), "increments MAJOR (0.2 -> 1.0)")
+    assert _held_for(_version_decision("1.4\n", "2.0\n"), "needs principal approval")
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "fragment"),
+    [
+        ("0.3\n", "0.2\n", "moves backwards"),
+        ("0.2\n", "0.4\n", "not one step"),
+        ("0.2\n", "1.1\n", "not one step"),
+        ("0.2\n", "0.3.0\n", "not a single MINOR or MAJOR step"),
+        ("0.2\n", "", "not a single MINOR or MAJOR step"),
+        (None, "0.3\n", "added or removed"),
+        ("0.2\n", None, "added or removed"),
+    ],
+)
+def test_malformed_or_out_of_step_version_holds(
+    before: str | None, after: str | None, fragment: str
+) -> None:
+    assert _held_for(_version_decision(before, after), fragment)
+
+
+def test_version_without_contents_holds() -> None:
+    assert _held_for(_decide([SAFE, VERSION_CHANGE]), "VERSION changed but its before/after")
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        ChangedFile("VERSION", "removed", patch="-0.2\n"),
+        ChangedFile("VERSION.txt", "renamed", "VERSION"),
+        ChangedFile("VERSION", "renamed", "version.old"),
+    ],
+)
+def test_version_removed_or_renamed_holds(item: ChangedFile) -> None:
+    decision = _decide([SAFE, item], config_versions={"VERSION": ("0.2\n", "0.2\n")})
+    assert decision.action == "hold"
+
+
+TAURI_CONF = "apps/desktop-tauri/src-tauri/tauri.conf.json"
+CARGO = "apps/desktop-tauri/src-tauri/Cargo.toml"
+
+
+def _pinned(path: str, version: str, *, tamper: str = "") -> tuple[str, str]:
+    from locus_tooling.versioning import set_manifest_version
+
+    before = (REPO / path).read_text(encoding="utf-8")
+    before = set_manifest_version(path, before, "0.2.0")
+    after = set_manifest_version(path, before, version)
+    return before, after.replace(*tamper.split("|", 1)) if tamper else after
+
+
+def _minor_with_manifests(manifests: dict[str, tuple[str, str]], before="0.2\n", after="0.3\n"):
+    files = [SAFE, VERSION_CHANGE, NOTE] + [
+        ChangedFile(path, "modified", patch="-a\n+b\n") for path in manifests
+    ]
+    return _decide(files, config_versions={"VERSION": (before, after), **manifests})
+
+
+def test_a_minor_bump_may_move_the_protected_manifests_version_field() -> None:
+    manifests = {TAURI_CONF: _pinned(TAURI_CONF, "0.3.0"), CARGO: _pinned(CARGO, "0.3.0")}
+    decision = _minor_with_manifests(manifests)
+    assert decision.merge, decision.reasons
+
+
+@pytest.mark.parametrize(
+    ("version", "tamper", "after"),
+    [
+        ("0.4.0", "", "0.3\n"),  # not <VERSION>.0
+        ("0.3.0", '"pubkey": "|"pubkey": "X', "0.3\n"),  # anything else in the file
+        ("1.0.0", "", "1.0\n"),  # a MAJOR bump: the manifests stay protected too
+        ("0.2.0", "", "0.2\n"),  # no bump: nothing to follow
+    ],
+)
+def test_protected_manifests_hold_unless_only_the_version_follows_a_minor_bump(
+    version: str, tamper: str, after: str
+) -> None:
+    manifests = {TAURI_CONF: _pinned(TAURI_CONF, version, tamper=tamper)}
+    decision = _minor_with_manifests(manifests, after=after)
+    assert _held_for(
+        decision, "protected path changed: apps/desktop-tauri/src-tauri/tauri.conf.json"
+    )
+
+
+def test_protected_manifest_without_contents_holds() -> None:
+    files = [SAFE, VERSION_CHANGE, NOTE, ChangedFile(TAURI_CONF, "modified", patch="-a\n+b\n")]
+    decision = _decide(files, config_versions={"VERSION": ("0.2\n", "0.3\n")})
+    assert _held_for(decision, "protected path changed")
+
+
+def test_only_the_root_version_file_is_special() -> None:
+    # Anything under a "VERSION/" directory still matches the CODEOWNERS entry.
+    nested = ChangedFile("VERSION/notes.txt", patch="+x\n")
+    assert _held_for(_decide([SAFE, nested]), "protected path changed: version/notes.txt")
+    # Rules and their check stay protected outright (CODEOWNERS and the baseline).
+    for path in ("docs/VERSIONING.md", "locus_tooling/versioning.py"):
+        for text in (CODEOWNERS, None):
+            decision = _decide([ChangedFile(path, patch="+x\n")], codeowners_text=text)
+            assert decision.action == "hold", (path, text is None)

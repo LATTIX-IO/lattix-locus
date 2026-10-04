@@ -793,6 +793,10 @@ FS_PARITY_PATHS = [
     f"{FS_ROOT}/setup.cfg",
     f"{FS_ROOT}/tox.ini",
     f"{FS_ROOT}/scripts/run_opa.py",
+    # D-31: the release-version check is a gate; the VERSION file is not.
+    f"{FS_ROOT}/locus_tooling/versioning.py",
+    f"{FS_ROOT}/VERSION",
+    f"{FS_ROOT}/docs/release-notes/x.md",
     f"{FS_ROOT}/vendor/lib/.github/workflows/x.yml",
     r"C:\ws\.github\workflows\ci.yml",
     "/Users/dev/Library/Keychains/login.keychain-db",
