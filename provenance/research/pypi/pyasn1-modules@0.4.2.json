@@ -1,0 +1,187 @@
+{
+  "prepared_by": "Claude Code (agent) for LOCUS-358, 2026-10-04",
+  "origin": {
+    "p28_status": "not-listed",
+    "countries": [
+      "DE",
+      "CA"
+    ],
+    "organizations": [
+      "pyasn1 maintenance organization (GitHub org 'pyasn1')",
+      "Red Hat (employer named on the maintainers' GitHub profiles)"
+    ],
+    "summary": "Same maintainers and PyPI owners as pyasn1: maintained in the pyasn1 GitHub organization by Christian Heimes (GitHub profile: Hamburg, Germany; Red Hat) and Simon Pichugin (GitHub profile: Vancouver, Canada; Red Hat), who made the v0.4.2 release commit. Original author Ilya Etingof (profile 'Central Europe'); the second-largest historical contributor is Russ Housley (RFC module definitions). Locations are self-reported and not independently verified. No evidence ties a maintainer, the organization or a funder to a P28-listed country.",
+    "confidence": "medium",
+    "evidence": [
+      {
+        "claim": "PyPI 0.4.2 metadata: maintainer 'pyasn1 maintenance organization', maintainer e-mail Christian Heimes <christian@python.org>, author Ilya Etingof; requires pyasn1>=0.6.1,<0.7.0.",
+        "url": "https://pypi.org/pypi/pyasn1-modules/0.4.2/json",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "github.com/pyasn1/pyasn1-modules is a fork of etingof/pyasn1-modules created 2022-07-11.",
+        "url": "https://github.com/pyasn1/pyasn1-modules",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "Tag v0.4.2 points to commit 7154ca47 'Prepare for 0.4.2 release' by droideck (2025-03-28T02:39:03Z); PyPI files uploaded 2025-03-28T02:41:19-22Z.",
+        "url": "https://github.com/pyasn1/pyasn1-modules/commit/7154ca47caea6e012ef58d6a9975c719f2b6213b",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "No GitHub Actions run was found around the 0.4.2 upload time, so the upload was probably made outside CI; PyPI has no PEP 740 provenance for the 0.4.2 files.",
+        "url": "https://github.com/pyasn1/pyasn1-modules/actions",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "PyPI XML-RPC package_roles('pyasn1-modules') returned Owner for droideck, etingof, ilya and tiran.",
+        "url": "https://pypi.org/pypi",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "GitHub profiles: tiran (Christian Heimes, Red Hat, Hamburg, Germany); droideck (Simon Pichugin, @RedHatOfficial, Vancouver, Canada).",
+        "url": "https://github.com/droideck",
+        "retrieved": "2026-10-04"
+      }
+    ]
+  },
+  "maintainers": [
+    {
+      "name": "Simon Pichugin",
+      "handle": "droideck",
+      "role": "maintainer; PyPI owner; release commit for 0.4.2",
+      "affiliation": "Red Hat",
+      "location": "Vancouver, Canada",
+      "location_basis": "self-reported GitHub profile",
+      "evidence": [
+        "https://github.com/droideck"
+      ]
+    },
+    {
+      "name": "Christian Heimes",
+      "handle": "tiran",
+      "role": "maintainer; PyPI owner; maintainer of record in package metadata",
+      "affiliation": "Red Hat",
+      "location": "Hamburg, Germany",
+      "location_basis": "self-reported GitHub profile",
+      "evidence": [
+        "https://github.com/tiran"
+      ]
+    },
+    {
+      "name": "Ilya Etingof",
+      "handle": "etingof",
+      "role": "original author; PyPI owner; inactive",
+      "affiliation": "Red Hat",
+      "location": "Central Europe",
+      "location_basis": "self-reported GitHub profile (no country given)",
+      "evidence": [
+        "https://github.com/etingof"
+      ]
+    },
+    {
+      "name": "Russ Housley",
+      "handle": "russhousley",
+      "role": "historical contributor (RFC ASN.1 module definitions); not a PyPI owner",
+      "evidence": [
+        "https://github.com/pyasn1/pyasn1-modules/graphs/contributors"
+      ]
+    },
+    {
+      "name": "unidentified PyPI account 'ilya'",
+      "handle": "ilya (PyPI)",
+      "role": "PyPI owner (upload rights)",
+      "location_basis": "not established: the PyPI account could not be tied to a person",
+      "evidence": [
+        "https://pypi.org/pypi"
+      ]
+    }
+  ],
+  "funding": {
+    "summary": "No current funding source declared. .github/FUNDING.yml has a 'custom' link to http://snmplabs.com/sponsorship.html, the original author's legacy site (not checked; plain http). No GitHub Sponsors, Open Collective or corporate sponsorship found.",
+    "sources": [
+      {
+        "name": "FUNDING.yml custom link to snmplabs.com/sponsorship.html (legacy, unverified)",
+        "evidence": "https://github.com/pyasn1/pyasn1-modules/blob/main/.github/FUNDING.yml",
+        "verified": false
+      }
+    ]
+  },
+  "screening_queries": [
+    {
+      "name": "Ilya Etingof",
+      "kind": "person"
+    },
+    {
+      "name": "Christian Heimes",
+      "kind": "person"
+    },
+    {
+      "name": "Simon Pichugin",
+      "kind": "person"
+    },
+    {
+      "name": "Russ Housley",
+      "kind": "person"
+    },
+    {
+      "name": "Red Hat",
+      "kind": "org"
+    },
+    {
+      "name": "pyasn1",
+      "kind": "org"
+    },
+    {
+      "name": "snmplabs",
+      "kind": "org"
+    }
+  ],
+  "entity_reviews": [],
+  "finding_notes": [
+    {
+      "rule": "network-client-import",
+      "path_regex": "\\.tar\\.gz/.*/tools/(ocspclient|snmpget)\\.py$",
+      "disposition": "benign",
+      "note": "sdist-only example script (tools/), not in the wheel and never installed or imported; it contacts the network only when a person runs it by hand"
+    },
+    {
+      "rule": "network-call",
+      "path_regex": "\\.tar\\.gz/.*/tools/ocspclient\\.py$",
+      "disposition": "benign",
+      "note": "sdist-only example script (tools/), not in the wheel and never installed or imported; it contacts the network only when a person runs it by hand"
+    }
+  ],
+  "source": {
+    "repo": "pyasn1/pyasn1-modules",
+    "tag": "v0.4.2",
+    "package_dirs": [
+      "pyasn1_modules"
+    ]
+  },
+  "dynamic_dependencies": [
+    {
+      "name": "pyasn1",
+      "version": "0.6.4"
+    }
+  ],
+  "modules": [
+    "pyasn1_modules"
+  ],
+  "exercise": "import base64\nfrom pyasn1.codec.der import decoder, encoder\nfrom pyasn1_modules import rfc2459, rfc5208, rfc5280, pem  # noqa: F401 - modules google-auth uses\n\nCERT = (\n    'MIIBNjCB3KADAgECAgIBZjAKBggqhkjOPQQDAjAkMSIwIAYDVQQDDBlsb2N1cy1wcm92ZW5hbmNlLWV4ZXJjaXNl'\n    'MB4XDTI2MDEwMTAwMDAwMFoXDTM2MDEwMTAwMDAwMFowJDEiMCAGA1UEAwwZbG9jdXMtcHJvdmVuYW5jZS1leGVy'\n    'Y2lzZTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABKDTeVhc20+Z0PDw06lNxsPEBDjDf+PSYuZ0u3FJ6J051ijG'\n    'y3+gzf8Ehd/G2vJJoIdXGgWBT2muITOhQ2UBCBcwCgYIKoZIzj0EAwIDSQAwRgIhAJSmxsGfEu5dbBTE6pYhPs3Q'\n    'OtXDstkVentuirSOxwR8AiEA/ueDxlZQhZWwDmFsCi37STzK5pqSuIdrO328ZAXbEK4='\n)\nder = base64.b64decode(CERT)\ncert, rest = decoder.decode(der, asn1Spec=rfc5280.Certificate())\nassert not rest\nassert int(cert['tbsCertificate']['serialNumber']) == 358\nassert encoder.encode(cert) == der\nlegacy, _ = decoder.decode(der, asn1Spec=rfc2459.Certificate())\nassert int(legacy['tbsCertificate']['serialNumber']) == 358\n",
+  "exercise_summary": "import pyasn1_modules (rfc2459, rfc5208, rfc5280, pem, as google-auth does); decode and re-encode a self-signed X.509 certificate with rfc5280 and rfc2459 (pyasn1 0.6.4 on the path)",
+  "decision": {
+    "outcome": "conditional",
+    "conditions": [
+      "Principal accepts that PyPI owner account 'ilya' (upload rights) could not be tied to a person.",
+      "Principal accepts that 0.4.2 was uploaded outside CI (no workflow run found), so the PyPI files are tied to the tag only by the byte-for-byte source comparison.",
+      "Install pinned by version and hash once Locus has a hash-locked dependency set (D-29 step 5).",
+      "Re-inspect on any version change (google-auth pulls pyasn1-modules unpinned)."
+    ],
+    "rationale": "No P28-listed origin found for maintainers, organization or funding; the Entity List, the rest of the Consolidated Screening List and the 1260H notice show no hit. All 132 wheel files are byte-identical to the v0.4.2 git tag; the sdist differs only in build metadata (setup.cfg, PKG-INFO, egg-info). The only other static findings are two sdist-only example scripts under tools/ (an OCSP client and an SNMP GET example) that use the network when run by hand and are not in the wheel. OSV lists no vulnerability for 0.4.2; the sandboxed import plus an X.509 decode/re-encode with rfc5280 and rfc2459 made no connection attempt."
+  },
+  "notes": [
+    "Pulled transitively by google-auth; not imported by Locus code paths (docs/development/deep-agents-harness.md section 8).",
+    "The exercise certificate is a public, self-signed test certificate generated for this inspection (no private key is stored)."
+  ]
+}

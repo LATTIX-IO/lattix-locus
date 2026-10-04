@@ -1,0 +1,340 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lattix.io/schemas/locus/provenance-attestation/1.json",
+  "title": "Locus provenance attestation (D-29)",
+  "description": "One inspected artifact at one exact version: a package (ecosystem pypi, npm, ...) or local model weights (ecosystem ollama, huggingface, ...). Stored at provenance/attestations/<ecosystem>/<name>@<version>.json with a .md summary beside it. See docs/PROVENANCE.md.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "ecosystem",
+    "name",
+    "version",
+    "artifacts",
+    "origin",
+    "maintainers",
+    "funding",
+    "entity_list_checks",
+    "sbom",
+    "vulnerabilities",
+    "static_findings",
+    "dynamic_egress",
+    "decision",
+    "review"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": "1"},
+    "kind": {"enum": ["package", "model"]},
+    "ecosystem": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+    "name": {"type": "string", "minLength": 1, "pattern": "^[^/\\\\@\\s]+$"},
+    "version": {"type": "string", "minLength": 1, "pattern": "^[^/\\\\@\\s]+$"},
+    "artifacts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/artifact"}},
+    "origin": {"$ref": "#/$defs/origin"},
+    "maintainers": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/maintainer"}},
+    "funding": {"$ref": "#/$defs/funding"},
+    "entity_list_checks": {
+      "type": "array",
+      "minItems": 2,
+      "items": {"$ref": "#/$defs/entity_check"}
+    },
+    "sbom": {"$ref": "#/$defs/sbom"},
+    "vulnerabilities": {"$ref": "#/$defs/vulnerabilities"},
+    "static_findings": {"$ref": "#/$defs/static_findings"},
+    "dynamic_egress": {"$ref": "#/$defs/dynamic_egress"},
+    "model": {"$ref": "#/$defs/model"},
+    "decision": {"$ref": "#/$defs/decision"},
+    "review": {"$ref": "#/$defs/review"},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "date": {"type": "string", "format": "date"},
+    "evidence": {
+      "type": "object",
+      "required": ["claim", "url", "retrieved"],
+      "additionalProperties": false,
+      "properties": {
+        "claim": {"type": "string", "minLength": 1},
+        "url": {"type": "string", "pattern": "^https://"},
+        "retrieved": {"$ref": "#/$defs/date"},
+        "verified": {
+          "description": "false when the source could not be read (bot wall, dead link); the claim then rests on the other evidence.",
+          "type": "boolean"
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["filename", "sha256", "inspected"],
+      "additionalProperties": false,
+      "properties": {
+        "filename": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "url": {"type": "string"},
+        "size": {"type": "integer", "minimum": 0},
+        "uploaded": {"type": "string"},
+        "inspected": {
+          "description": "true when this exact file was downloaded, hash-checked and put through the static (and, where it runs on the inspection host, dynamic) checks.",
+          "type": "boolean"
+        },
+        "source": {"type": "string"}
+      }
+    },
+    "origin": {
+      "type": "object",
+      "required": ["p28_status", "countries", "summary", "confidence", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "p28_status": {"enum": ["listed", "not-listed", "unknown"]},
+        "countries": {"type": "array", "items": {"type": "string", "pattern": "^[A-Z]{2}$"}},
+        "organizations": {"type": "array", "items": {"type": "string"}},
+        "summary": {"type": "string", "minLength": 1},
+        "confidence": {"enum": ["high", "medium", "low"]},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}}
+      }
+    },
+    "maintainer": {
+      "type": "object",
+      "required": ["name", "role"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "handle": {"type": "string"},
+        "role": {"type": "string", "minLength": 1},
+        "affiliation": {"type": "string"},
+        "location": {"type": "string"},
+        "location_basis": {"type": "string"},
+        "evidence": {"type": "array", "items": {"type": "string", "pattern": "^https://"}}
+      }
+    },
+    "funding": {
+      "type": "object",
+      "required": ["summary", "sources"],
+      "additionalProperties": false,
+      "properties": {
+        "summary": {"type": "string", "minLength": 1},
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "additionalProperties": false,
+            "properties": {
+              "name": {"type": "string", "minLength": 1},
+              "evidence": {"type": "string"},
+              "verified": {"type": "boolean"}
+            }
+          }
+        }
+      }
+    },
+    "entity_check": {
+      "type": "object",
+      "required": ["list", "method", "source", "date", "queries", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "list": {"enum": ["us-commerce-entity-list", "dod-1260h", "other"]},
+        "method": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "pattern": "^https://"},
+        "source_sha256": {"$ref": "#/$defs/sha256"},
+        "source_version": {"type": "string"},
+        "date": {"$ref": "#/$defs/date"},
+        "queries": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "result": {
+          "description": "possible-match: the screen found names that need a reviewer; reviewed-no-match: every hit was resolved as a different entity (reasons in matches/notes); match: a hit was confirmed.",
+          "enum": ["no-match", "possible-match", "reviewed-no-match", "match", "not-run"]
+        },
+        "matches": {"type": "array", "items": {"type": "object"}},
+        "notes": {"type": "string"}
+      }
+    },
+    "sbom": {
+      "type": "object",
+      "required": ["generator", "generator_kind", "format", "path", "sha256", "components"],
+      "additionalProperties": false,
+      "properties": {
+        "generator": {"type": "string", "minLength": 1},
+        "generator_kind": {"enum": ["syft", "locus-fallback"]},
+        "format": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "components": {"type": "integer", "minimum": 0}
+      }
+    },
+    "vulnerabilities": {
+      "type": "object",
+      "required": ["source", "mode", "date", "status", "results"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["online", "cache", "unavailable", "not-applicable"]},
+        "date": {"$ref": "#/$defs/date"},
+        "status": {"enum": ["none-known", "found", "unavailable", "not-applicable"]},
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "summary"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "summary": {"type": "string"},
+              "aliases": {"type": "array", "items": {"type": "string"}},
+              "severity": {"type": "string"},
+              "fixed_in": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": ["rule", "severity", "path", "detail", "disposition"],
+      "additionalProperties": false,
+      "properties": {
+        "rule": {"type": "string", "minLength": 1},
+        "severity": {"enum": ["info", "review", "high"]},
+        "path": {"type": "string"},
+        "line": {"type": "integer", "minimum": 0},
+        "detail": {"type": "string"},
+        "disposition": {"enum": ["benign", "needs-review", "blocking"]},
+        "note": {"type": "string"}
+      }
+    },
+    "static_findings": {
+      "type": "object",
+      "required": ["ruleset", "files_scanned", "findings"],
+      "additionalProperties": false,
+      "properties": {
+        "ruleset": {"type": "string", "minLength": 1},
+        "files_scanned": {"type": "integer", "minimum": 0},
+        "scanned_artifacts": {"type": "array", "items": {"type": "string"}},
+        "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+        "summary": {"type": "string"}
+      }
+    },
+    "egress_event": {
+      "type": "object",
+      "required": ["event", "target", "outcome"],
+      "additionalProperties": false,
+      "properties": {
+        "event": {"type": "string", "minLength": 1},
+        "target": {"type": "string"},
+        "outcome": {"enum": ["denied", "allowed", "recorded"]}
+      }
+    },
+    "dynamic_egress": {
+      "type": "object",
+      "required": ["status", "isolation", "network", "date", "attempts", "limitations"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {"enum": ["pass", "fail", "error", "not-run"]},
+        "isolation": {"type": "string", "minLength": 1},
+        "network": {"enum": ["denied", "allowed"]},
+        "interpreter": {"type": "string"},
+        "artifact": {"type": "string"},
+        "exercise": {"type": "string"},
+        "date": {"$ref": "#/$defs/date"},
+        "exit_code": {"type": ["integer", "null"]},
+        "completed": {"type": "boolean"},
+        "jail_probe": {
+          "description": "Positive control: a loopback connection from inside the jail to a listener on the host. 'blocked' shows the jail denied egress.",
+          "enum": ["blocked", "connected", "not-run"]
+        },
+        "attempts": {"type": "array", "items": {"$ref": "#/$defs/egress_event"}},
+        "other_events": {"type": "array", "items": {"$ref": "#/$defs/egress_event"}},
+        "log_sha256": {"$ref": "#/$defs/sha256"},
+        "limitations": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "model": {
+      "type": "object",
+      "required": ["lineage", "format_check", "behavioural_eval"],
+      "additionalProperties": false,
+      "properties": {
+        "lineage": {"type": "string", "minLength": 1},
+        "served_as": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["engine", "model"],
+            "additionalProperties": false,
+            "properties": {
+              "engine": {"type": "string", "minLength": 1},
+              "model": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        "format_check": {
+          "type": "object",
+          "required": ["status", "weights", "refused"],
+          "additionalProperties": false,
+          "properties": {
+            "status": {"enum": ["pass", "fail"]},
+            "weights": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["path", "format", "sha256"],
+                "additionalProperties": false,
+                "properties": {
+                  "path": {"type": "string"},
+                  "format": {"enum": ["safetensors", "gguf"]},
+                  "sha256": {"$ref": "#/$defs/sha256"}
+                }
+              }
+            },
+            "refused": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["path", "reason"],
+                "additionalProperties": false,
+                "properties": {
+                  "path": {"type": "string"},
+                  "reason": {"type": "string"}
+                }
+              }
+            }
+          }
+        },
+        "behavioural_eval": {
+          "type": "object",
+          "required": ["status"],
+          "additionalProperties": false,
+          "properties": {
+            "status": {"enum": ["pending", "pass", "fail"]},
+            "tracking": {"type": "string"},
+            "suite": {"type": "string"},
+            "date": {"$ref": "#/$defs/date"},
+            "notes": {"type": "string"}
+          }
+        },
+        "inference_network": {"enum": ["none", "loopback-only"]}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "required": ["outcome", "conditions", "rationale"],
+      "additionalProperties": false,
+      "properties": {
+        "outcome": {"enum": ["pass", "fail", "conditional"]},
+        "conditions": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "rationale": {"type": "string", "minLength": 1}
+      }
+    },
+    "review": {
+      "type": "object",
+      "required": ["reviewer", "date"],
+      "additionalProperties": false,
+      "properties": {
+        "reviewer": {"enum": ["principal", "agent-prepared, principal sign-off pending"]},
+        "name": {"type": "string"},
+        "date": {"$ref": "#/$defs/date"},
+        "prepared_by": {"type": "string"},
+        "notes": {"type": "string"}
+      }
+    }
+  }
+}

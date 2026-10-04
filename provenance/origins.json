@@ -1,0 +1,864 @@
+{
+  "schema_version": "1",
+  "description": "Reviewed origin data for the D-29 dependency gate (locus_tooling/provenance/gate.py). One entry per package (PEP 503 name). p28_status: listed | not-listed | unknown. 'listed' packages need a passing attestation for the exact version; 'unknown' ones need an entry in unknown_origin_allowlist.json. Locations from GitHub profiles are self-reported. See docs/PROVENANCE.md.",
+  "scope_note": "Covers [project].dependencies in pyproject.toml, apps/backend/requirements.txt, and the transitive packages listed in docs/development/deep-agents-harness.md section 8. The rest of the transitive closure is not yet covered (no lock file); see docs/PROVENANCE.md.",
+  "reviewed": {
+    "reviewer": "agent-prepared, principal sign-off pending",
+    "date": "2026-10-04",
+    "prepared_by": "Claude Code (agent), LOCUS-358"
+  },
+  "packages": {
+    "aiosqlite": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "0.22.1",
+      "pulled_by": "langgraph-checkpoint-sqlite",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "The Omnilib Project (Amethyst Reese)",
+      "basis": "omnilib GitHub organization, location 'United States of America'; author Amethyst Reese.",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/aiosqlite/",
+        "https://github.com/omnilib/aiosqlite",
+        "https://github.com/omnilib"
+      ]
+    },
+    "anthropic": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "1.11.0",
+      "pulled_by": "langchain-anthropic",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "Anthropic",
+      "basis": "PyPI author 'Anthropic <support@anthropic.com>'; anthropics GitHub organization, location 'United States of America'.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/anthropic/",
+        "https://github.com/anthropics/anthropic-sdk-python",
+        "https://github.com/anthropics"
+      ]
+    },
+    "biscuit-python": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "FR",
+        "BE"
+      ],
+      "maintainer": "Eclipse Biscuit project (Clement Delafargue, Geoffroy Couprie)",
+      "basis": "Eclipse Foundation project (eclipse-biscuit org); top contributor divarvel (Clement Delafargue) and Biscuit co-author Geal (Geoffroy Couprie) both self-report Nantes, France.",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/biscuit-python/",
+        "https://github.com/eclipse-biscuit/biscuit-python",
+        "https://github.com/divarvel",
+        "https://github.com/Geal"
+      ]
+    },
+    "click": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "Pallets (David Lord)",
+      "basis": "Pallets project; lead maintainer davidism (David Lord) self-reports San Diego, CA.",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/click/",
+        "https://github.com/pallets/click",
+        "https://github.com/davidism"
+      ]
+    },
+    "comtypes": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "Enthought, Inc. (original author Thomas Heller)",
+      "basis": "Repository in the enthought GitHub organization, location Austin, TX. Windows-only dependency.",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/comtypes/",
+        "https://github.com/enthought/comtypes",
+        "https://github.com/enthought"
+      ]
+    },
+    "deepagents": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "LangChain Inc.",
+      "basis": "Published by LangChain Inc.; source repository in the langchain-ai GitHub organization, whose profile location is 'United States of America'.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/deepagents/",
+        "https://github.com/langchain-ai/deepagents",
+        "https://github.com/langchain-ai"
+      ]
+    },
+    "docstring-parser": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "0.18.0",
+      "pulled_by": "anthropic",
+      "p28_status": "not-listed",
+      "countries": [
+        "PL"
+      ],
+      "maintainer": "Marcin Kurczewski",
+      "basis": "Author per PyPI metadata; GitHub profile rr-: Poland (self-reported).",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/docstring-parser/",
+        "https://github.com/rr-/docstring_parser",
+        "https://github.com/rr-"
+      ]
+    },
+    "fastapi": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "DE"
+      ],
+      "maintainer": "Sebastian Ramirez (FastAPI)",
+      "basis": "Author per PyPI metadata; GitHub profile tiangolo: Berlin, Germany, FastAPI Cloud (self-reported).",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/fastapi/",
+        "https://github.com/fastapi/fastapi",
+        "https://github.com/tiangolo"
+      ]
+    },
+    "filetype": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "1.2.0",
+      "pulled_by": "langchain-google-genai",
+      "p28_status": "unknown",
+      "countries": [],
+      "maintainer": "Tomas Aparicio",
+      "basis": "Author per PyPI metadata; GitHub profile h2non gives the location 'Decentralized'. The earlier note 'ES' in the harness doc is not supported by public evidence.",
+      "confidence": "low",
+      "evidence": [
+        "https://pypi.org/project/filetype/",
+        "https://github.com/h2non/filetype.py",
+        "https://github.com/h2non"
+      ]
+    },
+    "google-auth": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "2.59.1",
+      "pulled_by": "google-genai",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "Google LLC",
+      "basis": "PyPI author 'Google Cloud Platform <googleapis-packages@google.com>'; googleapis GitHub organization.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/google-auth/",
+        "https://github.com/googleapis/google-cloud-python"
+      ]
+    },
+    "google-genai": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "2.28.0",
+      "pulled_by": "langchain-google-genai",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "Google LLC",
+      "basis": "PyPI author 'Google LLC'; googleapis GitHub organization.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/google-genai/",
+        "https://github.com/googleapis/python-genai"
+      ]
+    },
+    "httpcore2": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "2.13.1",
+      "pulled_by": "httpx2",
+      "p28_status": "not-listed",
+      "countries": [
+        "GB"
+      ],
+      "maintainer": "Pydantic Services Inc. (author Tom Christie)",
+      "basis": "Maintainer e-mail 'Pydantic Services Inc.' per PyPI; repository pydantic/httpx2; Pydantic lead Samuel Colvin self-reports London, United Kingdom.",
+      "confidence": "low",
+      "evidence": [
+        "https://pypi.org/project/httpcore2/",
+        "https://github.com/pydantic/httpx2",
+        "https://github.com/samuelcolvin"
+      ]
+    },
+    "httpx": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "unknown",
+      "countries": [],
+      "maintainer": "Encode (Tom Christie)",
+      "basis": "Author Tom Christie per PyPI metadata; neither the encode GitHub organization nor the author's profile states a location. No indicator of a P28-listed origin found, but no positive evidence either.",
+      "confidence": "low",
+      "evidence": [
+        "https://pypi.org/project/httpx/",
+        "https://github.com/encode/httpx",
+        "https://github.com/tomchristie"
+      ]
+    },
+    "httpx2": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "2.13.1",
+      "pulled_by": "anthropic, langsmith, openai",
+      "p28_status": "not-listed",
+      "countries": [
+        "GB"
+      ],
+      "maintainer": "Pydantic Services Inc. (author Tom Christie)",
+      "basis": "Maintainer e-mail 'Pydantic Services Inc.' per PyPI; repository pydantic/httpx2; Pydantic lead Samuel Colvin self-reports London, United Kingdom.",
+      "confidence": "low",
+      "evidence": [
+        "https://pypi.org/project/httpx2/",
+        "https://github.com/pydantic/httpx2",
+        "https://github.com/samuelcolvin"
+      ]
+    },
+    "hvac": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "hvac project (Brian Scholer, Jeffrey Hogan)",
+      "basis": "hvac GitHub organization; top contributor jeffwecan (Jeffrey Hogan) self-reports Austin, Texas, @hashicorp; PyPI maintainer Brian Scholer (briantist) states no location.",
+      "confidence": "low",
+      "evidence": [
+        "https://pypi.org/project/hvac/",
+        "https://github.com/hvac/hvac",
+        "https://github.com/jeffwecan",
+        "https://github.com/briantist"
+      ]
+    },
+    "keyring": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "Jason R. Coombs",
+      "basis": "Maintainer per PyPI metadata; GitHub profile jaraco: Pittsburgh, PA, USA (self-reported).",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/keyring/",
+        "https://github.com/jaraco/keyring",
+        "https://github.com/jaraco"
+      ]
+    },
+    "langchain": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "LangChain Inc.",
+      "basis": "Published by LangChain Inc.; source repository in the langchain-ai GitHub organization, whose profile location is 'United States of America'.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/langchain/",
+        "https://github.com/langchain-ai/langchain",
+        "https://github.com/langchain-ai"
+      ]
+    },
+    "langchain-anthropic": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "1.7.5",
+      "pulled_by": "deepagents",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "LangChain Inc.",
+      "basis": "Published by LangChain Inc.; source repository in the langchain-ai GitHub organization, whose profile location is 'United States of America'.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/langchain-anthropic/",
+        "https://github.com/langchain-ai/langchain",
+        "https://github.com/langchain-ai"
+      ]
+    },
+    "langchain-core": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "LangChain Inc.",
+      "basis": "Published by LangChain Inc.; source repository in the langchain-ai GitHub organization, whose profile location is 'United States of America'.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/langchain-core/",
+        "https://github.com/langchain-ai/langchain",
+        "https://github.com/langchain-ai"
+      ]
+    },
+    "langchain-google-genai": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "4.4.0",
+      "pulled_by": "deepagents",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "LangChain Inc.",
+      "basis": "Published by LangChain Inc.; source repository in the langchain-ai GitHub organization, whose profile location is 'United States of America'.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/langchain-google-genai/",
+        "https://github.com/langchain-ai/langchain-google",
+        "https://github.com/langchain-ai"
+      ]
+    },
+    "langchain-protocol": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "0.0.19",
+      "pulled_by": "langchain-core, langgraph-sdk",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "LangChain Inc.",
+      "basis": "Published by LangChain Inc.; source repository in the langchain-ai GitHub organization, whose profile location is 'United States of America'.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/langchain-protocol/",
+        "https://github.com/langchain-ai/agent-protocol",
+        "https://github.com/langchain-ai"
+      ]
+    },
+    "langgraph": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "LangChain Inc.",
+      "basis": "Published by LangChain Inc.; source repository in the langchain-ai GitHub organization, whose profile location is 'United States of America'.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/langgraph/",
+        "https://github.com/langchain-ai/langgraph",
+        "https://github.com/langchain-ai"
+      ]
+    },
+    "langgraph-checkpoint": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "LangChain Inc.",
+      "basis": "Published by LangChain Inc.; source repository in the langchain-ai GitHub organization, whose profile location is 'United States of America'.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/langgraph-checkpoint/",
+        "https://github.com/langchain-ai/langgraph",
+        "https://github.com/langchain-ai"
+      ]
+    },
+    "langgraph-checkpoint-sqlite": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "LangChain Inc.",
+      "basis": "Published by LangChain Inc.; source repository in the langchain-ai GitHub organization, whose profile location is 'United States of America'.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/langgraph-checkpoint-sqlite/",
+        "https://github.com/langchain-ai/langgraph",
+        "https://github.com/langchain-ai"
+      ]
+    },
+    "langgraph-prebuilt": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "1.1.0",
+      "pulled_by": "langgraph",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "LangChain Inc.",
+      "basis": "Published by LangChain Inc.; source repository in the langchain-ai GitHub organization, whose profile location is 'United States of America'.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/langgraph-prebuilt/",
+        "https://github.com/langchain-ai/langgraph",
+        "https://github.com/langchain-ai"
+      ]
+    },
+    "langgraph-sdk": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "0.4.5",
+      "pulled_by": "langgraph",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "LangChain Inc.",
+      "basis": "Published by LangChain Inc.; source repository in the langchain-ai GitHub organization, whose profile location is 'United States of America'.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/langgraph-sdk/",
+        "https://github.com/langchain-ai/langgraph",
+        "https://github.com/langchain-ai"
+      ]
+    },
+    "langsmith": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "0.14.4",
+      "pulled_by": "langchain-core",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "LangChain Inc.",
+      "basis": "Published by LangChain Inc.; source repository in the langchain-ai GitHub organization, whose profile location is 'United States of America'.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/langsmith/",
+        "https://github.com/langchain-ai/langsmith-sdk",
+        "https://github.com/langchain-ai"
+      ]
+    },
+    "nats-py": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "Synadia Communications (Waldemar Quevedo)",
+      "basis": "Author Waldemar Quevedo <wally@synadia.com>; GitHub profile wallyqs: San Francisco, Synadia Communications; synadia-io organization location 'United States of America'.",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/nats-py/",
+        "https://github.com/nats-io/nats.py",
+        "https://github.com/wallyqs",
+        "https://github.com/synadia-io"
+      ]
+    },
+    "opa-python-client": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "unknown",
+      "countries": [],
+      "maintainer": "Tural Muradov",
+      "basis": "Single maintainer (GitHub Turall, PyPI author Tural Muradov); no location on the GitHub profile or PyPI.",
+      "confidence": "low",
+      "evidence": [
+        "https://pypi.org/project/opa-python-client/",
+        "https://github.com/Turall/OPA-python-client",
+        "https://github.com/Turall"
+      ]
+    },
+    "openai": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "OpenAI",
+      "basis": "PyPI author 'OpenAI <support@openai.com>'; repository in the openai GitHub organization (OpenAI, US company).",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/openai/",
+        "https://github.com/openai/openai-python"
+      ]
+    },
+    "opentelemetry-api": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "OpenTelemetry Authors (CNCF)",
+      "basis": "CNCF project (Linux Foundation, a US nonprofit); PyPI author 'OpenTelemetry Authors <cncf-opentelemetry-contributors@lists.cncf.io>'.",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/opentelemetry-api/",
+        "https://github.com/open-telemetry/opentelemetry-python",
+        "https://opentelemetry.io/"
+      ]
+    },
+    "opentelemetry-exporter-otlp-proto-http": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "OpenTelemetry Authors (CNCF)",
+      "basis": "CNCF project (Linux Foundation, a US nonprofit); same repository as opentelemetry-api.",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/opentelemetry-exporter-otlp-proto-http/",
+        "https://github.com/open-telemetry/opentelemetry-python"
+      ]
+    },
+    "opentelemetry-sdk": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "OpenTelemetry Authors (CNCF)",
+      "basis": "CNCF project (Linux Foundation, a US nonprofit); same repository as opentelemetry-api.",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/opentelemetry-sdk/",
+        "https://github.com/open-telemetry/opentelemetry-python"
+      ]
+    },
+    "playwright": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "Microsoft Corporation",
+      "basis": "PyPI author Microsoft Corporation; microsoft GitHub organization, location Redmond, WA.",
+      "confidence": "high",
+      "evidence": [
+        "https://pypi.org/project/playwright/",
+        "https://github.com/microsoft/playwright-python",
+        "https://github.com/microsoft"
+      ]
+    },
+    "presidio-analyzer": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "unknown",
+      "countries": [],
+      "maintainer": "Data Privacy Stack (originally Microsoft)",
+      "basis": "Created by Microsoft: github.com/microsoft/presidio now redirects to data-privacy-stack/presidio, and PyPI names 'Presidio <presidio@dataprivacystack.org>'. The current organization states no location and its ownership was not established.",
+      "confidence": "low",
+      "evidence": [
+        "https://pypi.org/project/presidio-analyzer/",
+        "https://github.com/data-privacy-stack/presidio",
+        "https://github.com/microsoft/presidio"
+      ]
+    },
+    "psycopg": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "unknown",
+      "countries": [],
+      "maintainer": "The Psycopg Team (Daniele Varrazzo)",
+      "basis": "Author Daniele Varrazzo per PyPI metadata; neither the psycopg organization nor the author's GitHub profile states a location.",
+      "confidence": "low",
+      "evidence": [
+        "https://pypi.org/project/psycopg/",
+        "https://github.com/psycopg/psycopg",
+        "https://github.com/dvarrazzo"
+      ]
+    },
+    "pyasn1": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "0.6.4",
+      "pulled_by": "google-auth",
+      "p28_status": "not-listed",
+      "countries": [
+        "DE",
+        "CA"
+      ],
+      "maintainer": "pyasn1 maintenance organization (Christian Heimes, Simon Pichugin)",
+      "basis": "D-29 inspection: current maintainers self-report Hamburg, Germany and Vancouver, Canada (both Red Hat); see the attestation.",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/pyasn1/",
+        "https://github.com/pyasn1/pyasn1",
+        "https://github.com/tiran",
+        "https://github.com/droideck"
+      ],
+      "attestation": "attestations/pypi/pyasn1@0.6.4.json"
+    },
+    "pyasn1-modules": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "0.4.2",
+      "pulled_by": "google-auth",
+      "p28_status": "not-listed",
+      "countries": [
+        "DE",
+        "CA"
+      ],
+      "maintainer": "pyasn1 maintenance organization (Christian Heimes, Simon Pichugin)",
+      "basis": "D-29 inspection: same maintainers as pyasn1; see the attestation.",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/pyasn1-modules/",
+        "https://github.com/pyasn1/pyasn1-modules",
+        "https://github.com/tiran",
+        "https://github.com/droideck"
+      ],
+      "attestation": "attestations/pypi/pyasn1-modules@0.4.2.json"
+    },
+    "pydantic": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "GB"
+      ],
+      "maintainer": "Pydantic (Samuel Colvin)",
+      "basis": "Lead author Samuel Colvin; GitHub profile samuelcolvin: London, United Kingdom, @pydantic (self-reported).",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/pydantic/",
+        "https://github.com/pydantic/pydantic",
+        "https://github.com/samuelcolvin"
+      ]
+    },
+    "pydantic-settings": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "GB"
+      ],
+      "maintainer": "Pydantic (Samuel Colvin)",
+      "basis": "pydantic organization; lead author Samuel Colvin self-reports London, United Kingdom.",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/pydantic-settings/",
+        "https://github.com/pydantic/pydantic-settings",
+        "https://github.com/samuelcolvin"
+      ]
+    },
+    "pyjwt": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "Jose Padilla",
+      "basis": "Author per PyPI metadata; GitHub profile jpadilla: Hartford, CT, @auth0 (self-reported).",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/PyJWT/",
+        "https://github.com/jpadilla/pyjwt",
+        "https://github.com/jpadilla"
+      ]
+    },
+    "pyobjc-framework-applicationservices": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "NL"
+      ],
+      "maintainer": "Ronald Oussoren",
+      "basis": "Author per PyPI metadata; GitHub profile ronaldoussoren: Amsterdam (self-reported). macOS-only dependency.",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/pyobjc-framework-ApplicationServices/",
+        "https://github.com/ronaldoussoren/pyobjc",
+        "https://github.com/ronaldoussoren"
+      ]
+    },
+    "python-dotenv": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "IN"
+      ],
+      "maintainer": "Saurabh Kumar",
+      "basis": "Author per PyPI metadata; GitHub profile theskumar: New Delhi, India (self-reported).",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/python-dotenv/",
+        "https://github.com/theskumar/python-dotenv",
+        "https://github.com/theskumar"
+      ]
+    },
+    "pyyaml": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "CA",
+        "DE",
+        "US"
+      ],
+      "maintainer": "The YAML Project (Ingy dot Net, Tina Mueller, Matt Davis; original author Kirill Simonov)",
+      "basis": "yaml GitHub organization; contributors self-report Toronto (ingydotnet), Berlin/SUSE (perlpunk), Portland, OR/Ansible (nitzmahone) and Chicago, IL (xitology, original author).",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/PyYAML/",
+        "https://github.com/yaml/pyyaml",
+        "https://github.com/ingydotnet",
+        "https://github.com/perlpunk",
+        "https://github.com/nitzmahone",
+        "https://github.com/xitology"
+      ]
+    },
+    "redis": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "Redis Inc.",
+      "basis": "PyPI author 'Redis Inc. <oss@redis.com>'; redis GitHub organization (no location stated).",
+      "confidence": "low",
+      "evidence": [
+        "https://pypi.org/project/redis/",
+        "https://github.com/redis/redis-py"
+      ]
+    },
+    "sqlite-vec": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "0.1.9",
+      "pulled_by": "langgraph-checkpoint-sqlite",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "Alex Garcia",
+      "basis": "D-29 inspection: sole author and PyPI owner self-reports Los Angeles; Mozilla Builders sponsor; native binaries tied to the v0.1.9 CI build. See the attestation.",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/sqlite-vec/",
+        "https://github.com/asg017/sqlite-vec",
+        "https://github.com/asg017"
+      ],
+      "attestation": "attestations/pypi/sqlite-vec@0.1.9.json"
+    },
+    "structlog": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "DE"
+      ],
+      "maintainer": "Hynek Schlawack",
+      "basis": "Author per PyPI metadata; GitHub profile hynek: Berlin, Variomedia AG (self-reported).",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/structlog/",
+        "https://github.com/hynek/structlog",
+        "https://github.com/hynek"
+      ]
+    },
+    "tldextract": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "John Kurkowski",
+      "basis": "Author per PyPI metadata; GitHub profile john-kurkowski: Portland, OR, USA (self-reported).",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/tldextract/",
+        "https://github.com/john-kurkowski/tldextract",
+        "https://github.com/john-kurkowski"
+      ]
+    },
+    "truststore": {
+      "ecosystem": "pypi",
+      "scope": "transitive",
+      "version": "0.10.4",
+      "pulled_by": "google-genai",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "Seth Larson, David Glick",
+      "basis": "Authors per PyPI metadata; GitHub profile sethmlarson: Minneapolis, MN, @psf (self-reported).",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/truststore/",
+        "https://github.com/sethmlarson/truststore",
+        "https://github.com/sethmlarson"
+      ]
+    },
+    "uvicorn": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "NL"
+      ],
+      "maintainer": "Marcelo Trylesinski (original author Tom Christie)",
+      "basis": "Maintainer per PyPI metadata; repository Kludex/uvicorn; GitHub profile Kludex: Utrecht, Netherlands, @pydantic (self-reported).",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/uvicorn/",
+        "https://github.com/Kludex/uvicorn",
+        "https://github.com/Kludex"
+      ]
+    },
+    "zeroconf": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "US"
+      ],
+      "maintainer": "J. Nick Koston",
+      "basis": "Maintainer per PyPI metadata; GitHub profile bdraco: Houston, TX (self-reported).",
+      "confidence": "medium",
+      "evidence": [
+        "https://pypi.org/project/zeroconf/",
+        "https://github.com/python-zeroconf/python-zeroconf",
+        "https://github.com/bdraco"
+      ]
+    }
+  }
+}
