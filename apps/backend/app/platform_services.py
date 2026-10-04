@@ -72,10 +72,10 @@ try:
 except Exception:  # pragma: no cover - optional dependency in some local test paths
     GraphDatabase = None
 
-try:
-    from openai import OpenAI
-except Exception:  # pragma: no cover - optional dependency in some local test paths
-    OpenAI = None
+# Embedded long-term memory (LOCUS-387): re-exported so the backend's composition
+# root resolves both adapters of the memory port from this module.
+from locus_runtime.memory.contract import Embedder, EmbeddingUnavailable  # noqa: E402
+from locus_runtime.memory.sqlite_store import SQLiteLongTermMemoryStore  # noqa: E402,F401
 
 
 def _json_default(value: Any) -> Any:
@@ -673,17 +673,41 @@ class RedisMemoryStore:
 
 
 class PostgresLongTermMemoryStore(_BasePostgresService):
-    def __init__(self, dsn: str) -> None:
+    """Long-term memory port adapter on Postgres + pgvector (the full stack).
+
+    Embeddings come from the injected embedder (the gated local engine, LOCUS-378);
+    without one, or while it is unavailable, entries are stored without a vector
+    and search falls back to keywords.
+    """
+
+    store_kind = "postgres"
+    backend_label = "Postgres + pgvector"
+
+    def __init__(self, dsn: str, *, embedder: Embedder | None = None) -> None:
         super().__init__(dsn)
         self.vector_enabled = False
+        # Must match the embedding model's output (768 for the default
+        # nomic-embed-text); vectors of another size are stored without the
+        # pgvector column (keyword search still finds them).
         self.embedding_dimensions = _validated_embedding_dimensions(
-            int(os.getenv("LOCUS_MEMORY_EMBEDDING_DIMENSIONS", "1536"))
+            int(os.getenv("LOCUS_MEMORY_EMBEDDING_DIMENSIONS", "768"))
         )
-        self.embedding_model = str(
-            os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-            or "text-embedding-3-small"
-        ).strip()
-        self._openai_client: Any | None = None
+        self.embedder = embedder
+
+    @property
+    def embedding_model(self) -> str:
+        return self.embedder.model if self.embedder is not None else ""
+
+    def describe(self) -> dict[str, Any]:
+        status = self.embedder.status() if self.embedder is not None else None
+        return {
+            "store": self.store_kind,
+            "keyword_search": "ilike",
+            "vector_extension": "pgvector" if self.vector_enabled else "unavailable",
+            "semantic_search": status.state if status is not None else "disabled",
+            "semantic_search_reason": status.reason if status is not None else "",
+            "embedding_model": self.embedding_model,
+        }
 
     def initialize(self) -> None:
         if not self.enabled or self._initialized:
@@ -774,28 +798,19 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                         pass
         self._initialized = True
 
-    def _get_openai_client(self) -> Any | None:
-        if OpenAI is None:
-            return None
-        api_key = str(os.getenv("OPENAI_API_KEY", "") or "").strip()
-        if not api_key:
-            return None
-        if self._openai_client is None:
-            self._openai_client = OpenAI(api_key=api_key)
-        return self._openai_client
-
     def _embed_text(self, text: str) -> tuple[list[float] | None, str | None]:
-        if not text.strip():
-            return None, None
-        client = self._get_openai_client()
-        if client is None:
+        """Embed through the gated embedder (a gateway ``model_call``, LOCUS-378)."""
+        if not text.strip() or self.embedder is None:
             return None, None
         try:
-            response = client.embeddings.create(model=self.embedding_model, input=text[:8000])
-            vector = response.data[0].embedding if getattr(response, "data", None) else None
-        except Exception:  # noqa: BLE001
+            vectors = self.embedder.embed([text[:8000]])
+        except EmbeddingUnavailable:
             return None, None
-        if not isinstance(vector, list) or not vector:
+        except Exception:  # noqa: BLE001 - embeddings never fail a memory write
+            LOGGER.warning("long-term memory embedding failed", exc_info=False)
+            return None, None
+        vector = vectors[0] if vectors else None
+        if not isinstance(vector, list) or len(vector) != self.embedding_dimensions:
             return None, None
         return [float(value) for value in vector], self.embedding_model
 

@@ -70,7 +70,10 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       LOCUS_MEMORY_ENABLE_LONG_TERM: ${LOCUS_MEMORY_ENABLE_LONG_TERM:-1}
       LOCUS_MEMORY_LEARNING_ENABLED: ${LOCUS_MEMORY_LEARNING_ENABLED:-1}
-      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      # Long-term memory embeds on the local engine through the gated model client
+      # (LOCUS-378/387); the pgvector column size must match the model's vectors.
+      LOCUS_MEMORY_EMBEDDING_MODEL: ${LOCUS_MEMORY_EMBEDDING_MODEL:-nomic-embed-text}
+      LOCUS_MEMORY_EMBEDDING_DIMENSIONS: ${LOCUS_MEMORY_EMBEDDING_DIMENSIONS:-768}
       # World-models / knowledge graph live in Postgres (PostgresWorldGraph) — no
       # Neo4j, no JVM. With NEO4J_URI unset the backend uses the relational
       # world-graph (locus_kg_nodes/locus_kg_edges) in the pgvector Postgres.

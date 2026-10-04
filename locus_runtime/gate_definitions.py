@@ -53,6 +53,11 @@ GATE_CONFIG_PATHS: tuple[str, ...] = (
     # able to edit its own exam or its promotion rule.
     "apps/evals/locus_evals/suite/",
     "locus_runtime/rsi/",
+    # The private held-out split (LOCUS-382): where it is fetched from (the pinned
+    # repository and tag) and how it is verified and installed. Pointing the
+    # evaluator at another repository or an older tag would change the exam.
+    "locus_tooling/evals_sync.py",
+    "locus_tooling/evals_heldout.py",
 )
 #: ``pyproject.toml`` tables that configure gates.
 PYPROJECT_GATE_TABLES: tuple[str, ...] = ("ruff", "mypy", "pytest", "coverage")

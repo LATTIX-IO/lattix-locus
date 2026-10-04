@@ -144,13 +144,17 @@ The agent loop is a port: `runtime_contract.AgentRuntime` (`PORT_VERSION = "1.0"
 Pydantic `RuntimeRequest` (envelope, toolset, gated client, profile, prompts, approver) and
 returns a `RuntimeResult` (end state, verified, usage, offered tools, interrupts). Get an
 implementation only from `runtimes.create_runtime(name)` (`LOCUS_AGENT_RUNTIME`, default
-`verified-loop`):
+`deep-agents` since 2026-10-04, D-27 confirmed on the RSI scorecard):
 
-- `verified-loop` -- `VerifiedLoopRuntime`, the unchanged `VerifiedLoop` plus the port's ask
-  rule (an unapproved gateway ask ends the run blocked).
-- `deep-agents` -- `DeepAgentsRuntime` (optional `deepagents` / LangGraph 1.x, separate venv);
-  every model turn and tool call goes through `RunController`, the verified loop's own
-  guards, accounting and verify gate.
+- `deep-agents` (default) -- `DeepAgentsRuntime` (pinned `deepagents` / LangGraph 1.x, a
+  platform dependency); every model turn and tool call goes through `RunController`, the
+  verified loop's own guards, accounting and verify gate.
+- `verified-loop` (fallback, `LOCUS_AGENT_RUNTIME=verified-loop`) -- `VerifiedLoopRuntime`,
+  the unchanged `VerifiedLoop` plus the port's ask rule (an unapproved gateway ask ends the
+  run blocked).
+
+`loop_runner`, `SweAgent` and the other loops still construct `VerifiedLoop` directly; moving
+them onto `create_runtime` is the D-27 consolidation follow-up.
 
 `tests/harness/test_runtime_contract.py` is the contract every implementation passes
 (mediation, ask -> blocked, budget stop, verify gate, deny as observation);

@@ -113,3 +113,17 @@ def test_client_denied_by_real_policy_sends_nothing_and_audits_no_prompt(
     assert requests == []
     assert audit and audit[-1].outcome == "deny"
     assert "PROMPT-SHOULD-NOT-BE-AUDITED" not in json.dumps([r.as_metadata() for r in audit])
+
+
+def test_embedding_calls_get_the_same_policy_as_chat(gateway: Gateway) -> None:
+    """LOCUS-378: memory embeddings are model_call actions under the same Rego."""
+
+    def embedding(provider: str, host: str) -> mc.ModelCall:
+        return mc.ModelCall(provider=provider, model="m", egress_host=host, operation="embeddings")
+
+    session = _session(gateway)
+    assert _decide(session, embedding("ollama", "127.0.0.1"))[::2] == ("allow", "R1")
+    assert _decide(session, embedding("nim", "evil-nim.example.com"))[0] == "deny"
+    restricted = _session(gateway, data_classification="restricted")
+    assert _decide(restricted, embedding("ollama", "127.0.0.1"))[0] == "allow"
+    assert _decide(restricted, embedding("nim", NIM_HOST))[0] == "deny"

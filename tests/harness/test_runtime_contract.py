@@ -42,11 +42,15 @@ from locus_runtime.harness.runtime_contract import (
     ApprovalRequest,
     RuntimeRequest,
     RuntimeResult,
+    RuntimeUnavailable,
 )
 from locus_runtime.harness.runtimes import (
     DEEP_AGENTS,
+    DEFAULT_RUNTIME,
+    RUNTIME_ENV,
     VERIFIED_LOOP,
     create_runtime,
+    default_runtime_name,
     runtime_available,
 )
 from locus_runtime.harness.tools import CodingToolset
@@ -263,6 +267,60 @@ def test_factory_builds_a_port_implementation(runtime_name: str) -> None:
     assert isinstance(runtime, AgentRuntime)
     assert runtime.name == runtime_name
     assert runtime.port_version == PORT_VERSION
+
+
+def test_default_runtime_is_deep_agents(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D-27, confirmed 2026-10-04: Deep Agents is the default runtime."""
+    monkeypatch.delenv(RUNTIME_ENV, raising=False)
+    assert DEFAULT_RUNTIME == DEEP_AGENTS
+    assert default_runtime_name() == DEEP_AGENTS
+    monkeypatch.setenv(RUNTIME_ENV, "  ")
+    assert default_runtime_name() == DEEP_AGENTS
+
+
+@pytest.mark.skipif(
+    not runtime_available(DEEP_AGENTS), reason="optional 'deepagents' not installed"
+)
+def test_create_runtime_without_a_name_builds_deep_agents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(RUNTIME_ENV, raising=False)
+    assert create_runtime().name == DEEP_AGENTS
+
+
+@pytest.mark.parametrize("value", [VERIFIED_LOOP, " Verified-Loop "])
+def test_env_selects_the_verified_loop_fallback(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv(RUNTIME_ENV, value)
+    assert default_runtime_name() == VERIFIED_LOOP
+    assert create_runtime().name == VERIFIED_LOOP
+
+
+def test_explicit_name_wins_over_the_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(RUNTIME_ENV, DEEP_AGENTS)
+    assert create_runtime(VERIFIED_LOOP).name == VERIFIED_LOOP
+
+
+def test_unavailable_default_fails_loudly_with_the_fallback_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken Deep Agents install never falls back to another runtime silently."""
+    from locus_runtime.harness import runtimes
+
+    real_import = runtimes.importlib.import_module
+
+    def broken(name: str, package: str | None = None) -> Any:
+        if name == "locus_runtime.harness.deep_agents.runtime":
+            raise ImportError("No module named 'deepagents'")
+        return real_import(name, package)
+
+    monkeypatch.delenv(RUNTIME_ENV, raising=False)
+    monkeypatch.setattr(runtimes.importlib, "import_module", broken)
+    with pytest.raises(RuntimeUnavailable, match=f"{RUNTIME_ENV}={VERIFIED_LOOP}"):
+        create_runtime()
+    assert not runtime_available(DEEP_AGENTS)
+    assert runtime_available(VERIFIED_LOOP)
 
 
 @pytest.mark.parametrize("runtime_name", RUNTIMES)

@@ -16,6 +16,13 @@ reason is shown by ``lattix loop status`` / ``report`` (:func:`scorecard_posture
 
 Fail honest: no reachable keyless model endpoint, no OPA or no suite means
 ``skipped`` with the reason; a crash is ``error``. Neither is ever a promote.
+
+The held-out split is private (LOCUS-382): before scoring, the runner verifies
+the synced held-out digest under ``<app_home>/evals/heldout/`` and, when nothing
+is synced (or the pinned ref changed), attempts a non-interactive
+``lattix evals sync`` with the user's own git credentials
+(:func:`ensure_heldout_for_scoring`). Without it the held-out split is reported
+``skipped: not synced`` and the comparison holds.
 """
 
 from __future__ import annotations
@@ -192,12 +199,29 @@ def candidate_python(configured: str) -> str:
     return sys.executable
 
 
+def ensure_heldout_for_scoring(splits: tuple[str, ...] | list[str]) -> list[str]:
+    """Verify the synced held-out digest, or sync it (non-interactive), before scoring.
+
+    Never raises: a missing or failed sync leaves the held-out split unavailable,
+    which the suite reports as skipped and :func:`compare` holds. Returns notes."""
+    if "heldout" not in splits:
+        return []
+    from locus_tooling.evals_sync import ensure_heldout
+
+    try:
+        _resolution, note = ensure_heldout(sync=True)
+    except Exception as exc:  # noqa: BLE001 - never let the sync crash the loop
+        return [f"held-out sync failed ({type(exc).__name__})"]
+    return [_clean(note, 400)] if note else []
+
+
 def default_scorecard_runner(request: ScorecardRequest) -> Scorecard:
     python = candidate_python(request.python)
     try:
         suite = _import_suite_runner(request.repo_path)
     except ImportError as exc:
         raise ScorecardUnavailable("the apps/evals RSI suite is not installed") from exc
+    extra_notes = ensure_heldout_for_scoring(request.splits)
     config = suite.SuiteRunConfig(
         candidate_checkout=request.candidate_checkout,
         output_dir=request.output_dir,
@@ -209,7 +233,7 @@ def default_scorecard_runner(request: ScorecardRequest) -> Scorecard:
         git_sha=request.git_sha,
         branch=request.branch,
         gate_failures=None if request.gate_failures is None else list(request.gate_failures),
-        **dict(request.run_kwargs),
+        **{"extra_notes": tuple(extra_notes), **dict(request.run_kwargs)},
     )
     try:
         run = suite.run_suite(config)

@@ -2,12 +2,18 @@
 
 Status: implemented 2026-10-03. Decision: D-27 (LangChain Deep Agents is the base harness),
 fork policy LOCUS-363 (pinned upstream, Locus code in an in-repo extension package).
-Measured scorecard: [`runtime-bakeoff-2026-10.md`](runtime-bakeoff-2026-10.md), section 9.
+Measured scorecard: [`runtime-bakeoff-2026-10.md`](runtime-bakeoff-2026-10.md), sections 9 and 10.
 
-`create_runtime()` still defaults to `verified-loop`. `deep-agents` is selectable
-(`create_runtime("deep-agents")` or `LOCUS_AGENT_RUNTIME=deep-agents`) and is built for
-production use. Flipping the default is a separate decision (D-27: when the extended runtime
-matches or beats the verified loop on the scorecard).
+**`create_runtime()` defaults to `deep-agents` since 2026-10-04.** The D-27 condition (the
+extended runtime matches or beats the verified loop) was confirmed on the LOCUS-351 RSI
+scorecard on local inference: `compare()` said `promote` (35/40 vs 32/40 passes, a tie within
+noise; held-out median tokens 21,867 vs 34,331, improved beyond noise; total tokens 0.72x;
+median model calls 12 vs 19.5; mediation, injection and secret-scan results equal). See
+bake-off section 10. The verified loop remains the fallback: `LOCUS_AGENT_RUNTIME=verified-loop`
+or `create_runtime("verified-loop")`. A missing or unaudited Deep Agents stack raises
+`RuntimeUnavailable` instead of falling back silently. `loop_runner`, `SweAgent` and the other
+loops still construct `VerifiedLoop` directly; moving them onto the port and deleting the
+verified loop are follow-ups.
 
 ## 1. Layout
 
@@ -134,15 +140,15 @@ New transitive packages (resolved 2026-10-03):
 | langchain-protocol | 0.0.19 | MIT | LangChain Inc. (US) | langchain-core, langgraph-sdk | |
 | langgraph-checkpoint-sqlite | 3.1.1 | MIT | LangChain Inc. (US) | platform | durable checkpointer |
 | aiosqlite | 0.22.1 | MIT | Amethyst Reese (individual; omnilib project) | checkpoint-sqlite | async saver only; unused |
-| sqlite-vec | 0.1.9 | MIT OR Apache-2.0 | Alex Garcia (individual, US); wheel metadata says "TODO" | checkpoint-sqlite | D-29 inspection done (LOCUS-358): [attestation](../../provenance/attestations/pypi/sqlite-vec@0.1.9.md), conditional, principal sign-off pending; loaded only by LangGraph's `SqliteStore`, which Locus does not use |
+| sqlite-vec | 0.1.9 | MIT OR Apache-2.0 | Alex Garcia (individual, US); wheel metadata says "TODO" | checkpoint-sqlite | D-29 inspection done (LOCUS-358): [attestation](../../provenance/attestations/pypi/sqlite-vec@0.1.9.md), conditional, signed off by the principal 2026-10-04 (#66); since LOCUS-387 also loaded by Locus itself: the embedded long-term memory store (`locus_runtime/memory/sqlite_store.py`) loads vec0 for `vec_distance_cosine`. That meets the attestation condition "if Locus loads the extension, re-inspect and exercise that code path": re-inspection pending, so Locus does **not** load it by default (pure-Python vectors); `LOCUS_MEMORY_SQLITE_VEC=1` opts in once the attestation is re-signed for this path |
 | langchain-anthropic | 1.7.5 | MIT | LangChain Inc. (US) | deepagents | imported, unused |
 | anthropic | 1.11.0 | MIT | Anthropic (US) | langchain-anthropic | imported, unused |
 | docstring-parser | 0.18.0 | MIT | individual (PL) | anthropic | |
 | langchain-google-genai | 4.4.0 | MIT | LangChain Inc. (US) | deepagents | not imported by Locus paths |
 | google-genai | 2.28.0 | Apache-2.0 | Google LLC (US) | langchain-google-genai | |
 | google-auth | 2.59.1 | Apache-2.0 | Google LLC (US) | google-genai | |
-| pyasn1 | 0.6.4 | BSD-2-Clause | pyasn1 maintenance organization (Christian Heimes, DE; Simon Pichugin, CA; original author Ilya Etingof) | google-auth | D-29 inspection done (LOCUS-358): [attestation](../../provenance/attestations/pypi/pyasn1@0.6.4.md), conditional, principal sign-off pending |
-| pyasn1-modules | 0.4.2 | BSD-2-Clause | as pyasn1 | google-auth | D-29 inspection done (LOCUS-358): [attestation](../../provenance/attestations/pypi/pyasn1-modules@0.4.2.md), conditional, principal sign-off pending |
+| pyasn1 | 0.6.4 | BSD-2-Clause | pyasn1 maintenance organization (Christian Heimes, DE; Simon Pichugin, CA; original author Ilya Etingof) | google-auth | D-29 inspection done (LOCUS-358): [attestation](../../provenance/attestations/pypi/pyasn1@0.6.4.md), conditional, signed off by the principal 2026-10-04 (#66) |
+| pyasn1-modules | 0.4.2 | BSD-2-Clause | as pyasn1 | google-auth | D-29 inspection done (LOCUS-358): [attestation](../../provenance/attestations/pypi/pyasn1-modules@0.4.2.md), conditional, signed off by the principal 2026-10-04 (#66) |
 | filetype | 1.2.0 | MIT | Tomas Aparicio (individual; origin unknown: the profile says "Decentralized") | langchain-google-genai | on the unknown-origin allowlist |
 | truststore | 0.10.4 | MIT | Seth Larson, David Glick (individuals, US) | google-genai | |
 | httpx2, httpcore2 | 2.13.1 | BSD-3-Clause | encode / Tom Christie (UK) | anthropic, langsmith, openai | |
