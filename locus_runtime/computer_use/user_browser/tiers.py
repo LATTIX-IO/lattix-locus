@@ -27,7 +27,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from locus_runtime.computer_use.user_browser.sites import normalize_site
 
@@ -36,6 +36,16 @@ logger = logging.getLogger(__name__)
 Tier = Literal["strict", "assisted", "trusted", "open"]
 TIERS: tuple[Tier, ...] = ("strict", "assisted", "trusted", "open")
 DEFAULT_TIER: Tier = "strict"
+
+
+def _as_tier(value: str) -> Tier:
+    """``value`` as a :data:`Tier` (unknown values fall back to the default)."""
+    for tier in TIERS:
+        if value == tier:
+            return tier
+    return DEFAULT_TIER
+
+
 MAX_SITES = 200
 _MAX_HISTORY = 50
 
@@ -234,7 +244,7 @@ class TierStore:
                         current.consent, tier=tier, risk_acknowledged=TIER_RISKS[tier]
                     )
             settings = TierSettings(
-                tier=cast(Tier, tier),
+                tier=_as_tier(tier),
                 allowlisted_sites=allow,
                 granted_sites=grant,
                 consent=consent,
@@ -292,7 +302,7 @@ class TierStore:
             if tier not in TIERS:
                 tier = DEFAULT_TIER
             self._settings = TierSettings(
-                tier=cast(Tier, tier),
+                tier=_as_tier(tier),
                 allowlisted_sites=_site_list(raw.get("allowlisted_sites") or ()),
                 granted_sites=_site_list(raw.get("granted_sites") or ()),
                 consent=consent,
