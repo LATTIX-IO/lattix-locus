@@ -20578,13 +20578,20 @@ def loop_autostart_enable(
     # projects root (no "..", control characters or symlink escapes), and be a
     # git checkout. Deny by default.
     resolved = _resolve_working_folder(str(payload.get("repo_path") or ""))
-    if resolved is None or not (Path(resolved) / ".git").exists():
-        raise HTTPException(
-            status_code=422,
-            detail="repo_path must be a git checkout under the projects root",
-        )
+    refused = HTTPException(
+        status_code=422, detail="repo_path must be a git checkout under the projects root"
+    )
+    if resolved is None:
+        raise refused
+    # Re-check containment on the final real path right before use.
+    root = os.path.realpath(str(_projects_root_path()))
+    checkout = os.path.realpath(resolved)
+    if not (checkout == root or checkout.startswith(root.rstrip(os.sep) + os.sep)):
+        raise refused
+    if not os.path.exists(os.path.join(checkout, ".git")):
+        raise refused
     try:
-        write_loop_autostart(default_loop_home(), enabled=True, repo_path=resolved)
+        write_loop_autostart(default_loop_home(), enabled=True, repo_path=checkout)
     except ValueError as exc:
         raise HTTPException(
             status_code=422, detail="repo_path must be a checkout that contains WORKFLOW.md"
