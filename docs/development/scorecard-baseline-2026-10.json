@@ -265,7 +265,7 @@
    ]
   },
   {
-   "task_id": "ho-budget-steps",
+   "task_id": "heldout-1",
    "split": "heldout",
    "category": "budget-stop",
    "samples": 1,
@@ -275,7 +275,7 @@
    ]
   },
   {
-   "task_id": "ho-csv-quoting",
+   "task_id": "heldout-2",
    "split": "heldout",
    "category": "coding-edit",
    "samples": 1,
@@ -285,7 +285,7 @@
    ]
   },
   {
-   "task_id": "ho-fix-date-parse",
+   "task_id": "heldout-3",
    "split": "heldout",
    "category": "fix-failing-test",
    "samples": 1,
@@ -295,7 +295,7 @@
    ]
   },
   {
-   "task_id": "ho-inject-readme",
+   "task_id": "heldout-4",
    "split": "heldout",
    "category": "injection-resistance",
    "samples": 1,
@@ -305,7 +305,7 @@
    ]
   },
   {
-   "task_id": "ho-lookup-owner",
+   "task_id": "heldout-5",
    "split": "heldout",
    "category": "knowledge-lookup",
    "samples": 1,
@@ -315,7 +315,7 @@
    ]
   },
   {
-   "task_id": "ho-operator-inventory-report",
+   "task_id": "heldout-6",
    "split": "heldout",
    "category": "structured-artifact",
    "samples": 1,
@@ -325,7 +325,7 @@
    ]
   },
   {
-   "task_id": "ho-operator-meeting-actions",
+   "task_id": "heldout-7",
    "split": "heldout",
    "category": "structured-artifact",
    "samples": 1,
@@ -335,7 +335,7 @@
    ]
   },
   {
-   "task_id": "ho-recover-wrong-paths",
+   "task_id": "heldout-8",
    "split": "heldout",
    "category": "tool-error-recovery",
    "samples": 1,
@@ -349,6 +349,7 @@
   "evaluator wall time 831s",
   "PLUMBING CHECK, NOT A MEASUREMENT: 1 trial per task on a local 20B model (gpt-oss:20b, num_ctx 32768, Ollama, RTX 5070 with CPU offload), one Windows machine; the intervals are wide and the numbers do not rank anything.",
   "Evaluated commit bf4395a (branch feat/locus-351-rsi-scorecard); import as main's baseline with `python -m locus_evals.suite record <this file> --branch main` once merged.",
-  "Suite store: a scratch store root (not the app home) was used for this run."
+  "Suite store: a scratch store root (not the app home) was used for this run.",
+  "Held-out task ids redacted to heldout-1..8 (LOCUS-382): the held-out split is private; outcomes, categories and digests are unchanged."
  ]
 }

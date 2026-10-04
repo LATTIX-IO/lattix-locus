@@ -77,7 +77,9 @@ Useful settings (environment):
 | `LOCUS_RSI_CANDIDATE_UNJAILED` | unset | `1` runs the candidate without an OS jail (loud warning; the scorecard records `isolation: none` and never promotes) |
 | `LOCUS_LOOP_SCORECARD_{TRIALS,SPLITS,MODEL,PYTHON}` | `1` / `dev,heldout` / `gpt-oss:20b-ctx32k` / runner's | trials per task, splits, the keyless (Ollama) model, the candidate interpreter |
 | `LOCUS_LOOP_TAG_VARIANTS` | off | `1` tags each evaluated commit `variant/<sha12>` in the runner's repository (local, never pushed) |
-| `LOCUS_EVAL_HELDOUT_DIR` | unset | a private held-out task directory replacing the committed one |
+| `LOCUS_EVAL_HELDOUT_DIR` | unset | a local private folder of held-out tasks; overrides the synced split (LOCUS-382) |
+| `LOCUS_EVALS_REF` / `LOCUS_EVALS_REPO` | pinned in `locus_tooling/evals_heldout.py` (`v1`) | the tag and repository `lattix evals sync` fetches the private held-out split from |
+| `LOCUS_EVALS_REQUIRE_SIGNED` | unset | `1` refuses a held-out tag that is unsigned or whose signature could not be verified here |
 
 This repository's whole-repo `mypy .` and `pytest` are not green today (see
 `AGENTS.md`, known gate gaps), so set scoped check commands before the first
@@ -181,10 +183,16 @@ since LOCUS-351, by the RSI scorecard below.
 With `LOCUS_LOOP_SCORECARD=advisory` (the default where the candidate can be
 jailed, LOCUS-379) or `required`, the runner evaluates the run's tree after the verifier suite passed
 (then commits it and archives the variant under the commit sha) with the RSI
-suite: 12 dev and 8 held-out tasks from
-`apps/evals/locus_evals/suite/`, loaded from the runner's own checkout (never
-from the run's working copy), sealed read-only and hash-verified before and
-after every sample. The candidate commit runs in a separate, secret-free
+suite: 12 dev tasks from `apps/evals/locus_evals/suite/`, loaded from the
+runner's own checkout (never from the run's working copy), and the private
+held-out split (LOCUS-382), synced from a separate private repository with
+`lattix evals sync` into `<app_home>/evals/heldout/<digest>/`; both are sealed
+read-only and hash-verified before and after every sample. Before scoring the
+runner verifies the synced digest, or attempts a non-interactive sync with the
+runner user's own git credentials; when no held-out split is available the
+scorecard reports it as `skipped: not synced` and holds (a dev-only run never
+promotes). The repository, and so the agent's working copy, holds no held-out
+task, and no jail can read the synced folder. The candidate commit runs in a separate, secret-free
 candidate instance (own temp app home, scrubbed environment, no keychain, its
 own telemetry DB, the evaluator's metering proxy as its only model endpoint, the
 trusted policy bundle on real OPA) inside an OS jail with no network: it can read
@@ -305,7 +313,8 @@ The update never sets or clears the kill switch (`DISABLED` / `LOCUS_LOOP_DISABL
   auto-merge in `required` mode, which is what reaches the Dev channel; a check
   of the merged commit's scorecard inside `desktop-dev.yml` itself is a
   follow-up ([rsi-scorecard.md §11](rsi-scorecard.md#11-known-limits-follow-ups-and-decisions)).
-  The suite, graders, held-out split and scorecard code are protected paths too.
+  The suite, graders, scorecard code and the held-out sync and its pinned source
+  (`locus_tooling/evals_sync.py`, `locus_tooling/evals_heldout.py`) are protected paths too.
 
 ## Safety model
 

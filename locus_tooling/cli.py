@@ -437,6 +437,52 @@ def secrets_set(name: str) -> None:
 
 
 @cli.group()
+def evals() -> None:
+    """RSI eval suite: the private held-out split (LOCUS-382)."""
+
+
+@evals.command("sync")
+@click.option("--ref", default="", help="Tag (or branch) to fetch (default: the pinned tag).")
+@click.option("--repo", default="", help="Repository URL (default: the pinned private repo).")
+@click.option(
+    "--non-interactive", is_flag=True, help="Never prompt for credentials (fail instead)."
+)
+def evals_sync(ref: str, repo: str, non_interactive: bool) -> None:
+    """Fetch the private held-out split with your own git credentials, verify its
+    manifest (and tag signature when possible) and install it read-only under
+    <app_home>/evals/heldout/<digest>/. Idempotent. Credentials are never stored."""
+    from .evals_sync import HeldoutSyncError, sync_heldout
+
+    try:
+        result = sync_heldout(
+            repository=repo or None, ref=ref or None, interactive=not non_interactive
+        )
+    except HeldoutSyncError as exc:
+        raise click.ClickException(f"[{exc.code}] {exc}") from exc
+    print_json(result.to_dict())
+    signature = result.signature
+    if signature.signed and signature.status != "verified":
+        click.echo(
+            f"warning: tag {result.ref} is signed but its signature was not verified here "
+            f"({signature.detail or signature.status})",
+            err=True,
+        )
+    elif not signature.signed:
+        click.echo(
+            f"note: {result.ref} is not a signed tag (LOCUS_EVALS_REQUIRE_SIGNED=1 refuses it)",
+            err=True,
+        )
+
+
+@evals.command("status")
+def evals_status() -> None:
+    """The pinned held-out source, the active sync and what the suite will use."""
+    from .evals_sync import heldout_status
+
+    print_json(heldout_status())
+
+
+@cli.group()
 def loop() -> None:
     """Self-improvement loop: Linear intake -> verified run -> PR (LOCUS-338)."""
 

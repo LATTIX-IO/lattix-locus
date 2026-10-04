@@ -1,8 +1,11 @@
 """The read-only, hash-verified suite store the evaluator runs from (LOCUS-351).
 
 At run time the task files (dev and held-out tasks and their graders) are copied
-from the trusted source -- the runner's own checkout, or a private held-out
-directory -- to ``<app_home>/evals/suite-store/<digest>/`` with a
+from the trusted sources -- the dev split from the runner's own checkout, the
+held-out split from the private, synced folder (LOCUS-382,
+:func:`locus_tooling.evals_sync.resolve_heldout`: ``LOCUS_EVAL_HELDOUT_DIR``,
+else ``<app_home>/evals/heldout/<digest>/``) -- to
+``<app_home>/evals/suite-store/<digest>/`` with a
 ``MANIFEST.json`` of sha256 hashes, and the files are made read-only. The
 store is outside every agent's write root (eval runs get a temp workspace; the
 loop's agent gets its working copy) and outside every eval agent's read roots.
@@ -20,19 +23,21 @@ import hashlib
 import json
 import os
 import shutil
-import stat
-import sys
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from locus_runtime.rsi.readonly import is_writable, make_read_only, make_writable
+from locus_tooling.evals_heldout import HELDOUT_DIR_ENV
+from locus_tooling.evals_sync import HeldoutResolution, resolve_heldout
 
 from locus_evals.suite import SUITE_VERSION
 from locus_evals.suite.loader import load_tasks, split_digest, task_files
 from locus_evals.suite.model import SPLITS
 
 MANIFEST = "MANIFEST.json"
-HELDOUT_ENV = "LOCUS_EVAL_HELDOUT_DIR"
+HELDOUT_ENV = HELDOUT_DIR_ENV
 
 
 class TamperError(RuntimeError):
@@ -46,6 +51,11 @@ class SealedSuite:
     files: Mapping[str, str] = field(default_factory=dict)
     split_digests: Mapping[str, str] = field(default_factory=dict)
     version: str = SUITE_VERSION
+    #: Where the held-out split came from (LOCUS-382); ``origin == "none"`` means
+    #: it was not available and the store holds the dev split only.
+    heldout: HeldoutResolution = field(
+        default_factory=lambda: HeldoutResolution(None, "none", reason="not resolved")
+    )
 
     @property
     def tasks_dir(self) -> Path:
@@ -83,36 +93,24 @@ def default_store_root() -> Path:
     return toolchain_app_home() / "evals" / "suite-store"
 
 
-def source_dirs(tasks_dir: Path, heldout_dir: Path | None = None) -> dict[str, Path]:
-    """Where each split comes from: the suite's ``tasks/<split>``, with the held-out
-    split optionally replaced by a private directory (``LOCUS_EVAL_HELDOUT_DIR``)."""
-    override = heldout_dir or (Path(os.environ[HELDOUT_ENV]) if os.getenv(HELDOUT_ENV) else None)
-    dirs = {split: Path(tasks_dir) / split for split in SPLITS}
-    if override is not None:
-        dirs["heldout"] = Path(override)
-    return dirs
+def source_dirs(
+    tasks_dir: Path, heldout_dir: Path | None = None
+) -> tuple[dict[str, Path], HeldoutResolution]:
+    """Where each split comes from: ``dev`` from the suite's ``tasks/dev``; ``heldout``
+    only from a private source (LOCUS-382): ``heldout_dir``, else
+    ``LOCUS_EVAL_HELDOUT_DIR``, else the synced folder. The repository holds no
+    held-out tasks, and a ``tasks/heldout`` folder there is ignored, so a public
+    copy can never stand in for the private split."""
+    resolution = resolve_heldout(explicit=heldout_dir)
+    dirs = {"dev": Path(tasks_dir) / "dev"}
+    if resolution.path is not None:
+        dirs["heldout"] = resolution.path
+    return dirs, resolution
 
 
-def _make_writable(root: Path) -> None:
-    for path in [root, *root.rglob("*")]:
-        try:
-            os.chmod(path, stat.S_IWRITE | stat.S_IREAD | (stat.S_IEXEC if path.is_dir() else 0))
-        except OSError:
-            pass
-
-
-def _make_read_only(root: Path) -> None:
-    for path in sorted(root.rglob("*"), reverse=True):
-        if path.is_file():
-            os.chmod(path, stat.S_IREAD)
-        elif path.is_dir() and sys.platform != "win32":
-            os.chmod(path, stat.S_IREAD | stat.S_IEXEC)
-    if sys.platform != "win32":
-        os.chmod(root, stat.S_IREAD | stat.S_IEXEC)
-
-
-def _writable(path: Path) -> bool:
-    return bool(path.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+_make_writable = make_writable
+_make_read_only = make_read_only
+_writable = is_writable
 
 
 def install(
@@ -122,7 +120,7 @@ def install(
     heldout_dir: Path | None = None,
 ) -> SealedSuite:
     """Copy the suite into the read-only store and seal it (idempotent per digest)."""
-    sources = source_dirs(tasks_dir, heldout_dir)
+    sources, heldout = source_dirs(tasks_dir, heldout_dir)
     staged_files: dict[str, Path] = {}
     for split, src in sources.items():
         for path in task_files(src, "."):
@@ -138,7 +136,7 @@ def install(
         if manifest_of(dest / "tasks") == files and all(
             not _writable(dest / name) for name in files
         ):
-            return _sealed(dest, digest, files)
+            return _sealed(dest, digest, files, heldout)
         _make_writable(dest)
         shutil.rmtree(dest)
     staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=base))
@@ -163,16 +161,23 @@ def install(
         shutil.rmtree(staging, ignore_errors=True)
         raise
     _make_read_only(dest)
-    return _sealed(dest, digest, files)
+    return _sealed(dest, digest, files, heldout)
 
 
-def _sealed(dest: Path, digest: str, files: Mapping[str, str]) -> SealedSuite:
+def _sealed(
+    dest: Path, digest: str, files: Mapping[str, str], heldout: HeldoutResolution
+) -> SealedSuite:
     tasks = dest / "tasks"
     return SealedSuite(
         root=dest,
         digest=digest,
         files=dict(files),
-        split_digests={split: split_digest(tasks, split) for split in SPLITS},
+        # Only splits that have tasks: an absent held-out split has no digest
+        # (it can never look comparable to a baseline's).
+        split_digests={
+            split: split_digest(tasks, split) for split in SPLITS if task_files(tasks, split)
+        },
+        heldout=heldout,
     )
 
 
