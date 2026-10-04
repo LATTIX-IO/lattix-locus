@@ -10,7 +10,7 @@ Locus exists so an operator can build, run, and audit multi-agent work on infras
 | Build a workflow | `/builder/workflows/[id]` ReactFlow canvas | Node config is schema-driven; validation happens before a run, not during it |
 | Define an agent | `/builder/agents/[id]` | Security scope and guardrail binding are part of the definition, not an afterthought |
 | Run and watch | `/workflows/start`, `/runs/[id]` | Progress, per-node output, and cognition state are visible while running |
-| Approve a gated step | `locus/human-review`, `/inbox`, `/approvals` | Nothing state-changing proceeds past a gate without an explicit decision |
+| Approve a gated step | `locus/human-review`, `/activity`, `/approvals` | Nothing state-changing proceeds past a gate without an explicit decision |
 | Audit afterwards | `/audit/events`, `/observability/runs/{id}/trace`, run audit tabs | A reviewer can reconstruct what ran, under what policy, with what evidence |
 | Publish and roll back | publish / activate / rollback on every definition type | Version history is real; rollback is a first-class action, not a restore-from-backup |
 | Operate the platform | `lattix health`, `/healthz/details`, `/platform/security-policy` | Posture is inspectable at runtime, not just at deploy time |

@@ -251,7 +251,7 @@ Focused validation for the cognitive MVP:
 .venv/Scripts/python.exe -m pytest apps/backend/tests/test_cognitive_graph.py tests/unit/test_cognitive_runtime.py tests/e2e/test_full_pipeline.py -q
 
 cd apps/frontend
-npm test -- --run src/lib/locus-node-schema.spec.ts src/components/run-conversation-console.spec.tsx
+npm test -- --run src/lib/locus-node-schema.spec.ts src/components/user-chat-workspace.spec.tsx
 ```
 
 For the cortical column zero-trust MVP slice, use the focused verification suite below before merging or promoting behavior changes:
