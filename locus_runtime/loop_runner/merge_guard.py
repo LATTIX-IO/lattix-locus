@@ -28,7 +28,9 @@ Rules (each produces a reason on hold):
    ``.pre-commit-config.yaml``, ``scripts/run_opa.py``, ``precommit.*``), the
    gate targets or variables of the ``Makefile``, or the ``[tool.ruff]`` /
    ``[tool.mypy]`` / ``[tool.pytest]`` / ``[tool.coverage]`` sections of
-   ``pyproject.toml``.
+   ``pyproject.toml``. The lists live in :mod:`locus_runtime.gate_definitions`,
+   shared with the gateway, which asks (R3) before an agent writes any of them
+   (LOCUS-362).
 4. **Tests not weakened.** No test file deleted (or renamed out of the test
    tree); no net deletion of test functions or assertions in test files; no
    added skip/xfail markers anywhere.
@@ -44,6 +46,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
+from locus_runtime.gate_definitions import (
+    MAKEFILE_GATE_TARGETS,
+    PYPROJECT_GATE_TABLES,
+    gate_config_reason,
+)
+
 MergeAction = Literal["merge", "hold"]
 
 #: Protected even if CODEOWNERS is edited, emptied or deleted (defence in depth):
@@ -56,6 +64,7 @@ BASELINE_PROTECTED: tuple[str, ...] = (
     "/locus_runtime/win_sandbox.py",
     "/locus_runtime/security.py",
     "/locus_runtime/grants.py",
+    "/locus_runtime/gate_definitions.py",
     "/locus_tooling/native_secrets.py",
     "/apps/backend/app/policy_gateway.py",
     "/apps/backend/app/request_security.py",
@@ -76,46 +85,6 @@ BASELINE_PROTECTED: tuple[str, ...] = (
     "/locus_tooling/update_contract.py",
     "/locus_tooling/desktop_update.py",
     "/locus_tooling/build_info.py",
-)
-
-#: Files whose any change redefines a gate (exact basenames, any directory).
-GATE_CONFIG_BASENAMES: frozenset[str] = frozenset(
-    {
-        "conftest.py",
-        "pytest.ini",
-        "tox.ini",
-        "setup.cfg",
-        "ruff.toml",
-        ".ruff.toml",
-        "mypy.ini",
-        ".mypy.ini",
-        ".pre-commit-config.yaml",
-        ".coveragerc",
-        "noxfile.py",
-    }
-)
-#: Repository-relative gate files / prefixes (lower-case).
-GATE_CONFIG_PATHS: tuple[str, ...] = (
-    ".github/workflows/",
-    "policies/",
-    "scripts/run_opa.py",
-    "precommit.sh",
-    "precommit.ps1",
-)
-#: ``pyproject.toml`` tables that configure gates.
-PYPROJECT_GATE_TABLES: tuple[str, ...] = ("ruff", "mypy", "pytest", "coverage")
-#: ``Makefile`` targets that run gates.
-MAKEFILE_GATE_TARGETS: frozenset[str] = frozenset(
-    {
-        "test",
-        "unit-test",
-        "integration-test",
-        "performance-test",
-        "lint",
-        "typecheck",
-        "policy-test",
-        "helm-validate",
-    }
 )
 
 _SUCCESS = "success"
@@ -269,13 +238,7 @@ def _is_test_path(path: str) -> bool:
 
 
 def _gate_config_reason(path: str) -> str:
-    name = path.rsplit("/", 1)[-1]
-    if name in GATE_CONFIG_BASENAMES:
-        return f"gate configuration file changed: {path}"
-    for prefix in GATE_CONFIG_PATHS:
-        if path == prefix.rstrip("/") or path.startswith(prefix):
-            return f"gate definition changed: {path}"
-    return ""
+    return gate_config_reason(path)
 
 
 def _pyproject_gate_tables(text: str) -> dict[str, object]:
