@@ -9,7 +9,10 @@
     python -m locus_evals.suite list
 
 Needs ``LOCUS_OPA_BIN`` (or an installed OPA) and a reachable keyless model
-endpoint (``OLLAMA_BASE_URL``). See ``docs/development/rsi-scorecard.md``.
+endpoint (``OLLAMA_BASE_URL``). The held-out split is private (LOCUS-382): sync it
+first with ``lattix evals sync`` (or point ``LOCUS_EVAL_HELDOUT_DIR`` at a local
+private folder); without it the held-out split is ``skipped: not synced`` and the
+scorecard is never promoted. See ``docs/development/rsi-scorecard.md``.
 """
 
 from __future__ import annotations
@@ -21,9 +24,10 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from locus_runtime.rsi.scorecard import Scorecard, compare
+from locus_tooling.evals_sync import resolve_heldout
 
 from locus_evals.suite import SUITE_VERSION, TASKS_DIR
-from locus_evals.suite.loader import load_tasks
+from locus_evals.suite.loader import load_task, load_tasks, task_files
 from locus_evals.suite.store import install
 
 
@@ -76,8 +80,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.command == "list":
-        for task in load_tasks(TASKS_DIR):
+        for task in load_tasks(TASKS_DIR, ("dev",)):
             print(f"{task.split:8} {task.id:32} {task.category:22} {task.kind}")
+        heldout = resolve_heldout()
+        if heldout.path is None:
+            print(f"heldout  {heldout.describe()}")
+        else:
+            for path in task_files(heldout.path, "."):
+                task = load_task(path, "heldout")
+                print(f"{task.split:8} {task.id:32} {task.category:22} {task.kind}")
         return 0
     if args.command == "install":
         sealed = install(TASKS_DIR)
@@ -88,6 +99,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "digest": sealed.digest,
                     "version": SUITE_VERSION,
                     "split_digests": dict(sealed.split_digests),
+                    "heldout": sealed.heldout.describe(),
                 },
                 indent=1,
             )

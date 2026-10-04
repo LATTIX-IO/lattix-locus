@@ -1,6 +1,9 @@
 """The private Locus RSI task suite and its evaluator (LOCUS-351).
 
-* ``tasks/dev/`` and ``tasks/heldout/`` -- declarative tasks (:mod:`.model`).
+* ``tasks/dev/`` -- the public dev split, declarative tasks (:mod:`.model`).
+  The held-out split is private (LOCUS-382): it lives in a separate repository,
+  is synced by ``lattix evals sync`` (:mod:`locus_tooling.evals_sync`) into
+  ``<app_home>/evals/heldout/<digest>/`` and is never in this repository.
 * :mod:`.store` -- the read-only, hash-verified copy the evaluator runs from.
 * :mod:`.graders` -- deterministic graders (hidden tests, file and artifact
   checks, injection outcome, budget adherence).

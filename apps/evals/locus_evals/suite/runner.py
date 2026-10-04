@@ -109,6 +109,8 @@ class SuiteRunConfig:
     max_actions: int = 60
     max_tokens: int = 600_000
     keep_candidate_home: bool = False
+    #: Notes from the caller (e.g. the loop's held-out sync, LOCUS-382).
+    extra_notes: tuple[str, ...] = ()
 
 
 @dataclass
@@ -495,6 +497,19 @@ def run_records(
     return run_builtin(tasks, cfg.trials, evaluate), engine, None
 
 
+def skipped_splits(sealed: SealedSuite, cfg: SuiteRunConfig) -> dict[str, str]:
+    """Requested splits the sealed store has no tasks for, with why (LOCUS-382)."""
+    out: dict[str, str] = {}
+    for split in cfg.splits:
+        if split in sealed.split_digests:
+            continue
+        if split == "heldout":
+            out[split] = sealed.heldout.reason or "not synced"
+        else:
+            out[split] = "no tasks"
+    return out
+
+
 def select_tasks(sealed: SealedSuite, cfg: SuiteRunConfig) -> list[SuiteTask]:
     tasks = load_tasks(sealed.tasks_dir, cfg.splits)
     if cfg.task_ids:
@@ -530,6 +545,7 @@ def score(
             "engine": engine,
             "suite_version": SUITE_VERSION,
             "split_digests": {s: d for s, d in ctx.sealed.split_digests.items() if s in cfg.splits},
+            "skipped_splits": skipped_splits(ctx.sealed, cfg),
             "trials": cfg.trials,
             "isolation": isolation,
             "notes": list(notes),
@@ -600,15 +616,28 @@ def run_suite(cfg: SuiteRunConfig) -> SuiteRun:
     from locus_runtime.rsi.secret_scan import SecretGuard
     from locus_runtime.win_toolchain import toolchain_app_home
 
-    notes: list[str] = []
+    notes: list[str] = [str(n)[:400] for n in cfg.extra_notes]
     if not cfg.git_sha:
         sha, branch, dirty = git_identity(cfg.candidate_checkout)
         cfg = dataclasses.replace(cfg, git_sha=sha, branch=cfg.branch or branch)
         if dirty:
             notes.append("candidate checkout had uncommitted changes")
     sealed = install(cfg.tasks_dir, cfg.store_root, heldout_dir=cfg.heldout_dir)
+    skipped = skipped_splits(sealed, cfg)
+    if "heldout" in skipped:
+        # LOCUS-382: never a silent dev-only run that looks promotable.
+        notes.append(
+            f"held-out split skipped: {skipped['heldout']} (run `lattix evals sync` or set "
+            "LOCUS_EVAL_HELDOUT_DIR); this scorecard is never promoted"
+        )
+    elif "heldout" in cfg.splits:
+        notes.append(f"held-out split: {sealed.heldout.describe()}")
     tasks = select_tasks(sealed, cfg)
     if not tasks:
+        if skipped:
+            raise SuiteUnavailable(
+                "no tasks to run: " + "; ".join(f"{k} skipped: {v}" for k, v in skipped.items())
+            )
         raise SuiteUnavailable("no tasks selected")
     binary = find_opa_binary()
     if binary is None:
@@ -644,7 +673,12 @@ def run_suite(cfg: SuiteRunConfig) -> SuiteRun:
         candidate.model_base_url = proxy.start()
         if candidate.jailed:
             try:
-                probe = candidate.verify_isolation()
+                # The exam itself is a target too: the sealed store and the
+                # synced held-out folder must be unreadable from the jail.
+                protected = [sealed.root]
+                if sealed.heldout.path is not None:
+                    protected.append(sealed.heldout.path)
+                probe = candidate.verify_isolation(protected=protected)
             except CandidateError as exc:
                 raise SuiteUnavailable(f"candidate isolation not proven: {exc}") from exc
             blocked = sum(len(probe.get(k) or {}) for k in ("read", "write", "list", "connect"))

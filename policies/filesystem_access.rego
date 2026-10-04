@@ -55,6 +55,8 @@ gate_write_paths := {
 	".claude/", ".cursor/", ".ai-memory/",
 	# RSI scorecard (LOCUS-351): eval suite, graders, held-out split, comparator.
 	"apps/evals/locus_evals/suite/", "locus_runtime/rsi/",
+	# Private held-out split source and sync (LOCUS-382).
+	"locus_tooling/evals_sync.py", "locus_tooling/evals_heldout.py",
 }
 
 # --- facts -------------------------------------------------------------------

@@ -29,7 +29,11 @@ anti-tamper status of the suite store.
   ``hold``;
 * the candidate was scored inside an OS jail (LOCUS-379): a scorecard with
   ``isolation == "none"`` (the explicit unjailed opt-out) is always held with
-  the reason "candidate not isolated".
+  the reason "candidate not isolated";
+* the held-out split was run (LOCUS-382: it comes from a private, synced
+  folder; when it is not available the scorecard records it under
+  ``skipped_splits`` -- e.g. ``{"heldout": "not synced"}`` -- and is held with
+  that reason, never promoted on the dev split alone).
 
 Anything the rule cannot establish is a ``hold`` with a reason (fail closed).
 """
@@ -298,6 +302,9 @@ class Scorecard(BaseModel):
     suite_version: str = ""
     #: sha256 over each split's task files (comparability).
     split_digests: dict[str, str] = Field(default_factory=dict)
+    #: Requested splits that could not run, with why (LOCUS-382), e.g.
+    #: ``{"heldout": "not synced"}``. Missing in older scorecards: read as none.
+    skipped_splits: dict[str, str] = Field(default_factory=dict)
     trials: int = 0
     #: The candidate's OS jail tier. Missing in scorecards from before LOCUS-379,
     #: which ran unjailed: they read as ``none`` (fail closed).
@@ -447,6 +454,7 @@ def build_scorecard(
         engine=str(info.get("engine") or ""),
         suite_version=str(info.get("suite_version") or ""),
         split_digests={str(k): str(v) for k, v in dict(info.get("split_digests") or {}).items()},
+        skipped_splits={str(k): str(v) for k, v in dict(info.get("skipped_splits") or {}).items()},
         trials=int(info.get("trials") or 0),
         isolation=_ISOLATION.get(str(info.get("isolation") or ""), "none"),
         status=status,
@@ -653,7 +661,12 @@ def compare(
         reasons.append(f"{NOT_ISOLATED_REASON} (isolation: {candidate.isolation})")
     required = candidate.split(rule.required_split)
     if required is None or required.samples == 0:
-        reasons.append(f"the {rule.required_split} split was not run (required for promotion)")
+        skipped = candidate.skipped_splits.get(rule.required_split, "")
+        reasons.append(
+            f"the {rule.required_split} split was not run"
+            + (f" (skipped: {skipped})" if skipped else "")
+            + " (required for promotion)"
+        )
     if baseline is None:
         reasons.append("no baseline scorecard to compare against")
         return Comparison(decision="hold", reasons=reasons)
@@ -728,7 +741,8 @@ def scorecard_markdown(scorecard: Scorecard) -> list[str]:
     for name in SPLITS:
         s = scorecard.split(name)
         if s is None:
-            lines.append(f"- {name}: not run")
+            skipped = scorecard.skipped_splits.get(name, "")
+            lines.append(f"- {name}: skipped: {skipped}" if skipped else f"- {name}: not run")
             continue
         tokens = scorecard.metric(name, "tokens")
         wall = scorecard.metric(name, "wall_seconds")

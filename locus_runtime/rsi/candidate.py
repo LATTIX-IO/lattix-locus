@@ -695,14 +695,19 @@ class CandidateInstance:
         return dict(result.get("escape") or {})
 
     def verify_isolation(
-        self, *, external: tuple[str, int] | None = ("1.1.1.1", 443)
+        self,
+        *,
+        external: tuple[str, int] | None = ("1.1.1.1", 443),
+        protected: Sequence[Path] = (),
     ) -> dict[str, Any]:
         """Prove the jail from inside before scoring (raises :class:`CandidateError`).
 
         A fresh canary in a directory that is **not** granted must be unreadable and
         unwritable, the evaluator's home unlistable, a loopback listener and an
         external host unreachable, no OS credential store reachable and no
-        secret-like variable visible. Returns the probe report (evidence)."""
+        secret-like variable visible. Each ``protected`` folder (the sealed suite
+        store, the synced held-out split; LOCUS-382) must be unlistable and its
+        first file unreadable. Returns the probe report (evidence)."""
         if not self.jailed:
             raise CandidateError("the candidate is not jailed (isolation 'none')")
         outside = Path(tempfile.mkdtemp(prefix="locus-canary-"))
@@ -717,10 +722,16 @@ class CandidateInstance:
             targets: list[tuple[str, int]] = [("127.0.0.1", port)]
             if external is not None:
                 targets.append(external)
+            reads, listings = [str(canary)], [str(Path.home()), str(outside)]
+            for folder in protected:
+                listings.append(str(folder))
+                sample = next((p for p in sorted(Path(folder).rglob("*")) if p.is_file()), None)
+                if sample is not None:
+                    reads.append(str(sample))
             report = self.escape_probe(
-                read=[str(canary)],
+                read=reads,
                 write=[str(canary)],
-                listing=[str(Path.home()), str(outside)],
+                listing=listings,
                 connect=targets,
             )
             escaped = escapes(report)
