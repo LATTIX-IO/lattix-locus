@@ -273,27 +273,40 @@ def test_observability_dashboard_includes_skill_metrics() -> None:
     assert {"usage_count", "last_used_at", "status", "version"} <= set(sample.keys())
 
 
-def test_skill_carries_maturity_tier_defaults_and_accepts_overrides() -> None:
-    created = client.post(
-        "/skills",
-        json={
-            "name": "tiered-skill",
-            "content": "## Goal\nDo the thing.",
-            "tier": "tier2",
-            "maturity": "incubating",
-            "owner": "platform-team",
-            "dependencies": ["commit"],
-            "eval_rubric": "Was the thing done correctly?",
-            "eval_dataset": [{"prompt": "Do it", "expectation": "done"}],
-        },
-        headers=ADMIN_HEADERS,
-    )
+def test_skill_save_cannot_set_tier_or_maturity() -> None:
+    # LOCUS-374: tier and maturity are earned only through eval + promote.
+    base = {
+        "name": "tiered-skill",
+        "content": "## Goal\nDo the thing.",
+        "owner": "platform-team",
+        "dependencies": ["commit"],
+        "eval_rubric": "Was the thing done correctly?",
+        "eval_dataset": [{"prompt": "Do it", "expectation": "done"}],
+    }
+    for field, value in (("tier", "tier1"), ("tier", "tier2"), ("maturity", "standard")):
+        refused = client.post("/skills", json={**base, field: value}, headers=ADMIN_HEADERS)
+        assert refused.status_code == 422, (field, value)
+        assert "promote" in refused.json()["detail"]
+    created = client.post("/skills", json=base, headers=ADMIN_HEADERS)
     assert created.status_code == 200
     body = created.json()
     skill_id = body["id"]
     try:
-        assert body["tier"] == "tier2"
-        assert body["maturity"] == "incubating"
+        assert body["tier"] == "tier3"
+        assert body["maturity"] == "draft"
+        # Echoing the current values back (as the UI does on edit) is accepted.
+        echoed = client.post(
+            "/skills",
+            json={**base, "id": skill_id, "tier": "tier3", "maturity": "draft"},
+            headers=ADMIN_HEADERS,
+        )
+        assert echoed.status_code == 200
+        # Raising it on an existing skill is still refused.
+        raised = client.post(
+            "/skills", json={**base, "id": skill_id, "tier": "tier1"}, headers=ADMIN_HEADERS
+        )
+        assert raised.status_code == 422
+        assert store.skills[skill_id].tier == "tier3"
         assert body["owner"] == "platform-team"
         assert body["dependencies"] == ["commit"]
         assert len(body["eval_dataset"]) == 1

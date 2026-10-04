@@ -109,8 +109,7 @@ export default function SkillBuilderPage({ params }: { params: Promise<{ id: str
           .split(",")
           .map((tag) => tag.trim())
           .filter(Boolean),
-        tier: draft.tier,
-        maturity: draft.maturity,
+        // tier / maturity are not sent: they're earned via eval + promote (LOCUS-374).
         owner: draft.owner.trim(),
         dependencies: draft.dependencies
           .split(",")
@@ -303,10 +302,12 @@ export default function SkillBuilderPage({ params }: { params: Promise<{ id: str
           <div className="grid gap-2.5 md:grid-cols-2">
             <label className="block">
               <span className="fx-muted mb-1 block text-[11px] uppercase tracking-wide">Tier</span>
+              {/* Earned through eval + promote only; read-only here (LOCUS-374). */}
               <select
                 className="fx-field h-8 w-full px-2 text-sm"
                 value={draft.tier}
-                onChange={(e) => setDraft({ ...draft, tier: e.target.value as Draft["tier"] })}
+                disabled
+                aria-describedby="skill-tier-earned"
               >
                 <option value="tier3">Tier 3 · Personal/Workflow</option>
                 <option value="tier2">Tier 2 · Methodology</option>
@@ -318,7 +319,8 @@ export default function SkillBuilderPage({ params }: { params: Promise<{ id: str
               <select
                 className="fx-field h-8 w-full px-2 text-sm"
                 value={draft.maturity}
-                onChange={(e) => setDraft({ ...draft, maturity: e.target.value as Draft["maturity"] })}
+                disabled
+                aria-describedby="skill-tier-earned"
               >
                 <option value="draft">Draft</option>
                 <option value="incubating">Incubating</option>
@@ -326,6 +328,9 @@ export default function SkillBuilderPage({ params }: { params: Promise<{ id: str
                 <option value="standard">Standard</option>
               </select>
             </label>
+            <p id="skill-tier-earned" className="fx-muted text-[11px] md:col-span-2">
+              Tier and maturity are earned: run the eval, then promote.
+            </p>
             <label className="block">
               <span className="fx-muted mb-1 block text-[11px] uppercase tracking-wide">Owner</span>
               <input

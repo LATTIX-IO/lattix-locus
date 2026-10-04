@@ -25477,6 +25477,20 @@ def save_skill(
     if status_value not in {"enabled", "disabled"}:
         status_value = "enabled"
 
+    # Tier and maturity are earned only through eval + promote (D-18, P24): a
+    # save may echo the current values back but never set them (LOCUS-374).
+    current_tier = existing.tier if existing else "tier3"
+    current_maturity = existing.maturity if existing else "draft"
+    for field, current in (("tier", current_tier), ("maturity", current_maturity)):
+        if field in payload and str(payload.get(field) or "") != current:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Skill {field} can't be set on save; run the skill eval and use "
+                    "promote to raise it."
+                ),
+            )
+
     resolved_quarantine = existing.quarantine_status if existing else "none"
     bundle_update: dict[str, Any] = (
         {
@@ -25543,14 +25557,8 @@ def save_skill(
         ),
         version=(existing.version + 1) if existing else 1,
         updated_at=_now_iso(),
-        tier=str(
-            payload.get("tier") if "tier" in payload else (existing.tier if existing else "tier3")
-        ),
-        maturity=str(
-            payload.get("maturity")
-            if "maturity" in payload
-            else (existing.maturity if existing else "draft")
-        ),
+        tier=current_tier,
+        maturity=current_maturity,
         owner=str(
             payload.get("owner") if "owner" in payload else (existing.owner if existing else "")
         ),
