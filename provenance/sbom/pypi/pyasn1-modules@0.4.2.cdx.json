@@ -1,0 +1,48 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [
+    {
+      "author": "etingof@gmail.com",
+      "bom-ref": "pkg:pypi/pyasn1-modules@0.4.2",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "29253a9207ce32b64c3ac6600edc75368f98473906e8fd1043bd6b5b1de2c14a"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD"
+          }
+        }
+      ],
+      "name": "pyasn1_modules",
+      "properties": [
+        {
+          "name": "locus:requires-dist",
+          "value": "pyasn1<0.7.0,>=0.6.1"
+        }
+      ],
+      "purl": "pkg:pypi/pyasn1-modules@0.4.2",
+      "type": "library",
+      "version": "0.4.2"
+    }
+  ],
+  "metadata": {
+    "component": {
+      "name": "pyasn1-modules",
+      "type": "library",
+      "version": "0.4.2"
+    },
+    "tools": [
+      {
+        "name": "locus-provenance",
+        "version": "1"
+      }
+    ]
+  },
+  "serialNumber": "urn:uuid:8ac62a50-c672-5938-ae61-432748891bee",
+  "specVersion": "1.5",
+  "version": 1
+}

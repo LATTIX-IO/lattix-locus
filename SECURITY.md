@@ -73,6 +73,7 @@ Locus sits on a sensitive boundary: operator intent becomes agent execution agai
 | Egress control | Sandbox egress gateway, per-integration `egress_allowlist` | Deny by default; allowlist is data, not code |
 | Secret storage | Vault (`hvac`), installer-managed mirroring | Secrets never in the repo, logs, or memory records |
 | Telemetry and trace egress | `locus_runtime/telemetry/` (OpenTelemetry, local SQLite store), exporter settings in `apps/backend/app/main.py`, `capability_widening.py` — LOCUS-375, see `docs/OBSERVABILITY.md` | Traces stay local by default; message and tool content is not captured unless the principal turns it on, and is then redacted and truncated; every exported string is redacted again before any sink. External exporters (OTLP, LangSmith) are off by default, need the host on the egress allowlist (fail closed, checked on every export) and a credential resolved from native secrets by name; enabling one, a new endpoint or content capture is capability-widening (confirmation, and the shell proof on the desktop). Audit stays in the audit log. |
+| Dependency and model provenance (P28, D-29) | `locus_tooling/provenance/`, `provenance/` (attestations, `origins.json`, `unknown_origin_allowlist.json`), the CI dependency gate, `provenance_denial()` in `locus_runtime/model_client.py` — LOCUS-358, see [`docs/PROVENANCE.md`](docs/PROVENANCE.md) | Every declared dependency has a reviewed origin record. A package from a P28-listed origin needs a principal-signed passing attestation for the exact pinned version; an unknown origin needs an allowlist entry with a reason; CI fails otherwise (no network). A model of a P28-listed lineage runs only on a local engine (Ollama on loopback) with a passing local-model attestation whose weights digest matches what the engine loads; hosted, API or web inference of those lineages is always refused. |
 | Audit integrity | Hash-chained, signed events (`locus_runtime/events.py`) | No execution path bypasses the event log |
 | Transport and headers | Envoy, `apps/backend/app/security_headers.py`, `request_security.py` | Security headers and request validation are not optional middleware |
 
@@ -100,6 +101,7 @@ Require explicit security review when a change touches:
 - the event hash chain or event signing
 - the installer's secret handling or state manifest
 - Helm secrets, network policies, RBAC, seccomp profile, or RuntimeClass
+- anything under `provenance/` (attestations, origins, the unknown-origin allowlist), the provenance gate, or the model client's provenance check: signing off an attestation is the principal's decision (see `docs/PROVENANCE.md`)
 
 ## Known posture gaps
 

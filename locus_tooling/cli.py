@@ -8,6 +8,7 @@ from collections.abc import Mapping
 import click
 
 from . import installer
+from .provenance import cli as provenance_cli
 from .common import (
     DEFAULT_ARCHIVE_URL,
     configured_local_api_headers,
@@ -539,6 +540,10 @@ def loop_autostart(repo: str, off: bool) -> None:
 @click.argument("domain", required=False)
 def demo(domain: str | None) -> None:
     print_json({"domain": domain or "default", "agents": discover_agent_records()[:5]})
+
+
+# D-29 provenance inspection and dependency gate (LOCUS-358).
+cli.add_command(provenance_cli.provenance)
 
 
 if __name__ == "__main__":

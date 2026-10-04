@@ -1,0 +1,348 @@
+{
+  "schema_version": "1",
+  "kind": "package",
+  "ecosystem": "pypi",
+  "name": "pyasn1-modules",
+  "version": "0.4.2",
+  "artifacts": [
+    {
+      "filename": "pyasn1_modules-0.4.2-py3-none-any.whl",
+      "sha256": "29253a9207ce32b64c3ac6600edc75368f98473906e8fd1043bd6b5b1de2c14a",
+      "url": "https://files.pythonhosted.org/packages/47/8d/d529b5d697919ba8c11ad626e835d4039be708a35b0d22de83a269a6682c/pyasn1_modules-0.4.2-py3-none-any.whl",
+      "size": 181259,
+      "uploaded": "2025-03-28T02:41:19.028683Z",
+      "inspected": true,
+      "source": "PyPI JSON API; sha256 verified on download"
+    },
+    {
+      "filename": "pyasn1_modules-0.4.2.tar.gz",
+      "sha256": "677091de870a80aae844b1ca6134f54652fa2c8c5a52aa396440ac3106e941e6",
+      "url": "https://files.pythonhosted.org/packages/e9/e6/78ebbb10a8c8e4b61a59249394a4a594c1a7af95593dc933a349c8d00964/pyasn1_modules-0.4.2.tar.gz",
+      "size": 307892,
+      "uploaded": "2025-03-28T02:41:22.170129Z",
+      "inspected": true,
+      "source": "PyPI JSON API; sha256 verified on download; static checks only (not run on this host)"
+    }
+  ],
+  "origin": {
+    "p28_status": "not-listed",
+    "countries": [
+      "DE",
+      "CA"
+    ],
+    "organizations": [
+      "pyasn1 maintenance organization (GitHub org 'pyasn1')",
+      "Red Hat (employer named on the maintainers' GitHub profiles)"
+    ],
+    "summary": "Same maintainers and PyPI owners as pyasn1: maintained in the pyasn1 GitHub organization by Christian Heimes (GitHub profile: Hamburg, Germany; Red Hat) and Simon Pichugin (GitHub profile: Vancouver, Canada; Red Hat), who made the v0.4.2 release commit. Original author Ilya Etingof (profile 'Central Europe'); the second-largest historical contributor is Russ Housley (RFC module definitions). Locations are self-reported and not independently verified. No evidence ties a maintainer, the organization or a funder to a P28-listed country.",
+    "confidence": "medium",
+    "evidence": [
+      {
+        "claim": "PyPI 0.4.2 metadata: maintainer 'pyasn1 maintenance organization', maintainer e-mail Christian Heimes <christian@python.org>, author Ilya Etingof; requires pyasn1>=0.6.1,<0.7.0.",
+        "url": "https://pypi.org/pypi/pyasn1-modules/0.4.2/json",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "github.com/pyasn1/pyasn1-modules is a fork of etingof/pyasn1-modules created 2022-07-11.",
+        "url": "https://github.com/pyasn1/pyasn1-modules",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "Tag v0.4.2 points to commit 7154ca47 'Prepare for 0.4.2 release' by droideck (2025-03-28T02:39:03Z); PyPI files uploaded 2025-03-28T02:41:19-22Z.",
+        "url": "https://github.com/pyasn1/pyasn1-modules/commit/7154ca47caea6e012ef58d6a9975c719f2b6213b",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "No GitHub Actions run was found around the 0.4.2 upload time, so the upload was probably made outside CI; PyPI has no PEP 740 provenance for the 0.4.2 files.",
+        "url": "https://github.com/pyasn1/pyasn1-modules/actions",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "PyPI XML-RPC package_roles('pyasn1-modules') returned Owner for droideck, etingof, ilya and tiran.",
+        "url": "https://pypi.org/pypi",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "GitHub profiles: tiran (Christian Heimes, Red Hat, Hamburg, Germany); droideck (Simon Pichugin, @RedHatOfficial, Vancouver, Canada).",
+        "url": "https://github.com/droideck",
+        "retrieved": "2026-10-04"
+      }
+    ]
+  },
+  "maintainers": [
+    {
+      "name": "Simon Pichugin",
+      "handle": "droideck",
+      "role": "maintainer; PyPI owner; release commit for 0.4.2",
+      "affiliation": "Red Hat",
+      "location": "Vancouver, Canada",
+      "location_basis": "self-reported GitHub profile",
+      "evidence": [
+        "https://github.com/droideck"
+      ]
+    },
+    {
+      "name": "Christian Heimes",
+      "handle": "tiran",
+      "role": "maintainer; PyPI owner; maintainer of record in package metadata",
+      "affiliation": "Red Hat",
+      "location": "Hamburg, Germany",
+      "location_basis": "self-reported GitHub profile",
+      "evidence": [
+        "https://github.com/tiran"
+      ]
+    },
+    {
+      "name": "Ilya Etingof",
+      "handle": "etingof",
+      "role": "original author; PyPI owner; inactive",
+      "affiliation": "Red Hat",
+      "location": "Central Europe",
+      "location_basis": "self-reported GitHub profile (no country given)",
+      "evidence": [
+        "https://github.com/etingof"
+      ]
+    },
+    {
+      "name": "Russ Housley",
+      "handle": "russhousley",
+      "role": "historical contributor (RFC ASN.1 module definitions); not a PyPI owner",
+      "evidence": [
+        "https://github.com/pyasn1/pyasn1-modules/graphs/contributors"
+      ]
+    },
+    {
+      "name": "unidentified PyPI account 'ilya'",
+      "handle": "ilya (PyPI)",
+      "role": "PyPI owner (upload rights)",
+      "location_basis": "not established: the PyPI account could not be tied to a person",
+      "evidence": [
+        "https://pypi.org/pypi"
+      ]
+    }
+  ],
+  "funding": {
+    "summary": "No current funding source declared. .github/FUNDING.yml has a 'custom' link to http://snmplabs.com/sponsorship.html, the original author's legacy site (not checked; plain http). No GitHub Sponsors, Open Collective or corporate sponsorship found.",
+    "sources": [
+      {
+        "name": "FUNDING.yml custom link to snmplabs.com/sponsorship.html (legacy, unverified)",
+        "evidence": "https://github.com/pyasn1/pyasn1-modules/blob/main/.github/FUNDING.yml",
+        "verified": false
+      }
+    ]
+  },
+  "entity_list_checks": [
+    {
+      "list": "us-commerce-entity-list",
+      "method": "Name screening of 3419 Entity List (EL) rows in the US Consolidated Screening List CSV (primary and alternate names): persons by full-name token match, organizations by normalized phrase; surname plus a given-name variant (same first three letters) is reported too. Every hit is a possible match for a reviewer.",
+      "source": "https://data.trade.gov/downloadable_consolidated_screening_list/v1/consolidated.csv",
+      "source_sha256": "19299ef91fbc7e99c0c0117252f0352a9516b6a1e427e1f272f5e3a0a6328d11",
+      "source_version": "3419 EL rows",
+      "date": "2026-10-04",
+      "queries": [
+        "Ilya Etingof",
+        "Christian Heimes",
+        "Simon Pichugin",
+        "Russ Housley",
+        "Red Hat",
+        "pyasn1",
+        "snmplabs"
+      ],
+      "result": "no-match",
+      "matches": []
+    },
+    {
+      "list": "other",
+      "method": "Informational: the same screening over all 26185 rows of the US Consolidated Screening List (SDN, MEU, CMIC, DPL, UVL, ISN, ...).",
+      "source": "https://data.trade.gov/downloadable_consolidated_screening_list/v1/consolidated.csv",
+      "source_sha256": "19299ef91fbc7e99c0c0117252f0352a9516b6a1e427e1f272f5e3a0a6328d11",
+      "source_version": "26185 CSL rows",
+      "date": "2026-10-04",
+      "queries": [
+        "Ilya Etingof",
+        "Christian Heimes",
+        "Simon Pichugin",
+        "Russ Housley",
+        "Red Hat",
+        "pyasn1",
+        "snmplabs"
+      ],
+      "result": "no-match",
+      "matches": []
+    },
+    {
+      "list": "dod-1260h",
+      "method": "Phrase screening of the full text of the latest Federal Register Section 1260H notice (Federal Register 2026-11571, 2026-06-10); the list names companies, so a person can only hit by surname.",
+      "source": "https://www.federalregister.gov/documents/2026/06/10/2026-11571/notice-of-availability-of-designation-of-chinese-military-companies",
+      "source_sha256": "df7a615282fd49af88fedf2ad788086939e3ca25704feeb12d9731612e9a1df6",
+      "source_version": "Federal Register 2026-11571, 2026-06-10",
+      "date": "2026-10-04",
+      "queries": [
+        "Ilya Etingof",
+        "Christian Heimes",
+        "Simon Pichugin",
+        "Russ Housley",
+        "Red Hat",
+        "pyasn1",
+        "snmplabs"
+      ],
+      "result": "no-match",
+      "matches": []
+    }
+  ],
+  "sbom": {
+    "generator": "locus-provenance sbom fallback (dist-info metadata, CycloneDX 1.5)",
+    "generator_kind": "locus-fallback",
+    "format": "CycloneDX JSON",
+    "path": "sbom/pypi/pyasn1-modules@0.4.2.cdx.json",
+    "sha256": "7be14049b7286485829d18af37138e8836e008f07bbd32fc8b29495783310977",
+    "components": 1
+  },
+  "vulnerabilities": {
+    "source": "OSV API (https://api.osv.dev/v1/query)",
+    "mode": "online",
+    "date": "2026-10-04",
+    "status": "none-known",
+    "results": []
+  },
+  "static_findings": {
+    "ruleset": "locus-provenance-static/1",
+    "files_scanned": 424,
+    "findings": [
+      {
+        "rule": "network-client-import",
+        "severity": "review",
+        "path": "pyasn1_modules-0.4.2.tar.gz/pyasn1_modules-0.4.2/tools/ocspclient.py",
+        "line": 15,
+        "detail": "imports network module 'urllib.request'",
+        "disposition": "benign",
+        "note": "sdist-only example script (tools/), not in the wheel and never installed or imported; it contacts the network only when a person runs it by hand"
+      },
+      {
+        "rule": "network-call",
+        "severity": "review",
+        "path": "pyasn1_modules-0.4.2.tar.gz/pyasn1_modules-0.4.2/tools/ocspclient.py",
+        "line": 159,
+        "detail": "calls urllib2.urlopen()",
+        "disposition": "benign",
+        "note": "sdist-only example script (tools/), not in the wheel and never installed or imported; it contacts the network only when a person runs it by hand"
+      },
+      {
+        "rule": "network-client-import",
+        "severity": "review",
+        "path": "pyasn1_modules-0.4.2.tar.gz/pyasn1_modules-0.4.2/tools/snmpget.py",
+        "line": 10,
+        "detail": "imports network module 'socket'",
+        "disposition": "benign",
+        "note": "sdist-only example script (tools/), not in the wheel and never installed or imported; it contacts the network only when a person runs it by hand"
+      },
+      {
+        "rule": "source-build-metadata",
+        "severity": "info",
+        "path": "pyasn1_modules-0.4.2.tar.gz/PKG-INFO",
+        "line": 0,
+        "detail": "build metadata not in pyasn1/pyasn1-modules@v0.4.2",
+        "disposition": "benign"
+      },
+      {
+        "rule": "source-build-metadata",
+        "severity": "info",
+        "path": "pyasn1_modules-0.4.2.tar.gz/pyasn1_modules.egg-info/PKG-INFO",
+        "line": 0,
+        "detail": "build metadata not in pyasn1/pyasn1-modules@v0.4.2",
+        "disposition": "benign"
+      },
+      {
+        "rule": "source-build-metadata",
+        "severity": "info",
+        "path": "pyasn1_modules-0.4.2.tar.gz/pyasn1_modules.egg-info/SOURCES.txt",
+        "line": 0,
+        "detail": "build metadata not in pyasn1/pyasn1-modules@v0.4.2",
+        "disposition": "benign"
+      },
+      {
+        "rule": "source-build-metadata",
+        "severity": "info",
+        "path": "pyasn1_modules-0.4.2.tar.gz/pyasn1_modules.egg-info/dependency_links.txt",
+        "line": 0,
+        "detail": "build metadata not in pyasn1/pyasn1-modules@v0.4.2",
+        "disposition": "benign"
+      },
+      {
+        "rule": "source-build-metadata",
+        "severity": "info",
+        "path": "pyasn1_modules-0.4.2.tar.gz/pyasn1_modules.egg-info/requires.txt",
+        "line": 0,
+        "detail": "build metadata not in pyasn1/pyasn1-modules@v0.4.2",
+        "disposition": "benign"
+      },
+      {
+        "rule": "source-build-metadata",
+        "severity": "info",
+        "path": "pyasn1_modules-0.4.2.tar.gz/pyasn1_modules.egg-info/top_level.txt",
+        "line": 0,
+        "detail": "build metadata not in pyasn1/pyasn1-modules@v0.4.2",
+        "disposition": "benign"
+      },
+      {
+        "rule": "source-build-metadata",
+        "severity": "info",
+        "path": "pyasn1_modules-0.4.2.tar.gz/pyasn1_modules.egg-info/zip-safe",
+        "line": 0,
+        "detail": "build metadata not in pyasn1/pyasn1-modules@v0.4.2",
+        "disposition": "benign"
+      },
+      {
+        "rule": "source-build-metadata",
+        "severity": "info",
+        "path": "pyasn1_modules-0.4.2.tar.gz/setup.cfg",
+        "line": 0,
+        "detail": "build metadata not in pyasn1/pyasn1-modules@v0.4.2",
+        "disposition": "benign"
+      }
+    ],
+    "scanned_artifacts": [
+      "pyasn1_modules-0.4.2-py3-none-any.whl",
+      "pyasn1_modules-0.4.2.tar.gz"
+    ],
+    "summary": "pyasn1_modules-0.4.2-py3-none-any.whl: 132/132 files identical to pyasn1/pyasn1-modules@v0.4.2; pyasn1_modules-0.4.2.tar.gz: 278/286 files identical to pyasn1/pyasn1-modules@v0.4.2"
+  },
+  "dynamic_egress": {
+    "status": "pass",
+    "isolation": "windows-appcontainer, network denied, audit hook",
+    "network": "denied",
+    "interpreter": "CPython 3.14.8 (win32)",
+    "exercise": "import pyasn1_modules (rfc2459, rfc5208, rfc5280, pem, as google-auth does); decode and re-encode a self-signed X.509 certificate with rfc5280 and rfc2459 (pyasn1 0.6.4 on the path)",
+    "date": "2026-10-04",
+    "exit_code": 0,
+    "completed": true,
+    "jail_probe": "blocked",
+    "attempts": [],
+    "other_events": [],
+    "limitations": [
+      "Python audit hooks see socket, DNS, urllib/http.client and process events; native code calling the OS socket API directly raises no audit event. The jail blocks such calls but they are not logged, so native binaries are also scanned statically for networking imports.",
+      "Only the import and the stated exercise were run; code paths they do not reach were not observed."
+    ],
+    "artifact": "pyasn1_modules-0.4.2-py3-none-any.whl",
+    "log_sha256": "2d05556c01ccbba616cf04653dc24b3b1e463f77390256cded0bd010a353806a"
+  },
+  "decision": {
+    "outcome": "conditional",
+    "conditions": [
+      "Principal accepts that PyPI owner account 'ilya' (upload rights) could not be tied to a person.",
+      "Principal accepts that 0.4.2 was uploaded outside CI (no workflow run found), so the PyPI files are tied to the tag only by the byte-for-byte source comparison.",
+      "Install pinned by version and hash once Locus has a hash-locked dependency set (D-29 step 5).",
+      "Re-inspect on any version change (google-auth pulls pyasn1-modules unpinned)."
+    ],
+    "rationale": "No P28-listed origin found for maintainers, organization or funding; the Entity List, the rest of the Consolidated Screening List and the 1260H notice show no hit. All 132 wheel files are byte-identical to the v0.4.2 git tag; the sdist differs only in build metadata (setup.cfg, PKG-INFO, egg-info). The only other static findings are two sdist-only example scripts under tools/ (an OCSP client and an SNMP GET example) that use the network when run by hand and are not in the wheel. OSV lists no vulnerability for 0.4.2; the sandboxed import plus an X.509 decode/re-encode with rfc5280 and rfc2459 made no connection attempt."
+  },
+  "review": {
+    "reviewer": "agent-prepared, principal sign-off pending",
+    "date": "2026-10-04",
+    "prepared_by": "Claude Code (agent) for LOCUS-358, 2026-10-04"
+  },
+  "notes": [
+    "Pulled transitively by google-auth; not imported by Locus code paths (docs/development/deep-agents-harness.md section 8).",
+    "The exercise certificate is a public, self-signed test certificate generated for this inspection (no private key is stored)."
+  ]
+}
