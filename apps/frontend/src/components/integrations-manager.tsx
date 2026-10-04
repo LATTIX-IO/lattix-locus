@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   deleteIntegration,
   getIntegrationCatalog,
@@ -8,6 +8,8 @@ import {
   installCatalogIntegration,
   saveIntegration,
   testIntegration,
+  oauthAuthorize,
+  oauthDisconnect,
   type IntegrationCatalogEntry,
 } from "@/lib/api";
 import type { IntegrationDefinition } from "@/types/frontier";
@@ -21,6 +23,22 @@ type LastTestMetadata = {
 
 type ApiKeyLocation = "header" | "query";
 type OauthGrantType = "client_credentials" | "authorization_code";
+
+function readOAuthTokens(metadata: Record<string, unknown> | undefined): { connected: boolean; hasRefreshToken: boolean } {
+  if (!metadata || typeof metadata !== "object") {
+    return { connected: false, hasRefreshToken: false };
+  }
+  const tokens = metadata.tokens;
+  if (!tokens || typeof tokens !== "object") {
+    return { connected: false, hasRefreshToken: false };
+  }
+  const accessToken = String((tokens as Record<string, unknown>).access_token ?? "").trim();
+  const refreshToken = String((tokens as Record<string, unknown>).refresh_token ?? "").trim();
+  const expiresAt = String((tokens as Record<string, unknown>).expires_at ?? "").trim();
+  const now = new Date().toISOString();
+  const connected = !!accessToken && (!expiresAt || expiresAt > now);
+  return { connected, hasRefreshToken: !!refreshToken };
+}
 
 function readLastTest(metadata: Record<string, unknown> | undefined): LastTestMetadata | null {
   if (!metadata || typeof metadata !== "object") {
@@ -83,7 +101,10 @@ export function IntegrationsManager() {
   const [bearerPrefix, setBearerPrefix] = useState("Bearer");
   const [basicUsername, setBasicUsername] = useState("");
   const [oauthTokenUrl, setOauthTokenUrl] = useState("");
+  const [oauthAuthUrl, setOauthAuthUrl] = useState("");
+  const [oauthRedirectUri, setOauthRedirectUri] = useState("");
   const [oauthClientId, setOauthClientId] = useState("");
+  const [oauthClientSecret, setOauthClientSecret] = useState("");
   const [oauthGrantType, setOauthGrantType] = useState<OauthGrantType>("client_credentials");
   const [oauthScopes, setOauthScopes] = useState("");
   const [oauthAudience, setOauthAudience] = useState("");
@@ -92,6 +113,17 @@ export function IntegrationsManager() {
   const [catalog, setCatalog] = useState<IntegrationCatalogEntry[]>([]);
   const [installingId, setInstallingId] = useState<string | null>(null);
   const [showCustom, setShowCustom] = useState(false);
+  const [connectingId, setConnectingId] = useState<string | null>(null);
+  const [disconnectingId, setDisconnectingId] = useState<string | null>(null);
+
+  const isOAuthIntegration = useCallback((item: IntegrationDefinition): boolean => {
+    const auth = readAuthConfig(item.metadata_json);
+    return item.auth_type === "oauth2" && String(auth.grant_type ?? "client_credentials") === "authorization_code";
+  }, []);
+
+  const getOAuthStatus = useCallback((item: IntegrationDefinition) => {
+    return readOAuthTokens(item.metadata_json);
+  }, []);
 
   async function refreshCatalog() {
     try {
@@ -169,7 +201,10 @@ export function IntegrationsManager() {
       method: "oauth2",
       grant_type: oauthGrantType,
       token_url: oauthTokenUrl.trim(),
+      authorization_url: oauthAuthUrl.trim(),
+      redirect_uri: oauthRedirectUri.trim(),
       client_id: oauthClientId.trim(),
+      client_secret: oauthClientSecret.trim(),
       scopes: oauthScopes
         .split(/[\s,]+/)
         .map((value) => value.trim())
@@ -189,7 +224,10 @@ export function IntegrationsManager() {
     setBearerPrefix("Bearer");
     setBasicUsername("");
     setOauthTokenUrl("");
+    setOauthAuthUrl("");
+    setOauthRedirectUri("");
     setOauthClientId("");
+    setOauthClientSecret("");
     setOauthGrantType("client_credentials");
     setOauthScopes("");
     setOauthAudience("");
@@ -233,6 +271,50 @@ export function IntegrationsManager() {
     await deleteIntegration(id);
     await refresh();
     setStatusMessage("Integration removed.");
+  }
+
+  async function handleOAuthConnect(id: string) {
+    setConnectingId(id);
+    setStatusMessage("");
+    try {
+      const result = await oauthAuthorize(id);
+      const authorizeUrl = result.authorize_url;
+      const popup = window.open(
+        authorizeUrl,
+        "oauth-popup",
+        "width=600,height=700,scrollbars=yes,resizable=yes"
+      );
+      if (!popup) {
+        setStatusMessage("Popup blocked. Please allow popups for this site.");
+        setConnectingId(null);
+        return;
+      }
+      const checkClosed = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(checkClosed);
+          setConnectingId(null);
+          void refresh();
+        }
+      }, 500);
+      setTimeout(() => clearInterval(checkClosed), 5 * 60 * 1000);
+    } catch (err) {
+      setConnectingId(null);
+      setStatusMessage(err instanceof Error ? err.message : "Failed to start OAuth flow");
+    }
+  }
+
+  async function handleOAuthDisconnect(id: string) {
+    setDisconnectingId(id);
+    setStatusMessage("");
+    try {
+      await oauthDisconnect(id);
+      await refresh();
+      setStatusMessage("Integration disconnected.");
+    } catch (err) {
+      setStatusMessage(err instanceof Error ? err.message : "Failed to disconnect integration");
+    } finally {
+      setDisconnectingId(null);
+    }
   }
 
   return (
@@ -388,6 +470,24 @@ export function IntegrationsManager() {
                   placeholder="https://login.example.com/oauth2/token"
                 />
               </label>
+              <label className="block text-sm md:col-span-2">
+                Authorization URL
+                <input
+                  className="fx-field mt-1 w-full px-2 py-2 text-sm"
+                  value={oauthAuthUrl}
+                  onChange={(event) => setOauthAuthUrl(event.target.value)}
+                  placeholder="https://login.example.com/oauth2/authorize"
+                />
+              </label>
+              <label className="block text-sm md:col-span-2">
+                Redirect URI
+                <input
+                  className="fx-field mt-1 w-full px-2 py-2 text-sm"
+                  value={oauthRedirectUri}
+                  onChange={(event) => setOauthRedirectUri(event.target.value)}
+                  placeholder="http://localhost:3000/integrations/callback"
+                />
+              </label>
               <label className="block text-sm">
                 Client ID
                 <input
@@ -395,6 +495,16 @@ export function IntegrationsManager() {
                   value={oauthClientId}
                   onChange={(event) => setOauthClientId(event.target.value)}
                   placeholder="frontier-client"
+                />
+              </label>
+              <label className="block text-sm">
+                Client Secret (optional - use secret reference instead)
+                <input
+                  className="fx-field mt-1 w-full px-2 py-2 text-sm"
+                  type="password"
+                  value={oauthClientSecret}
+                  onChange={(event) => setOauthClientSecret(event.target.value)}
+                  placeholder="••••••••"
                 />
               </label>
               <label className="block text-sm">
@@ -479,69 +589,101 @@ export function IntegrationsManager() {
           </div>
         ) : (
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {items.map((item) => {
-              const lastTest = readLastTest(item.metadata_json);
-              const isMcp = String(readAuthConfig(item.metadata_json).protocol ?? item.metadata_json?.protocol ?? "") === "mcp"
-                || item.type === "custom";
-              return (
-                <article key={item.id} className="fx-panel flex flex-col gap-2 p-3 text-xs">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="truncate font-medium text-[var(--foreground)]">{item.name}</p>
-                      <p className="fx-muted truncate font-mono text-[11px]">{item.base_url || "(no endpoint)"}</p>
+{items.map((item) => {
+                const lastTest = readLastTest(item.metadata_json);
+                const isMcp = String(readAuthConfig(item.metadata_json).protocol ?? item.metadata_json?.protocol ?? "") === "mcp"
+                  || item.type === "custom";
+                const isOAuth = isOAuthIntegration(item);
+                const oauthStatus = getOAuthStatus(item);
+                return (
+                  <article key={item.id} className="fx-panel flex flex-col gap-2 p-3 text-xs">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate font-medium text-[var(--foreground)]">{item.name}</p>
+                        <p className="fx-muted truncate font-mono text-[11px]">{item.base_url || "(no endpoint)"}</p>
+                      </div>
+                      <span className="fx-muted shrink-0 rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[10px] uppercase">
+                        {isMcp ? "MCP" : item.type === "http" ? "API" : item.type}
+                      </span>
                     </div>
-                    <span className="fx-muted shrink-0 rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[10px] uppercase">
-                      {isMcp ? "MCP" : item.type === "http" ? "API" : item.type}
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    <span
-                      className={`rounded-full border px-2 py-0.5 text-[10px] uppercase ${
-                        item.status === "configured"
-                          ? "border-[hsl(var(--state-success)/0.5)] text-[hsl(var(--state-success))]"
-                          : item.status === "error"
-                            ? "border-[hsl(var(--state-critical)/0.5)] text-[hsl(var(--state-critical))]"
-                            : "border-[var(--ui-border)] fx-muted"
-                      }`}
-                    >
-                      {item.status}
-                    </span>
-                    <span className="rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[10px] fx-muted">
-                      {authSummary(item)}
-                    </span>
-                    {lastTest ? (
+                    <div className="flex flex-wrap gap-1.5">
                       <span
-                        className={`rounded-full border px-2 py-0.5 text-[10px] ${
-                          lastTest.ok
+                        className={`rounded-full border px-2 py-0.5 text-[10px] uppercase ${
+                          item.status === "configured"
                             ? "border-[hsl(var(--state-success)/0.5)] text-[hsl(var(--state-success))]"
-                            : "border-[hsl(var(--state-critical)/0.5)] text-[hsl(var(--state-critical))]"
+                            : item.status === "error"
+                              ? "border-[hsl(var(--state-critical)/0.5)] text-[hsl(var(--state-critical))]"
+                              : "border-[var(--ui-border)] fx-muted"
                         }`}
                       >
-                        test {lastTest.ok ? "OK" : "failed"}
+                        {item.status}
                       </span>
+                      <span className="rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[10px] fx-muted">
+                        {authSummary(item)}
+                      </span>
+                      {isOAuth && (
+                        <span
+                          className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                            oauthStatus.connected
+                              ? "border-[hsl(var(--state-success)/0.5)] text-[hsl(var(--state-success))]"
+                              : "border-[var(--ui-border)] fx-muted"
+                          }`}
+                        >
+                          {oauthStatus.connected ? "Connected" : "Not connected"}
+                        </span>
+                      )}
+                      {lastTest ? (
+                        <span
+                          className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                            lastTest.ok
+                              ? "border-[hsl(var(--state-success)/0.5)] text-[hsl(var(--state-success))]"
+                              : "border-[hsl(var(--state-critical)/0.5)] text-[hsl(var(--state-critical))]"
+                          }`}
+                        >
+                          test {lastTest.ok ? "OK" : "failed"}
+                        </span>
+                      ) : null}
+                    </div>
+                    {item.secret_ref ? (
+                      <p className="fx-muted font-mono text-[10px]">secret: {item.secret_ref}</p>
                     ) : null}
-                  </div>
-                  {item.secret_ref ? (
-                    <p className="fx-muted font-mono text-[10px]">secret: {item.secret_ref}</p>
-                  ) : null}
-                  <div className="mt-auto flex gap-2 pt-1">
-                    <button
-                      onClick={() => handleTest(item.id)}
-                      className="fx-btn-secondary px-2.5 py-1 text-[11px] font-medium disabled:opacity-60"
-                      disabled={testingId === item.id}
-                    >
-                      {testingId === item.id ? "Testing…" : "Test"}
-                    </button>
-                    <button
-                      onClick={() => handleDelete(item.id)}
-                      className="fx-btn-warning px-2.5 py-1 text-[11px] font-medium"
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </article>
-              );
-            })}
+                    <div className="mt-auto flex gap-2 pt-1">
+                      <button
+                        onClick={() => handleTest(item.id)}
+                        className="fx-btn-secondary px-2.5 py-1 text-[11px] font-medium disabled:opacity-60"
+                        disabled={testingId === item.id}
+                      >
+                        {testingId === item.id ? "Testing…" : "Test"}
+                      </button>
+                      {isOAuth ? (
+                        oauthStatus.connected ? (
+                          <button
+                            onClick={() => handleOAuthDisconnect(item.id)}
+                            className="fx-btn-warning px-2.5 py-1 text-[11px] font-medium disabled:opacity-60"
+                            disabled={disconnectingId === item.id}
+                          >
+                            {disconnectingId === item.id ? "Disconnecting…" : "Disconnect"}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleOAuthConnect(item.id)}
+                            className="fx-btn-primary px-2.5 py-1 text-[11px] font-medium disabled:opacity-60"
+                            disabled={connectingId === item.id}
+                          >
+                            {connectingId === item.id ? "Connecting…" : "Connect"}
+                          </button>
+                        )
+                      ) : null}
+                      <button
+                        onClick={() => handleDelete(item.id)}
+                        className="fx-btn-warning px-2.5 py-1 text-[11px] font-medium"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
           </div>
         )}
       </div>

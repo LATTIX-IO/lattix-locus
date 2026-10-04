@@ -1769,3 +1769,13 @@ export async function testIntegration(id: string): Promise<IntegrationTestRespon
 export async function deleteIntegration(id: string): Promise<{ ok: boolean }> {
   return safeFetch<{ ok: boolean }>(`/integrations/${id}`, { ok: true }, { method: "DELETE" });
 }
+
+export async function oauthAuthorize(integrationId: string): Promise<{ authorize_url: string; state: string }> {
+  return strictFetch(`/integrations/${encodeURIComponent(integrationId)}/oauth/authorize`);
+}
+
+export async function oauthDisconnect(integrationId: string): Promise<{ ok: boolean; id: string }> {
+  return strictFetch(`/integrations/${encodeURIComponent(integrationId)}/oauth/disconnect`, {
+    method: "POST",
+  });
+}

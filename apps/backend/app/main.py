@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 import math
 import os
+import platform
 import re
 import sys
 import asyncio
@@ -6262,6 +6264,17 @@ def _integration_response_payload(integration: IntegrationDefinition) -> dict[st
     payload["secret_ref"] = _mask_secret_ref(integration.secret_ref)
     payload["secret_configured"] = bool(integration.secret_ref.strip())
     payload["base_url"] = _sanitize_base_url(integration.base_url)
+    # Mask OAuth tokens in metadata for security
+    metadata = payload.get("metadata_json")
+    if isinstance(metadata, dict):
+        tokens = metadata.get("tokens")
+        if isinstance(tokens, dict):
+            masked_tokens = dict(tokens)
+            if "access_token" in masked_tokens:
+                masked_tokens["access_token"] = _mask_secret_ref(masked_tokens["access_token"])
+            if "refresh_token" in masked_tokens:
+                masked_tokens["refresh_token"] = _mask_secret_ref(masked_tokens["refresh_token"])
+            metadata["tokens"] = masked_tokens
     return payload
 
 
@@ -13956,7 +13969,7 @@ def _resolve_working_folder(value: str) -> str | None:
 def list_workspace_folders(request: Request, path: str = "") -> dict[str, Any]:
     """List immediate subfolders under the mounted projects root for the
     working-folder picker. `path` (optional) drills into a subfolder."""
-    actor = _enforce_request_authn(request, action="workspace.folders.list")
+    _enforce_request_authn(request, action="workspace.folders.list")
     root = _projects_root_path()
     base = _resolve_working_folder(path) if path else (str(root.resolve()) if root.exists() else None)
     result: dict[str, Any] = {
@@ -14343,15 +14356,186 @@ def _sync_run_execution_enabled() -> bool:
     }
 
 
-def _resolve_integration_bearer(integration: IntegrationDefinition) -> str:
-    """Resolve an integration's credential from its secret reference.
+def _generate_pkce_pair() -> tuple[str, str]:
+    """Generate PKCE code verifier and code challenge (S256)."""
+    code_verifier = secrets_module.token_urlsafe(32)
+    code_challenge = hashlib.sha256(code_verifier.encode()).digest()
+    code_challenge_b64 = base64.urlsafe_b64encode(code_challenge).decode().rstrip("=")
+    return code_verifier, code_challenge_b64
 
-    Supported reference forms: ``env:VAR_NAME`` (local-first) and Vault paths
-    (``secret/...``). Raw credentials are never stored in integrations.
+
+def _generate_oauth_state() -> str:
+    """Generate a secure random OAuth state parameter for CSRF protection."""
+    return secrets_module.token_urlsafe(32)
+
+
+def _build_oauth_authorize_url(
+    integration: IntegrationDefinition,
+    redirect_uri: str,
+    state: str,
+    code_challenge: str,
+) -> str:
+    """Build the OAuth 2.0 authorization URL with PKCE."""
+    metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+    auth_config = metadata.get("auth", {}) if isinstance(metadata.get("auth"), dict) else {}
+
+    auth_url = str(auth_config.get("authorization_url") or auth_config.get("authorize_url") or "").strip()
+    if not auth_url:
+        raise ValueError("OAuth authorization URL not configured for integration")
+
+    client_id = str(auth_config.get("client_id") or "").strip()
+    if not client_id:
+        raise ValueError("OAuth client_id not configured for integration")
+
+    scopes = auth_config.get("scopes")
+    if isinstance(scopes, list):
+        scope_str = " ".join(str(s).strip() for s in scopes if str(s).strip())
+    else:
+        scope_str = str(scopes or "").strip()
+
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+    if scope_str:
+        params["scope"] = scope_str
+
+    separator = "&" if "?" in auth_url else "?"
+    return f"{auth_url}{separator}{urlencode(params)}"
+
+
+async def _exchange_oauth_code_for_tokens(
+    integration: IntegrationDefinition,
+    code: str,
+    code_verifier: str,
+    redirect_uri: str,
+) -> dict[str, Any]:
+    """Exchange authorization code for access and refresh tokens."""
+    metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+    auth_config = metadata.get("auth", {}) if isinstance(metadata.get("auth"), dict) else {}
+
+    token_url = str(auth_config.get("token_url") or "").strip()
+    if not token_url:
+        raise ValueError("OAuth token URL not configured for integration")
+
+    client_id = str(auth_config.get("client_id") or "").strip()
+    client_secret = str(auth_config.get("client_secret") or "").strip()
+
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "code_verifier": code_verifier,
+        "client_id": client_id,
+    }
+    if client_secret:
+        data["client_secret"] = client_secret
+
+    body = urlencode(data).encode("utf-8")
+    req = urllib_request.Request(
+        token_url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+    )
+    with urllib_request.urlopen(req, timeout=30) as resp:  # noqa: S310
+        resp_data = json.loads(resp.read().decode("utf-8"))
+
+    if "error" in resp_data:
+        raise ValueError(f"Token exchange failed: {resp_data.get('error_description') or resp_data['error']}")
+
+    return resp_data
+
+
+async def _refresh_oauth_token(integration: IntegrationDefinition) -> dict[str, Any] | None:
+    """Refresh OAuth access token using refresh token."""
+    metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+    auth_config = metadata.get("auth", {}) if isinstance(metadata.get("auth"), dict) else {}
+    tokens = metadata.get("tokens", {}) if isinstance(metadata.get("tokens"), dict) else {}
+
+    refresh_token = str(tokens.get("refresh_token") or "").strip()
+    if not refresh_token:
+        return None
+
+    token_url = str(auth_config.get("token_url") or "").strip()
+    if not token_url:
+        return None
+
+    client_id = str(auth_config.get("client_id") or "").strip()
+    client_secret = str(auth_config.get("client_secret") or "").strip()
+
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+    }
+    if client_secret:
+        data["client_secret"] = client_secret
+
+    body = urlencode(data).encode("utf-8")
+    req = urllib_request.Request(
+        token_url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=30) as resp:  # noqa: S310
+            resp_data = json.loads(resp.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+    if "error" in resp_data:
+        return None
+
+    return resp_data
+
+
+def _is_token_expired(expires_at: str | None) -> bool:
+    """Check if OAuth token is expired or near expiry (5 min buffer)."""
+    if not expires_at:
+        return True
+    try:
+        exp = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        return datetime.now(UTC) >= exp - timedelta(minutes=5)
+    except Exception:
+        return True
+
+
+def _resolve_integration_bearer(integration: IntegrationDefinition) -> str:
+    """Resolve an integration's credential from its secret reference or OAuth tokens.
+
+    Supported reference forms:
+    - ``env:VAR_NAME`` (local-first)
+    - Vault paths (``secret/...``)
+    - OAuth 2.0 tokens stored in integration metadata (for MCP servers with auth_code flow)
     """
     ref = str(integration.secret_ref or "").strip()
     if not ref:
+        metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+        auth_config = metadata.get("auth", {}) if isinstance(metadata.get("auth"), dict) else {}
+        if auth_config.get("grant_type") == "authorization_code":
+            tokens = metadata.get("tokens", {}) if isinstance(metadata.get("tokens"), dict) else {}
+            access_token = str(tokens.get("access_token") or "").strip()
+            expires_at = str(tokens.get("expires_at") or "").strip()
+            if access_token and not _is_token_expired(expires_at):
+                return access_token
+            new_tokens = asyncio.run(_refresh_oauth_token(integration))
+            if new_tokens:
+                metadata["tokens"] = {**tokens, **new_tokens}
+                if "expires_in" in new_tokens:
+                    metadata["tokens"]["expires_at"] = (
+                        datetime.now(UTC) + timedelta(seconds=int(new_tokens["expires_in"]))
+                    ).isoformat()
+                integration.metadata_json = metadata
+                _persist_store_state()
+                return str(new_tokens.get("access_token") or "").strip()
         return ""
+
     if ref.startswith("env:"):
         return str(os.getenv(ref[4:].strip()) or "").strip()
     if ref.startswith("secret/"):
@@ -18376,6 +18560,195 @@ def delete_integration(integration_id: str, request: Request) -> dict[str, bool]
     )
     _persist_store_state()
     return {"ok": True}
+
+
+@app.get("/integrations/{integration_id}/oauth/authorize")
+async def oauth_authorize(integration_id: str, request: Request) -> dict[str, Any]:
+    """Initiate OAuth 2.0 Authorization Code flow with PKCE for an MCP integration."""
+    _enforce_builder_access(request, action="integration.oauth.authorize")
+    integration = store.integrations.get(integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="integration not found")
+
+    metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+    auth_config = metadata.get("auth", {}) if isinstance(metadata.get("auth"), dict) else {}
+
+    if auth_config.get("grant_type") != "authorization_code":
+        raise HTTPException(status_code=400, detail="Integration is not configured for OAuth authorization code flow")
+
+    redirect_uri = str(auth_config.get("redirect_uri") or "").strip()
+    if not redirect_uri:
+        raise HTTPException(status_code=400, detail="OAuth redirect_uri not configured for integration")
+
+    state = _generate_oauth_state()
+    code_verifier, code_challenge = _generate_pkce_pair()
+
+    oauth_state = {
+        "state": state,
+        "code_verifier": code_verifier,
+        "integration_id": integration_id,
+        "created_at": _now_iso(),
+    }
+    metadata["oauth_state"] = oauth_state
+    integration.metadata_json = metadata
+    _persist_store_state()
+
+    try:
+        authorize_url = _build_oauth_authorize_url(integration, redirect_uri, state, code_challenge)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _append_audit_event(
+        "integration.oauth.authorize",
+        _enforce_builder_access(request, action="integration.oauth.authorize"),
+        "allowed",
+        {"integration_id": integration_id},
+    )
+
+    return {"authorize_url": authorize_url, "state": state}
+
+
+@app.get("/integrations/{integration_id}/oauth/callback")
+async def oauth_callback(integration_id: str, request: Request) -> Response:
+    """Handle OAuth 2.0 callback and exchange code for tokens."""
+    integration = store.integrations.get(integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="integration not found")
+
+    metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+    oauth_state = metadata.get("oauth_state") if isinstance(metadata.get("oauth_state"), dict) else {}
+
+    query_params = dict(parse_qsl(str(request.url).split("?", 1)[1])) if "?" in str(request.url) else {}
+    code = str(query_params.get("code") or "").strip()
+    state = str(query_params.get("state") or "").strip()
+    error = str(query_params.get("error") or "").strip()
+
+    stored_state = str(oauth_state.get("state") or "").strip()
+    if not state or state != stored_state:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state parameter")
+
+    code_verifier = str(oauth_state.get("code_verifier") or "").strip()
+    if not code_verifier:
+        raise HTTPException(status_code=400, detail="Missing PKCE code verifier")
+
+    if error:
+        metadata.pop("oauth_state", None)
+        integration.metadata_json = metadata
+        _persist_store_state()
+        raise HTTPException(status_code=400, detail=f"OAuth authorization failed: {error}")
+
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing authorization code")
+
+    redirect_uri = str(
+        (metadata.get("auth", {}) if isinstance(metadata.get("auth"), dict) else {}).get("redirect_uri") or ""
+    ).strip()
+    if not redirect_uri:
+        raise HTTPException(status_code=400, detail="OAuth redirect_uri not configured")
+
+    try:
+        token_data = await _exchange_oauth_code_for_tokens(integration, code, code_verifier, redirect_uri)
+    except ValueError as exc:
+        metadata.pop("oauth_state", None)
+        integration.metadata_json = metadata
+        _persist_store_state()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    access_token = str(token_data.get("access_token") or "").strip()
+    refresh_token = str(token_data.get("refresh_token") or "").strip()
+    expires_in = token_data.get("expires_in")
+    token_type = str(token_data.get("token_type") or "Bearer").strip()
+
+    if not access_token:
+        raise HTTPException(status_code=400, detail="Token exchange did not return access token")
+
+    tokens = {
+        "access_token": access_token,
+        "token_type": token_type,
+    }
+    if refresh_token:
+        tokens["refresh_token"] = refresh_token
+    if expires_in:
+        tokens["expires_at"] = (
+            datetime.now(UTC) + timedelta(seconds=int(expires_in))
+        ).isoformat()
+
+    metadata["tokens"] = tokens
+    metadata.pop("oauth_state", None)
+    integration.metadata_json = metadata
+    integration.status = "configured"
+    store.integrations[integration_id] = integration
+    _persist_store_state()
+
+    _append_audit_event(
+        "integration.oauth.callback",
+        _enforce_builder_access(request, action="integration.oauth.callback"),
+        "allowed",
+        {"integration_id": integration_id, "has_refresh_token": bool(refresh_token)},
+    )
+
+    frontend_url = str(os.getenv("FRONTIER_FRONTEND_URL") or "http://localhost:3000").strip()
+    success_url = f"{frontend_url}/builder/integrations?connected={integration_id}"
+    return Response(
+        content=f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>MCP Connection Successful</title>
+            <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                       display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0;
+                       background: #0d0d0d; color: #e0e0e0; }}
+                .container {{ text-align: center; padding: 2rem; }}
+                .success {{ color: #4ade80; font-size: 3rem; margin-bottom: 1rem; }}
+                h1 {{ font-size: 1.5rem; margin-bottom: 0.5rem; }}
+                p {{ color: #888; margin-bottom: 1.5rem; }}
+                a {{ color: #6ca0ff; text-decoration: none; }}
+                a:hover {{ text-decoration: underline; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="success">✓</div>
+                <h1>MCP Server Connected</h1>
+                <p>{integration.name} has been successfully authenticated.</p>
+                <p>You can close this window and return to the application.</p>
+                <a href="{success_url}">Return to Integrations</a>
+            </div>
+            <script>
+                setTimeout(() => {{ window.close(); }}, 3000);
+            </script>
+        </body>
+        </html>
+        """,
+        media_type="text/html",
+    )
+
+
+@app.post("/integrations/{integration_id}/oauth/disconnect")
+def oauth_disconnect(integration_id: str, request: Request) -> dict[str, Any]:
+    """Disconnect OAuth integration and clear stored tokens."""
+    actor = _enforce_builder_access(request, action="integration.oauth.disconnect")
+    _enforce_emergency_write_policy("integration.oauth.disconnect", actor)
+    integration = store.integrations.get(integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="integration not found")
+
+    metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+    metadata.pop("tokens", None)
+    metadata.pop("oauth_state", None)
+    integration.metadata_json = metadata
+    integration.status = "draft"
+    store.integrations[integration_id] = integration
+    _persist_store_state()
+
+    _append_audit_event(
+        "integration.oauth.disconnect",
+        actor,
+        "allowed",
+        {"integration_id": integration_id},
+    )
+    return {"ok": True, "id": integration_id}
 
 
 @app.get("/templates/agents")

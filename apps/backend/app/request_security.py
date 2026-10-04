@@ -448,6 +448,24 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         "integration.delete",
     ),
     RouteAccessRule(
+        ("GET",),
+        "/integrations/{integration_id}/oauth/authorize",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "integration.oauth.authorize",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/integrations/{integration_id}/oauth/callback",
+        RouteAccessCategory.PUBLIC_MINIMAL,
+        "integration.oauth.callback",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/integrations/{integration_id}/oauth/disconnect",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "integration.oauth.disconnect",
+    ),
+    RouteAccessRule(
         ("GET",), "/templates/agents", RouteAccessCategory.AUTHENTICATED_READ, "template.agent.list"
     ),
     RouteAccessRule(
