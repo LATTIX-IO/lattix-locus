@@ -59,7 +59,14 @@ RESTRICTIVE_FLAGS: frozenset[str] = frozenset(
 )
 #: Booleans that permit when True: turning one on widens.
 PERMISSIVE_FLAGS: frozenset[str] = frozenset(
-    {"allow_local_unsigned_integrations", "allow_runtime_engine_override"}
+    {
+        "allow_local_unsigned_integrations",
+        "allow_runtime_engine_override",
+        # Telemetry (LOCUS-375): content in spans; spans sent off the machine.
+        "telemetry_capture_content",
+        "telemetry_otlp_enabled",
+        "telemetry_langsmith_enabled",
+    }
 )
 #: Allowlists: any new entry widens.
 ALLOWLISTS: frozenset[str] = frozenset(
@@ -77,7 +84,23 @@ ALLOWLISTS: frozenset[str] = frozenset(
 BLOCKLISTS: frozenset[str] = frozenset({"global_blocked_keywords", "high_risk_tool_patterns"})
 #: Limits: raising one widens.
 LIMITS: frozenset[str] = frozenset(
-    {"collaboration_max_agents", "max_tool_calls_per_run", "max_retrieval_items"}
+    {
+        "collaboration_max_agents",
+        "max_tool_calls_per_run",
+        "max_retrieval_items",
+        # Keeping captured content longer (LOCUS-375).
+        "telemetry_payload_retention_days",
+    }
+)
+#: Where data is sent, and with which credential (LOCUS-375 telemetry exporters):
+#: a new non-empty value widens (a new destination or account); clearing narrows.
+DESTINATIONS: frozenset[str] = frozenset(
+    {
+        "telemetry_otlp_endpoint",
+        "telemetry_otlp_auth_secret_ref",
+        "telemetry_langsmith_endpoint",
+        "telemetry_langsmith_api_key_ref",
+    }
 )
 #: Settings that cannot be ranked (a different guardrail ruleset, runtime
 #: engine or strategy, a model endpoint): any change widens.
@@ -120,6 +143,8 @@ NEUTRAL: frozenset[str] = frozenset(
         # settings; key writes are judged by ``provider_key_writes_widen``.
         "openai_api_key",
         "nim_api_key",
+        # Same destination and account: a LangSmith project is a label there.
+        "telemetry_langsmith_project",
     }
 )
 #: Handled field by field below.
@@ -133,6 +158,7 @@ def classified_platform_fields() -> frozenset[str]:
         | ALLOWLISTS
         | BLOCKLISTS
         | LIMITS
+        | DESTINATIONS
         | UNRANKED
         | NEUTRAL
         | SPECIAL
@@ -189,6 +215,9 @@ def widening_fields(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]
             changed = bool(_items(before) - _items(after))
         elif field in LIMITS:
             changed = _int(after) > _int(before)
+        elif field in DESTINATIONS:
+            new_value = str(after or "").strip()
+            changed = bool(new_value) and new_value != str(before or "").strip()
         elif field == "foss_guardrail_signal_enforcement":
             changed = _signal_rank(after) < _signal_rank(before)
         elif field == "ai_providers":
@@ -206,6 +235,20 @@ def widening_fields(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]
         if changed:
             widened.append(field)
     return widened
+
+
+#: Every telemetry setting (LOCUS-375); a widening change to one also needs
+#: ``confirm_security_change`` on every profile (desktop: the shell proof too).
+TELEMETRY_FIELDS: frozenset[str] = frozenset(
+    field for field in classified_platform_fields() if field.startswith("telemetry_")
+)
+
+
+def telemetry_widening_fields(old: Mapping[str, Any], new: Mapping[str, Any]) -> list[str]:
+    """The telemetry settings whose change widens: content capture on, an exporter
+    enabled, a new endpoint or credential, a longer payload retention. Disabling an
+    exporter, clearing an endpoint or shortening retention narrows."""
+    return [field for field in widening_fields(old, new) if field in TELEMETRY_FIELDS]
 
 
 def is_widening(old: Mapping[str, Any], new: Mapping[str, Any]) -> bool:
@@ -294,6 +337,7 @@ __all__ = [
     "BODY_PREDICATES",
     "CHAT_MODE_RANK",
     "STATE_PREDICATES",
+    "TELEMETRY_FIELDS",
     "approval_decision_approves",
     "classified_platform_fields",
     "is_widening",
@@ -301,6 +345,7 @@ __all__ = [
     "schedule_enabled",
     "schedule_toggle_enables",
     "skill_save_enables",
+    "telemetry_widening_fields",
     "user_settings_widening",
     "user_skills_widening",
     "widening_fields",
