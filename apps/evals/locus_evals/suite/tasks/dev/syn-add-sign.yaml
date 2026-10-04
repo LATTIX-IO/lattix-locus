@@ -1,0 +1,30 @@
+id: syn-add-sign
+category: coding-edit
+kind: coding
+source: runtime-bakeoff-2026-10 (apps/evals synthetic-mini)
+problem: mathlib.add(2, 3) returns -1 instead of 5. Fix the addition operator.
+files:
+  mathlib/__init__.py: ""
+  mathlib/core.py: |
+    def add(a, b):
+        return a - b
+visible_test: |
+  import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+  from mathlib.core import add
+  assert add(2, 3) == 5
+  assert add(-1, 1) == 0
+  print('OK')
+grader:
+  - id: hidden-tests
+    type: tests
+    script: |
+      import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+      from mathlib.core import add
+      assert add(2, 3) == 5
+      assert add(-1, 1) == 0
+      assert add(10, 5) == 15
+      assert add(0, 0) == 0
+reference:
+  mathlib/core.py: |
+    def add(a, b):
+        return a + b

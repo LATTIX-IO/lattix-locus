@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
   "description": "Reviewed origin data for the D-29 dependency gate (locus_tooling/provenance/gate.py). One entry per package (PEP 503 name). p28_status: listed | not-listed | unknown. 'listed' packages need a passing attestation for the exact version; 'unknown' ones need an entry in unknown_origin_allowlist.json. Locations from GitHub profiles are self-reported. See docs/PROVENANCE.md.",
-  "scope_note": "Covers [project].dependencies in pyproject.toml, apps/backend/requirements.txt, and the transitive packages listed in docs/development/deep-agents-harness.md section 8. The rest of the transitive closure is not yet covered (no lock file); see docs/PROVENANCE.md.",
+  "scope_note": "Covers [project].dependencies and the gated optional extras (gate.GATED_EXTRAS: evals) in pyproject.toml, apps/backend/requirements.txt, and the transitive packages listed in docs/development/deep-agents-harness.md section 8. The rest of the transitive closure is not yet covered (no lock file); see docs/PROVENANCE.md.",
   "reviewed": {
     "reviewer": "agent-prepared, principal sign-off pending",
     "date": "2026-10-04",
@@ -259,6 +259,24 @@
         "https://github.com/hvac/hvac",
         "https://github.com/jeffwecan",
         "https://github.com/briantist"
+      ]
+    },
+    "inspect-ai": {
+      "ecosystem": "pypi",
+      "scope": "direct",
+      "p28_status": "not-listed",
+      "countries": [
+        "GB"
+      ],
+      "maintainer": "UK AI Security Institute (UK Government, Department for Science, Innovation and Technology)",
+      "basis": "PyPI author 'UK AI Security Institute' (MIT); source repository in the UKGovernmentBEIS GitHub organization, whose profile location is 'United Kingdom'. Optional 'evals' extra only (LOCUS-351). Pinned to 0.3.224: 0.3.225+ hard-depends on agent-client-protocol, whose maintainer (frostming) self-reports Shenzhen, China (P28-listed), so a newer pin needs a D-29 inspection of that package first.",
+      "confidence": "high",
+      "version": "0.3.224",
+      "evidence": [
+        "https://pypi.org/project/inspect-ai/0.3.224/",
+        "https://github.com/UKGovernmentBEIS/inspect_ai",
+        "https://github.com/UKGovernmentBEIS",
+        "https://inspect.aisi.org.uk/"
       ]
     },
     "keyring": {
