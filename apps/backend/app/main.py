@@ -4271,8 +4271,9 @@ def _build_long_term_memory_store() -> Any:
                 str(_memory_sqlite_path()),
                 embedder=_MEMORY_EMBEDDER,
                 on_pending=_wake_memory_backfill,
-                # sqlite-vec (D-29 attested, conditional); 0 = pure-Python vectors.
-                load_extension=_env_flag("LOCUS_MEMORY_SQLITE_VEC", True),
+                # sqlite-vec stays opt-in (=1) until its D-29 attestation is re-signed
+                # for this code path (vec_distance_cosine); default: pure-Python vectors.
+                load_extension=_env_flag("LOCUS_MEMORY_SQLITE_VEC", False),
             )
     return PostgresLongTermMemoryStore(os.getenv("POSTGRES_DSN", ""), embedder=_MEMORY_EMBEDDER)
 

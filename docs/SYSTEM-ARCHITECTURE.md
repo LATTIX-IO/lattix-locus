@@ -85,7 +85,8 @@ contract suite (`tests/unit/test_memory_store_contract.py`):
 
 - **Embedded SQLite** (`locus_runtime/memory/sqlite_store.py`), the default on the
   desktop / local profile (LOCUS-387): one file at `<app_home>/data/memory/locus-memory.db`,
-  FTS5 keyword search and sqlite-vec semantic search fused by reciprocal rank. No server
+  FTS5 keyword search and semantic search (pure-Python cosine by default; sqlite-vec with
+  `LOCUS_MEMORY_SQLITE_VEC=1` once its attestation is re-signed) fused by reciprocal rank. No server
   runs, so memory is on with zero setup. First run creates the file owner-only (0600 in a
   0700 directory on POSIX; the per-user app-home ACL on Windows) and registers the default
   **Personal** knowledge collection; the backend re-checks both on every start.

@@ -319,7 +319,6 @@ class SQLiteLongTermMemoryStore:
     """:class:`~locus_runtime.memory.contract.LongTermMemoryStore` on one SQLite file."""
 
     store_kind = "sqlite"
-    backend_label = "SQLite (FTS5 + sqlite-vec)"
     port_version = PORT_VERSION
     #: Keyword search answers with no embedding model (FTS5, or LIKE without FTS5).
     keyword_search_enabled = True
@@ -329,7 +328,7 @@ class SQLiteLongTermMemoryStore:
         path: str,
         *,
         embedder: Embedder | None = None,
-        load_extension: bool = True,
+        load_extension: bool = False,
         on_pending: Callable[[], None] | None = None,
     ) -> None:
         self.path = str(path or "").strip()
@@ -342,6 +341,12 @@ class SQLiteLongTermMemoryStore:
         self._initialized = False
         self.fts_enabled = False
         self.vector_extension_version = ""
+
+    @property
+    def backend_label(self) -> str:
+        """What actually serves search: sqlite-vec only when it was loaded."""
+        vectors = "sqlite-vec" if self.vector_extension_version else "Python vectors"
+        return f"SQLite (FTS5 + {vectors})"
 
     # -- identity / status --------------------------------------------------------
     @property
