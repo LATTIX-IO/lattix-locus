@@ -481,10 +481,37 @@ async function strictFetch<T>(path: string, init?: RequestInit): Promise<T> {
     if (shellAction && invoke && isShellProofRefusal(res.status, details)) {
       return confirmViaDesktopShell<T>(invoke, shellAction, path, requestBodyObject(init?.body));
     }
-    throw new Error(`Request failed (${res.status})${details ? `: ${details}` : ""}`);
+    throw new ApiRequestError(res.status, details);
   }
 
   return (await res.json()) as T;
+}
+
+/** A backend refusal: the status and the raw response body. The message keeps
+ * the historic "Request failed (<status>): <body>" form callers match on. */
+export class ApiRequestError extends Error {
+  readonly status: number;
+  readonly details: string;
+
+  constructor(status: number, details: string) {
+    super(`Request failed (${status})${details ? `: ${details}` : ""}`);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.details = details;
+  }
+}
+
+/** FastAPI's `{"detail": ...}` body of a refusal, or null when it is not JSON. */
+export function apiErrorDetail(error: unknown): unknown {
+  if (!(error instanceof ApiRequestError) || !error.details) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(error.details);
+    return parsed !== null && typeof parsed === "object" && "detail" in parsed ? (parsed as { detail: unknown }).detail : null;
+  } catch {
+    return null;
+  }
 }
 
 /** A read where "not found" is a normal answer: 404 resolves to null, every
@@ -1749,11 +1776,58 @@ export async function getPlatformSecurityPolicy(): Promise<SecurityPolicyRespons
   return strictFetch<SecurityPolicyResponse>("/platform/security-policy");
 }
 
-export async function savePlatformSettings(payload: Json): Promise<{ ok: boolean }> {
-  const result = await strictFetch<{ ok: boolean }>("/platform/settings", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
+/**
+ * The backend refused a platform-settings save because it changes sensitive
+ * security settings (`changed_sensitive_keys`) and the request did not carry
+ * `confirm_security_change: true`. The UI shows the keys, asks, and resends
+ * with `{ confirmSecurityChange: true }` (which on the desktop then goes
+ * through the shell's confirmation when it widens, LOCUS-357).
+ */
+export class SecurityChangeConfirmationRequired extends Error {
+  readonly keys: string[];
+
+  constructor(keys: string[], message = "Sensitive platform security changes need your confirmation.") {
+    super(message);
+    this.name = "SecurityChangeConfirmationRequired";
+    this.keys = keys;
+  }
+}
+
+/** The sensitive keys of a "confirm_security_change" refusal, else null. */
+export function sensitiveKeysFromError(error: unknown): string[] | null {
+  if (!(error instanceof ApiRequestError) || error.status !== 400) {
+    return null;
+  }
+  const detail = apiErrorDetail(error);
+  if (detail === null || typeof detail !== "object") {
+    return null;
+  }
+  const keys = (detail as { changed_sensitive_keys?: unknown }).changed_sensitive_keys;
+  if (!Array.isArray(keys) || keys.length === 0) {
+    return null;
+  }
+  return keys.filter((key): key is string => typeof key === "string");
+}
+
+export async function savePlatformSettings(
+  payload: Json,
+  options: { confirmSecurityChange?: boolean } = {},
+): Promise<{ ok: boolean }> {
+  const body = isJsonRecord(payload) && options.confirmSecurityChange ? { ...payload, confirm_security_change: true } : payload;
+  let result: { ok: boolean };
+  try {
+    result = await strictFetch<{ ok: boolean }>("/platform/settings", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    const keys = sensitiveKeysFromError(error);
+    if (keys) {
+      const detail = apiErrorDetail(error) as { message?: unknown };
+      throw new SecurityChangeConfirmationRequired(keys, typeof detail.message === "string" ? detail.message : undefined);
+    }
+    throw error;
+  }
 
   if (isJsonRecord(payload)) {
     const cached = readCachedValue<PlatformSettings>("platform-settings");

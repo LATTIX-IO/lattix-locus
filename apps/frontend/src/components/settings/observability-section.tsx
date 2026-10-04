@@ -189,6 +189,7 @@ export function ObservabilitySection() {
           />
         </>
       )}
+      {platform.confirmationDialog}
     </div>
   );
 }

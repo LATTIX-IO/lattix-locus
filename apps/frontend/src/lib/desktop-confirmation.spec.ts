@@ -289,3 +289,54 @@ describe("settings widening on the desktop", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("sensitive platform settings (confirm_security_change)", () => {
+  function sensitiveRefusal(keys: string[]) {
+    const body = JSON.stringify({
+      detail: { message: "Sensitive platform security changes require confirm_security_change=true", changed_sensitive_keys: keys },
+    });
+    return { ok: false, status: 400, json: async () => JSON.parse(body), text: async () => body };
+  }
+
+  it("turns the 400 into SecurityChangeConfirmationRequired carrying the keys", async () => {
+    fetchMock.mockResolvedValueOnce(sensitiveRefusal(["telemetry_capture_content"]));
+
+    const api = await import("@/lib/api");
+    const failure = await api.savePlatformSettings({ telemetry_capture_content: true }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(api.SecurityChangeConfirmationRequired);
+    expect((failure as InstanceType<typeof api.SecurityChangeConfirmationRequired>).keys).toEqual(["telemetry_capture_content"]);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("resends with confirm_security_change and routes the widening through the shell", async () => {
+    enterDesktopShell();
+    fetchMock.mockResolvedValueOnce(refused("Confirm this change in the Locus desktop app (missing_proof)"));
+    invokeMock.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+
+    const { savePlatformSettings } = await import("@/lib/api");
+    await expect(savePlatformSettings({ telemetry_capture_content: true }, { confirmSecurityChange: true })).resolves.toEqual({ ok: true });
+
+    const sent = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect(sent).toEqual({ telemetry_capture_content: true, confirm_security_change: true });
+    expect(invokeMock).toHaveBeenCalledWith("confirm_action", {
+      action: "platform.settings.save",
+      path: "/platform/settings",
+      body: { telemetry_capture_content: true, confirm_security_change: true },
+    });
+  });
+
+  it("does not cache the confirmation flag as a setting", async () => {
+    fetchMock.mockResolvedValueOnce(okJson({ ok: true }));
+    const events: unknown[] = [];
+    const listener = (event: Event) => events.push((event as CustomEvent).detail);
+    window.addEventListener("locus:platform-settings-updated", listener);
+
+    const { savePlatformSettings } = await import("@/lib/api");
+    await savePlatformSettings({ block_new_runs: true }, { confirmSecurityChange: true });
+    window.removeEventListener("locus:platform-settings-updated", listener);
+
+    expect(events.at(-1)).toMatchObject({ block_new_runs: true });
+    expect(events.at(-1)).not.toHaveProperty("confirm_security_change");
+  });
+});

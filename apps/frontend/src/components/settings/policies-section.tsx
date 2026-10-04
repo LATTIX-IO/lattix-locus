@@ -379,6 +379,7 @@ export function PoliciesSection() {
       <div className="sticky bottom-0 z-10 -mx-1 rounded-[12px] border border-border bg-card/95 px-3 py-2 backdrop-blur">{saveBar}</div>
 
       <PersonalSkillsGroup />
+      {platform.confirmationDialog}
     </div>
   );
 }

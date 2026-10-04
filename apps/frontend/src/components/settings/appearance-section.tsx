@@ -74,6 +74,7 @@ function ClassificationBannerGroup() {
           />
         </>
       )}
+      {platform.confirmationDialog}
     </SettingsGroup>
   );
 }

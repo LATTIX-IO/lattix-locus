@@ -45,6 +45,7 @@ vi.mock("@/lib/api", async () => {
     BROWSER_TIERS: actual.BROWSER_TIERS,
     isBrowserTierWidening: actual.isBrowserTierWidening,
     DesktopConfirmationCancelledError: actual.DesktopConfirmationCancelledError,
+    SecurityChangeConfirmationRequired: actual.SecurityChangeConfirmationRequired,
   };
 });
 
@@ -60,6 +61,7 @@ vi.mock("@/components/first-run-wizard", () => ({ openFirstRunWizard: vi.fn() })
 
 import { ComputerUseSection } from "@/components/settings/computer-use-section";
 import { DesktopConfirmationCancelledError } from "@/lib/desktop-confirmation";
+import { SecurityChangeConfirmationRequired } from "@/lib/api";
 import { LoopSection } from "@/components/settings/loop-section";
 import { ObservabilitySection } from "@/components/settings/observability-section";
 import { PoliciesSection } from "@/components/settings/policies-section";
@@ -191,6 +193,59 @@ describe("Observability", () => {
 
     await waitFor(() => expect(api.savePlatformSettings).toHaveBeenCalledTimes(1));
     expect(api.savePlatformSettings.mock.calls[0][0]).toMatchObject({ telemetry_capture_content: true, telemetry_otlp_enabled: false });
+  });
+
+  it("explains content capture, then resends with confirm_security_change when the backend flags it", async () => {
+    api.savePlatformSettings
+      .mockRejectedValueOnce(new SecurityChangeConfirmationRequired(["telemetry_capture_content"]))
+      .mockResolvedValueOnce({ ok: true });
+    render(<ObservabilitySection />);
+
+    fireEvent.click(await screen.findByRole("switch", { name: /capture prompt and output content/i }));
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    const dialog = await screen.findByRole("dialog", { name: /confirm a security change/i });
+    expect(within(dialog).getByText("Capture prompt and output content")).toBeInTheDocument();
+    expect(dialog).toHaveTextContent(/prompts and outputs of every run on this machine/i);
+    expect(dialog).toHaveTextContent(/redacted/i);
+    expect(api.savePlatformSettings).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /confirm and save/i }));
+    await waitFor(() => expect(api.savePlatformSettings).toHaveBeenCalledTimes(2));
+    expect(api.savePlatformSettings.mock.calls[1][0]).toMatchObject({ telemetry_capture_content: true });
+    expect(api.savePlatformSettings.mock.calls[1][1]).toEqual({ confirmSecurityChange: true });
+    expect(await screen.findByText(/^saved\.$/i)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("does not save when the security change is declined", async () => {
+    api.savePlatformSettings.mockRejectedValueOnce(new SecurityChangeConfirmationRequired(["telemetry_capture_content"]));
+    render(<ObservabilitySection />);
+
+    fireEvent.click(await screen.findByRole("switch", { name: /capture prompt and output content/i }));
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /^cancel$/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/security change was not confirmed/i);
+    expect(api.savePlatformSettings).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("sensitive settings in other sections", () => {
+  it("lists every flagged key with a friendly label (Policies & autonomy)", async () => {
+    api.savePlatformSettings
+      .mockRejectedValueOnce(new SecurityChangeConfirmationRequired(["block_new_runs", "some_future_key"]))
+      .mockResolvedValueOnce({ ok: true });
+    render(<PoliciesSection />);
+
+    fireEvent.click(await screen.findByRole("switch", { name: /approve every run/i }));
+    fireEvent.click(screen.getAllByRole("button", { name: /save changes/i })[0]);
+
+    const dialog = await screen.findByRole("dialog", { name: /confirm a security change/i });
+    expect(within(dialog).getByText("Block new runs")).toBeInTheDocument();
+    expect(within(dialog).getByText("some_future_key")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: /confirm and save/i }));
+    await waitFor(() => expect(api.savePlatformSettings.mock.calls[1]?.[1]).toEqual({ confirmSecurityChange: true }));
   });
 });
 
