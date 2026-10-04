@@ -337,9 +337,11 @@
     "rationale": "No P28-listed origin found for maintainers, organization or funding; the Entity List, the rest of the Consolidated Screening List and the 1260H notice show no hit. All 132 wheel files are byte-identical to the v0.4.2 git tag; the sdist differs only in build metadata (setup.cfg, PKG-INFO, egg-info). The only other static findings are two sdist-only example scripts under tools/ (an OCSP client and an SNMP GET example) that use the network when run by hand and are not in the wheel. OSV lists no vulnerability for 0.4.2; the sandboxed import plus an X.509 decode/re-encode with rfc5280 and rfc2459 made no connection attempt."
   },
   "review": {
-    "reviewer": "agent-prepared, principal sign-off pending",
+    "reviewer": "principal",
     "date": "2026-10-04",
-    "prepared_by": "Claude Code (agent) for LOCUS-358, 2026-10-04"
+    "prepared_by": "Claude Code (agent) for LOCUS-358, 2026-10-04",
+    "name": "jpbooth@lattix.io (principal)",
+    "notes": "Approved by the principal in the Claude Code session on 2026-10-04; the decision's conditions are accepted as stated."
   },
   "notes": [
     "Pulled transitively by google-auth; not imported by Locus code paths (docs/development/deep-agents-harness.md section 8).",

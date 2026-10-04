@@ -263,8 +263,8 @@
         "path": "sqlite_vec-0.1.9-py3-none-macosx_10_6_x86_64.whl/sqlite_vec/vec0.dylib",
         "line": 0,
         "detail": "native binary: needs review (opaque to the AST rules)",
-        "disposition": "needs-review",
-        "note": "Agent review: built in GitHub Actions from tag v0.1.9 (byte-identical to the npm packages with SLSA provenance for run 23786847732); the networking-import scan found nothing; the win_amd64 build was loaded and exercised in the AppContainer with no connection attempt. Not reverse-engineered and the build was not reproduced, so the principal decides whether this level of review is enough."
+        "disposition": "benign",
+        "note": "Agent review: built in GitHub Actions from tag v0.1.9 (byte-identical to the npm packages with SLSA provenance for run 23786847732); the networking-import scan found nothing; the win_amd64 build was loaded and exercised in the AppContainer with no connection attempt. Not reverse-engineered and the build was not reproduced, so the principal decides whether this level of review is enough. Accepted by the principal on 2026-10-04 at the review level recorded here (see decision conditions)."
       },
       {
         "rule": "native-extension",
@@ -272,8 +272,8 @@
         "path": "sqlite_vec-0.1.9-py3-none-macosx_11_0_arm64.whl/sqlite_vec/vec0.dylib",
         "line": 0,
         "detail": "native binary: needs review (opaque to the AST rules)",
-        "disposition": "needs-review",
-        "note": "Agent review: built in GitHub Actions from tag v0.1.9 (byte-identical to the npm packages with SLSA provenance for run 23786847732); the networking-import scan found nothing; the win_amd64 build was loaded and exercised in the AppContainer with no connection attempt. Not reverse-engineered and the build was not reproduced, so the principal decides whether this level of review is enough."
+        "disposition": "benign",
+        "note": "Agent review: built in GitHub Actions from tag v0.1.9 (byte-identical to the npm packages with SLSA provenance for run 23786847732); the networking-import scan found nothing; the win_amd64 build was loaded and exercised in the AppContainer with no connection attempt. Not reverse-engineered and the build was not reproduced, so the principal decides whether this level of review is enough. Accepted by the principal on 2026-10-04 at the review level recorded here (see decision conditions)."
       },
       {
         "rule": "native-extension",
@@ -281,8 +281,8 @@
         "path": "sqlite_vec-0.1.9-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl/sqlite_vec/vec0.so",
         "line": 0,
         "detail": "native binary: needs review (opaque to the AST rules)",
-        "disposition": "needs-review",
-        "note": "Agent review: built in GitHub Actions from tag v0.1.9 (byte-identical to the npm packages with SLSA provenance for run 23786847732); the networking-import scan found nothing; the win_amd64 build was loaded and exercised in the AppContainer with no connection attempt. Not reverse-engineered and the build was not reproduced, so the principal decides whether this level of review is enough."
+        "disposition": "benign",
+        "note": "Agent review: built in GitHub Actions from tag v0.1.9 (byte-identical to the npm packages with SLSA provenance for run 23786847732); the networking-import scan found nothing; the win_amd64 build was loaded and exercised in the AppContainer with no connection attempt. Not reverse-engineered and the build was not reproduced, so the principal decides whether this level of review is enough. Accepted by the principal on 2026-10-04 at the review level recorded here (see decision conditions)."
       },
       {
         "rule": "native-extension",
@@ -290,8 +290,8 @@
         "path": "sqlite_vec-0.1.9-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.manylinux1_x86_64.whl/sqlite_vec/vec0.so",
         "line": 0,
         "detail": "native binary: needs review (opaque to the AST rules)",
-        "disposition": "needs-review",
-        "note": "Agent review: built in GitHub Actions from tag v0.1.9 (byte-identical to the npm packages with SLSA provenance for run 23786847732); the networking-import scan found nothing; the win_amd64 build was loaded and exercised in the AppContainer with no connection attempt. Not reverse-engineered and the build was not reproduced, so the principal decides whether this level of review is enough."
+        "disposition": "benign",
+        "note": "Agent review: built in GitHub Actions from tag v0.1.9 (byte-identical to the npm packages with SLSA provenance for run 23786847732); the networking-import scan found nothing; the win_amd64 build was loaded and exercised in the AppContainer with no connection attempt. Not reverse-engineered and the build was not reproduced, so the principal decides whether this level of review is enough. Accepted by the principal on 2026-10-04 at the review level recorded here (see decision conditions)."
       },
       {
         "rule": "native-extension",
@@ -299,8 +299,8 @@
         "path": "sqlite_vec-0.1.9-py3-none-win_amd64.whl/sqlite_vec/vec0.dll",
         "line": 0,
         "detail": "native binary: needs review (opaque to the AST rules)",
-        "disposition": "needs-review",
-        "note": "Agent review: built in GitHub Actions from tag v0.1.9 (byte-identical to the npm packages with SLSA provenance for run 23786847732); the networking-import scan found nothing; the win_amd64 build was loaded and exercised in the AppContainer with no connection attempt. Not reverse-engineered and the build was not reproduced, so the principal decides whether this level of review is enough."
+        "disposition": "benign",
+        "note": "Agent review: built in GitHub Actions from tag v0.1.9 (byte-identical to the npm packages with SLSA provenance for run 23786847732); the networking-import scan found nothing; the win_amd64 build was loaded and exercised in the AppContainer with no connection attempt. Not reverse-engineered and the build was not reproduced, so the principal decides whether this level of review is enough. Accepted by the principal on 2026-10-04 at the review level recorded here (see decision conditions)."
       }
     ],
     "scanned_artifacts": [
@@ -357,9 +357,11 @@
     "rationale": "No P28-listed origin found: the sole author and PyPI owner self-reports Los Angeles, and the main sponsor is Mozilla. The Entity List and the 1260H notice show no match; four informational SDN name hits are resolved as different people (reasons in the 'other' check). The five native binaries in the PyPI wheels are byte-identical to the npm packages of the same release, whose SLSA provenance names the v0.1.9 tag and release workflow run, and no networking imports were found in them. The Python wrapper only computes the extension path and serializes vectors. The win_amd64 wheel loaded vec0 and ran a KNN query in the AppContainer with egress denied and made no connection attempt; OSV lists no vulnerabilities for 0.1.9. The wheel metadata carries placeholder values ('TODO') from the packaging tool, which is cosmetic."
   },
   "review": {
-    "reviewer": "agent-prepared, principal sign-off pending",
+    "reviewer": "principal",
     "date": "2026-10-04",
-    "prepared_by": "Claude Code (agent) for LOCUS-358, 2026-10-04"
+    "prepared_by": "Claude Code (agent) for LOCUS-358, 2026-10-04",
+    "name": "jpbooth@lattix.io (principal)",
+    "notes": "Approved by the principal in the Claude Code session on 2026-10-04; the decision's conditions are accepted as stated."
   },
   "notes": [
     "sqlite-vec is pulled by langgraph-checkpoint-sqlite (requires sqlite-vec>=0.1.6, so unpinned). Its Python module is imported only by langgraph.store.sqlite (SqliteStore: base.py and aio.py), which also loads the native extension; Locus imports only langgraph.checkpoint.sqlite (SqliteSaver), so neither the module nor vec0 is loaded by Locus today.",

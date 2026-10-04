@@ -3,8 +3,8 @@
 Generated from the JSON record beside this file by `lattix provenance render`; edit the JSON, not this summary.
 
 - **Decision:** conditional (conditions: Principal accepts that PyPI owner account 'ilya' (upload rights) could not be tied to a person.; Principal accepts that 0.4.2 was uploaded outside CI (no workflow run found), so the PyPI files are tied to the tag only by the byte-for-byte source comparison.; Install pinned by version and hash once Locus has a hash-locked dependency set (D-29 step 5).; Re-inspect on any version change (google-auth pulls pyasn1-modules unpinned).)
-- **Reviewer:** agent-prepared, principal sign-off pending, 2026-10-04
-- **Gate status:** not passing: principal sign-off pending
+- **Reviewer:** principal (jpbooth@lattix.io (principal)), 2026-10-04
+- **Gate status:** passing
 - **Origin:** not-listed (DE, CA; confidence medium). Same maintainers and PyPI owners as pyasn1: maintained in the pyasn1 GitHub organization by Christian Heimes (GitHub profile: Hamburg, Germany; Red Hat) and Simon Pichugin (GitHub profile: Vancouver, Canada; Red Hat), who made the v0.4.2 release commit. Original author Ilya Etingof (profile 'Central Europe'); the second-largest historical contributor is Russ Housley (RFC module definitions). Locations are self-reported and not independently verified. No evidence ties a maintainer, the organization or a funder to a P28-listed country.
 
 ## Rationale
