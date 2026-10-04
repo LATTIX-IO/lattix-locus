@@ -1,11 +1,10 @@
 # Locus MVP Frontend
 
-Dual-mode Next.js frontend for local-first orchestration operations and workflow building.
+Next.js frontend for the Locus desktop app (and the hosted console).
 
-## Modes
+## Navigation
 
-- **User Mode** (Ops/day-to-day): inbox, workflows, artifacts, and shared settings.
-- **Builder Mode** (Power-user): agent studio, workflow studio, templates, playbooks, observability, integrations, node library, guardrails, releases, and builder settings.
+One navigation, no modes (LOCUS-353): **Home** (task composer, running agents), **Activity** (runs, traces, artifacts), **Memory**, **Library** (skills, playbooks, workflows, agents, connections, knowledge, templates, guardrails, node library, releases) and **Settings** (one page: engines, connections, computer use, policies & autonomy, loop & Linear, updates, observability, appearance). See `FRONTEND.md` for the route map and the redirects from the old routes.
 
 ## Local development
 
@@ -30,7 +29,7 @@ Set backend API base URL using environment variable:
 NEXT_PUBLIC_API_BASE_URL=/api
 ```
 
-If the backend is unavailable, the UI falls back to local mock data so workflows remain explorable in local-first mode.
+If the backend is unavailable, the UI says so (with a retry); it never substitutes placeholder data.
 
 ## API coverage (frontend client)
 
@@ -45,7 +44,7 @@ The client layer (`src/lib/api.ts`) is wired for:
 - `POST /approvals`
 - `GET /inbox`
 
-Builder mode endpoints:
+Library endpoints:
 
 - `GET/POST workflow-definitions` + publish
 - `GET/POST agent-definitions` + publish

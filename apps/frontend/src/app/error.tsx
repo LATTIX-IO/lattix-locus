@@ -44,8 +44,8 @@ export default function GlobalError({
         <button onClick={reset} className="fx-btn-primary px-4 py-2 text-sm font-medium">
           Try again
         </button>
-        <a href="/inbox" className="fx-btn-secondary px-4 py-2 text-sm font-medium no-underline">
-          Go to Inbox
+        <a href="/home" className="fx-btn-secondary px-4 py-2 text-sm font-medium no-underline">
+          Go to Home
         </a>
       </div>
     </div>

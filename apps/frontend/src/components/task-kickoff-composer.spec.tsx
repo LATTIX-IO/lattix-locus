@@ -69,7 +69,7 @@ describe("TaskKickoffComposer", () => {
       prompt: "Line one",
       tokens: [],
     }), { timeoutMs: 120000 });
-    expect(pushMock).toHaveBeenCalledWith("/inbox?session=run-2");
+    expect(pushMock).toHaveBeenCalledWith("/activity?session=run-2");
     expect(refreshMock).toHaveBeenCalled();
     expect(screen.getByText("Task started. Opening run run-2...")).toBeInTheDocument();
   });

@@ -62,7 +62,7 @@ export function LocalAuthPanel({ providerLabel }: LocalAuthPanelProps) {
       if (!session.authenticated) {
         throw new Error("Authenticated session was not established.");
       }
-      router.replace("/inbox");
+      router.replace("/home");
       router.refresh();
     } catch (error) {
       setErrorMessage(normalizeError(error));

@@ -645,7 +645,7 @@ export function RunFollowupComposer({
         router.refresh();
       } else {
         setSubmitInfo(`Follow-up sent. Opening run ${nextRun.id}...`);
-        router.push(`/inbox?session=${encodeURIComponent(nextRun.id)}`);
+        router.push(`/activity?session=${encodeURIComponent(nextRun.id)}`);
         router.refresh();
       }
       setDraft("");
@@ -844,7 +844,7 @@ export function RunFollowupComposer({
       {!onStatusChange && submitInfo ? <p className="text-xs text-[hsl(var(--state-success))]">{submitInfo}</p> : null}
       {!onStatusChange && createdRunId ? (
         <p className="text-xs text-[var(--foreground)]">
-          Run created: <Link href={`/inbox?session=${encodeURIComponent(createdRunId)}`} className="underline decoration-dotted underline-offset-2">{createdRunId}</Link>
+          Run created: <Link href={`/activity?session=${encodeURIComponent(createdRunId)}`} className="underline decoration-dotted underline-offset-2">{createdRunId}</Link>
         </p>
       ) : null}
       {!onStatusChange && submitError ? <p className="text-xs text-[var(--fx-danger)]">{submitError}</p> : null}

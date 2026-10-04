@@ -66,9 +66,9 @@ const entityLabels: Record<ReleaseEntityType, string> = {
 };
 
 const openHrefForEntity = {
-  workflow: (id: string) => `/builder/workflows/${encodeURIComponent(id)}`,
-  agent: (id: string) => `/builder/agents/${encodeURIComponent(id)}`,
-  guardrail: (id: string) => `/builder/guardrails/${encodeURIComponent(id)}`,
+  workflow: (id: string) => `/library/workflows/${encodeURIComponent(id)}`,
+  agent: (id: string) => `/library/agents/${encodeURIComponent(id)}`,
+  guardrail: (id: string) => `/library/guardrails/${encodeURIComponent(id)}`,
 } as const;
 
 function entityKey(entityType: ReleaseEntityType, entityId: string): string {
@@ -377,7 +377,7 @@ export function ReleasesWorkspace({ workflows, agents, guardrails }: Props) {
     <section className="space-y-5">
       <header className="flex flex-wrap items-start justify-between gap-4 rounded-[1.7rem] border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_97%,hsl(var(--background))_3%)] px-5 py-4 shadow-[0_22px_56px_rgba(15,23,42,0.06)]">
         <div className="max-w-2xl">
-          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Builder workspace</p>
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Library</p>
           <h1 className="mt-2 text-[1.5rem] font-semibold tracking-[-0.03em] text-[var(--foreground)]">Versions & Releases</h1>
           <p className="mt-2 text-sm leading-6 text-[var(--fx-muted)]">Promote published revisions to runtime, inspect revision history, and restore prior versions when needed without leaving the release surface.</p>
         </div>

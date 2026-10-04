@@ -45,6 +45,21 @@
   --fx-focus-ring: hsl(var(--accent));
   --fx-shadow-soft: 0 1px 2px rgba(16, 24, 40, 0.05), 0 10px 24px rgba(16, 24, 40, 0.05);
   --fx-shadow-panel: 0 1px 2px rgba(16, 24, 40, 0.04), 0 14px 34px rgba(16, 24, 40, 0.06);
+
+  /* Locus design system (P31): the shadcn/ui token names, mapped onto the HSL
+     tokens above so src/components/ui/* speak the shadcn vocabulary without
+     restyling the rest of the app. Each alias follows the active theme because
+     the theme classes sit on the same element (<html>) as :root. */
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --primary-foreground: 225 100% 98%;
+  --secondary: var(--muted);
+  --secondary-foreground: var(--foreground);
+  --destructive: var(--state-critical);
+  --destructive-foreground: 0 0% 100%;
+  --input: var(--border);
+  --ring: var(--accent);
 }
 
 .theme-light {
@@ -93,6 +108,19 @@
   --color-border: hsl(var(--border));
   --color-primary: hsl(var(--primary));
   --color-accent: hsl(var(--accent));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-success: hsl(var(--state-success));
+  --color-warning: hsl(var(--state-warning));
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-ibm-plex-mono);
 }

@@ -103,6 +103,7 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
   const { addToast } = useToast();
   const [policy, setPolicy] = useState<SecurityPolicyResponse | null>(null);
   const [rulesets, setRulesets] = useState<GuardrailRuleSet[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [blockedKeywords, setBlockedKeywords] = useState(listToText(value.blocked_keywords));
@@ -142,15 +143,23 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
     let cancelled = false;
 
     async function load() {
-      const [policyResult, rulesetResult] = await Promise.all([
-        entityType === "agent" ? getAgentSecurityPolicy(entityId) : getWorkflowSecurityPolicy(entityId),
-        getGuardrailRulesets(),
-      ]);
-      if (cancelled) {
-        return;
+      try {
+        const [policyResult, rulesetResult] = await Promise.all([
+          entityType === "agent" ? getAgentSecurityPolicy(entityId) : getWorkflowSecurityPolicy(entityId),
+          getGuardrailRulesets(),
+        ]);
+        if (cancelled) {
+          return;
+        }
+        setPolicy(policyResult);
+        setRulesets(rulesetResult.filter((item) => item.status === "published"));
+        setLoadError(null);
+      } catch (error) {
+        if (!cancelled) {
+          setPolicy(null);
+          setLoadError(error instanceof Error ? error.message : "Unable to load the security policy.");
+        }
       }
-      setPolicy(policyResult);
-      setRulesets(rulesetResult.filter((item) => item.status === "published"));
     }
 
     void load();
@@ -203,6 +212,12 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
           {collapsed ? "Expand" : "Collapse"}
         </button>
       </div>
+
+      {loadError ? (
+        <p role="alert" className="mt-3 text-xs text-[var(--fx-danger)]">
+          Could not load the effective policy: {loadError}
+        </p>
+      ) : null}
 
       {collapsed ? (
         <p className="mt-3 text-[10px] fx-muted">Panel collapsed to leave more room for the canvas.</p>

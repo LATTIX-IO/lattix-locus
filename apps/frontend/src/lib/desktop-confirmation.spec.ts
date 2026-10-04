@@ -188,3 +188,104 @@ describe("matchShellAction", () => {
     expect(new Set(SHELL_ACTIONS.map((spec) => spec.id)).size).toBe(SHELL_ACTIONS.length);
   });
 });
+
+// LOCUS-353: Settings routes its own widening changes through the shell too.
+describe("settings widening on the desktop", () => {
+  const strictTier = {
+    tier: "strict" as const,
+    effective_tier: "strict" as const,
+    allowlisted_sites: [],
+    granted_sites: [],
+    consent: null,
+  };
+
+  it("widens the browser tier only through confirm_browser_tier (camelCase args), never a plain request", async () => {
+    enterDesktopShell();
+    invokeMock.mockResolvedValueOnce(JSON.stringify({ ...strictTier, tier: "assisted", effective_tier: "assisted", allowlisted_sites: ["docs.example.com"] }));
+
+    const { setUserBrowserTier } = await import("@/lib/api");
+    const saved = await setUserBrowserTier(strictTier, { tier: "assisted", allowlisted_sites: ["docs.example.com"], granted_sites: [] });
+
+    expect(invokeMock).toHaveBeenCalledWith("confirm_browser_tier", {
+      tier: "assisted",
+      allowlistedSites: ["docs.example.com"],
+      grantedSites: [],
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(saved.tier).toBe("assisted");
+  });
+
+  it("reports a cancelled tier dialog as a cancellation", async () => {
+    enterDesktopShell();
+    invokeMock.mockRejectedValueOnce("cancelled");
+
+    const { setUserBrowserTier, DesktopConfirmationCancelledError } = await import("@/lib/api");
+    await expect(
+      setUserBrowserTier(strictTier, { tier: "open", allowlisted_sites: [], granted_sites: [] }),
+    ).rejects.toBeInstanceOf(DesktopConfirmationCancelledError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("narrows the browser tier with a plain request and no dialog", async () => {
+    enterDesktopShell();
+    fetchMock.mockResolvedValueOnce(okJson(strictTier));
+
+    const { setUserBrowserTier } = await import("@/lib/api");
+    await setUserBrowserTier(
+      { ...strictTier, tier: "trusted", effective_tier: "trusted", granted_sites: ["a.example.com"] },
+      { tier: "strict", allowlisted_sites: [], granted_sites: [] },
+    );
+
+    expect(invokeMock).not.toHaveBeenCalled();
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toMatch(/\/user-browser\/tier$/);
+    expect(JSON.parse(init.body)).toEqual({ tier: "strict", allowlisted_sites: [], granted_sites: [] });
+  });
+
+  it("on the web, refuses a widening without an acknowledgement and sends acknowledge_risk with one", async () => {
+    fetchMock.mockResolvedValueOnce(okJson({ ...strictTier, tier: "assisted" }));
+
+    const { setUserBrowserTier } = await import("@/lib/api");
+    const widening = { tier: "assisted" as const, allowlisted_sites: [], granted_sites: [] };
+    await expect(setUserBrowserTier(strictTier, widening)).rejects.toThrow(/acknowledge its risk/);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await setUserBrowserTier(strictTier, widening, { acknowledgeRisk: true });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ tier: "assisted", acknowledge_risk: true });
+  });
+
+  it("turns the loop on and autostarts it through confirm_action; turning it off is a plain request", async () => {
+    enterDesktopShell();
+    invokeMock.mockResolvedValue(JSON.stringify({ enabled: true }));
+    fetchMock.mockResolvedValue(okJson({ enabled: false }));
+
+    const { disableLoop, enableLoop, enableLoopAutostart } = await import("@/lib/api");
+    await enableLoop();
+    await enableLoopAutostart("C:/src/locus");
+    await disableLoop();
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "confirm_action", { action: "loop.enable", path: "/loop/enable", body: {} });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "confirm_action", {
+      action: "loop.autostart.enable",
+      path: "/loop/autostart",
+      body: { repo_path: "C:/src/locus" },
+    });
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/loop\/disable$/);
+  });
+
+  it("stores a provider key through confirm_action", async () => {
+    enterDesktopShell();
+    invokeMock.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+
+    const { setProviderKey } = await import("@/lib/api");
+    await setProviderKey("nim", "nvapi-secret");
+
+    expect(invokeMock).toHaveBeenCalledWith("confirm_action", {
+      action: "models.provider.key.set",
+      path: "/models/providers/nim/key",
+      body: { api_key: "nvapi-secret" },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

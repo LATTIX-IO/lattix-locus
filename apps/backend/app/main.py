@@ -20503,6 +20503,119 @@ def system_update_cancel() -> dict[str, Any]:
     return {"released": bool(_update_channel_port().release())}
 
 
+# ---------------------------------------------------------------------------
+# Self-improvement loop controls for Settings → Loop & Linear (LOCUS-353). The
+# same switches as `lattix loop status|enable|disable|autostart`. Turning the
+# loop on and autostarting it widen what runs unattended: on the desktop they
+# need the shell's confirmation (request_security "loop.enable" and
+# "loop.autostart.enable"). Turning it off, or autostart off, only narrows.
+# The Linear key is reported as present or absent, never returned.
+# ---------------------------------------------------------------------------
+def _loop_status_payload() -> dict[str, Any]:
+    from locus_runtime.loop_runner import loop_status
+    from locus_runtime.loop_runner.linear import LinearNotConfigured, resolve_linear_key
+    from locus_runtime.loop_runner.state import DISABLED_ENV, default_loop_home
+    from locus_tooling.desktop_update import read_loop_autostart
+
+    home = default_loop_home()
+    status = loop_status(home)
+    status.pop("home", None)  # a local path the UI does not need
+    try:
+        resolve_linear_key()
+        linear_configured = True
+    except LinearNotConfigured:
+        linear_configured = False
+    autostart = read_loop_autostart(home)
+    return {
+        **status,
+        "disabled_by_environment": str(os.getenv(DISABLED_ENV) or "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        "autostart": {"enabled": autostart.enabled, "repo_path": autostart.repo_path},
+        "linear": {"api_key_configured": linear_configured},
+    }
+
+
+@app.get("/loop/status")
+def loop_status_read(request: Request) -> dict[str, Any]:
+    _enforce_request_authn(request, action="loop.status.read", required=True)
+    return _loop_status_payload()
+
+
+@app.post("/loop/enable")
+def loop_enable(request: Request) -> dict[str, Any]:
+    """Clear the file kill switch. LOCUS_LOOP_DISABLED, when set, still wins."""
+    from locus_runtime.loop_runner.state import KILL_FILE, default_loop_home
+
+    actor = _enforce_principal_only(request, action="loop.enable")
+    (default_loop_home() / KILL_FILE).unlink(missing_ok=True)
+    _append_audit_event("loop.enable", actor, "allowed", {})
+    return _loop_status_payload()
+
+
+@app.post("/loop/disable")
+def loop_disable(request: Request) -> dict[str, Any]:
+    """Set the file kill switch: the loop stops before its next step."""
+    from locus_runtime.loop_runner.state import KILL_FILE, default_loop_home
+
+    actor = _enforce_request_authn(request, action="loop.disable", required=True)
+    home = default_loop_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / KILL_FILE).write_text("disabled from Locus Settings\n", encoding="utf-8")
+    _append_audit_event("loop.disable", actor, "allowed", {})
+    return _loop_status_payload()
+
+
+@app.post("/loop/autostart")
+def loop_autostart_enable(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Start `lattix loop serve` with the desktop app on this checkout (needs WORKFLOW.md)."""
+    from locus_runtime.loop_runner.state import default_loop_home
+    from locus_tooling.desktop_update import write_loop_autostart
+
+    actor = _enforce_principal_only(request, action="loop.autostart.enable")
+    # Confined like the working-folder picker: the checkout must lie under the
+    # projects root (no "..", control characters or symlink escapes), and be a
+    # git checkout. Deny by default.
+    resolved = _resolve_working_folder(str(payload.get("repo_path") or ""))
+    refused = HTTPException(
+        status_code=422, detail="repo_path must be a git checkout under the projects root"
+    )
+    if resolved is None:
+        raise refused
+    # Containment check before any filesystem access: a pure normpath + prefix
+    # test, then the same test again on the real path (symlinks) right before use.
+    root = os.path.realpath(str(_projects_root_path()))
+    prefix = root.rstrip(os.sep) + os.sep
+    candidate = os.path.normpath(resolved)
+    if not candidate.startswith(prefix):
+        raise refused
+    checkout = os.path.realpath(candidate)
+    if not checkout.startswith(prefix):
+        raise refused
+    if not os.path.exists(os.path.join(checkout, ".git")):
+        raise refused
+    try:
+        write_loop_autostart(default_loop_home(), enabled=True, repo_path=checkout)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail="repo_path must be a checkout that contains WORKFLOW.md"
+        ) from exc
+    _append_audit_event("loop.autostart.enable", actor, "allowed", {})
+    return _loop_status_payload()
+
+
+@app.delete("/loop/autostart")
+def loop_autostart_disable(request: Request) -> dict[str, Any]:
+    from locus_runtime.loop_runner.state import default_loop_home
+    from locus_tooling.desktop_update import write_loop_autostart
+
+    actor = _enforce_request_authn(request, action="loop.autostart.disable", required=True)
+    write_loop_autostart(default_loop_home(), enabled=False)
+    _append_audit_event("loop.autostart.disable", actor, "allowed", {})
+    return _loop_status_payload()
+
+
 @app.post("/system/shutdown")
 def system_shutdown(request: Request) -> JSONResponse:
     """Desktop only: tear down every spawned child process (frontend, DB, model,

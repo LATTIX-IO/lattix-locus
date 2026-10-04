@@ -4,7 +4,6 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, useSyncExternalStore } from "react";
 
 import {
-  getOperatorSession,
   loginWithLocalPassword,
   registerWithLocalPassword,
 } from "@/lib/api";
@@ -274,11 +273,7 @@ export function LattixAuthCard({ initialErrorCode }: LattixAuthCardProps = {}) {
           password: formData.password ?? "",
         });
       }
-      const session = await getOperatorSession();
-      const destination = session.capabilities.can_builder && session.default_mode === "builder"
-        ? "/builder/workflows"
-        : "/inbox";
-      router.replace(destination);
+      router.replace("/home");
       router.refresh();
     } catch (err) {
       setError(

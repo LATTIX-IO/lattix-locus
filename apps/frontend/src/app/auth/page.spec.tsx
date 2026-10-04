@@ -97,10 +97,10 @@ describe("LattixAuthCard", () => {
         password: "correct-horse",
       });
     });
-    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith("/inbox"));
+    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith("/home"));
   });
 
-  it("routes builder-default operators to the builder workflows screen", async () => {
+  it("routes every operator to Home after sign-in (there is no builder mode)", async () => {
     loginMock.mockResolvedValueOnce({ ok: true, authenticated: true, provider: "casdoor", mode: "oidc" });
     getSessionMock.mockResolvedValueOnce({
       authenticated: true,
@@ -114,7 +114,7 @@ describe("LattixAuthCard", () => {
     fireEvent.change(screen.getByLabelText(/^password$/i), { target: { value: "hunter2hunter" } });
     fireEvent.click(screen.getByRole("button", { name: /^sign in$/i }));
 
-    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith("/builder/workflows"));
+    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith("/home"));
   });
 
   it("surfaces the server error when credentials are rejected", async () => {
@@ -180,7 +180,7 @@ describe("LattixAuthCard", () => {
         password: "fresh-pass",
       });
     });
-    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith("/inbox"));
+    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith("/home"));
   });
 
   it("blocks sign-up submission when the password confirmation does not match", async () => {
