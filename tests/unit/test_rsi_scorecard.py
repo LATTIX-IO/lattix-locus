@@ -35,6 +35,7 @@ META = {
     "branch": "main",
     "split_digests": {"dev": "dev-digest", "heldout": "heldout-digest"},
     "trials": 1,
+    "isolation": "appcontainer",
 }
 
 
@@ -414,3 +415,38 @@ def test_property_more_heldout_passes_never_turn_promote_into_hold() -> None:
         if compare(base, _card(heldout=(k, 20))).promote:
             for better in range(k, 21):
                 assert compare(base, _card(heldout=(better, 20))).promote
+
+
+# --------------------------------------------------------------------------- #
+# LOCUS-379: candidate isolation
+# --------------------------------------------------------------------------- #
+def test_isolation_is_recorded_and_unknown_or_missing_reads_as_none() -> None:
+    assert _card().isolation == "appcontainer"
+    for meta in (
+        {**META, "isolation": "docker"},
+        {k: v for k, v in META.items() if k != "isolation"},
+    ):
+        assert _card(meta=meta).isolation == "none"
+    # Scorecards from before LOCUS-379 (no field) ran unjailed: they load as none.
+    legacy = _card().model_dump(mode="json")
+    legacy.pop("isolation")
+    assert Scorecard.model_validate(legacy).isolation == "none"
+
+
+def test_an_unisolated_candidate_is_held_however_good_it_is() -> None:
+    base = _card(heldout=(5, 20))
+    jailed = _card(heldout=(19, 20))
+    assert compare(base, jailed).promote
+    unjailed = _card(heldout=(19, 20), meta={**META, "isolation": "none"})
+    result = compare(base, unjailed)
+    assert result.decision == "hold"
+    assert "candidate not isolated (isolation: none)" in result.reasons
+    # Only the candidate must be isolated: an unjailed (legacy) baseline still compares.
+    legacy_base = _card(heldout=(5, 20), meta={**META, "isolation": "none"})
+    assert compare(legacy_base, jailed).promote
+
+
+def test_markdown_states_the_isolation() -> None:
+    assert "- Candidate isolation: **appcontainer**" in scorecard_markdown(_card())
+    text = "\n".join(scorecard_markdown(_card(meta={**META, "isolation": "none"})))
+    assert "**none** (not jailed: never promoted)" in text

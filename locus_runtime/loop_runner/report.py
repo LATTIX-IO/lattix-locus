@@ -61,6 +61,7 @@ def build_report(
     now: datetime | None = None,
     days: int = 30,
     scorecards: Sequence[Mapping[str, Any]] = (),
+    scorecard_posture: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The report over the last ``days`` days (pure)."""
     moment = now or datetime.now(UTC)
@@ -111,7 +112,14 @@ def build_report(
     card_window = _within(scorecards, "at", since)
     card_measured = [c for c in card_window if _number(c.get("heldout_pass_rate")) is not None]
     heldout = [float(c["heldout_pass_rate"]) for c in card_measured]
+    posture = dict(scorecard_posture or {})
     scorecard = {
+        "mode": posture.get("mode"),
+        "mode_reason": posture.get("reason"),
+        "candidate_jail": posture.get("candidate_jail"),
+        "isolation": dict(
+            sorted(Counter(str(c.get("isolation") or "none") for c in card_window).items())
+        ),
         "runs": len(card_window),
         "statuses": dict(
             sorted(Counter(str(c.get("status") or "unknown") for c in card_window).items())
@@ -174,9 +182,19 @@ def load_report(
         now=now,
         days=days,
         scorecards=ScorecardHistory(base).load(),
+        scorecard_posture=_posture(),
     )
     report["home"] = str(base)
     return report
+
+
+def _posture() -> dict[str, Any]:
+    from locus_runtime.loop_runner.scorecard_gate import scorecard_posture
+
+    try:
+        return scorecard_posture()
+    except Exception as exc:  # noqa: BLE001 - the report is read-only and never fails
+        return {"mode": "off", "reason": f"scorecard posture unavailable ({type(exc).__name__})"}
 
 
 def _pct(value: Any) -> str:
@@ -201,9 +219,13 @@ def render_text(report: Mapping[str, Any]) -> str:
         f"{_pct(ev.get('mean_resolve_rate'))}, statuses {ev.get('statuses') or {}}",
     ]
     card = report.get("scorecard") or {}
+    if card.get("mode"):
+        reason = card.get("mode_reason") or ""
+        lines.append(f"  RSI scorecard mode: {card.get('mode')} ({reason})")
     lines.append(
         f"  RSI scorecard: latest held-out {_pct(card.get('latest_heldout_pass_rate'))}, "
-        f"change {_pct(card.get('change'))}, statuses {card.get('statuses') or {}}"
+        f"change {_pct(card.get('change'))}, statuses {card.get('statuses') or {}}, "
+        f"isolation {card.get('isolation') or {}}"
     )
     for metric, data in ((report.get("perf") or {}).get("metrics") or {}).items():
         latest = _number(data.get("latest_ms"))

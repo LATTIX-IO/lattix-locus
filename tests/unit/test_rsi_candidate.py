@@ -4,6 +4,10 @@ Environment scrub (allowlist, not a copy), no keychain, separate app home, its
 own telemetry DB, the candidate's code (not the installed one), and the checks
 that turn a violation into an error instead of a result. The probe tests start
 a real child Python with the scrubbed environment.
+
+These tests exercise the **unjailed** path (``LOCUS_RSI_CANDIDATE_UNJAILED=1``,
+the explicit opt-out), which every OS can run; the OS jail itself (LOCUS-379) is
+tested in ``test_rsi_candidate_jail.py``.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from locus_runtime.rsi.candidate import (
     CandidateInstance,
     is_secret_like,
 )
+from locus_runtime.rsi.jail import UNJAILED_ENV
 
 REPO = Path(__file__).resolve().parents[2]
 PARENT_ENV = {
@@ -44,6 +49,11 @@ PARENT_ENV = {
     "HTTPS_PROXY": "http://corp-proxy:8080",
     "PYTHONPATH": "C:\\installed\\locus",
 }
+
+
+@pytest.fixture(autouse=True)
+def _unjailed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(UNJAILED_ENV, "1")
 
 
 def _instance(

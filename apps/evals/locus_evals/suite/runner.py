@@ -480,6 +480,7 @@ def score(
     *,
     engine: str,
     notes: Sequence[str] = (),
+    isolation: str = "none",
 ) -> Scorecard:
     tamper = TamperCheck(
         verified_before=ctx.tamper.verified_before,
@@ -501,6 +502,7 @@ def score(
             "suite_version": SUITE_VERSION,
             "split_digests": {s: d for s, d in ctx.sealed.split_digests.items() if s in cfg.splits},
             "trials": cfg.trials,
+            "isolation": isolation,
             "notes": list(notes),
         },
     )
@@ -564,7 +566,7 @@ def git_identity(checkout: Path) -> tuple[str, str, bool]:
 def run_suite(cfg: SuiteRunConfig) -> SuiteRun:
     """Install + seal the suite, run it against the candidate, write the scorecard."""
     from locus_runtime.policy_engine import OpaSidecarEngine, default_policy_dir, find_opa_binary
-    from locus_runtime.rsi.candidate import CandidateInstance
+    from locus_runtime.rsi.candidate import CandidateError, CandidateInstance
     from locus_runtime.rsi.metering import MeteringProxy
     from locus_runtime.win_toolchain import toolchain_app_home
 
@@ -583,28 +585,48 @@ def run_suite(cfg: SuiteRunConfig) -> SuiteRun:
         raise SuiteUnavailable("no OPA binary (LOCUS_OPA_BIN): the gateway must be enforcing")
     upstream = _upstream(cfg)
     _preflight(upstream)
-    engine = OpaSidecarEngine(opa_binary=binary, timeout_seconds=10.0)
-    engine.start()
-    proxy = MeteringProxy(upstream, expected_model=cfg.model)
-    proxy_url = proxy.start()
-    candidate = CandidateInstance(
-        cfg.candidate_checkout,
-        model_base_url=proxy_url,
-        model=cfg.model,
-        provider=cfg.provider,
-        python=cfg.candidate_python,
-        runtime=cfg.runtime,
-        opa_bin=str(binary),
-        policy_dir=str(default_policy_dir()),
-        toolchain_home=str(toolchain_app_home()),
-        timeout_seconds=cfg.max_seconds + 300.0,
-        keep_home=cfg.keep_candidate_home,
-    )
-    started = time.monotonic()
-    ctx = EvalContext(
-        cfg=cfg, sealed=sealed, candidate=candidate, meter=proxy, run_tests=JailTestRunner(engine)
-    )
     try:
+        candidate = CandidateInstance(
+            cfg.candidate_checkout,
+            model_base_url="http://127.0.0.1:1/v1",  # replaced by the proxy URL below
+            model=cfg.model,
+            provider=cfg.provider,
+            python=cfg.candidate_python,
+            runtime=cfg.runtime,
+            opa_bin=str(binary),
+            policy_dir=str(default_policy_dir()),
+            toolchain_home=str(toolchain_app_home()),
+            timeout_seconds=cfg.max_seconds + 300.0,
+            keep_home=cfg.keep_candidate_home,
+        )
+    except CandidateError as exc:
+        # No OS jail here and no explicit unjailed opt-out: skipped, never unjailed.
+        raise SuiteUnavailable(str(exc)) from exc
+    engine = OpaSidecarEngine(opa_binary=binary, timeout_seconds=10.0)
+    proxy = MeteringProxy(upstream, expected_model=cfg.model)
+    started = time.monotonic()
+    try:
+        engine.start()
+        candidate.model_base_url = proxy.start()
+        if candidate.jailed:
+            try:
+                probe = candidate.verify_isolation()
+            except CandidateError as exc:
+                raise SuiteUnavailable(f"candidate isolation not proven: {exc}") from exc
+            blocked = sum(len(probe.get(k) or {}) for k in ("read", "write", "list", "connect"))
+            notes.append(
+                f"candidate jail: {candidate.isolation}; isolation probe blocked {blocked} "
+                f"escape attempts; jail setup {candidate.setup_seconds:.1f}s"
+            )
+        else:
+            notes.append("candidate NOT jailed (LOCUS_RSI_CANDIDATE_UNJAILED=1): never promoted")
+        ctx = EvalContext(
+            cfg=cfg,
+            sealed=sealed,
+            candidate=candidate,
+            meter=proxy,
+            run_tests=JailTestRunner(engine),
+        )
         records, engine_name, log_dir = run_records(
             tasks, cfg, lambda task, trial: evaluate_sample(ctx, task, trial)
         )
@@ -614,7 +636,9 @@ def run_suite(cfg: SuiteRunConfig) -> SuiteRun:
         proxy.close()
         engine.close()
     notes.append(f"evaluator wall time {time.monotonic() - started:.0f}s")
-    scorecard = score(records, ctx, cfg, engine=engine_name, notes=notes)
+    scorecard = score(
+        records, ctx, cfg, engine=engine_name, notes=notes, isolation=candidate.isolation
+    )
     run = SuiteRun(scorecard=scorecard, records=records, inspect_log_dir=log_dir)
     run.scorecard_path = write_outputs(run, cfg.output_dir)
     for split, s in scorecard.splits.items():

@@ -7,11 +7,12 @@ copy) in a :class:`~locus_runtime.rsi.candidate.CandidateInstance`, compares
 the scorecard with the stored baseline (the latest complete scorecard of the
 base branch in ``LOCUS_LOOP_HOME/variants/``) and records the variant.
 
-Modes (``LOCUS_LOOP_SCORECARD``): ``off`` (default: the candidate runs
-agent-written code outside the jail, so opting in is a principal decision);
-``advisory`` (formerly the default for ``lattix
-loop``: run, record, attach to the PR; never blocks); ``required`` (the D-22
-auto-merge additionally holds unless the comparison says ``promote``).
+Modes (``LOCUS_LOOP_SCORECARD``): ``off``; ``advisory`` (run, record, attach to
+the PR; never blocks); ``required`` (the D-22 auto-merge additionally holds
+unless the comparison says ``promote``). The default (LOCUS-379) is
+``advisory`` when this host can run the candidate in an OS jail
+(:func:`locus_runtime.rsi.jail.jail_availability`) and ``off`` otherwise; the
+reason is shown by ``lattix loop status`` / ``report`` (:func:`scorecard_posture`).
 
 Fail honest: no reachable keyless model endpoint, no OPA or no suite means
 ``skipped`` with the reason; a crash is ``error``. Neither is ever a promote.
@@ -20,6 +21,7 @@ Fail honest: no reachable keyless model endpoint, no OPA or no suite means
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -50,6 +52,37 @@ class ScorecardUnavailable(RuntimeError):
 def parse_scorecard_mode(value: str | None, default: EvalMode = "advisory") -> EvalMode:
     """``off`` | ``advisory`` | ``required`` (same spelling rules as the eval gate)."""
     return parse_eval_mode(value, default)
+
+
+def default_scorecard_mode() -> tuple[EvalMode, str]:
+    """``(mode, reason)``: ``advisory`` when the candidate can be jailed on this host
+    (LOCUS-379), else ``off`` with what is missing."""
+    from locus_runtime.rsi.jail import jail_availability
+
+    availability = jail_availability()
+    if availability.tier is not None:
+        return "advisory", f"candidate jail available: {availability.tier} ({availability.reason})"
+    return "off", (
+        f"no OS jail for the candidate instance on this host ({availability.reason}); "
+        "the scorecard stays off unless LOCUS_LOOP_SCORECARD is set"
+    )
+
+
+def scorecard_posture(env: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """The scorecard mode in effect and why (``lattix loop status`` / ``report``)."""
+    from locus_runtime.rsi.jail import jail_availability, unjailed_requested
+
+    source = os.environ if env is None else env
+    default, reason = default_scorecard_mode()
+    raw = str(source.get("LOCUS_LOOP_SCORECARD") or "").strip()
+    return {
+        "mode": parse_scorecard_mode(raw, default) if raw else default,
+        "default": default,
+        "configured": bool(raw),
+        "candidate_jail": jail_availability().tier,
+        "unjailed_opt_out": unjailed_requested(source),
+        "reason": reason,
+    }
 
 
 def scorecard_merge_hold_reason(mode: str, status: str | None) -> str:
@@ -90,6 +123,7 @@ class ScorecardGateResult:
             "heldout_pass_rate": heldout.pass_rate if heldout else None,
             "dev_pass_rate": dev.pass_rate if dev else None,
             "scorecard_status": self.scorecard.status if self.scorecard else None,
+            "isolation": self.scorecard.isolation if self.scorecard else None,
             "reasons": list(self.comparison.reasons[:8]) if self.comparison else [],
             "improvements": list(self.comparison.improvements) if self.comparison else [],
             "variant": Path(self.variant_path).name if self.variant_path else "",
