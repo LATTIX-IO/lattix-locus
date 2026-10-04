@@ -10,14 +10,18 @@ first and to finish with ``submit``.
 
 from __future__ import annotations
 
+#: Like the verified loop's ``update_plan``: the plan is recorded once and revised
+#: when it changes. Upstream's prompt asks for a status update after every step,
+#: which costs a whole model turn each time (measured: up to 6 per small task).
 TODO_SYSTEM_PROMPT = (
-    "Keep your plan current with `write_todos` (at most one call per turn). Finish by "
-    "calling `submit`: it runs the verifiers."
+    "Record your plan once with `write_todos`; call it again only when the plan itself "
+    "changes, not to report progress. Finish by calling `submit`: it runs the verifiers."
 )
 
 TODO_TOOL_DESCRIPTION = (
-    "Record or update the run plan: the full list of steps, each with a status "
-    "(pending, in_progress or completed). Each call replaces the previous list."
+    "Record the run plan: the full list of steps, each with a status (pending, "
+    "in_progress or completed). A call replaces the previous list; call it again only "
+    "when the plan changes."
 )
 
 #: ``{available_agents}`` is filled in by Deep Agents' SubAgentMiddleware.
