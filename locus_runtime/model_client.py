@@ -99,8 +99,10 @@ def redact_reason(text: Any, *, secrets: Sequence[str] = ()) -> str:
     return redact_text(value, limit=_REASON_MAX)
 
 
-#: P28 provenance policy: model families and publishers that must never be called,
-#: whatever provider hosts them (Qwen, DeepSeek, Yi, GLM, Kimi and their publishers).
+#: P28 provenance policy: model families and publishers from a P28-listed origin
+#: (Qwen, DeepSeek, Yi, GLM, Kimi and their publishers). Hosted/API inference of
+#: these is always refused; on a local engine (loopback) a model is allowed only
+#: with a passing local-model provenance attestation (D-29, :func:`provenance_denial`).
 _EXCLUDED_MODEL_PATTERN = re.compile(
     r"(^|[/:_.-])(qwen|qwq|deepseek|yi-|yi_|01-ai|glm|chatglm|z-ai|zhipu|kimi|moonshot|"
     r"baichuan|internlm|minimax|ernie|hunyuan|doubao)",
@@ -108,9 +110,57 @@ _EXCLUDED_MODEL_PATTERN = re.compile(
 )
 
 
+def listed_model_lineage(model: str) -> str:
+    """The P28-listed family ``model`` belongs to (``"qwen"``, ``"deepseek"``, ...), or ``""``."""
+    match = _EXCLUDED_MODEL_PATTERN.search(str(model or "").strip())
+    return match.group(2).lower().rstrip("-_") if match else ""
+
+
 def is_provenance_excluded(model: str) -> bool:
-    """True when ``model`` belongs to a family excluded by P28 (checked on every call)."""
-    return bool(_EXCLUDED_MODEL_PATTERN.search(str(model or "").strip()))
+    """True when ``model`` is of a P28-listed lineage (checked on every endpoint resolve).
+
+    Such a model is refused for hosted inference whatever any attestation says; a
+    local engine may still serve it with a passing attestation (:func:`provenance_denial`).
+    """
+    return bool(listed_model_lineage(model))
+
+
+def _local_model_verdict(provider: str, model: str) -> tuple[bool, str]:
+    """D-29 attestation lookup for a listed-lineage model on a local engine (fail closed)."""
+    try:
+        from locus_tooling.provenance.models import local_model_verdict
+
+        verdict = local_model_verdict(provider, model)
+    except Exception as exc:  # noqa: BLE001 - any lookup failure denies
+        return False, f"attestation lookup failed ({type(exc).__name__})"
+    return verdict.passing, verdict.reason
+
+
+def provenance_denial(provider: str, model: str, base_url: str) -> str:
+    """Why P28/D-29 refuses ``model`` at ``base_url``, or ``""`` when it may run.
+
+    * Not of a listed lineage: allowed (other controls still apply).
+    * Listed lineage on a non-loopback endpoint (hosted, API or web inference):
+      refused, whatever the attestation says.
+    * Listed lineage on a loopback engine: allowed only with a passing local-model
+      attestation whose weights digest matches what the engine will load.
+    """
+    lineage = listed_model_lineage(model)
+    if not lineage:
+        return ""
+    host = host_of(base_url) if base_url else ""
+    if not host or not is_loopback_host(host):
+        return (
+            f"hosted inference of a P28-listed model lineage ('{lineage}') is excluded "
+            "by the provenance policy (P28, D-29)"
+        )
+    allowed, reason = _local_model_verdict(provider, model)
+    if allowed:
+        return ""
+    return (
+        f"local model of P28-listed lineage '{lineage}' needs a passing provenance "
+        f"attestation (D-29): {reason}"
+    )
 
 
 class ModelProviderError(RuntimeError):
@@ -460,14 +510,15 @@ def resolve_endpoint(
             model=bare,
             reason=f"unknown model provider '{provider_id}'",
         )
-    if is_provenance_excluded(bare):
+    url = str(base_url or settings.value(provider_id, "base_url") or "").strip().rstrip("/")
+    denial = provenance_denial(provider_id, bare, url)
+    if denial:
         raise ModelProviderError(
             code=MODEL_CALL_DENIED,
             provider=provider_id,
             model=bare,
-            reason="model family excluded by the provenance policy (P28)",
+            reason=denial,
         )
-    url = str(base_url or settings.value(provider_id, "base_url") or "").strip().rstrip("/")
     if not url or not host_of(url):
         raise ModelProviderError(
             code=PROVIDER_NOT_CONFIGURED,
