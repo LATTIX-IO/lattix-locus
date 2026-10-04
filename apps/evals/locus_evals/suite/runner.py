@@ -306,6 +306,9 @@ def evaluate_sample(ctx: EvalContext, task: SuiteTask, trial: int) -> SampleReco
             **base_info, status="error", error=f"suite store tampered: {ctx.stopped}"[:300]
         )
     base = Path(tempfile.mkdtemp(prefix="rsi-", dir=ctx.cfg.work_dir)).resolve()
+    # Graded copy in a separate, unannounced directory: a process the candidate
+    # left behind cannot find (or race) what is graded.
+    grade_dir = Path(tempfile.mkdtemp(prefix="rsi-grade-", dir=ctx.cfg.work_dir)).resolve()
     try:
         root = materialize(task, base)
         envelope = task_envelope(task, root, ctx.cfg)
@@ -335,7 +338,7 @@ def evaluate_sample(ctx: EvalContext, task: SuiteTask, trial: int) -> SampleReco
         meter = ctx.meter.take()
         if not error and result.get("end_state") == "error":
             error = str(result.get("error") or "candidate run error")[:300]
-        grade_root = base / "grade"
+        grade_root = grade_dir / "ws"
         shutil.copytree(root, grade_root, ignore=shutil.ignore_patterns(".git"))
         evidence = RunEvidence(
             end_state=str(result.get("end_state") or ""),
@@ -375,6 +378,7 @@ def evaluate_sample(ctx: EvalContext, task: SuiteTask, trial: int) -> SampleReco
         )
     finally:
         _rmtree(base)
+        _rmtree(grade_dir)
     ctx.verify_store("after")
     _record_telemetry(record)
     return record
