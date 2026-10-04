@@ -1814,6 +1814,31 @@ def _safe_post_auth_redirect_path(candidate: str) -> str:
     return value
 
 
+#: Where a browser OIDC sign-in may land (LOCUS-344). The landing is chosen from
+#: these constants, so no request-derived text reaches the flow cookie or the
+#: redirect; deep links fall back to their section.
+_POST_AUTH_LANDINGS: tuple[str, ...] = (
+    "/home",
+    "/activity",
+    "/memory",
+    "/library",
+    "/settings",
+    "/workflows",
+    "/artifacts",
+    "/inbox",
+)
+
+
+def _post_auth_landing(candidate: str) -> str:
+    """The constant landing page for ``candidate`` (its first path segment)."""
+    path = urlsplit(_safe_post_auth_redirect_path(candidate)).path
+    first = "/" + path.lstrip("/").split("/", 1)[0]
+    for landing in _POST_AUTH_LANDINGS:
+        if first == landing:
+            return landing
+    return _POST_AUTH_REDIRECT_DEFAULT
+
+
 def _generate_oidc_pkce_verifier() -> str:
     return base64.urlsafe_b64encode(os.urandom(48)).decode("utf-8").rstrip("=")
 
@@ -18595,11 +18620,16 @@ def start_oidc_browser_login(
     nonce = base64.urlsafe_b64encode(os.urandom(24)).decode("utf-8").rstrip("=")
     code_verifier = _generate_oidc_pkce_verifier()
     payload = {
-        "intent": chosen_intent,
+        # Constants only: the cookie carries no request-derived text (LOCUS-344).
+        "intent": (
+            OidcBrowserIntent.SIGNUP
+            if chosen_intent == OidcBrowserIntent.SIGNUP
+            else OidcBrowserIntent.SIGNIN
+        ),
         "state": state,
         "nonce": nonce,
         "code_verifier": code_verifier,
-        "return_to": _safe_post_auth_redirect_path(next),
+        "return_to": _post_auth_landing(next),
         "expires_at": (
             datetime.now(timezone.utc) + timedelta(seconds=_oidc_browser_flow_ttl_seconds())
         ).isoformat(),
@@ -18664,7 +18694,7 @@ def complete_oidc_browser_login(request: Request) -> RedirectResponse:
             code_verifier=code_verifier,
         )
         session_token = _verified_oidc_session_token_from_exchange(token_payload)
-        return_to = _safe_post_auth_redirect_path(str(browser_flow.get("return_to") or "/inbox"))
+        return_to = _post_auth_landing(str(browser_flow.get("return_to") or ""))
     except Exception:  # noqa: BLE001
         response = RedirectResponse(
             url=_oidc_error_redirect("Unable to complete browser sign-in."),
@@ -18673,10 +18703,6 @@ def complete_oidc_browser_login(request: Request) -> RedirectResponse:
         _clear_oidc_browser_flow_cookie(response, request)
         return response
 
-    # Same-origin relative path only, checked at the redirect itself.
-    target = urlsplit(return_to)
-    if target.scheme or target.netloc or not return_to.startswith("/") or return_to[1:2] in {"/", "\\"}:
-        return_to = _POST_AUTH_REDIRECT_DEFAULT
     response = RedirectResponse(url=return_to, status_code=302)
     _set_operator_session_cookie(response, request, session_token)
     _clear_oidc_browser_flow_cookie(response, request)

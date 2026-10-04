@@ -299,3 +299,24 @@ def test_integration_probe_failure_hides_exception_detail(monkeypatch) -> None:
         assert "Traceback" not in response.text
     finally:
         store.integrations.pop(integration_id, None)
+
+
+@pytest.mark.parametrize(
+    ("candidate", "landing"),
+    [
+        ("/activity?session=abc", "/activity"),
+        ("/settings/engines", "/settings"),
+        ("/home", "/home"),
+        ("/library/skills/x", "/library"),
+        ("https://evil.example/home", "/inbox"),
+        ("//evil.example/home", "/inbox"),
+        ("/\evil.example", "/inbox"),
+        ("/unknown/page", "/inbox"),
+        ("", "/inbox"),
+    ],
+)
+def test_post_auth_landing_is_a_constant_section(candidate: str, landing: str) -> None:
+    # LOCUS-344: the OIDC flow cookie and redirect carry only constant landings.
+    result = main_module._post_auth_landing(candidate)
+    assert result == landing
+    assert result in (*main_module._POST_AUTH_LANDINGS, main_module._POST_AUTH_REDIRECT_DEFAULT)
