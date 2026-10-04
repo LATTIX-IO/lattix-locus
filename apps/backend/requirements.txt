@@ -23,12 +23,10 @@ langchain-core==1.6.6
 langgraph==1.2.12
 langgraph-checkpoint==4.2.0
 langgraph-checkpoint-sqlite==3.1.1
-nats-py>=2.10.0
 # AI observability (LOCUS-375): locus_runtime.telemetry; pinned together. Apache-2.0.
 opentelemetry-api==1.40.0
 opentelemetry-exporter-otlp-proto-http==1.40.0
 opentelemetry-sdk==1.40.0
-opa-python-client>=0.2.3
 # [binary] bundles libpq — required on slim images with no system Postgres client libs.
 psycopg[binary]>=3.2.0
 pydantic>=2.10.0
@@ -36,9 +34,7 @@ pydantic-settings>=2.7.0
 PyYAML>=6.0
 python-dotenv>=1.0.1
 redis>=5.2.1
-structlog>=24.4.0
 tldextract>=5.1.0
 uvicorn[standard]>=0.34.0
-zeroconf>=0.145.0
 # Lazily-imported optional clients used by the local-first profile:
 openai>=1.50.0

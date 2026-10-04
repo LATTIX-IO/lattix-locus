@@ -465,37 +465,6 @@
         "https://github.com/langchain-ai"
       ]
     },
-    "nats-py": {
-      "ecosystem": "pypi",
-      "scope": "direct",
-      "p28_status": "not-listed",
-      "countries": [
-        "US"
-      ],
-      "maintainer": "Synadia Communications (Waldemar Quevedo)",
-      "basis": "Author Waldemar Quevedo <wally@synadia.com>; GitHub profile wallyqs: San Francisco, Synadia Communications; synadia-io organization location 'United States of America'.",
-      "confidence": "medium",
-      "evidence": [
-        "https://pypi.org/project/nats-py/",
-        "https://github.com/nats-io/nats.py",
-        "https://github.com/wallyqs",
-        "https://github.com/synadia-io"
-      ]
-    },
-    "opa-python-client": {
-      "ecosystem": "pypi",
-      "scope": "direct",
-      "p28_status": "unknown",
-      "countries": [],
-      "maintainer": "Tural Muradov",
-      "basis": "Single maintainer (GitHub Turall, PyPI author Tural Muradov); no location on the GitHub profile or PyPI.",
-      "confidence": "low",
-      "evidence": [
-        "https://pypi.org/project/opa-python-client/",
-        "https://github.com/Turall/OPA-python-client",
-        "https://github.com/Turall"
-      ]
-    },
     "openai": {
       "ecosystem": "pypi",
       "scope": "direct",
@@ -778,22 +747,6 @@
       ],
       "attestation": "attestations/pypi/sqlite-vec@0.1.9.json"
     },
-    "structlog": {
-      "ecosystem": "pypi",
-      "scope": "direct",
-      "p28_status": "not-listed",
-      "countries": [
-        "DE"
-      ],
-      "maintainer": "Hynek Schlawack",
-      "basis": "Author per PyPI metadata; GitHub profile hynek: Berlin, Variomedia AG (self-reported).",
-      "confidence": "medium",
-      "evidence": [
-        "https://pypi.org/project/structlog/",
-        "https://github.com/hynek/structlog",
-        "https://github.com/hynek"
-      ]
-    },
     "tldextract": {
       "ecosystem": "pypi",
       "scope": "direct",
@@ -842,22 +795,6 @@
         "https://pypi.org/project/uvicorn/",
         "https://github.com/Kludex/uvicorn",
         "https://github.com/Kludex"
-      ]
-    },
-    "zeroconf": {
-      "ecosystem": "pypi",
-      "scope": "direct",
-      "p28_status": "not-listed",
-      "countries": [
-        "US"
-      ],
-      "maintainer": "J. Nick Koston",
-      "basis": "Maintainer per PyPI metadata; GitHub profile bdraco: Houston, TX (self-reported).",
-      "confidence": "medium",
-      "evidence": [
-        "https://pypi.org/project/zeroconf/",
-        "https://github.com/python-zeroconf/python-zeroconf",
-        "https://github.com/bdraco"
       ]
     }
   }
