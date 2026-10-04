@@ -854,3 +854,38 @@ def test_register_on_posix_uses_per_user_browser_dirs(
     assert paths["chrome"] == tmp_path / chrome_dir / "io.lattix.locus_browser.json"
     assert paths["firefox"] == tmp_path / firefox_dir / "io.lattix.locus_browser.json"
     assert all(r.registry_key == "" for r in done)
+
+
+def test_moving_down_the_tiers_narrows_without_acknowledgement(store: tiers_mod.TierStore) -> None:
+    calls: list[str] = []
+    store.update(
+        tier="open",
+        granted_sites=["a.com"],
+        actor="alice",
+        principal_type="user",
+        acknowledge_risk=True,
+        confirm_widening=lambda: calls.append("open"),
+    )
+    lower = store.update(
+        tier="trusted",
+        actor="alice",
+        principal_type="user",
+        confirm_widening=lambda: calls.append("trusted"),
+    )
+    assert lower.effective_tier == "trusted" and lower.consent is not None
+    assert lower.consent.risk_acknowledged == tiers_mod.TIER_RISKS["trusted"]
+    assert calls == ["open"]  # the downgrade was not a widening
+
+    def refuse() -> None:
+        raise tiers_mod.TierConfirmationRequired("missing_proof")
+
+    with pytest.raises(tiers_mod.TierConfirmationRequired):
+        store.update(
+            tier="trusted",
+            granted_sites=["a.com", "b.com"],
+            actor="alice",
+            principal_type="user",
+            acknowledge_risk=True,
+            confirm_widening=refuse,
+        )
+    assert store.settings.granted_sites == ("a.com",)

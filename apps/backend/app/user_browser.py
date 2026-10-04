@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from locus_runtime.computer_use.controller import get_controller
+from locus_tooling import shell_confirmation
 from locus_runtime.computer_use.user_browser.pairing import (
     CHROMIUM_EXTENSION_ID,
     FIREFOX_EXTENSION_ID,
@@ -112,6 +113,45 @@ def cross_site_refusal(headers: Mapping[str, str], allowed_origins: list[str]) -
     return None
 
 
+def shell_proof_required(runtime_profile: str) -> bool:
+    """Widening needs the desktop shell's proof on the desktop profile (loopback
+    bootstrap) and wherever a shell secret was handed over. Fail closed: on the
+    desktop profile with no shell secret, widening is refused."""
+    return runtime_profile == "local-native" or shell_confirmation.secret_installed()
+
+
+def _proof_header(headers: Mapping[str, str]) -> str | None:
+    for key, value in headers.items():
+        if str(key).lower() == shell_confirmation.PROOF_HEADER:
+            return str(value)
+    return None
+
+
+def verify_tier_proof(headers: Mapping[str, str], payload: Mapping[str, Any]) -> None:
+    """The shell's proof for this exact tier request (raises ``ShellProofError``).
+
+    On the proof path the request must state both site lists, so the dialog
+    the human confirmed showed every site the tier will cover.
+    """
+    allow, grant = payload.get("allowlisted_sites"), payload.get("granted_sites")
+    if not isinstance(allow, list) or not isinstance(grant, list):
+        raise shell_confirmation.ShellProofError("site_lists_required")
+    tier = str(payload.get("tier") or "")
+    shell_confirmation.verify(
+        _proof_header(headers),
+        lambda nonce, ts: shell_confirmation.tier_message(
+            tier=tier, allowlisted_sites=allow, granted_sites=grant, nonce=nonce, timestamp=ts
+        ),
+    )
+
+
+def verify_pairing_proof(headers: Mapping[str, str]) -> None:
+    shell_confirmation.verify(
+        _proof_header(headers),
+        lambda nonce, ts: shell_confirmation.pairing_message(nonce=nonce, timestamp=ts),
+    )
+
+
 def status_payload(hub: RelayHub) -> dict[str, Any]:
     settings = get_tier_store().settings
     return {
@@ -131,6 +171,9 @@ __all__ = [
     "ensure_user_browser",
     "is_human_principal",
     "relay_request_refusal",
+    "shell_proof_required",
+    "verify_pairing_proof",
+    "verify_tier_proof",
     "status_payload",
     "tier_store_path",
 ]

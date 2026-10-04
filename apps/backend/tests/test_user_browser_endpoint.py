@@ -323,3 +323,148 @@ def test_posture_shows_the_tier_and_who_accepted_it() -> None:
     )
     assert state == "degraded"
     assert "open" in evidence and "alice" in evidence and "2026-10-03T12:00:00Z" in evidence
+
+
+# --------------------------------------------------------------------------- #
+# Desktop: widening needs the shell's out-of-band confirmation proof
+# --------------------------------------------------------------------------- #
+SHELL_SECRET = bytes(range(100, 132))
+
+
+@pytest.fixture()
+def desktop(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    from locus_tooling import shell_confirmation as sc
+
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-native")
+    sc.install_secret(SHELL_SECRET)
+    try:
+        yield
+    finally:
+        sc.install_secret(None)
+
+
+def _tier_proof(body: dict[str, Any], *, ts: int | None = None, key: bytes = SHELL_SECRET) -> str:
+    import secrets as _secrets
+    import time as _time
+
+    from locus_tooling import shell_confirmation as sc
+
+    return sc.proof_header(
+        key,
+        lambda nonce, stamp: sc.tier_message(
+            tier=body["tier"],
+            allowlisted_sites=body.get("allowlisted_sites"),
+            granted_sites=body.get("granted_sites"),
+            nonce=nonce,
+            timestamp=stamp,
+        ),
+        nonce=_secrets.token_hex(16),
+        timestamp=int(_time.time()) if ts is None else ts,
+    )
+
+
+def _put_tier(body: dict[str, Any], proof: str | None = None) -> Any:
+    headers = dict(PRINCIPAL)
+    if proof is not None:
+        headers["X-Locus-Shell-Proof"] = proof
+    return client.put("/user-browser/tier", json=body, headers=headers)
+
+
+WIDEN = {
+    "tier": "trusted",
+    "allowlisted_sites": ["example.com"],
+    "granted_sites": ["mail.example.com"],
+    "acknowledge_risk": True,
+}
+
+
+def test_desktop_widening_without_proof_is_refused_and_audited(desktop: None) -> None:
+    from app.main import store as backend_store
+
+    refused = _put_tier(WIDEN)
+    assert refused.status_code == 403, refused.text
+    assert tiers_mod.get_tier_store().settings.tier == "strict"
+    event = next(e for e in backend_store.audit_events if e.action == "user_browser.tier.set")
+    assert event.outcome == "blocked" and event.metadata["reason"] == "missing_proof"
+
+
+def test_desktop_widening_with_a_valid_proof_and_its_replay(desktop: None) -> None:
+    proof = _tier_proof(WIDEN)
+    done = _put_tier(WIDEN, proof)
+    assert done.status_code == 200, done.text
+    assert done.json()["tier"] == "trusted" and done.json()["consent"]["tier"] == "trusted"
+    tiers_mod.get_tier_store().reset()
+    replay = _put_tier(WIDEN, proof)
+    assert replay.status_code == 403 and "replayed_proof" in replay.text
+
+
+@pytest.mark.parametrize("kind", ["expired", "wrong_key", "other_request", "no_lists"])
+def test_desktop_invalid_proofs_are_refused(desktop: None, kind: str) -> None:
+    import time as _time
+
+    body = dict(WIDEN)
+    if kind == "expired":
+        proof = _tier_proof(body, ts=int(_time.time()) - 3600)
+    elif kind == "wrong_key":
+        proof = _tier_proof(body, key=b"\x07" * 32)
+    elif kind == "other_request":
+        proof = _tier_proof({**body, "tier": "assisted"})  # confirmed something else
+    else:
+        body = {"tier": "assisted", "acknowledge_risk": True}  # lists omitted
+        proof = _tier_proof(body)
+    refused = _put_tier(body, proof)
+    assert refused.status_code == 403, refused.text
+    assert tiers_mod.get_tier_store().settings.tier == "strict"
+
+
+def test_desktop_narrowing_needs_no_proof(desktop: None) -> None:
+    assert _put_tier(WIDEN, _tier_proof(WIDEN)).status_code == 200
+    fewer = {**WIDEN, "granted_sites": []}
+    assert _put_tier(fewer).status_code == 200  # removing a site narrows
+    assert _put_tier({"tier": "assisted", "acknowledge_risk": True}).status_code == 200
+    strict = _put_tier({"tier": "strict"})
+    assert strict.status_code == 200 and strict.json()["consent"] is None
+    # ...and widening again needs a fresh proof.
+    assert _put_tier(WIDEN).status_code == 403
+
+
+def test_desktop_profile_without_a_shell_secret_refuses_widening(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-native")
+    refused = _put_tier(WIDEN, _tier_proof(WIDEN))
+    assert refused.status_code == 403 and "no_shell" in refused.text
+    assert _put_tier({"tier": "strict"}).status_code == 200
+
+
+def test_desktop_pairing_needs_a_pairing_proof(desktop: None) -> None:
+    import secrets as _secrets
+    import time as _time
+
+    from locus_tooling import shell_confirmation as sc
+
+    assert client.post("/user-browser/pairing", headers=PRINCIPAL).status_code == 403
+    tier_proof = _tier_proof(WIDEN)  # a proof for another action does not pair
+    assert (
+        client.post(
+            "/user-browser/pairing", headers={**PRINCIPAL, "X-Locus-Shell-Proof": tier_proof}
+        ).status_code
+        == 403
+    )
+    proof = sc.proof_header(
+        SHELL_SECRET,
+        lambda nonce, ts: sc.pairing_message(nonce=nonce, timestamp=ts),
+        nonce=_secrets.token_hex(16),
+        timestamp=int(_time.time()),
+    )
+    paired = client.post(
+        "/user-browser/pairing", headers={**PRINCIPAL, "X-Locus-Shell-Proof": proof}
+    )
+    assert paired.status_code == 200, paired.text
+    # Unpairing narrows: no proof needed.
+    assert client.delete("/user-browser/pairing", headers=PRINCIPAL).status_code == 200
+
+
+def test_non_desktop_profile_keeps_principal_auth_plus_acknowledgement() -> None:
+    assert _put_tier({**WIDEN, "acknowledge_risk": False}).status_code == 422
+    assert _put_tier(WIDEN).status_code == 200

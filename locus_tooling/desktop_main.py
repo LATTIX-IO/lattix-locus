@@ -125,6 +125,12 @@ def main() -> int | None:
         return self_check()
     if len(sys.argv) > 1 and sys.argv[1] == "--loop-serve":
         return loop_serve(sys.argv[2:])
+
+    # Out-of-band confirmation secret from the Tauri shell (LOCUS-350): read once
+    # from stdin, kept in memory, stdin detached so no child inherits the pipe.
+    from locus_tooling.shell_confirmation import receive_from_stdin
+
+    receive_from_stdin()
     from locus_tooling.desktop import run_desktop_supervisor
 
     _prepend_bundled_bin_to_path()

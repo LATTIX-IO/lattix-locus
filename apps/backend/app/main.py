@@ -21484,7 +21484,20 @@ def user_browser_pair(request: Request) -> dict[str, Any]:
 
     from locus_tooling.native_secrets import SecretStorageUnavailable
 
+    from locus_tooling.shell_confirmation import ShellProofError
+
     actor = _enforce_principal_only(request, action="user_browser.pair")
+    # Pairing lets the agent use the principal's browser at all: on the desktop
+    # it needs the shell's out-of-band confirmation (confirm_browser_pairing).
+    if app_user_browser.shell_proof_required(_active_runtime_profile().name):
+        try:
+            app_user_browser.verify_pairing_proof(request.headers)
+        except ShellProofError as exc:
+            _append_audit_event("user_browser.pair", actor, "blocked", {"reason": exc.code})
+            raise HTTPException(
+                status_code=403,
+                detail=f"Pair the browser from the Locus desktop app ({exc.code})",
+            ) from exc
     hub = get_hub()
     rotated = hub.paired
     try:
@@ -21529,10 +21542,27 @@ def user_browser_get_tier(request: Request) -> dict[str, Any]:
 def user_browser_set_tier(
     request: Request, payload: dict[str, Any] = Body(default_factory=dict)
 ) -> dict[str, Any]:
-    """Principal-only. Widening beyond strict needs ``acknowledge_risk: true``."""
-    from locus_runtime.computer_use.user_browser.tiers import TierChangeRefused, get_tier_store
+    """Principal-only. Widening needs ``acknowledge_risk: true`` and, on the desktop
+    profile, the shell's out-of-band confirmation proof. Narrowing needs neither."""
+    from locus_runtime.computer_use.user_browser.tiers import (
+        TierChangeRefused,
+        TierConfirmationRequired,
+        get_tier_store,
+    )
+
+    from locus_tooling.shell_confirmation import ShellProofError
 
     actor = _enforce_principal_only(request, action="user_browser.tier.set")
+    proof_needed = app_user_browser.shell_proof_required(_active_runtime_profile().name)
+
+    def confirm_widening() -> None:
+        if not proof_needed:
+            return
+        try:
+            app_user_browser.verify_tier_proof(request.headers, payload)
+        except ShellProofError as exc:
+            raise TierConfirmationRequired(exc.code) from exc
+
     store = get_tier_store()
     before = store.settings
     lists: dict[str, Any] = {}
@@ -21549,7 +21579,16 @@ def user_browser_set_tier(
             actor=actor,
             principal_type="user",
             acknowledge_risk=payload.get("acknowledge_risk") is True,
+            confirm_widening=confirm_widening,
         )
+    except TierConfirmationRequired as exc:
+        _append_audit_event(
+            "user_browser.tier.set",
+            actor,
+            "blocked",
+            {"reason": exc.code, "requested_tier": str(payload.get("tier") or "")[:16]},
+        )
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except TierChangeRefused as exc:
         _append_audit_event(
             "user_browser.tier.set",

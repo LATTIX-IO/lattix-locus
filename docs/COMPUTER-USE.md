@@ -189,18 +189,33 @@ The backend must be running and the browser paired (`POST /user-browser/pairing`
 - **Firefox.** For development, use `about:debugging` > This Firefox > **Load Temporary Add-on** and pick `manifest.json`. It stays until Firefox restarts. Release builds need a **signed XPI**: AMO *unlisted* signing (`web-ext sign --channel=unlisted`) keeps the add-on off the public listing. The add-on ID `locus-browser@lattix.io` must stay the same. In `about:addons` > Locus > Permissions, check that site access is granted (Firefox can make MV3 host permissions optional).
 - **Use.** Click the Locus toolbar icon. **Share this tab with Locus** marks the current tab as shared (Strict reads only shared tabs). **Stop the agent (panic)** latches panic for every computer-use tool. The popup also shows whether the host is connected.
 
+### Desktop: out-of-band confirmation for widening
+
+On the desktop install, the local-operator bootstrap authenticates any loopback request as the operator. Without an extra check, an un-jailed local process could widen the tier itself. So on the desktop profile (`local-native`, and wherever a shell secret was handed over), **widening needs a proof that only the Tauri shell can produce, after the human confirms a native OS dialog.** Widening means any of: a higher tier than the effective one, any new allowlisted or granted site, or pairing a browser.
+
+1. **Secret.** At sidecar spawn the shell draws a 32-byte secret from the OS CSPRNG (`getrandom`). It writes the secret to the backend's **stdin** as one line, and sets the flag `LOCUS_SHELL_CONFIRMATION=stdin` (the flag is not the secret). The secret never goes into the environment, argv, a file or a log. The frozen backend (`desktop_main`) reads it once, before the supervisor starts any child (`locus_tooling/shell_confirmation.py`). It keeps the secret in memory only, then points fd 0 and the Windows standard input handle at the null device, so no child process inherits the pipe.
+2. **Dialog.** The UI invokes the Tauri command `confirm_browser_tier` (`{tier, allowlistedSites, grantedSites}`; both lists required) or `confirm_browser_pairing`. The shell shows a native dialog (`tauri-plugin-dialog`) with the exact risk text (`TIER_RISKS`, mirrored in `browser_tier.rs` and checked by a test) and the full site lists.
+3. **Proof.** Only on **Allow** does the shell sign HMAC-SHA256(secret, canonical request) with a fresh 16-byte nonce and a timestamp, and send the request itself with `X-Locus-Shell-Proof: v1:<ts>:<nonce>:<hmac>`. The canonical messages are `locus-shell-proof/v1|browser-tier|<tier>|<allowlisted,...>|<granted,...>|<nonce>|<ts>` and `locus-shell-proof/v1|browser-pair|<nonce>|<ts>`. The webview never sees the secret or the proof.
+4. **Backend checks.** The backend recomputes the proof over the received request. It refuses with **403** and an audit event when the proof is missing, malformed, signed for another request, expired (more than 60 s off), replayed (each nonce is single-use) or when no shell secret exists. The check runs under the tier store's lock, so a concurrent change cannot turn an unproven request into a widening.
+
+Narrowing (down the tiers, removing sites, back to Strict, unpairing) never needs a proof. On non-desktop profiles there is no shell: principal auth plus `acknowledge_risk` remains the rule. A desktop backend started without the shell (for example `lattix native-up`) has no secret, so it refuses widening altogether (fail closed).
+
+The webview gets no `dialog:*` permission, so a page cannot open native dialogs that look like this confirmation. The Rust side calls the dialog plugin directly.
+
 ### Endpoints
 
 | Route | Who |
 |---|---|
 | `GET /user-browser/status`, `GET /user-browser/tier` | authenticated |
-| `POST` / `DELETE /user-browser/pairing`, `PUT /user-browser/tier` | the human principal only (admin, `principal_type=user`, no agent / service / internal caller). Cross-site browser requests are refused: `Sec-Fetch-Site: cross-site`, or an `Origin` outside the CORS allowlist. |
+| `POST` / `DELETE /user-browser/pairing`, `PUT /user-browser/tier` | the human principal only (admin, `principal_type=user`, no agent / service / internal caller). Cross-site browser requests are refused: `Sec-Fetch-Site: cross-site`, or an `Origin` outside the CORS allowlist. On the desktop, pairing and any widening also need the shell's proof (above). |
 | `POST /user-browser/relay/{hello,next,result,event,bye}` | the native host only: loopback, no browser headers, pairing key, then session token |
 
 ### Residual risks
 
 - **An extension with tab access is powerful.** `<all_urls>` host access is needed to read pages and capture the visible tab. If our extension or its update channel were compromised, every signed-in session would be exposed. Mitigations: minimal code, no remote code, a strict extension-page CSP, a pinned ID, and the relay refusing anything without the pairing key. The extension itself, though, is trusted code in the principal's browser.
-- **The pairing key protects the relay, not the machine.** Any process running as the same OS user can read the user's keychain entry or call the loopback relay with it. The same is true of the local-operator bootstrap that lets loopback requests act as the operator. A non-jailed agent process with `process_exec` could, in principle, call `PUT /user-browser/tier` through that bootstrap. Jailed runs (AppContainer: loopback blocked) cannot. See the decision note in the handoff.
+- **The pairing key protects the relay, not the machine.** Any process running as the same OS user can read the user's keychain entry or call the loopback relay with it.
+- **Same-user code beats any in-session check.** The shell proof stops a local process from widening the tier over HTTP through the loopback bootstrap. But arbitrary code running as the same OS user could still read the backend's memory, or send synthetic input to the confirmation dialog (UIPI only protects higher-integrity windows). Jailed agent runs (AppContainer: loopback and other processes blocked) cannot do either.
+- **Approvals share the bootstrap exposure.** Exact approvals of "ask" actions (`POST /workflow-runs/{run_id}/escalations/{id}/approve`) are not shell-confirmed yet. A local un-jailed process could approve its own user-browser asks the same way (follow-up).
 - **Open tier.** No prompts at all, including for purchases, sends and deletes. A prompt injection on any page can then make the agent act in signed-in sessions. Only the floor remains. Open shows as `degraded` on the Posture page with the consent record.
 - **Label-based classification.** As for the agent browser, a page that labels "Delete account" as "OK" gets R2 (the default), not R3. In Trusted, that action would not ask. The R4 secret-field checks do not depend on labels alone.
 - **Synthetic events.** The extension clicks with `element.click()` and fills by setting the value and dispatching `input` / `change`. Some sites ignore untrusted events. Pressing Enter in a form uses `form.requestSubmit()`.
@@ -216,8 +231,11 @@ The backend must be running and the browser paired (`POST /user-browser/pairing`
 | Port contract for both drivers (gateway first, panic under 100 ms and latched, secrets, observe mode) | `tests/policy/test_browser_driver_contract.py` |
 | Pairing and relay (unpaired, mismatched, unpinned, bad session, unpair revokes, loopback-only, browser headers refused), tier principal-only, consent recorded, posture | `apps/backend/tests/test_user_browser_endpoint.py`, `tests/unit/test_user_browser.py` |
 | Native host framing, origin pinning, loopback-only backend URL, refusal codes; registration with a fake registry and temp dirs | `tests/unit/test_user_browser.py` |
+| Desktop shell proof: valid, wrong key, other request, expired, replayed and missing proofs; site lists required; narrowing without a proof; widening without one refused and audited; pairing proof; no shell secret refuses widening; non-desktop rule unchanged | `tests/unit/test_shell_confirmation.py`, `apps/backend/tests/test_user_browser_endpoint.py` |
+| The secret is handed over on stdin. A real child receives it, then spawns a grandchild: the grandchild's stdin is not the pipe, and the secret is in no env, argv, stdin or log line (a negative control with stdin left attached fails this check) | `tests/unit/test_shell_confirmation.py` |
+| Rust wiring as strings: dialog plugin, commands, stdin hand-off, risk texts and message formats identical to Python, no `dialog:*` permission for the webview | `tests/backend/test_desktop_packaging.py` |
 
-**Not verified:** behaviour against a real signed-in profile in installed Chrome, Edge or Firefox; the native host launched by a real browser through a real registry entry or manifest; Firefox at all (the extension code is written for it but was only run in Chromium); AMO signing; macOS and Linux host paths on real machines; the frozen `locus-backend` binary acting as the host.
+**Not verified:** behaviour against a real signed-in profile in installed Chrome, Edge or Firefox; the native host launched by a real browser through a real registry entry or manifest; Firefox at all (the extension code is written for it but was only run in Chromium); AMO signing; macOS and Linux host paths on real machines; the frozen `locus-backend` binary acting as the host; **the Rust shell changes for the confirmation dialog (not compiled locally; CI compiles them) and the dialog on a real desktop**. No UI calls `confirm_browser_tier` yet.
 
 ## Verify on macOS
 

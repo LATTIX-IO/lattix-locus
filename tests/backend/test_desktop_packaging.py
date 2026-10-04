@@ -207,3 +207,42 @@ def test_tauri_panic_hotkey_is_wired_from_rust():
     assert "eprintln!" in cu_rs and "token" not in "".join(
         line for line in cu_rs.splitlines() if "eprintln!" in line or "println!" in line
     )
+
+
+# --- out-of-band browser-tier confirmation (LOCUS-350) ------------------------
+def test_shell_confirmation_is_wired_from_rust_and_matches_python():
+    import re
+
+    from locus_runtime.computer_use.user_browser.tiers import TIER_RISKS
+    from locus_tooling import shell_confirmation as sc
+
+    cargo = (_TAURI_DIR / "Cargo.toml").read_text(encoding="utf-8")
+    for dep in ('tauri-plugin-dialog = "2"', 'hmac = "0.12"', 'sha2 = "0.10"', 'getrandom = "0.2"'):
+        assert dep in cargo
+    main_rs = (_TAURI_DIR / "src" / "main.rs").read_text(encoding="utf-8")
+    assert ".plugin(tauri_plugin_dialog::init())" in main_rs
+    assert "browser_tier::confirm_browser_tier" in main_rs
+    assert "browser_tier::confirm_browser_pairing" in main_rs
+    # The secret goes over stdin; only the flag is in the environment.
+    assert '.env(browser_tier::SHELL_CONFIRMATION_ENV, "stdin")' in main_rs
+    assert "_child.write(line.as_bytes())" in main_rs
+    assert "secret_line_for_backend" not in re.sub(
+        r"match browser_tier::secret_line_for_backend\(\)", "", main_rs
+    )
+    tier_rs = (_TAURI_DIR / "src" / "browser_tier.rs").read_text(encoding="utf-8")
+    for name, text in TIER_RISKS.items():
+        assert f'const RISK_{name.upper()}: &str = "{text}";' in tier_rs, name
+    assert f'const MESSAGE_PREFIX: &str = "{sc.MESSAGE_PREFIX}";' in tier_rs
+    assert f'const SECRET_LINE_PREFIX: &str = "{sc.SECRET_LINE_PREFIX}";' in tier_rs
+    assert "{MESSAGE_PREFIX}|browser-tier|{tier}|{}|{}|{nonce}|{ts}" in tier_rs
+    assert "{MESSAGE_PREFIX}|browser-pair|{nonce}|{ts}" in tier_rs
+    assert "X-Locus-Shell-Proof: {proof_header}" in tier_rs
+    assert "getrandom::getrandom" in tier_rs
+    # The webview gets no dialog permission (it could fake confirmations).
+    cap = json.loads((_TAURI_DIR / "capabilities" / "default.json").read_text(encoding="utf-8"))
+    assert not any(str(p).startswith("dialog:") for p in cap["permissions"])
+    # The frozen backend reads the secret before the supervisor starts children.
+    desktop_main = (_REPO_ROOT / "locus_tooling" / "desktop_main.py").read_text(encoding="utf-8")
+    assert desktop_main.index("receive_from_stdin()") < desktop_main.index(
+        "run_desktop_supervisor()"
+    )

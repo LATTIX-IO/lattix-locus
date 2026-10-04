@@ -24,8 +24,8 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -60,6 +60,14 @@ TIER_RISKS: Mapping[str, str] = {
 
 class TierChangeRefused(PermissionError):
     """The change is not allowed (not the principal, no acknowledgement, bad value)."""
+
+
+class TierConfirmationRequired(TierChangeRefused):
+    """A widening change lacked the out-of-band principal confirmation (desktop shell)."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(f"widening needs confirmation in the Locus desktop app ({code})")
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -173,11 +181,15 @@ class TierStore:
         actor: str,
         principal_type: str,
         acknowledge_risk: bool = False,
+        confirm_widening: Callable[[], None] | None = None,
     ) -> TierSettings:
         """Set the tier and site lists. Only a human principal may call this.
 
         Widening beyond strict needs ``acknowledge_risk=True`` and records consent.
-        Lists left as ``None`` keep their current value.
+        Lists left as ``None`` keep their current value. ``confirm_widening`` is
+        called under the store lock only when the change widens (the backend
+        passes the desktop shell-proof check); it raises to refuse. Narrowing
+        never calls it.
         """
         actor = str(actor or "").strip()[:128]
         if not actor or str(principal_type or "") != "user":
@@ -195,9 +207,10 @@ class TierStore:
             now = float(self._clock())
             consent: ConsentRecord | None = None
             if tier != "strict":
+                # Widening: a higher tier than the effective one, or any new site.
+                # Moving down the tiers with no new sites narrows (no consent needed).
                 widening = (
-                    tier != current.tier
-                    or not current.tier_consent
+                    TIERS.index(tier) > TIERS.index(current.effective_tier)
                     or not set(allow) <= set(current.allowlisted_sites)
                     or not set(grant) <= set(current.granted_sites)
                 )
@@ -206,11 +219,19 @@ class TierStore:
                         f"widening the browser tier to {tier!r} needs the principal to "
                         "acknowledge its risk (acknowledge_risk: true)"
                     )
-                consent = (
-                    ConsentRecord(tier, actor, "user", now, TIER_RISKS[tier])
-                    if widening
-                    else current.consent
-                )
+                if widening and confirm_widening is not None:
+                    confirm_widening()
+                if widening:
+                    consent = ConsentRecord(tier, actor, "user", now, TIER_RISKS[tier])
+                elif current.consent is not None and current.consent.tier == tier:
+                    consent = current.consent
+                elif current.consent is None:  # unreachable: a widened tier has consent
+                    raise TierChangeRefused("no consent record to narrow from")
+                else:
+                    # Narrowed from a wider consented tier: that consent covers this one.
+                    consent = replace(
+                        current.consent, tier=tier, risk_acknowledged=TIER_RISKS[tier]
+                    )
             settings = TierSettings(
                 tier=tier,  # type: ignore[arg-type]
                 allowlisted_sites=allow,
@@ -326,6 +347,7 @@ __all__ = [
     "TIER_RISKS",
     "ConsentRecord",
     "TierChangeRefused",
+    "TierConfirmationRequired",
     "TierSettings",
     "TierStore",
     "current_tier_settings",
