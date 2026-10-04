@@ -20583,10 +20583,15 @@ def loop_autostart_enable(
     )
     if resolved is None:
         raise refused
-    # Re-check containment on the final real path right before use.
+    # Containment check before any filesystem access: a pure normpath + prefix
+    # test, then the same test again on the real path (symlinks) right before use.
     root = os.path.realpath(str(_projects_root_path()))
-    checkout = os.path.realpath(resolved)
-    if not (checkout == root or checkout.startswith(root.rstrip(os.sep) + os.sep)):
+    prefix = root.rstrip(os.sep) + os.sep
+    candidate = os.path.normpath(resolved)
+    if not candidate.startswith(prefix):
+        raise refused
+    checkout = os.path.realpath(candidate)
+    if not checkout.startswith(prefix):
         raise refused
     if not os.path.exists(os.path.join(checkout, ".git")):
         raise refused
