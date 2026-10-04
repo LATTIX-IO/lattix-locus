@@ -1378,12 +1378,27 @@ export async function getMcpServers(): Promise<McpServer[]> {
   return res.servers ?? [];
 }
 
+/** The tier list an "Always allow on <site>" approval adds a site to. */
+export type BrowserSiteList = "allowlisted_sites" | "granted_sites";
+
 export type RunEscalation = {
   id: string;
   path: string;
   workspace_root: string;
   policy: string;
   status: string;
+  /** "gateway" for a gateway ask; folder escalations have no kind. */
+  kind?: string;
+  action_kind?: string;
+  tool?: string;
+  risk?: string;
+  reasons?: string[];
+  created_at?: string;
+  /** User-browser asks (LOCUS-350): the registrable site the action targets,
+   * the effective tier, and the list "Always allow" adds it to (null: none). */
+  site?: string;
+  browser_tier?: string;
+  site_list?: BrowserSiteList | null;
 };
 
 export async function getRunEscalations(runId: string): Promise<RunEscalation[]> {
@@ -1397,6 +1412,14 @@ export async function approveRunEscalation(
 ): Promise<{ ok: boolean }> {
   return strictFetch(
     `/workflow-runs/${encodeURIComponent(runId)}/escalations/${encodeURIComponent(escalationId)}/approve`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+/** Deny an agent request (narrowing: grants nothing; a plain request). */
+export async function denyRunEscalation(runId: string, escalationId: string): Promise<{ ok: boolean; escalation: RunEscalation }> {
+  return strictFetch(
+    `/workflow-runs/${encodeURIComponent(runId)}/escalations/${encodeURIComponent(escalationId)}/deny`,
     { method: "POST", body: JSON.stringify({}) },
   );
 }
@@ -2274,6 +2297,31 @@ export async function setUserBrowserTier(
     }
     throw error;
   }
+}
+
+/**
+ * "Always allow on <site>": add one site to the current tier's list (the
+ * Assisted allowlist or the Trusted grant list). The backend takes the full
+ * lists (PUT /user-browser/tier); adding a site widens, so on the desktop it is
+ * confirmed in the shell's dialog with the new list (confirm_browser_tier). On
+ * the web profile the caller must have shown the risk (`acknowledgeRisk`).
+ */
+export async function allowSiteInBrowserTier(
+  site: string,
+  list: BrowserSiteList,
+  options: { acknowledgeRisk?: boolean } = {},
+): Promise<UserBrowserTierSettings> {
+  const current = await getUserBrowserTier();
+  if (current[list].includes(site)) {
+    return current;
+  }
+  const next: BrowserTierChange = {
+    tier: current.tier,
+    allowlisted_sites: [...current.allowlisted_sites],
+    granted_sites: [...current.granted_sites],
+  };
+  next[list] = [...current[list], site];
+  return setUserBrowserTier(current, next, options);
 }
 
 export type UserBrowserStatus = {

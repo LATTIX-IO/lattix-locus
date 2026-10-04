@@ -7,6 +7,7 @@ import { ControlStatusList } from "@/components/control-status";
 import { MarkdownBlock } from "@/components/markdown-block";
 import { ReactFlowCanvas, type GraphLink, type GraphNode } from "@/components/reactflow-canvas";
 import { RunArchiveButton } from "@/components/run-archive-button";
+import { RunEscalations } from "@/components/run-escalations";
 import { RunFollowupComposer, type FollowupComposerStatus } from "@/components/run-followup-composer";
 import { StatusChip } from "@/components/status-chip";
 import { TaskKickoffComposer } from "@/components/task-kickoff-composer";
@@ -726,6 +727,8 @@ export function UserChatWorkspace({
     return buildExecutionGraph(selectedRunId ?? "session", displayedRunTitle, selectedRun, ordered);
   }, [displayedRunTitle, ordered, selectedRun, selectedRunId]);
   const approvals = selectedRun?.approvals ?? { required: false, pending: false };
+  // New agent requests arrive as approval_required events: reload them then.
+  const approvalRequestCount = ordered.filter((event: WorkflowRunEvent) => event.type === "approval_required").length;
   const guardrailEvents = ordered.filter((event: WorkflowRunEvent) => event.type === "guardrail_result");
   const activeRuntimeProvider = followupStatus.provider || (typeof selectedRun?.runtime?.provider === "string" ? selectedRun.runtime.provider : "");
   const activeRuntimeModel = followupStatus.model || (typeof selectedRun?.runtime?.model === "string" ? selectedRun.runtime.model : "");
@@ -904,6 +907,10 @@ export function UserChatWorkspace({
                   ) : (
                     visibleTimelineEvents.map((event) => <ChatBubble key={event.id} event={event} />)
                   )}
+                </div>
+
+                <div className="shrink-0 px-5 pt-3 empty:hidden lg:px-6 xl:px-8 2xl:px-10">
+                  <RunEscalations runId={selectedRunId} refreshKey={approvalRequestCount + runRefreshNonce} />
                 </div>
 
                 <div

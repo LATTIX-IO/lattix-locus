@@ -72,6 +72,10 @@ vi.mock("@/lib/api", () => ({
   getPublishedWorkflows: vi.fn(async () => []),
   getRuntimeProviders: vi.fn(async () => ({ providers: [{ provider: "ollama", configured: true, model: "llama3", mode: "live" }] })),
   getUserRuntimeProviders: vi.fn(async () => []),
+  getRunEscalations: vi.fn(async () => []),
+  approveRunEscalation: vi.fn(),
+  denyRunEscalation: vi.fn(),
+  allowSiteInBrowserTier: vi.fn(),
 }));
 
 import { LeftNav } from "@/components/navigation/left-nav";

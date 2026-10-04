@@ -167,18 +167,20 @@ export function BrowserTierControl({ onSaved }: { onSaved?: (settings: UserBrows
           </label>
         ))}
       </fieldset>
-      {tier !== "strict" ? (
+      {tier === "assisted" || tier === "trusted" ? (
         <div className="grid gap-3 lg:grid-cols-2">
           <ListField
             id="browser-allowlisted-sites"
             label="Allowlisted sites (read and navigate)"
+            description="May stay empty: approve sites one by one with “Always allow” when the agent asks."
             value={allowlisted}
             onChange={setAllowlisted}
             placeholder={"docs.example.com"}
           />
           <ListField
             id="browser-granted-sites"
-            label="Granted sites (act)"
+            label="Granted sites (act, Trusted)"
+            description="May stay empty: approve sites one by one with “Always allow” when the agent asks."
             value={granted}
             onChange={setGranted}
             placeholder={"app.example.com"}

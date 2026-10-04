@@ -290,6 +290,20 @@ describe("Computer use", () => {
     expect(api.setUserBrowserTier.mock.calls[0][2]).toEqual({ acknowledgeRisk: true });
   });
 
+  it("lets a widened tier start with empty site lists", async () => {
+    api.setUserBrowserTier.mockResolvedValue({ tier: "trusted", effective_tier: "trusted", allowlisted_sites: [], granted_sites: [], consent: null });
+    render(<ComputerUseSection />);
+
+    fireEvent.click(await screen.findByRole("radio", { name: /trusted/i }));
+    expect(screen.getByRole("textbox", { name: /granted sites/i })).toHaveValue("");
+    expect(screen.getAllByText(/may stay empty/i).length).toBe(2);
+    fireEvent.click(screen.getByRole("button", { name: /review and save/i }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /i understand/i }));
+
+    await waitFor(() => expect(api.setUserBrowserTier).toHaveBeenCalledTimes(1));
+    expect(api.setUserBrowserTier.mock.calls[0][1]).toEqual({ tier: "trusted", allowlisted_sites: [], granted_sites: [] });
+  });
+
   it("hands a widening to the desktop shell without an in-app dialog", async () => {
     (window as unknown as { __TAURI__?: unknown }).__TAURI__ = { core: { invoke: vi.fn() } };
     api.setUserBrowserTier.mockResolvedValue({ tier: "assisted", effective_tier: "assisted", allowlisted_sites: [], granted_sites: [], consent: null });

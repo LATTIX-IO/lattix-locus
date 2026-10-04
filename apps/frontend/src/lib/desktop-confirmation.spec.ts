@@ -340,3 +340,67 @@ describe("sensitive platform settings (confirm_security_change)", () => {
     expect(events.at(-1)).not.toHaveProperty("confirm_security_change");
   });
 });
+
+describe("Always allow on <site> (browser tier lists)", () => {
+  const TRUSTED = {
+    tier: "trusted",
+    effective_tier: "trusted",
+    allowlisted_sites: ["docs.example.org"],
+    granted_sites: [],
+    consent: { tier: "trusted" },
+  };
+
+  it("sends the full new list through confirm_browser_tier on the desktop", async () => {
+    enterDesktopShell();
+    fetchMock.mockResolvedValueOnce(okJson(TRUSTED));
+    invokeMock.mockResolvedValueOnce(JSON.stringify({ ...TRUSTED, granted_sites: ["example.com"] }));
+
+    const { allowSiteInBrowserTier } = await import("@/lib/api");
+    const saved = await allowSiteInBrowserTier("example.com", "granted_sites");
+
+    expect(invokeMock).toHaveBeenCalledWith("confirm_browser_tier", {
+      tier: "trusted",
+      allowlistedSites: ["docs.example.org"],
+      grantedSites: ["example.com"],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1); // only the read; the shell sends the PUT
+    expect(saved.granted_sites).toEqual(["example.com"]);
+  });
+
+  it("does nothing when the site is already listed", async () => {
+    fetchMock.mockResolvedValueOnce(okJson({ ...TRUSTED, granted_sites: ["example.com"] }));
+
+    const { allowSiteInBrowserTier } = await import("@/lib/api");
+    await allowSiteInBrowserTier("example.com", "granted_sites");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts from empty lists: the web profile sends the acknowledged full list", async () => {
+    const assisted = { ...TRUSTED, tier: "assisted", effective_tier: "assisted", allowlisted_sites: [], consent: { tier: "assisted" } };
+    fetchMock
+      .mockResolvedValueOnce(okJson(assisted))
+      .mockResolvedValueOnce(okJson({ ...assisted, allowlisted_sites: ["example.com"] }));
+
+    const { allowSiteInBrowserTier } = await import("@/lib/api");
+    await allowSiteInBrowserTier("example.com", "allowlisted_sites", { acknowledgeRisk: true });
+
+    const put = fetchMock.mock.calls[1];
+    expect((put[1] as RequestInit).method).toBe("PUT");
+    expect(JSON.parse(String((put[1] as RequestInit).body))).toEqual({
+      tier: "assisted",
+      allowlisted_sites: ["example.com"],
+      granted_sites: [],
+      acknowledge_risk: true,
+    });
+  });
+
+  it("denying an agent request is a plain request", async () => {
+    enterDesktopShell();
+    fetchMock.mockResolvedValueOnce(okJson({ ok: true }));
+
+    const { denyRunEscalation } = await import("@/lib/api");
+    await denyRunEscalation("run-1", "esc-1");
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/workflow-runs/run-1/escalations/esc-1/deny");
+  });
+});

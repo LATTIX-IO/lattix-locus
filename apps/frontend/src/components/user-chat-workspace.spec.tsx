@@ -98,6 +98,10 @@ vi.mock("@/lib/api", () => ({
   getWorkflowRunEventsLive: getWorkflowRunEventsLiveMock,
   submitApproval: submitApprovalMock,
   streamWorkflowRun: streamWorkflowRunMock,
+  getRunEscalations: vi.fn(async () => []),
+  approveRunEscalation: vi.fn(),
+  denyRunEscalation: vi.fn(),
+  allowSiteInBrowserTier: vi.fn(),
 }));
 
 import { UserChatWorkspace } from "@/components/user-chat-workspace";

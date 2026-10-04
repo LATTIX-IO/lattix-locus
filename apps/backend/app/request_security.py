@@ -310,6 +310,12 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         RouteAccessCategory.AUTHENTICATED_MUTATE,
         "workflow.run.escalations.approve",
     ),
+    RouteAccessRule(
+        ("POST",),
+        "/workflow-runs/{run_id}/escalations/{escalation_id}/deny",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.run.escalations.deny",
+    ),
     # Biscuit capability grants (LOCUS-334): list own grants, revoke one.
     RouteAccessRule(
         ("GET",), "/gateway/grants", RouteAccessCategory.AUTHENTICATED_READ, "gateway.grants.read"
@@ -1354,6 +1360,8 @@ _SHELL_PROOF_RULES: tuple[ShellProofRule, ...] = (
         "grant, so matching actions stop asking.",
         current="/workflow-runs/{run_id}/escalations",
     ),
+    # Denying an agent request grants nothing: the action stays refused.
+    _narrowing("POST", "/workflow-runs/{run_id}/escalations/{escalation_id}/deny"),
     _narrowing("POST", "/gateway/grants/{grant_id}/revoke"),
     _conditional(
         "POST",
