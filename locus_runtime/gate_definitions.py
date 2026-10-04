@@ -74,12 +74,22 @@ GATE_WRITE_DIRS: tuple[str, ...] = (".github/",)
 #: Code ownership files (any directory: GitHub reads root, ``docs/`` and ``.github/``).
 OWNERSHIP_BASENAMES: frozenset[str] = frozenset({"codeowners"})
 
+#: Agent instruction and memory files. Coding agents (Locus included) load them
+#: as instructions, so a write is an injection-persistence path (P8). They
+#: steer future runs the way gates do. ``AGENTS.md`` is also D-22 protected.
+AGENT_INSTRUCTION_BASENAMES: frozenset[str] = frozenset(
+    {"agents.md", "claude.md", "claude.local.md", "gemini.md", ".cursorrules", ".windsurfrules"}
+)
+AGENT_INSTRUCTION_PATHS: tuple[str, ...] = (".claude/", ".cursor/", ".ai-memory/")
+
 #: Every basename whose write is a gate edit (gateway; any directory).
 GATE_WRITE_BASENAMES: frozenset[str] = (
-    GATE_CONFIG_BASENAMES | MIXED_GATE_BASENAMES | OWNERSHIP_BASENAMES
+    GATE_CONFIG_BASENAMES | MIXED_GATE_BASENAMES | OWNERSHIP_BASENAMES | AGENT_INSTRUCTION_BASENAMES
 )
 #: Every repository-relative prefix / file whose write is a gate edit (gateway).
-GATE_WRITE_PATHS: tuple[str, ...] = tuple(dict.fromkeys((*GATE_CONFIG_PATHS, *GATE_WRITE_DIRS)))
+GATE_WRITE_PATHS: tuple[str, ...] = tuple(
+    dict.fromkeys((*GATE_CONFIG_PATHS, *GATE_WRITE_DIRS, *AGENT_INSTRUCTION_PATHS))
+)
 
 
 def _prefix_matches(path: str, prefix: str) -> bool:

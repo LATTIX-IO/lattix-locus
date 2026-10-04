@@ -45,11 +45,14 @@ gate_write_basenames := {
 	".gitlab-ci.yml", "azure-pipelines.yml", "jenkinsfile",
 	"pyproject.toml", "makefile", "gnumakefile",
 	"codeowners",
+	# Agent instruction / memory files (injection persistence, P8).
+	"agents.md", "claude.md", "claude.local.md", "gemini.md", ".cursorrules", ".windsurfrules",
 }
 
 gate_write_paths := {
 	".github/workflows/", ".circleci/", "policies/", "scripts/run_opa.py",
 	"precommit.sh", "precommit.ps1", ".github/",
+	".claude/", ".cursor/", ".ai-memory/",
 }
 
 # --- facts -------------------------------------------------------------------
