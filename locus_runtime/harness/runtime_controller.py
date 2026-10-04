@@ -173,6 +173,8 @@ class RunController(VerifiedLoop):
         self._trace_context: telemetry.RunContext | None = None
         self._restored_envelope: dict[str, Any] | None = None
         self._compactions = {"context_compactions": 0, "compacted_outputs": 0, "chars_saved": 0}
+        #: Asks raised by each tool call id (parallel calls interrupt separately).
+        self._call_asks: dict[str, list[ApprovalRequest]] = {}
 
     # -- durability ----------------------------------------------------------------
     def restore(self) -> bool:
@@ -402,11 +404,13 @@ class RunController(VerifiedLoop):
             store = self.store
             entry = store.action(self.run_id, call_id) if store is not None else None
             if entry is not None and entry.status in ("done", "interrupted"):
+                self._call_asks[call_id] = []
                 self._rec.annotation(
                     "action_replayed", step=self._st.usage.steps, tool=name, call_id=call_id
                 )
                 return entry.content
             if store is not None and entry is not None and entry.status == "started":
+                self._call_asks[call_id] = []
                 store.mark_action(self.run_id, call_id, name, "interrupted", NOT_REEXECUTED)
                 self._rec.annotation(
                     "action_not_reexecuted", step=self._st.usage.steps, tool=name, call_id=call_id
@@ -423,6 +427,7 @@ class RunController(VerifiedLoop):
                 self._st.usage.steps,
             )
             asks = self._asks.take(self.toolset)
+            self._call_asks[call_id] = list(asks)
             if asks:
                 self._pending_asks.extend(asks)
                 self.interrupts.extend(asks)
@@ -483,9 +488,17 @@ class RunController(VerifiedLoop):
         with self._lock:
             self._block(blocker)
 
-    def pending_asks(self) -> list[ApprovalRequest]:
+    def asks_for(self, call_id: str) -> list[ApprovalRequest]:
+        """The asks the last run of tool call ``call_id`` raised."""
         with self._lock:
-            return list(self._pending_asks)
+            return list(self._call_asks.get(call_id) or [])
+
+    def claim_asks(self, call_id: str) -> list[ApprovalRequest]:
+        """Take the asks of ``call_id`` out of the pending set (decided in place)."""
+        with self._lock:
+            asks = self._call_asks.pop(call_id, None) or []
+            self._pending_asks = [a for a in self._pending_asks if a not in asks]
+            return asks
 
     def take_pending_asks(self) -> list[ApprovalRequest]:
         with self._lock:

@@ -60,7 +60,7 @@ from locus_runtime.harness.workspace import Workspace
 from locus_runtime.model_client import GatewayModelGate, ModelClient, ModelEndpoint, ModelRouter
 from locus_runtime.model_client import ModelTier
 from tests.gateway_support import FakeEngine
-from tests.harness.conftest import requires_bash, requires_git, tool_response
+from tests.harness.conftest import requires_bash, requires_git, tc, tool_response
 from tests.harness.test_runtime_contract import (
     PROFILE,
     AskForCommands,
@@ -609,6 +609,41 @@ def test_approved_action_runs_exactly_once_across_a_restart(tmp_path: Path) -> N
     assert _lines(repo / "deployed.txt") == ["shipped"]
     assert live.monitor.report().outcomes.get("ask", 0) == 0  # approved: no new ask
     assert [a.status for a in _ledger(db) if a.tool == "execute_bash"] == ["done"]
+
+
+@needs_deep_agents
+@requires_bash
+@requires_git
+def test_parallel_asks_in_one_turn_are_each_approved_and_run_once(tmp_path: Path) -> None:
+    """Two gated calls in one model turn interrupt separately; one resume answers both."""
+    _make_repo(tmp_path)
+    envelope = RunEnvelope(
+        goal="ship both",
+        done_criteria=(
+            FileCheck(id="a", path="a.txt", contains="a"),
+            FileCheck(id="b", path="b.txt", contains="b"),
+        ),
+        budget=RunBudget(max_steps=8, max_seconds=300),
+    )
+    both = ChatResponse(
+        text="",
+        tool_calls=[
+            tc("pa", "execute_bash", command="echo a >> a.txt # deploy"),
+            tc("pb", "execute_bash", command="echo b >> b.txt # deploy"),
+        ],
+    )
+    approvals: list[ApprovalRequest] = []
+    live = run_deep_agents(
+        tmp_path,
+        [plan_step(DEEP_AGENTS), both, tool_response("s", "submit", answer="shipped")],
+        envelope=envelope,
+        intent_gate=AskForCommands("deploy"),
+        approver=lambda r: approvals.append(r) is None,
+    )
+    result = live.result
+    assert result is not None and result.end_state == "done", result
+    assert len(approvals) == 2 and len({a.fingerprint for a in approvals}) == 2
+    assert _lines(tmp_path / "a.txt") == ["a"] and _lines(tmp_path / "b.txt") == ["b"]
 
 
 @needs_deep_agents

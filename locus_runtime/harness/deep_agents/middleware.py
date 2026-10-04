@@ -233,25 +233,28 @@ def build_classes(lc: LangChain) -> HarnessClasses:
         def _gated_call(self, call_id: str, name: str, normalized: str, raw: Any) -> str:
             controller = self.controller
             content = str(controller.tool_call(call_id, name, raw))
-            if not controller.has_pending_asks():
+            asks = controller.asks_for(call_id)
+            if not asks:
                 return content
             # LangGraph HITL: the graph pauses (and is checkpointed) here; the
             # runtime approves through the gateway ledger and resumes, or ends
             # the run blocked. On resume the call re-runs and, approved, executes.
+            # Parallel calls interrupt separately, each with its own asks.
             lc.interrupt(
                 {
                     "kind": ASK_INTERRUPT_KIND,
                     "tool": normalized,
                     "call_id": call_id,
-                    "asks": [a.model_dump(mode="json") for a in controller.pending_asks()],
+                    "asks": [a.model_dump(mode="json") for a in asks],
                 }
             )
-            # ``interrupt`` returned: this node was resumed with a decision for an
+            # ``interrupt`` returned: this call was resumed with a decision for an
             # earlier ask and the re-run raised a new one. Decide it here, once.
-            controller.resolve_asks(controller.take_pending_asks())
+            controller.resolve_asks(controller.claim_asks(call_id))
             content = str(controller.tool_call(call_id, name, raw))
-            if controller.has_pending_asks():
-                controller.end_blocked(blocker_for_asks(controller.take_pending_asks()))
+            again = controller.claim_asks(call_id)
+            if again:
+                controller.end_blocked(blocker_for_asks(again))
             return content
 
     class LocusTurnMiddleware(middleware_base):  # type: ignore[misc]

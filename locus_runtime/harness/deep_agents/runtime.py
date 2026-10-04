@@ -251,7 +251,7 @@ class DeepAgentsRuntime:
                 interrupts = list(out.get("__interrupt__") or []) if isinstance(out, dict) else []
                 asks = controller.take_pending_asks() or asks_from_interrupts(interrupts)
                 if interrupts or asks:
-                    payload = self._decide(controller, asks)
+                    payload = self._decide(controller, asks, interrupts)
                     continue
                 # The turn middleware nudges text turns inside the graph; the graph
                 # ending on its own is a fallback path (same nudge, new invoke).
@@ -267,12 +267,15 @@ class DeepAgentsRuntime:
         if snapshot.interrupts:
             # A decision was pending when the process stopped: ask again (an
             # approval is never carried across a restart), then resume.
-            return self._decide(controller, asks_from_interrupts(snapshot.interrupts))
+            pending = list(snapshot.interrupts)
+            return self._decide(controller, asks_from_interrupts(pending), pending)
         if snapshot.next:
             return None  # continue from the last checkpoint
         return {"messages": [{"role": "user", "content": self._nudge(controller, snapshot.values)}]}
 
-    def _decide(self, controller: RunController, asks: list[ApprovalRequest]) -> Any:
+    def _decide(
+        self, controller: RunController, asks: list[ApprovalRequest], interrupts: list[Any]
+    ) -> Any:
         if not asks:
             controller.end_blocked(
                 Blocker(
@@ -282,7 +285,12 @@ class DeepAgentsRuntime:
                 )
             )
         controller.resolve_asks(asks)  # ends the run blocked unless approved
-        return self._lc.Command(resume={"approved": True})
+        decision = {"approved": True}
+        ids = [str(getattr(i, "id", "") or "") for i in interrupts]
+        if len(ids) > 1 and all(ids):
+            # LangGraph needs one resume value per pending interrupt (parallel calls).
+            return self._lc.Command(resume={i: decision for i in ids})
+        return self._lc.Command(resume=decision)
 
     @staticmethod
     def _nudge(controller: RunController, values: Any) -> str:
