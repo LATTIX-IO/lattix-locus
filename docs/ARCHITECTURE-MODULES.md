@@ -21,7 +21,7 @@ Locus is built from **modules**. A module owns one job of an AI harness behind a
 | **Persistence** | `StateStore`, `Checkpointer`, `AuditLog` | SQLite; hash-chained audit log | Release |
 | **Observability** | `TelemetrySink` | Local OTel (GenAI conventions) to SQLite; optional Langfuse | Live |
 | **Delivery and update** | `RepoDelivery`, `UpdateChannel` | git/gh delivery; Tauri updater channels (D-26) | Release |
-| **Trust kernel** | `PolicyEngine`, `GrantIssuer`, `Sandbox`, `SecretStore`, `GuardrailClassifier` | OPA → Regorus (D-12); Biscuit; bwrap / seatbelt / AppContainer; keychain/DPAPI; Granite Guardian, Presidio | **Release only, principal-reviewed** |
+| **Trust kernel** | `PolicyEngine`, `GrantIssuer`, `Sandbox`, `SecretStore`, `GuardrailClassifier` | OPA (bundled) → Cedar authorization core (D-30, ADR-0001); Biscuit; bwrap / seatbelt / AppContainer; keychain/DPAPI; Granite Guardian, Presidio | **Release only, principal-reviewed** |
 
 ## 2. Rules
 
