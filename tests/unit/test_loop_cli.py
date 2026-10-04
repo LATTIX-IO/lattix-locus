@@ -12,6 +12,7 @@ from click.testing import CliRunner
 
 import locus_tooling.native_secrets as native_secrets
 from locus_runtime.loop_runner.state import KILL_FILE, Ledger, LoopConfig, loop_status
+from locus_runtime.rsi import secret_scan
 from locus_tooling.cli import cli
 
 REPO = Path(__file__).resolve().parents[2]
@@ -21,7 +22,28 @@ REPO = Path(__file__).resolve().parents[2]
 def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("LOCUS_LOOP_HOME", str(tmp_path / "loop"))
     monkeypatch.delenv("LOCUS_LOOP_DISABLED", raising=False)
+    # Hermetic: never read the host's HKCU\Environment (LOCUS-380 status warning).
+    monkeypatch.setattr(secret_scan, "read_user_environment", lambda: {})
     return tmp_path / "loop"
+
+
+def test_loop_status_warns_about_secret_names_in_the_persistent_user_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = "fake-persistent-value-0123456789"
+    monkeypatch.setattr(
+        secret_scan,
+        "read_user_environment",
+        lambda: {"NVIDIA_API_KEY": value, "GH_TOKEN": value, "PATH": "C:\\bin"},
+    )
+    status = loop_status()
+    [warning] = status["warnings"]
+    assert "GH_TOKEN, NVIDIA_API_KEY" in warning and "lattix secrets set" in warning
+    assert "PATH" not in warning and value not in warning
+    result = CliRunner().invoke(cli, ["loop", "status"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["warnings"] == [warning]
+    assert "warning: " in result.stderr and value not in result.output
 
 
 def test_secrets_set_prompts_hidden_and_never_echoes(monkeypatch: pytest.MonkeyPatch) -> None:
