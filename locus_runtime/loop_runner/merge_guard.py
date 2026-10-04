@@ -81,6 +81,9 @@ BASELINE_PROTECTED: tuple[str, ...] = (
     # scorecard, comparator and candidate isolation.
     "/apps/evals/locus_evals/suite/",
     "/locus_runtime/rsi/",
+    # Where the private held-out split comes from and how it is verified (LOCUS-382).
+    "/locus_tooling/evals_sync.py",
+    "/locus_tooling/evals_heldout.py",
     # The update trust chain (LOCUS-349, D-26): Dev installs auto-install what
     # merges, so the updater pubkey/endpoints, the shell, the version stamp and
     # the manifest signing/verification are never auto-merged.

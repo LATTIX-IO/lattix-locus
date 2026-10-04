@@ -5,3 +5,5 @@ docker/casdoor/start-casdoor.sh text eol=lf
 provenance/** text eol=lf
 # RSI suite tasks (LOCUS-351): byte-identical on every OS (suite digests, sealed store)
 apps/evals/locus_evals/suite/tasks/** text eol=lf
+# Public held-out-shaped test stub (LOCUS-382): hashed like the private split
+tests/evals/fixtures/heldout_stub/** text eol=lf

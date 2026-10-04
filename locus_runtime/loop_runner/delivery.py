@@ -22,7 +22,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -78,6 +78,26 @@ def _no_hooks_dir() -> str:
 
 def _hardening_args() -> list[str]:
     return ["-c", f"core.hooksPath={_no_hooks_dir()}", "-c", "core.fsmonitor=false"]
+
+
+#: Extra settings for fetching a repository the runner only reads (LOCUS-382):
+#: no ``ext::`` transport, no external diff, no symlinks, no submodules, objects
+#: checked on receipt, line endings never converted.
+_FETCH_HARDENING: tuple[str, ...] = (
+    "protocol.ext.allow=never",
+    "diff.external=",
+    "core.symlinks=false",
+    "core.autocrlf=false",
+    "submodule.recurse=false",
+    "transfer.fsckObjects=true",
+)
+_SAFE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,99}")
+_HEX_SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def _last_line(text: str | None) -> str:
+    lines = (text or "").strip().splitlines()
+    return lines[-1][:300] if lines else ""
 
 
 def git_metadata_digest(worktree: Path) -> str:
@@ -139,23 +159,151 @@ class GitOps:
                 "info files changed during the run; refusing to run host git on it"
             )
 
-    def run(self, cwd: Path, *args: str, timeout: int | None = None) -> str:
+    def run(
+        self,
+        cwd: Path,
+        *args: str,
+        timeout: int | None = None,
+        config: Sequence[str] = (),
+        env: Mapping[str, str] | None = None,
+    ) -> str:
+        """Run host git; ``config`` adds ``-c key=value`` overrides, ``env`` replaces
+        the environment (``None`` inherits it)."""
+        done = self._exec(cwd, args, timeout=timeout, config=config, env=env, text=True)
+        if done.returncode != 0:
+            raise DeliveryError(f"git {args[0]} failed: {_last_line(done.stderr or done.stdout)}")
+        return str(done.stdout)
+
+    def run_bytes(
+        self,
+        cwd: Path,
+        *args: str,
+        timeout: int | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> bytes:
+        """Like :meth:`run`, but stdout as raw bytes (blob contents, no newline translation)."""
+        done = self._exec(cwd, args, timeout=timeout, config=(), env=env, text=False)
+        if done.returncode != 0:
+            err = done.stderr.decode("utf-8", "replace") if done.stderr else ""
+            raise DeliveryError(f"git {args[0]} failed: {_last_line(err)}")
+        return bytes(done.stdout)
+
+    def _exec(
+        self,
+        cwd: Path,
+        args: Sequence[str],
+        *,
+        timeout: int | None,
+        config: Sequence[str],
+        env: Mapping[str, str] | None,
+        text: bool,
+    ) -> subprocess.CompletedProcess[Any]:
         self.verify_seal(cwd)
+        overrides = [part for item in config for part in ("-c", item)]
         try:
-            done = subprocess.run(
-                [self.git, *_hardening_args(), "-C", str(cwd), *args],
+            return subprocess.run(
+                [self.git, *_hardening_args(), *overrides, "-C", str(cwd), *args],
                 capture_output=True,
-                text=True,
+                text=text,
                 timeout=timeout or self.timeout,
+                env=None if env is None else dict(env),
             )
         except subprocess.TimeoutExpired as exc:
             raise DeliveryError(f"git {args[0]} timed out", transient=True) from exc
         except OSError as exc:
             raise DeliveryError(f"git is not available ({type(exc).__name__})") from exc
-        if done.returncode != 0:
-            detail = (done.stderr or done.stdout or "").strip().splitlines()[-1:] or [""]
-            raise DeliveryError(f"git {args[0]} failed: {detail[0][:300]}")
-        return done.stdout
+
+    # ------------------------------------------------- read-only fetch (LOCUS-382)
+    def clone_ref(
+        self,
+        url: str,
+        dest: Path,
+        ref: str,
+        *,
+        env: Mapping[str, str] | None = None,
+        timeout: int | None = None,
+    ) -> str:
+        """``git clone --depth 1 --branch <ref>`` of one tag or branch; returns HEAD's sha.
+
+        No checkout: files are read as blobs (:meth:`tree_blobs`, :meth:`read_blob`),
+        so no smudge/clean filter, attribute, symlink, submodule or hook of the
+        cloned repository runs on the host. Credentials come from the user's own
+        git credential helper; nothing here reads or stores them.
+        """
+        if not _SAFE_REF.fullmatch(ref) or ".." in ref or ref.endswith((".lock", "/")):
+            raise DeliveryError(f"refusing git ref {ref!r}")
+        if not url or url.startswith("-") or url.lower().startswith("ext::"):
+            raise DeliveryError("refusing the repository URL (looks like an option or transport)")
+        if dest.exists():
+            raise DeliveryError(f"clone target already exists: {dest}")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        self.run(
+            dest.parent,
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            "--branch",
+            ref,
+            "--single-branch",
+            "--no-checkout",
+            "--no-recurse-submodules",
+            "--",
+            url,
+            str(dest),
+            timeout=timeout,
+            config=_FETCH_HARDENING,
+            env=env,
+        )
+        return self.run(dest, "rev-parse", "--verify", "HEAD^{commit}", env=env).strip()
+
+    def tree_blobs(self, repo: Path, rev: str = "HEAD") -> list[tuple[str, str, str]]:
+        """``(mode, object sha, path)`` of every entry of ``rev``'s tree (recursive);
+        a non-blob entry's mode is suffixed with its type (``160000:commit``)."""
+        out = self.run(repo, "ls-tree", "-r", "-z", "--full-tree", rev)
+        entries: list[tuple[str, str, str]] = []
+        for item in out.split("\0"):
+            if not item:
+                continue
+            meta, _, path = item.partition("\t")
+            parts = meta.split()
+            if len(parts) != 3:
+                raise DeliveryError("git ls-tree returned an unexpected line")
+            mode, kind, sha = parts
+            entries.append((mode if kind == "blob" else f"{mode}:{kind}", sha, path))
+        return entries
+
+    def read_blob(self, repo: Path, sha: str) -> bytes:
+        if not _HEX_SHA.fullmatch(sha):
+            raise DeliveryError("refusing a blob id that is not a hex sha")
+        return self.run_bytes(repo, "cat-file", "blob", sha)
+
+    def tag_object(self, repo: Path, tag: str) -> tuple[str, str]:
+        """``(kind, body)`` of ``refs/tags/<tag>``: ``("tag", <annotated tag text>)``,
+        ``("commit", "")`` for a lightweight tag, ``("", "")`` when there is no such tag."""
+        name = f"refs/tags/{tag}"
+        try:
+            kind = self.run(repo, "cat-file", "-t", name).strip()
+        except DeliveryError:
+            return "", ""
+        if kind != "tag":
+            return kind, ""
+        return kind, self.run(repo, "cat-file", "tag", name)
+
+    def verify_tag(
+        self, repo: Path, tag: str, *, env: Mapping[str, str] | None = None
+    ) -> tuple[int, str]:
+        """``git verify-tag --raw <tag>``: ``(exit code, combined output)``. The
+        verifier (gpg, gpgsm or ssh-keygen) is the user's own configuration."""
+        done = self._exec(
+            repo,
+            ("verify-tag", "--raw", f"refs/tags/{tag}"),
+            timeout=None,
+            config=(),
+            env=env,
+            text=True,
+        )
+        return int(done.returncode), f"{done.stdout or ''}\n{done.stderr or ''}".strip()
 
     def fetch(self, repo: Path, remote: str, branch: str) -> None:
         self.run(repo, "fetch", "--quiet", remote, branch)

@@ -1,0 +1,26 @@
+id: stub-port-lookup
+category: knowledge-lookup
+kind: lookup
+source: LOCUS-382 public test stub (NOT a held-out task; the real split is private)
+problem: >-
+  Which port does the cache service listen on? Read the repository and write
+  only the number to answer.txt.
+files:
+  services/cache.toml: |
+    [cache]
+    listen = "0.0.0.0:6411"
+  services/web.toml: |
+    [web]
+    listen = "0.0.0.0:8080"
+done_criteria:
+  - id: answer-exists
+    kind: file
+    path: answer.txt
+    description: answer.txt exists
+grader:
+  - id: answer
+    type: file_matches
+    path: answer.txt
+    pattern: '^\s*6411\s*$'
+reference:
+  answer.txt: "6411\n"

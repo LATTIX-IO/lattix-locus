@@ -15,8 +15,9 @@ import os
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from . import native_binaries as nb
 
@@ -218,6 +219,62 @@ def ensure_playwright_chromium(
     return True
 
 
+# --------------------------------------------------------------------------- #
+# Private RSI held-out split (LOCUS-382)
+# --------------------------------------------------------------------------- #
+#: (app_home) -> resolution, note; see :func:`locus_tooling.evals_sync.ensure_heldout`.
+HeldoutEnsureFn = Callable[[Path], "tuple[Any, str]"]
+
+
+#: Without access (the usual case) a launch retries the fetch at most once a day.
+HELDOUT_RETRY_SECONDS = 24 * 3600
+HELDOUT_FETCH_TIMEOUT = 60
+
+
+def _default_heldout_ensure(app_home: Path) -> "tuple[Any, str]":
+    from .evals_sync import ensure_heldout, heldout_root
+
+    marker = heldout_root(app_home) / ".firstrun-attempt"
+    try:
+        recent = time.time() - marker.stat().st_mtime < HELDOUT_RETRY_SECONDS
+    except OSError:
+        recent = False
+    resolution, note = ensure_heldout(
+        sync=not recent, app_home=app_home, timeout=HELDOUT_FETCH_TIMEOUT
+    )
+    if not resolution.available and not recent:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(int(time.time())), encoding="utf-8")
+    return resolution, note
+
+
+def ensure_heldout_suite(
+    app_home: Path,
+    *,
+    progress: ProgressFn | None = None,
+    ensure: HeldoutEnsureFn | None = None,
+) -> bool:
+    """First run: sync the private RSI held-out split if this user can read it.
+
+    Non-interactive (no credential prompt) and quiet: most installs have no access
+    to the private repository, and that is fine -- the self-improvement scorecard
+    then reports the held-out split as ``skipped: not synced``. Never raises.
+    Returns whether a verified held-out split is available."""
+    progress = progress or _default_progress
+    try:
+        # The note (why a sync failed) may name the repository: not shown on the splash.
+        resolution, _note = (ensure or _default_heldout_ensure)(Path(app_home))
+    except Exception as exc:  # noqa: BLE001 - first run must not crash the app
+        progress(f"held-out eval suite: skipped ({type(exc).__name__})")
+        return False
+    if getattr(resolution, "available", False):
+        progress(f"held-out eval suite: {resolution.describe()}")
+        return True
+    # No access (the usual case) or no git: one quiet line, no error.
+    progress("held-out eval suite: skipped (not synced; private repository not accessible)")
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     from .desktop import desktop_app_home, writable_bin_dir
 
@@ -226,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     ensure_sidecars(writable_bin_dir(), model=model)
     ensure_agent_toolchain(desktop_app_home())
     ensure_playwright_chromium(desktop_app_home())
+    ensure_heldout_suite(desktop_app_home())
     return 0
 
 

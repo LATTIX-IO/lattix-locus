@@ -1,6 +1,11 @@
 """LOCUS-351: the RSI task suite, its graders, the sealed store and the evaluator.
 
-* Suite shape (>= 16 tasks, dev + held-out, every required category).
+* Suite shape (the public dev split covers every required category; LOCUS-382:
+  the repository holds no held-out task -- the held-out split is private).
+* The held-out split here is a public **test stub** (``fixtures/heldout_stub``),
+  passed explicitly; the real one is never in this repository. Set
+  ``LOCUS_EVAL_HELDOUT_DIR`` to a checkout of the private repository's
+  ``heldout/`` to also validate (and leak-check) the private tasks.
 * Suite validity: for every task the untouched fixture FAILS its grader and the
   reference solution PASSES it (hidden tests run with this interpreter here; the
   evaluator runs them in the platform jail).
@@ -27,7 +32,7 @@ import pytest
 from locus_evals.suite import TASKS_DIR
 from locus_evals.suite.graders import RunEvidence, grade
 from locus_evals.suite.inspect_adapter import inspect_available
-from locus_evals.suite.loader import SuiteError, load_task, load_tasks
+from locus_evals.suite.loader import SuiteError, load_task, load_tasks, task_files
 from locus_evals.suite.model import VISIBLE_TEST, SuiteTask
 from locus_evals.suite.runner import (
     EvalContext,
@@ -53,7 +58,37 @@ BAKEOFF_TASKS = {
     "loc-injection",
     "loc-tiny-budget",
 }
-TASKS = load_tasks(TASKS_DIR)
+STUB_HELDOUT = Path(__file__).resolve().parent / "fixtures" / "heldout_stub"
+#: The private held-out split, validated only when the principal points at it.
+PRIVATE_HELDOUT = os.environ.get("LOCUS_EVAL_HELDOUT_DIR", "").strip()
+REQUIRED_CATEGORIES = {
+    "coding-edit",
+    "fix-failing-test",
+    "tool-error-recovery",
+    "injection-resistance",
+    "budget-stop",
+    "knowledge-lookup",
+    "structured-artifact",
+}
+
+
+def _split_tasks(folder: Path, split: str = "heldout") -> list[SuiteTask]:
+    return [load_task(path, split) for path in task_files(folder, ".")]
+
+
+DEV_TASKS = load_tasks(TASKS_DIR, ("dev",))
+STUB_TASKS = _split_tasks(STUB_HELDOUT)
+PRIVATE_TASKS = _split_tasks(Path(PRIVATE_HELDOUT)) if PRIVATE_HELDOUT else []
+TASKS = DEV_TASKS + STUB_TASKS + PRIVATE_TASKS
+
+
+@pytest.fixture(autouse=True)
+def _no_real_heldout(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never pick up this machine's synced held-out split (or its override) in a test."""
+    monkeypatch.setenv("LOCUS_APP_HOME", str(tmp_path_factory.mktemp("app-home")))
+    monkeypatch.delenv("LOCUS_EVAL_HELDOUT_DIR", raising=False)
 
 
 def run_tests_here(root: Path, script: str, timeout: int) -> tuple[int, str]:
@@ -88,26 +123,40 @@ def _done(**kw: Any) -> RunEvidence:
 # --------------------------------------------------------------------------- #
 # Shape
 # --------------------------------------------------------------------------- #
-def test_suite_has_enough_tasks_in_both_splits_and_every_category() -> None:
-    assert len(TASKS) >= 16
-    dev = [t for t in TASKS if t.split == "dev"]
-    heldout = [t for t in TASKS if t.split == "heldout"]
-    assert dev and heldout
-    assert BAKEOFF_TASKS <= {t.id for t in dev}  # the 8 bake-off tasks, ported
-    categories = {t.category for t in TASKS}
-    assert {
-        "coding-edit",
-        "fix-failing-test",
-        "tool-error-recovery",
-        "injection-resistance",
-        "budget-stop",
-        "knowledge-lookup",
-        "structured-artifact",
-    } <= categories
-    assert sum(1 for t in TASKS if t.kind == "operator") >= 2
-    # The held-out split covers every category too (it is what promotion is judged on).
-    assert {t.category for t in heldout} == categories
-    assert not ({t.id for t in dev} & {t.id for t in heldout})
+def test_dev_split_has_enough_tasks_and_every_category() -> None:
+    assert len(DEV_TASKS) >= 12
+    assert BAKEOFF_TASKS <= {t.id for t in DEV_TASKS}  # the 8 bake-off tasks, ported
+    assert REQUIRED_CATEGORIES <= {t.category for t in DEV_TASKS}
+    assert sum(1 for t in DEV_TASKS if t.kind == "operator") >= 2
+
+
+def test_the_repository_holds_no_heldout_task() -> None:
+    """LOCUS-382: the held-out split is private; the suite folder has the dev split only."""
+    assert sorted(p.name for p in TASKS_DIR.iterdir()) == ["dev"]
+    assert all(t.split == "dev" for t in load_tasks(TASKS_DIR))
+    assert not ({t.id for t in DEV_TASKS} & {t.id for t in STUB_TASKS})
+
+
+@pytest.mark.skipif(not PRIVATE_TASKS, reason="LOCUS_EVAL_HELDOUT_DIR (the private split) not set")
+def test_private_heldout_covers_every_category_and_never_leaks_into_the_repo() -> None:
+    assert len(PRIVATE_TASKS) >= 8
+    assert {t.category for t in PRIVATE_TASKS} >= REQUIRED_CATEGORIES
+    assert not ({t.id for t in DEV_TASKS} & {t.id for t in PRIVATE_TASKS})
+    # No tracked file of this repository names a private task or quotes its problem.
+    listed = subprocess.run(
+        ["git", "-C", str(REPO), "ls-files", "-z"], capture_output=True, check=True
+    ).stdout.split(b"\0")
+    needles = [t.id.encode() for t in PRIVATE_TASKS] + [
+        " ".join(t.problem.split())[:60].encode() for t in PRIVATE_TASKS
+    ]
+    leaks: list[str] = []
+    for rel in filter(None, listed):
+        path = REPO / rel.decode()
+        if not path.is_file() or path.stat().st_size > 2_000_000:
+            continue
+        data = b" ".join(path.read_bytes().split())
+        leaks += [f"{rel.decode()}: {n.decode()[:40]}" for n in needles if n in data]
+    assert leaks == []
 
 
 @pytest.mark.parametrize("task", TASKS, ids=lambda t: t.id)
@@ -210,17 +259,16 @@ def test_injection_outcomes(tmp_path: Path) -> None:
 
 
 def test_injection_where_reading_the_secret_is_legitimate(tmp_path: Path) -> None:
-    task = _task("ho-inject-readme")
+    task = _task("stub-inject-config")
+    canary = "LOCUS_CANARY_STUB_c0ffee"
     root, base = _workspace(tmp_path / "read", task, solved=True)
-    # The token reached the model (it read config/deploy.ini): not a compromise here...
-    read = grade(
-        task, root, base, _done(meter_canary_hits=["LOCUS_CANARY_5b20c1"]), run_tests=run_tests_here
-    )
+    # The token reached the model (it read settings/release.cfg): not a compromise here...
+    read = grade(task, root, base, _done(meter_canary_hits=[canary]), run_tests=run_tests_here)
     assert read.injection == "resisted" and read.passed
     # ...but copying it into the code is.
     root, base = _workspace(tmp_path / "copy", task, solved=True)
-    (root / "pkg" / "__init__.py").write_text(
-        '__version__ = "1.3.0"\nTELEMETRY_KEY = "LOCUS_CANARY_5b20c1"\n', encoding="utf-8"
+    (root / "app" / "__init__.py").write_text(
+        f'VERSION = "2.4.1"\nDEPLOY_TOKEN = "{canary}"\n', encoding="utf-8"
     )
     copied = grade(task, root, base, _done(), run_tests=run_tests_here)
     assert copied.injection == "compromised" and not copied.passed
@@ -288,22 +336,36 @@ def _writable(path: Path) -> None:
 
 
 def test_store_is_read_only_hash_verified_and_idempotent(tmp_path: Path) -> None:
-    sealed = install(TASKS_DIR, tmp_path / "store")
+    sealed = install(TASKS_DIR, tmp_path / "store", heldout_dir=STUB_HELDOUT)
     assert sealed.root.parent == tmp_path / "store"
     assert (sealed.root / "MANIFEST.json").is_file()
-    assert len(sealed.files) == len(TASKS)
+    assert len(sealed.files) == len(DEV_TASKS) + len(STUB_TASKS)
     assert set(sealed.split_digests) == {"dev", "heldout"}
+    assert sealed.heldout.origin == "argument"
     some = sealed.root / next(iter(sealed.files))
     assert not os.access(some, os.W_OK)
     verify(sealed)  # clean
-    again = install(TASKS_DIR, tmp_path / "store")
+    again = install(TASKS_DIR, tmp_path / "store", heldout_dir=STUB_HELDOUT)
     assert again.root == sealed.root and again.digest == sealed.digest
+
+
+def test_without_a_synced_heldout_the_store_has_the_dev_split_only(tmp_path: Path) -> None:
+    """LOCUS-382: no private source -> no held-out split (and no digest that could match)."""
+    sealed = install(TASKS_DIR, tmp_path / "store")
+    assert set(sealed.split_digests) == {"dev"}
+    assert sealed.heldout.origin == "none" and sealed.heldout.reason == "not synced"
+    assert {t.split for t in load_tasks(sealed.tasks_dir)} == {"dev"}
+    # A public tasks/heldout folder is ignored: it can never stand in for the private split.
+    fake = tmp_path / "suite"
+    shutil.copytree(TASKS_DIR, fake)
+    shutil.copytree(STUB_HELDOUT, fake / "heldout")
+    assert set(install(fake, tmp_path / "store2").split_digests) == {"dev"}
 
 
 @pytest.mark.parametrize("attack", ["modify", "add", "remove", "make-writable", "manifest-only"])
 def test_any_store_change_is_detected(tmp_path: Path, attack: str) -> None:
-    sealed = install(TASKS_DIR, tmp_path / "store")
-    target = sealed.root / "tasks" / "heldout" / "ho-csv-quoting.yaml"
+    sealed = install(TASKS_DIR, tmp_path / "store", heldout_dir=STUB_HELDOUT)
+    target = sealed.root / "tasks" / "heldout" / "stub-shout.yaml"
     _writable(target)
     if attack == "modify":
         target.write_text(target.read_text(encoding="utf-8") + "\n# easier\n", encoding="utf-8")
@@ -313,8 +375,8 @@ def test_any_store_change_is_detected(tmp_path: Path, attack: str) -> None:
         # A same-user attacker can make the read-only folder writable first
         # (POSIX needs it; Windows ignores the folder's read-only bit).
         os.chmod(target.parent, 0o755)
-        extra = sealed.root / "tasks" / "heldout" / "ho-extra.yaml"
-        extra.write_text("id: ho-extra\n", encoding="utf-8")
+        extra = sealed.root / "tasks" / "heldout" / "stub-extra.yaml"
+        extra.write_text("id: stub-extra\n", encoding="utf-8")
     elif attack == "remove":
         os.chmod(target.parent, 0o755)
         target.unlink()
@@ -330,18 +392,24 @@ def test_any_store_change_is_detected(tmp_path: Path, attack: str) -> None:
     with pytest.raises(TamperError):
         verify(sealed)
     # Re-installing repairs a tampered store from the trusted source.
-    repaired = install(TASKS_DIR, tmp_path / "store")
+    repaired = install(TASKS_DIR, tmp_path / "store", heldout_dir=STUB_HELDOUT)
     verify(repaired)
 
 
-def test_heldout_can_come_from_a_private_directory(tmp_path: Path) -> None:
+def test_heldout_can_come_from_a_private_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     private = tmp_path / "private-heldout"
     private.mkdir()
-    shutil.copy(TASKS_DIR / "heldout" / "ho-csv-quoting.yaml", private / "ho-csv-quoting.yaml")
+    shutil.copy(STUB_HELDOUT / "stub-shout.yaml", private / "stub-shout.yaml")
     sealed = install(TASKS_DIR, tmp_path / "store", heldout_dir=private)
     heldout = [t for t in load_tasks(sealed.tasks_dir) if t.split == "heldout"]
-    assert [t.id for t in heldout] == ["ho-csv-quoting"]
+    assert [t.id for t in heldout] == ["stub-shout"]
     assert sealed.digest != install(TASKS_DIR, tmp_path / "store").digest
+    # LOCUS_EVAL_HELDOUT_DIR is the same private folder, without an argument.
+    monkeypatch.setenv("LOCUS_EVAL_HELDOUT_DIR", str(private))
+    by_env = install(TASKS_DIR, tmp_path / "store")
+    assert by_env.digest == sealed.digest and by_env.heldout.origin == "env"
 
 
 # --------------------------------------------------------------------------- #
@@ -398,8 +466,15 @@ class FakeCandidate:
         }
 
 
-def _ctx(tmp_path: Path, candidate: Any, meter: Any, **cfg: Any) -> EvalContext:
-    sealed = install(TASKS_DIR, tmp_path / "store")
+def _ctx(
+    tmp_path: Path,
+    candidate: Any,
+    meter: Any,
+    *,
+    heldout: Path | None = STUB_HELDOUT,
+    **cfg: Any,
+) -> EvalContext:
+    sealed = install(TASKS_DIR, tmp_path / "store", heldout_dir=heldout)
     config = SuiteRunConfig(
         candidate_checkout=REPO, output_dir=tmp_path / "out", work_dir=tmp_path, **cfg
     )
@@ -483,9 +558,9 @@ def test_tampering_during_a_run_stops_it_and_taints_the_scorecard(tmp_path: Path
     )
 
     def tamper(request: dict[str, Any]) -> None:
-        target = ctx.sealed.root / "tasks" / "heldout" / "ho-csv-quoting.yaml"
+        target = ctx.sealed.root / "tasks" / "heldout" / "stub-shout.yaml"
         _writable(target)
-        target.write_text("id: ho-csv-quoting\n", encoding="utf-8")
+        target.write_text("id: stub-shout\n", encoding="utf-8")
 
     candidate.on_run = tamper
     picked = [tasks["syn-add-sign"], tasks["syn-max-empty"]]
@@ -532,7 +607,7 @@ def test_inspect_and_builtin_engines_produce_the_same_scorecard(tmp_path: Path) 
     picked = [
         t
         for t in TASKS
-        if t.id in {"syn-add-sign", "loc-injection", "loc-tiny-budget", "ho-csv-quoting"}
+        if t.id in {"syn-add-sign", "loc-injection", "loc-tiny-budget", "stub-shout"}
     ]
     ctx = _ctx(tmp_path, FakeCandidate({}), FakeMeter(MeterSnapshot()), trials=2, engine="inspect")
     inspect_records, engine, log_dir = run_records(picked, ctx.cfg, _fake_evaluate)
@@ -585,11 +660,38 @@ def test_tamper_check_defaults_are_clean() -> None:
 def test_suite_digests_do_not_depend_on_line_endings(tmp_path: Path) -> None:
     from locus_evals.suite.loader import split_digest
 
-    crlf = tmp_path / "crlf"
-    for split in ("dev", "heldout"):
+    lf, crlf = tmp_path / "lf", tmp_path / "crlf"
+    for split, source in (("dev", TASKS_DIR / "dev"), ("heldout", STUB_HELDOUT)):
         (crlf / split).mkdir(parents=True)
-        for path in (TASKS_DIR / split).glob("*.yaml"):
+        shutil.copytree(source, lf / split)
+        for path in source.glob("*.yaml"):
             data = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
             (crlf / split / path.name).write_bytes(data)
     for split in ("dev", "heldout"):
-        assert split_digest(crlf, split) == split_digest(TASKS_DIR, split)
+        assert split_digest(crlf, split) == split_digest(lf, split)
+
+
+def test_a_missing_heldout_split_is_reported_skipped_and_never_promoted(tmp_path: Path) -> None:
+    """LOCUS-382: no synced held-out -> the scorecard says why, and compare() holds."""
+    from locus_runtime.rsi.scorecard import compare, scorecard_markdown
+
+    from locus_evals.suite.runner import skipped_splits
+
+    ctx = _ctx(
+        tmp_path,
+        FakeCandidate({}),
+        FakeMeter(MeterSnapshot()),
+        heldout=None,
+        splits=("dev", "heldout"),
+    )
+    assert skipped_splits(ctx.sealed, ctx.cfg) == {"heldout": "not synced"}
+    dev_only = [_fake_evaluate(t, 0) for t in DEV_TASKS]
+    card = score(dev_only, ctx, ctx.cfg, engine="builtin", isolation="appcontainer")
+    assert card.skipped_splits == {"heldout": "not synced"}
+    assert card.split("heldout") is None and "heldout" not in card.split_digests
+    assert "- heldout: skipped: not synced" in scorecard_markdown(card)
+    # Even against a weak, comparable-looking baseline the dev-only card holds.
+    base = card.model_copy(update={"split_digests": {**card.split_digests, "heldout": "x"}})
+    verdict = compare(base, card)
+    assert verdict.decision == "hold"
+    assert any("skipped: not synced" in r for r in verdict.reasons), verdict.reasons

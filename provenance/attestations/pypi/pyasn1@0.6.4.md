@@ -3,8 +3,8 @@
 Generated from the JSON record beside this file by `lattix provenance render`; edit the JSON, not this summary.
 
 - **Decision:** conditional (conditions: Principal accepts that PyPI owner account 'ilya' (upload rights) could not be tied to a person.; Install pinned by version and hash once Locus has a hash-locked dependency set (D-29 step 5); until then the attested sha256 values are the reference.; Re-inspect on any version change (google-auth pulls pyasn1 unpinned).)
-- **Reviewer:** agent-prepared, principal sign-off pending, 2026-10-04
-- **Gate status:** not passing: principal sign-off pending
+- **Reviewer:** principal (jpbooth@lattix.io (principal)), 2026-10-04
+- **Gate status:** passing
 - **Origin:** not-listed (DE, CA; confidence medium). Maintained since 2022 by Christian Heimes (GitHub profile: Hamburg, Germany; Red Hat) and Simon Pichugin (GitHub profile: Vancouver, Canada; Red Hat) in the pyasn1 GitHub organization. Simon Pichugin made the v0.6.4 release commit and ran the publish workflow. The original author, Ilya Etingof (GitHub profile: 'Central Europe'; Red Hat), still holds PyPI owner rights but has no commits in the organization's repository since 2020-03-21. Locations are self-reported profile fields and were not independently verified. No evidence ties a maintainer, the organization or a funder to a P28-listed country.
 
 ## Rationale
