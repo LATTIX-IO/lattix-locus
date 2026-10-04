@@ -20,7 +20,7 @@ from __future__ import annotations
 import importlib
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -190,8 +190,13 @@ def evaluate_candidate(
     *,
     base_branch: str = "main",
     now: datetime | None = None,
+    archive_now: bool = True,
 ) -> ScorecardGateResult:
-    """Run the scorecard, compare with the base branch's baseline, archive the variant."""
+    """Run the scorecard and compare it with the base branch's baseline.
+
+    With ``archive_now`` the variant is archived at once; the loop instead archives
+    it under the commit sha after committing (:func:`archive_variant`).
+    """
     try:
         scorecard = runner(request)
     except ScorecardUnavailable as exc:
@@ -204,19 +209,34 @@ def evaluate_candidate(
         model=scorecard.model,
     )
     comparison = compare(baseline, scorecard)
-    variant = ""
-    try:
-        variant = str(archive.record(scorecard, comparison=comparison, now=now, source="loop"))
-    except (OSError, ValueError):
-        variant = ""
-    return ScorecardGateResult(
+    result = ScorecardGateResult(
         comparison.decision,
         "; ".join(comparison.reasons[:3]),
         scorecard=scorecard,
         comparison=comparison,
         scorecard_path=str(request.output_dir / "scorecard.json"),
-        variant_path=variant,
     )
+    if archive_now and scorecard.git_sha:
+        result = archive_variant(result, archive, git_sha=scorecard.git_sha, now=now)
+    return result
+
+
+def archive_variant(
+    result: ScorecardGateResult,
+    archive: VariantArchive,
+    *,
+    git_sha: str,
+    now: datetime | None = None,
+) -> ScorecardGateResult:
+    """Record the evaluated variant under ``git_sha`` (the commit of the scored tree)."""
+    if result.scorecard is None:
+        return result
+    scorecard = result.scorecard.model_copy(update={"git_sha": git_sha})
+    try:
+        path = str(archive.record(scorecard, comparison=result.comparison, now=now, source="loop"))
+    except (OSError, ValueError):
+        path = ""
+    return replace(result, scorecard=scorecard, variant_path=path)
 
 
 class ScorecardHistory:

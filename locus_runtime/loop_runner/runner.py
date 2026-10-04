@@ -17,9 +17,10 @@ One tick (:meth:`LoopRunner.run_once`)::
     claim (comment marker + In Progress; earliest live claim wins)
     worktree from <remote>/<base> → envelope → gateway session → VerifiedLoop
     done    ─▶ pre-PR verifier suite from the diff (LOCUS-339) ── fail ─▶ stopped
-            ─▶ eval gate (optional) ─▶ commit
-            ─▶ RSI scorecard on the candidate commit vs the base branch's baseline
-               (LOCUS-351; off | advisory | required) ─▶ variant archived
+            ─▶ eval gate (optional)
+            ─▶ RSI scorecard on the candidate tree vs the base branch's baseline
+               (LOCUS-351; off | advisory | required)
+            ─▶ commit ─▶ variant archived under the commit sha
             ─▶ push, PR with evidence (incl. scorecard + comparison), issue → In Review
             ─▶ propose a quarantined SKILL.md from the trajectory (P24)
     blocked ─▶ comment + agent:human-review-required, issue → Blocked | Todo
@@ -151,6 +152,7 @@ from locus_runtime.loop_runner.scorecard_gate import (
     ScorecardHistory,
     ScorecardRequest,
     ScorecardRunner,
+    archive_variant,
     default_scorecard_runner,
     evaluate_candidate,
     parse_scorecard_mode,
@@ -817,13 +819,16 @@ class LoopRunner:
                     "missing tool), then re-queue the issue",
                 )
             eval_result = self._eval_gate(gateway, issue, record, result.envelope)
+            # Scored before the commit (same tree): a crash during the long scorecard
+            # run resumes with the change still uncommitted, as before LOCUS-351.
+            scorecard = self._scorecard_gate(record, worktree, gate)
             branch = str(record["branch"])
             title = f"{issue.identifier}: {issue.title}"[:120]
             self.git.commit_all(
                 worktree,
                 f"chore(loop): {title}\n\nResolves {issue.identifier}\nLocus-Run: {run_id}",
             )
-            scorecard = self._scorecard_gate(issue, record, worktree, gate)
+            scorecard = self._archive_scorecard(issue, record, worktree, scorecard)
             self._retry(lambda: self.git.push(worktree, self.config.remote, branch))
             body = pr_body(
                 issue,
@@ -1270,59 +1275,75 @@ class LoopRunner:
     # ------------------------------------------------------------------ scorecard (LOCUS-351)
     def _scorecard_gate(
         self,
-        issue: LinearIssue,
         record: dict[str, Any],
         worktree: Path,
         gate: GateReport | None,
     ) -> ScorecardGateResult | None:
-        """Evaluate the committed candidate with the RSI suite (None when off)."""
+        """Evaluate the run's tree with the RSI suite and compare (None when off)."""
         if parse_scorecard_mode(self.config.scorecard_mode, "off") == "off":
+            return None
+        run_id = str(record["run_id"])
+        request = ScorecardRequest(
+            candidate_checkout=worktree,
+            repo_path=self.config.repo_path,
+            output_dir=self.config.home / "scorecards" / run_id,
+            git_sha="",  # the tree is committed afterwards; archived under that sha
+            branch=str(record["branch"]),
+            # Only reached when every selected pre-PR check passed.
+            gate_failures=list(gate.failing_ids) if gate is not None else None,
+            trials=self.config.scorecard_trials,
+            splits=self.config.scorecard_splits,
+            model=self.config.scorecard_model or SCORECARD_DEFAULT_MODEL,
+            python=self.config.scorecard_python,
+            run_kwargs=dict(self.scorecard_run_kwargs),
+        )
+        with telemetry.gate("scorecard", run_id=run_id) as span:
+            result = evaluate_candidate(
+                request,
+                self.scorecard_runner,
+                VariantArchive(self.config.home),
+                base_branch=self.config.base_branch,
+                now=self.clock(),
+                archive_now=False,
+            )
+            summary = result.summary()
+            span.set_many(
+                {
+                    "locus.gate.status": result.status,
+                    "locus.rsi.heldout_pass_rate": summary.get("heldout_pass_rate"),
+                }
+            )
+            telemetry.record_score(
+                "rsi_scorecard",
+                summary.get("heldout_pass_rate"),
+                label=result.status,
+                comment=result.reason,
+                source="loop_runner",
+                run_id=run_id,
+            )
+        return result
+
+    def _archive_scorecard(
+        self,
+        issue: LinearIssue,
+        record: dict[str, Any],
+        worktree: Path,
+        result: ScorecardGateResult | None,
+    ) -> ScorecardGateResult | None:
+        """After the commit: archive the variant under its sha, tag, record history."""
+        if result is None:
             return None
         run_id = str(record["run_id"])
         branch = str(record["branch"])
         sha = ""
         try:
             sha = self.git.run(worktree, "rev-parse", "HEAD").strip()
-        except DeliveryError as exc:
-            result = ScorecardGateResult.skipped(f"no candidate commit ({_safe(exc, 120)})")
-        else:
-            request = ScorecardRequest(
-                candidate_checkout=worktree,
-                repo_path=self.config.repo_path,
-                output_dir=self.config.home / "scorecards" / run_id,
-                git_sha=sha,
-                branch=branch,
-                # Only reached when every selected pre-PR check passed.
-                gate_failures=list(gate.failing_ids) if gate is not None else None,
-                trials=self.config.scorecard_trials,
-                splits=self.config.scorecard_splits,
-                model=self.config.scorecard_model or SCORECARD_DEFAULT_MODEL,
-                python=self.config.scorecard_python,
-                run_kwargs=dict(self.scorecard_run_kwargs),
+        except DeliveryError:
+            logger.warning("loop.scorecard_no_commit_sha", extra={"run_id": run_id})
+        if sha and result.scorecard is not None:
+            result = archive_variant(
+                result, VariantArchive(self.config.home), git_sha=sha, now=self.clock()
             )
-            with telemetry.gate("scorecard", run_id=run_id) as span:
-                result = evaluate_candidate(
-                    request,
-                    self.scorecard_runner,
-                    VariantArchive(self.config.home),
-                    base_branch=self.config.base_branch,
-                    now=self.clock(),
-                )
-                summary = result.summary()
-                span.set_many(
-                    {
-                        "locus.gate.status": result.status,
-                        "locus.rsi.heldout_pass_rate": summary.get("heldout_pass_rate"),
-                    }
-                )
-                telemetry.record_score(
-                    "rsi_scorecard",
-                    summary.get("heldout_pass_rate"),
-                    label=result.status,
-                    comment=result.reason,
-                    source="loop_runner",
-                    run_id=run_id,
-                )
         record["scorecard"] = result.summary()
         try:
             ScorecardHistory(self.config.home).append(

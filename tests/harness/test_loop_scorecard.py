@@ -118,11 +118,11 @@ def test_advisory_scorecard_on_the_commit_is_attached_archived_and_reported(
     assert "a + b" in scorecard.seen_code[0]
     assert request.repo_path == py_repo.resolve()
     assert request.candidate_checkout.is_relative_to(home / "worktrees")
-    assert len(request.git_sha) == 40 and request.branch.startswith("loop/")
+    # Scored before the commit (the same tree); archived under the commit sha.
+    assert request.git_sha == "" and request.branch.startswith("loop/")
     assert request.gate_failures == [] and request.splits == ("dev", "heldout")
     assert request.output_dir == home / "scorecards" / result.run_id
     pushed = _git(tmp_path / "origin.git", "rev-parse", request.branch).strip()
-    assert pushed == request.git_sha  # what was scored is what was pushed
 
     body = github.opened[0]["body"]
     assert "## RSI scorecard" in body and "Decision: **promote**" in body
@@ -137,7 +137,9 @@ def test_advisory_scorecard_on_the_commit_is_attached_archived_and_reported(
     assert history[0]["status"] == "promote" and history[0]["issue"] == "LOC-1"
     entries = VariantArchive(home).entries()
     assert [e["branch"] for e in entries] == ["main", request.branch]
-    assert entries[-1]["decision"] == "promote" and entries[-1]["git_sha"] == request.git_sha
+    # The variant is the pushed commit: what was scored is what was pushed.
+    assert entries[-1]["decision"] == "promote" and entries[-1]["git_sha"] == pushed
+    assert run["scorecard"]["git_sha"] == pushed
 
     report = load_report(home)
     assert report["scorecard"]["runs"] == 1
@@ -186,7 +188,7 @@ def test_variant_tags_are_local(py_repo: Path, tmp_path: Path) -> None:  # noqa:
     scorecard = FakeScorecard()
     runner, _t, _gh = _loop(py_repo, tmp_path, scorecard, mode="advisory", tag_variants=True)
     assert runner.run_once().status == "done"
-    sha = scorecard.requests[0].git_sha
+    sha = VariantArchive(tmp_path / "home").entries()[-1]["git_sha"]
     assert _git(py_repo, "rev-parse", f"refs/tags/variant/{sha[:12]}").strip() == sha
     # Never pushed: the remote has no variant tags.
     assert _git(tmp_path / "origin.git", "tag", "--list", "variant/*").strip() == ""
