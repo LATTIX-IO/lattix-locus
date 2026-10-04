@@ -264,3 +264,50 @@ def test_update_trust_chain_is_protected_from_auto_merge() -> None:
             )
             assert decision.action == "hold", path
             assert any("protected path changed" in r for r in decision.reasons), path
+
+
+def test_manual_release_path_builds_the_version_it_names() -> None:
+    # The dispatch input / tag used to name only the artifact and the tag, so
+    # every build from this path reported tauri.conf.json's base 0.1.0 (app,
+    # /platform/version, installer) and an unstamped backend.
+    wf = _load("desktop-release.yml")
+    plan = next(s for s in _steps(wf["jobs"]["plan"]) if s.get("id") == "m")
+    assert wf["jobs"]["plan"]["outputs"]["version"] == "${{ steps.m.outputs.version }}"
+    # The input reaches the script only through env, never by interpolation.
+    assert "inputs.version" not in _run(plan)
+    assert plan["env"]["VERSION_INPUT"] == "${{ github.event.inputs.version }}"
+    # WiX rejects non-numeric pre-release versions: NSIS only on Windows then.
+    assert '"bundles": "nsis" if prerelease else ""' in _run(plan)
+    build = wf["jobs"]["build"]
+    assert build["env"]["VERSION"] == "${{ needs.plan.outputs.version }}"
+    sidecar = next(s for s in _steps(build) if s.get("name") == "Build backend sidecar")
+    assert 'python -m locus_tooling.build_info "$VERSION"' in _run(sidecar)
+    assert _run(sidecar).index("build_info") < _run(sidecar).index("pyinstaller packaging")
+    overlay = next(s for s in _steps(build) if s.get("name") == "Write the release version overlay")
+    assert 'json.dump({"version": os.environ["VERSION"]}, fh)' in _run(overlay)
+    tauri_steps = [s for s in _steps(build) if str(s.get("uses", "")).startswith("tauri-apps/")]
+    for step in tauri_steps:
+        args = step["with"]["args"]
+        assert (
+            "--config ${{ github.workspace }}/apps/desktop-tauri/src-tauri/release.conf.json"
+            in args
+        )
+        assert "format(' --bundles {0}', matrix.bundles)" in args
+    order = [s.get("name") for s in _steps(build)]
+    assert order.index("Write the release version overlay") < order.index(
+        "Build installers (release)"
+    )
+
+
+def test_dev_build_sets_the_full_dev_version_in_the_app() -> None:
+    # The Dev version reaches the compiled app (package_info, hence the
+    # LOCUS_APP_VERSION the shell hands the backend) through the --config
+    # overlay; tauri-codegen merges TAURI_CONFIG over tauri.conf.json.
+    wf = _load("desktop-dev.yml")
+    build = wf["jobs"]["build"]
+    overlay = next(s for s in _steps(build) if s.get("name") == "Write the Dev build overlay")
+    assert '"version": os.environ["VERSION"]' in _run(overlay)
+    installers = next(s for s in _steps(build) if s.get("name") == "Build installers")
+    assert "--config dev-channel.conf.json" in _run(installers)
+    main_rs = (TAURI / "src" / "main.rs").read_text(encoding="utf-8")
+    assert '.env("LOCUS_APP_VERSION", app.package_info().version.to_string())' in main_rs

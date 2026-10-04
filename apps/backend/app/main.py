@@ -973,10 +973,8 @@ class ProviderUnavailableError(HTTPException):
                 "and retry."
             )
         if self.code == "model_call_denied":
-            return (
-                f"Model call to '{self.provider}' (model '{self.model}') was denied by the "
-                f"gateway: {self.reason}"
-            )
+            # "Policy engine missing: reinstall ..." when the gateway has no engine.
+            return model_calls.model_call_denied_message(self.provider, self.model, self.reason)
         return (
             f"Model provider '{self.provider}' call failed for model '{self.model}': {self.reason}"
         )
@@ -18272,10 +18270,26 @@ def _installed_platform_version() -> str | None:
     return None
 
 
+def _stamped_build_version() -> str:
+    """The version CI stamped into a desktop sidecar build, or ``""``."""
+    try:
+        from locus_tooling.build_info import backend_build_version
+
+        return backend_build_version()
+    except Exception:  # noqa: BLE001 - no stamp means "not a stamped build"
+        return ""
+
+
 def _platform_version() -> str:
+    # The desktop shell passes its full version (e.g. 0.1.0-dev.16); a stamped
+    # sidecar knows it too, so neither falls back to the base package version.
     override = str(os.getenv("LOCUS_APP_VERSION") or "").strip()
     if override:
         return override
+
+    stamped = _stamped_build_version()
+    if stamped:
+        return stamped
 
     installed_version = _installed_platform_version()
     if installed_version:

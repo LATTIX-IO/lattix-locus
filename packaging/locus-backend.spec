@@ -148,6 +148,16 @@ for _sub in ("agents", "workflows"):
     if _src.is_dir():
         datas.append((str(_src), f"examples/{_sub}"))
 
+# The gateway's Rego policies (deployable modules only, not policies/tests/).
+# locus_runtime.policy_engine resolves them at <_MEIPASS>/policies when frozen;
+# without them the bundled OPA (locus-opa, a Tauri externalBin) has nothing to
+# evaluate and every decision denies. `--self-check` starts the engine on them.
+_REGO = sorted((_ROOT / "policies").glob("*.rego"))
+if not _REGO:
+    raise SystemExit("no policies/*.rego to bundle")
+for _rego in _REGO:
+    datas.append((str(_rego), "policies"))
+
 block_cipher = None
 
 a = Analysis(
