@@ -48,7 +48,6 @@ type Props = {
   description: string;
   initialNodes: GraphNode[];
   initialLinks: GraphLink[];
-  initialGeneratedArtifacts?: unknown[];
   rightSidebarSlot?: React.ReactNode;
   externalWidgetOptionOverrides?: Record<string, Record<string, string[]>>;
   onSave: (payload: { nodes: GraphNode[]; links: GraphLink[] }) => Promise<void>;

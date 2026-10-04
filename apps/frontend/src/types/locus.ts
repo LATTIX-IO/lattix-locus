@@ -129,17 +129,6 @@ export type ArtifactDetail = ArtifactSummary & {
   content: string;
 };
 
-export type GeneratedCodeArtifact = ArtifactSummary & {
-  framework: "microsoft-agent-framework" | "langgraph";
-  language: "python";
-  path: string;
-  summary: string;
-  content: string;
-  generated_at: string;
-  entity_type: "agent" | "workflow";
-  entity_id: string;
-};
-
 export type InboxItem = {
   id: string;
   runId: string;
@@ -165,7 +154,6 @@ export type WorkflowDefinition = {
     nodes?: Array<{ id: string; title: string; type: string; x: number; y: number; config?: Record<string, unknown> }>;
     links?: Array<{ from: string; to: string; from_port?: string; to_port?: string }>;
   };
-  generated_artifacts?: GeneratedCodeArtifact[];
 };
 
 export type SecurityClassification = "public" | "internal" | "confidential" | "restricted";

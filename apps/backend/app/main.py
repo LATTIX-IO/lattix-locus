@@ -31,7 +31,6 @@ from types import SimpleNamespace
 
 UTC = timezone.utc
 from pathlib import Path, PurePath
-from pprint import pformat
 from threading import Lock
 from typing import Any, Callable, Literal
 from urllib import error as urllib_error
@@ -68,7 +67,6 @@ from app.control_status import (
     collect_posture_facts,
     enforced_control_ids,
 )
-from app.generated_artifacts import GeneratedArtifactService
 from app.integration_starters import INTEGRATION_STARTER_TEMPLATE_SEEDS
 from app.mcp_starters import MCP_STARTER_TEMPLATE_SEEDS
 from app.platform_services import (
@@ -336,21 +334,6 @@ class ArtifactSummary(BaseModel):
     version: int
 
 
-class GeneratedCodeArtifact(BaseModel):
-    id: str
-    name: str
-    status: Literal["Draft", "Needs Review", "Approved", "Blocked"] = "Draft"
-    version: int = 1
-    framework: Literal["microsoft-agent-framework", "langgraph"]
-    language: Literal["python"] = "python"
-    path: str
-    summary: str = ""
-    content: str
-    generated_at: str
-    entity_type: Literal["agent", "workflow"]
-    entity_id: str
-
-
 class InboxItem(BaseModel):
     id: str
     runId: str
@@ -466,7 +449,6 @@ class WorkflowDefinition(BaseModel):
     active_at: str | None = None
     graph_json: dict[str, Any] = Field(default_factory=dict)
     security_config: dict[str, Any] = Field(default_factory=dict)
-    generated_artifacts: list[GeneratedCodeArtifact] = Field(default_factory=list)
 
 
 class AgentDefinition(BaseModel):
@@ -480,7 +462,6 @@ class AgentDefinition(BaseModel):
     active_at: str | None = None
     type: Literal["form", "graph"]
     config_json: dict[str, Any] = Field(default_factory=dict)
-    generated_artifacts: list[GeneratedCodeArtifact] = Field(default_factory=list)
 
 
 class GuardrailRuleSet(BaseModel):
@@ -1622,106 +1603,6 @@ def _normalize_text_list(value: Any) -> list[str]:
         if text and text not in output:
             output.append(text)
     return output
-
-
-def _python_literal(value: Any) -> str:
-    return pformat(value, width=100, sort_dicts=True)
-
-
-def _safe_python_identifier(value: str, *, prefix: str) -> str:
-    candidate = re.sub(r"[^0-9A-Za-z_]+", "_", str(value or "").strip()).strip("_").lower()
-    if not candidate:
-        candidate = prefix
-    if candidate[0].isdigit():
-        candidate = f"{prefix}_{candidate}"
-    return candidate
-
-
-def _artifact_slug(name: str, fallback: str) -> str:
-    return _slugify(name) or _slugify(fallback) or fallback
-
-
-def _hydrate_graph_for_codegen(
-    graph_json: dict[str, Any],
-) -> tuple[list[GraphNode], list[GraphEdge], list[str], dict[str, list[str]]]:
-    payload = _graph_payload_from_json(graph_json)
-    node_ids = [node.id for node in payload.nodes]
-    order = _topological_order(node_ids, payload.links) or node_ids
-    upstream_node_ids: dict[str, list[str]] = defaultdict(list)
-    for edge in payload.links:
-        upstream_node_ids[edge.to_node].append(edge.from_node)
-    return payload.nodes, payload.links, order, dict(upstream_node_ids)
-
-
-def _node_blueprints_for_codegen(
-    nodes: list[GraphNode], order: list[str], upstream_node_ids: dict[str, list[str]]
-) -> dict[str, dict[str, Any]]:
-    ordered_nodes = {node.id: node for node in nodes}
-    blueprints: dict[str, dict[str, Any]] = {}
-    for node_id in order:
-        node = ordered_nodes[node_id]
-        blueprints[node.id] = {
-            "id": node.id,
-            "title": node.title,
-            "type": _normalize_node_type(node.type),
-            "config": node.config if isinstance(node.config, dict) else {},
-            "upstream": list(upstream_node_ids.get(node.id, [])),
-            "position": {"x": node.x, "y": node.y},
-        }
-    return blueprints
-
-
-def _workflow_runtime_policy_snapshot(platform: PlatformSettings) -> dict[str, Any]:
-    return {
-        "default_runtime_engine": _normalize_runtime_engine(platform.default_runtime_engine),
-        "default_runtime_strategy": _normalize_runtime_strategy(platform.default_runtime_strategy),
-        "allowed_runtime_engines": _normalize_runtime_engine_list(platform.allowed_runtime_engines),
-        "allow_runtime_engine_override": bool(platform.allow_runtime_engine_override),
-        "enforce_runtime_engine_allowlist": bool(platform.enforce_runtime_engine_allowlist),
-        "default_hybrid_runtime_routing": _normalize_hybrid_runtime_routing(
-            platform.default_hybrid_runtime_routing,
-            default_engine=platform.default_runtime_engine,
-        ),
-    }
-
-
-def _agent_runtime_policy_snapshot(agent: AgentDefinition) -> dict[str, Any]:
-    config_json = agent.config_json if isinstance(agent.config_json, dict) else {}
-    runtime = config_json.get("runtime") if isinstance(config_json.get("runtime"), dict) else {}
-    engine_policy = (
-        runtime.get("engine_policy") if isinstance(runtime.get("engine_policy"), dict) else {}
-    )
-    default_runtime_engine = _normalize_runtime_engine(
-        engine_policy.get("default_runtime_engine")
-        or store.platform_settings.default_runtime_engine
-    )
-    return {
-        "default_runtime_engine": default_runtime_engine,
-        "default_runtime_strategy": _normalize_runtime_strategy(
-            store.platform_settings.default_runtime_strategy
-        ),
-        "allowed_runtime_engines": _normalize_runtime_engine_list(
-            engine_policy.get("allowed_runtime_engines")
-            if isinstance(engine_policy.get("allowed_runtime_engines"), list)
-            else store.platform_settings.allowed_runtime_engines
-        ),
-        "allow_runtime_engine_override": bool(
-            engine_policy.get(
-                "allow_runtime_engine_override",
-                store.platform_settings.allow_runtime_engine_override,
-            )
-        ),
-        "enforce_runtime_engine_allowlist": bool(
-            engine_policy.get(
-                "enforce_runtime_engine_allowlist",
-                store.platform_settings.enforce_runtime_engine_allowlist,
-            )
-        ),
-        "default_hybrid_runtime_routing": _normalize_hybrid_runtime_routing(
-            store.platform_settings.default_hybrid_runtime_routing,
-            default_engine=default_runtime_engine,
-        ),
-    }
 
 
 def _default_framework_profiles() -> dict[str, dict[str, Any]]:
@@ -14493,7 +14374,6 @@ def _restore_definition_snapshot(
                 payload.get("graph_json"), context_label="Workflow rollback"
             ),
             security_config=security_config,
-            generated_artifacts=[],
         )
 
     if entity_type == "agent_definition":
@@ -14534,7 +14414,6 @@ def _restore_definition_snapshot(
             active_at=active_at,
             type="graph",
             config_json=canonical_config,
-            generated_artifacts=[],
         )
 
     config_json = payload.get("config_json") if isinstance(payload.get("config_json"), dict) else {}
@@ -15129,16 +15008,8 @@ def _upsert_artifact_summary(artifact: ArtifactSummary) -> None:
     store.artifacts.insert(0, artifact)
 
 
-def _upsert_generated_artifact_summaries(artifacts: list[GeneratedCodeArtifact]) -> None:
-    for artifact in artifacts:
-        _upsert_artifact_summary(
-            ArtifactSummary(
-                id=artifact.id,
-                name=artifact.name,
-                status=artifact.status,
-                version=artifact.version,
-            )
-        )
+# Name suffixes of the code scaffolds that publishing used to generate.
+_REMOVED_SCAFFOLD_SUFFIXES = (" · LangGraph scaffold", " · Microsoft Agent Framework scaffold")
 
 
 def _serialize_store_state() -> dict[str, Any]:
@@ -15355,9 +15226,14 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
         hydrated_artifacts: list[ArtifactSummary] = []
         for artifact in artifacts_payload:
             try:
-                hydrated_artifacts.append(ArtifactSummary.model_validate(artifact))
+                summary = ArtifactSummary.model_validate(artifact)
             except Exception:  # noqa: BLE001
                 continue
+            # Summaries of the removed LangGraph/MAF code scaffolds (LOCUS-352)
+            # have no content left to serve; drop them on load.
+            if summary.name.endswith(_REMOVED_SCAFFOLD_SUFFIXES):
+                continue
+            hydrated_artifacts.append(summary)
         store.artifacts = hydrated_artifacts
 
     inbox_payload = payload.get("inbox")
@@ -27295,41 +27171,6 @@ def update_collaboration_permissions(
     return {"ok": True, "session": session.model_dump()}
 
 
-_GENERATED_ARTIFACT_SERVICE = GeneratedArtifactService(
-    store=store,
-    artifact_factory=GeneratedCodeArtifact,
-    now_iso=_now_iso,
-    python_literal=_python_literal,
-    safe_python_identifier=lambda value: _safe_python_identifier(value, prefix="node"),
-    artifact_slug=_artifact_slug,
-    hydrate_graph_for_codegen=_hydrate_graph_for_codegen,
-    node_blueprints_for_codegen=_node_blueprints_for_codegen,
-    resolve_effective_security_policy=_resolve_effective_security_policy,
-    workflow_runtime_policy_snapshot=_workflow_runtime_policy_snapshot,
-    agent_runtime_policy_snapshot=_agent_runtime_policy_snapshot,
-)
-
-
-def _build_generated_artifacts_for_workflow(
-    item: WorkflowDefinition, *, version: int
-) -> list[GeneratedCodeArtifact]:
-    return _GENERATED_ARTIFACT_SERVICE.build_generated_artifacts_for_workflow(item, version=version)
-
-
-def _build_generated_artifacts_for_agent(
-    item: AgentDefinition, *, version: int
-) -> list[GeneratedCodeArtifact]:
-    return _GENERATED_ARTIFACT_SERVICE.build_generated_artifacts_for_agent(item, version=version)
-
-
-def _iter_generated_artifacts() -> list[GeneratedCodeArtifact]:
-    return _GENERATED_ARTIFACT_SERVICE.iter_generated_artifacts()
-
-
-def _find_generated_artifact(artifact_id: str) -> GeneratedCodeArtifact | None:
-    return _GENERATED_ARTIFACT_SERVICE.find_generated_artifact(artifact_id)
-
-
 @app.get("/artifacts")
 def get_artifacts(request: Request) -> list[dict[str, Any]]:
     actor = _enforce_request_authn(request, action="artifact.list")
@@ -27339,13 +27180,6 @@ def get_artifacts(request: Request) -> list[dict[str, Any]]:
         or _request_has_privileged_control_plane_access(request)
     ):
         deduped = {item.id: item for item in store.artifacts}
-        for artifact in _iter_generated_artifacts():
-            deduped[artifact.id] = ArtifactSummary(
-                id=artifact.id,
-                name=artifact.name,
-                status=artifact.status,
-                version=artifact.version,
-            )
     else:
         for run_id in _visible_run_ids(request, actor):
             detail = store.run_details.get(run_id)
@@ -27364,37 +27198,6 @@ def get_artifacts(request: Request) -> list[dict[str, Any]]:
 @app.get("/artifacts/{artifact_id}")
 def get_artifact(artifact_id: str, request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="artifact.read")
-    generated_artifact = _find_generated_artifact(artifact_id)
-    if generated_artifact is not None:
-        if (
-            _effective_require_authenticated_requests()
-            and not _request_has_privileged_control_plane_access(request)
-        ):
-            _append_audit_event(
-                "artifact.read",
-                actor,
-                "blocked",
-                {"reason": "generated_artifact_access_denied", "artifact_id": artifact_id},
-            )
-            raise HTTPException(status_code=403, detail="Artifact access denied")
-        return {
-            "id": generated_artifact.id,
-            "name": generated_artifact.name,
-            "status": generated_artifact.status,
-            "version": generated_artifact.version,
-            "run_id": None,
-            "run_title": None,
-            "createdAt": generated_artifact.generated_at,
-            "content": generated_artifact.content,
-            "framework": generated_artifact.framework,
-            "language": generated_artifact.language,
-            "path": generated_artifact.path,
-            "summary": generated_artifact.summary,
-            "entity_type": generated_artifact.entity_type,
-            "entity_id": generated_artifact.entity_id,
-            "generated_at": generated_artifact.generated_at,
-        }
-
     artifact_summary: ArtifactSummary | None = None
     run_id: str | None = None
 
@@ -27478,7 +27281,7 @@ def get_artifact(artifact_id: str, request: Request) -> dict[str, Any]:
 def get_workflow_definitions(request: Request) -> list[dict[str, Any]]:
     _enforce_builder_access(request, action="workflow.definition.list")
     return [
-        item.model_dump(exclude={"graph_json", "generated_artifacts"})
+        item.model_dump(exclude={"graph_json"})
         for item in store.workflow_definitions.values()
     ]
 
@@ -27646,20 +27449,16 @@ def publish_workflow_definition(item_id: str, request: Request) -> dict[str, Any
     _validate_security_guardrail_reference(item.security_config, label="Workflow security policy")
 
     next_version = item.version + 1
-    generated_artifacts = _build_generated_artifacts_for_workflow(item, version=next_version)
     item.status = "published"
     item.version = next_version
-    item.generated_artifacts = generated_artifacts
     item.published_at = _now_iso()
     store.workflow_definitions[item_id] = item
-    _upsert_generated_artifact_summaries(generated_artifacts)
     published_revision = _record_definition_revision(
         entity_type="workflow_definition",
         entity_id=item_id,
         actor=actor,
         action="publish",
         snapshot=item,
-        metadata={"generated_artifact_count": len(generated_artifacts)},
     )
     item.published_revision_id = published_revision.id
     item.published_at = published_revision.created_at
@@ -27684,14 +27483,10 @@ def publish_workflow_definition(item_id: str, request: Request) -> dict[str, Any
         after={
             "version": item.version,
             "status": item.status,
-            "generated_artifact_count": len(generated_artifacts),
         },
     )
     _persist_store_state()
-    return {
-        "ok": True,
-        "generated_artifacts": [artifact.model_dump() for artifact in generated_artifacts],
-    }
+    return {"ok": True}
 
 
 @app.post("/workflow-definitions/{item_id}/unpublish")
@@ -27893,7 +27688,7 @@ def activate_workflow_definition(
 def get_agent_definitions(request: Request) -> list[dict[str, Any]]:
     _enforce_builder_access(request, action="agent.definition.list")
     return [
-        item.model_dump(exclude={"config_json", "generated_artifacts"})
+        item.model_dump(exclude={"config_json"})
         for item in store.agent_definitions.values()
     ]
 
@@ -28108,20 +27903,16 @@ def publish_agent_definition(item_id: str, request: Request) -> dict[str, Any]:
             )
 
     next_version = item.version + 1
-    generated_artifacts = _build_generated_artifacts_for_agent(item, version=next_version)
     item.status = "published"
     item.version = next_version
-    item.generated_artifacts = generated_artifacts
     item.published_at = _now_iso()
     store.agent_definitions[item_id] = item
-    _upsert_generated_artifact_summaries(generated_artifacts)
     published_revision = _record_definition_revision(
         entity_type="agent_definition",
         entity_id=item_id,
         actor=actor,
         action="publish",
         snapshot=item,
-        metadata={"generated_artifact_count": len(generated_artifacts)},
     )
     item.published_revision_id = published_revision.id
     item.published_at = published_revision.created_at
@@ -28146,14 +27937,10 @@ def publish_agent_definition(item_id: str, request: Request) -> dict[str, Any]:
         after={
             "version": item.version,
             "status": item.status,
-            "generated_artifact_count": len(generated_artifacts),
         },
     )
     _persist_store_state()
-    return {
-        "ok": True,
-        "generated_artifacts": [artifact.model_dump() for artifact in generated_artifacts],
-    }
+    return {"ok": True}
 
 
 @app.post("/agent-definitions/{item_id}/unpublish")

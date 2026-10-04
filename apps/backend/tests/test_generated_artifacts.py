@@ -521,109 +521,94 @@ def _run_access(owner: str, *, tenant: str = "") -> dict[str, object]:
     }
 
 
-def test_publish_agent_definition_generates_code_artifacts() -> None:
+def test_publish_agent_definition_emits_no_code_scaffolds() -> None:
+    """LOCUS-352: publishing no longer writes LangGraph/MAF source text."""
     agent_id = str(uuid4())
     payload = {
         "id": agent_id,
-        "name": "Generated Agent Test",
+        "name": "Published Agent Test",
         "config_json": {
             "graph_json": _sample_graph(),
-            "security": {
-                "classification": "restricted",
-                "allowed_runtime_engines": ["native", "langgraph"],
-                "blocked_keywords": ["secret"],
-            },
+            "security": {"classification": "restricted", "blocked_keywords": ["secret"]},
         },
     }
+    artifacts_before = list(store.artifacts)
+    try:
+        save_response = client.post("/agent-definitions", json=payload, headers=ADMIN_HEADERS)
+        assert save_response.status_code == 200
 
-    save_response = client.post("/agent-definitions", json=payload, headers=ADMIN_HEADERS)
-    assert save_response.status_code == 200
+        publish_response = client.post(
+            f"/agent-definitions/{agent_id}/publish", headers=ADMIN_HEADERS
+        )
+        assert publish_response.status_code == 200
+        assert publish_response.json() == {"ok": True}
 
-    publish_response = client.post(f"/agent-definitions/{agent_id}/publish", headers=ADMIN_HEADERS)
-    assert publish_response.status_code == 200
-    body = publish_response.json()
-    assert body["ok"] is True
-    assert len(body["generated_artifacts"]) == 2
-    assert {artifact["framework"] for artifact in body["generated_artifacts"]} == {
-        "langgraph",
-        "microsoft-agent-framework",
-    }
-
-    detail_response = client.get(f"/agent-definitions/{agent_id}")
-    assert detail_response.status_code == 200
-    detail = detail_response.json()
-    assert len(detail["generated_artifacts"]) == 2
-    langgraph_artifact = next(
-        artifact
-        for artifact in detail["generated_artifacts"]
-        if artifact["framework"] == "langgraph"
-    )
-    assert "EFFECTIVE_SECURITY_POLICY" in langgraph_artifact["content"]
-    assert "restricted" in langgraph_artifact["content"]
-    assert langgraph_artifact["path"].endswith("langgraph_agent.py")
-
-    artifact_response = client.get(f"/artifacts/{langgraph_artifact['id']}")
-    assert artifact_response.status_code == 200
-    artifact_detail = artifact_response.json()
-    assert artifact_detail["framework"] == "langgraph"
-    assert artifact_detail["entity_type"] == "agent"
-    assert artifact_detail["content"] == langgraph_artifact["content"]
-
-    store.agent_definitions.pop(agent_id, None)
-    store.artifacts = [
-        artifact
-        for artifact in store.artifacts
-        if artifact.id not in {item["id"] for item in body["generated_artifacts"]}
-    ]
+        detail = client.get(f"/agent-definitions/{agent_id}").json()
+        assert detail["status"] == "published"
+        assert "generated_artifacts" not in detail
+        assert store.artifacts == artifacts_before
+    finally:
+        store.agent_definitions.pop(agent_id, None)
+        store.artifacts = artifacts_before
 
 
-def test_publish_workflow_definition_generates_code_artifacts() -> None:
+def test_publish_workflow_definition_emits_no_code_scaffolds() -> None:
     workflow_id = str(uuid4())
     payload = {
         "id": workflow_id,
-        "name": "Generated Workflow Test",
-        "description": "Workflow publish should emit code scaffolds.",
+        "name": "Published Workflow Test",
+        "description": "Workflow publish no longer emits code scaffolds.",
         "graph_json": _sample_graph(),
-        "security_config": {
-            "classification": "confidential",
-            "allowed_runtime_engines": ["native", "langgraph"],
-            "require_human_approval": True,
-        },
+        "security_config": {"classification": "confidential", "require_human_approval": True},
     }
+    artifacts_before = list(store.artifacts)
+    try:
+        assert client.post("/workflow-definitions", json=payload).status_code == 200
+        publish_response = client.post(f"/workflow-definitions/{workflow_id}/publish")
+        assert publish_response.status_code == 200
+        assert publish_response.json() == {"ok": True}
 
-    save_response = client.post("/workflow-definitions", json=payload)
-    assert save_response.status_code == 200
+        detail = client.get(f"/workflow-definitions/{workflow_id}").json()
+        assert detail["status"] == "published"
+        assert "generated_artifacts" not in detail
+        assert store.artifacts == artifacts_before
+    finally:
+        store.workflow_definitions.pop(workflow_id, None)
+        store.artifacts = artifacts_before
 
-    publish_response = client.post(f"/workflow-definitions/{workflow_id}/publish")
-    assert publish_response.status_code == 200
-    body = publish_response.json()
-    assert body["ok"] is True
-    assert len(body["generated_artifacts"]) == 2
 
-    maf_artifact = next(
-        artifact
-        for artifact in body["generated_artifacts"]
-        if artifact["framework"] == "microsoft-agent-framework"
+def test_stored_code_scaffolds_from_an_older_build_are_dropped_on_load() -> None:
+    workflow = main_module.WorkflowDefinition.model_validate(
+        {
+            "id": "wf-legacy-scaffold",
+            "name": "Legacy",
+            "description": "",
+            "version": 2,
+            "status": "published",
+            "generated_artifacts": [{"id": "gen-1", "framework": "langgraph"}],
+        }
     )
-    assert "AzureAIClient" in maf_artifact["content"]
-    assert "GRAPH_SPEC" in maf_artifact["content"]
+    assert "generated_artifacts" not in workflow.model_dump()
 
-    detail_response = client.get(f"/workflow-definitions/{workflow_id}")
-    assert detail_response.status_code == 200
-    detail = detail_response.json()
-    assert len(detail["generated_artifacts"]) == 2
-
-    artifact_list_response = client.get("/artifacts")
-    assert artifact_list_response.status_code == 200
-    artifact_ids = {artifact["id"] for artifact in artifact_list_response.json()}
-    assert maf_artifact["id"] in artifact_ids
-
-    store.workflow_definitions.pop(workflow_id, None)
-    store.artifacts = [
-        artifact
-        for artifact in store.artifacts
-        if artifact.id not in {item["id"] for item in body["generated_artifacts"]}
-    ]
+    original_artifacts = list(store.artifacts)
+    try:
+        main_module._apply_store_state(
+            {
+                "artifacts": [
+                    {"id": "gen-1", "name": "Legacy · LangGraph scaffold", "status": "Draft", "version": 2},
+                    {
+                        "id": "gen-2",
+                        "name": "Legacy · Microsoft Agent Framework scaffold",
+                        "status": "Draft",
+                        "version": 2,
+                    },
+                    {"id": "run-artifact", "name": "Board summary", "status": "Draft", "version": 1},
+                ]
+            }
+        )
+        assert [artifact.id for artifact in store.artifacts] == ["run-artifact"]
+    finally:
+        store.artifacts = original_artifacts
 
 
 def test_workflow_definition_defaults_graph_schema_version_when_missing() -> None:
@@ -1065,7 +1050,6 @@ def test_workflow_definition_versions_and_rollback_restore_prior_snapshot() -> N
         restored = store.workflow_definitions[workflow_id]
         assert restored.name == "Initial Workflow"
         assert restored.description == "First draft of the workflow."
-        assert restored.generated_artifacts == []
 
         versions_after = client.get(f"/workflow-definitions/{workflow_id}/versions").json()[
             "versions"
@@ -1078,7 +1062,7 @@ def test_workflow_definition_versions_and_rollback_restore_prior_snapshot() -> N
         store.artifacts = original_artifacts
 
 
-def test_agent_definition_versions_and_rollback_clear_generated_artifacts() -> None:
+def test_agent_definition_versions_and_rollback_restore_prior_snapshot() -> None:
     agent_id = str(uuid4())
     original_artifacts = list(store.artifacts)
 
@@ -1099,7 +1083,7 @@ def test_agent_definition_versions_and_rollback_clear_generated_artifacts() -> N
 
         publish = client.post(f"/agent-definitions/{agent_id}/publish", headers=ADMIN_HEADERS)
         assert publish.status_code == 200
-        assert len(store.agent_definitions[agent_id].generated_artifacts) == 2
+        assert store.agent_definitions[agent_id].status == "published"
 
         changed_graph = _sample_graph()
         changed_graph["nodes"][2]["config"] = {"agent_id": "generated-agent", "model": "gpt-5.4"}
@@ -1135,7 +1119,6 @@ def test_agent_definition_versions_and_rollback_clear_generated_artifacts() -> N
 
         restored = store.agent_definitions[agent_id]
         assert restored.name == "Versioned Agent"
-        assert restored.generated_artifacts == []
         assert restored.config_json["system_prompt"] == "Respond with the original voice."
 
         versions_after = client.get(f"/agent-definitions/{agent_id}/versions").json()["versions"]
@@ -2537,7 +2520,7 @@ def test_definition_mutations_require_auth_when_enabled_and_emit_audit_events() 
         assert publish_events
         assert save_events[0].metadata.get("entity_type") == "workflow_definition"
         assert save_events[0].metadata.get("entity_id") == workflow_id
-        assert publish_events[0].metadata.get("after", {}).get("generated_artifact_count") == 2
+        assert publish_events[0].metadata.get("after", {}).get("status") == "published"
     finally:
         store.platform_settings.require_authenticated_requests = original_require_auth
         store.workflow_definitions.pop(workflow_id, None)
