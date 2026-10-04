@@ -261,7 +261,7 @@ def test_real_command_runs_in_appcontainer_through_the_gateway(
 ) -> None:
     workspace = tmp_path_factory.mktemp("appcontainer-ws").resolve()
     outside = tmp_path_factory.mktemp("appcontainer-outside").resolve()
-    (outside / "secret.txt").write_text("host-only", encoding="utf-8")
+    (outside / "host-only.txt").write_text("host-only", encoding="utf-8")
     monkeypatch.setenv("LOCUS_FAKE_API_TOKEN", "must-not-reach-the-agent")
     session = _session(
         gateway,
@@ -289,7 +289,7 @@ def test_real_command_runs_in_appcontainer_through_the_gateway(
     assert "LOCUS_" not in result.stdout.upper()
     assert "must-not-reach-the-agent" not in result.stdout
     # AppContainer is default-deny outside the granted workspace.
-    blocked = executor.run(["cmd", "/c", "type", str(outside / "secret.txt")], timeout=60)
+    blocked = executor.run(["cmd", "/c", "type", str(outside / "host-only.txt")], timeout=60)
     assert blocked.gateway is None  # the gateway allowed it; the OS refused it
     assert blocked.exit_code != 0
     assert "host-only" not in blocked.stdout
@@ -317,7 +317,7 @@ def test_toolchain_shell_and_python_run_in_appcontainer_through_the_gateway(
         pytest.skip("Windows agent toolchain not installed (set LOCUS_TEST_TOOLCHAIN_APP_HOME)")
     workspace = tmp_path_factory.mktemp("toolchain-ws").resolve()
     outside = tmp_path_factory.mktemp("toolchain-outside").resolve()
-    secret = outside / "secret.txt"
+    secret = outside / "host-only.txt"
     secret.write_text("host-only", encoding="utf-8")
     (workspace / "pkg").mkdir()
     (workspace / "pkg" / "__init__.py").write_text("VALUE = 42\n", encoding="utf-8")

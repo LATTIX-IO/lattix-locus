@@ -8,7 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from locus_runtime.loop_runner.delivery import DeliveryError, GitOps, git_metadata_digest
+from locus_runtime.harness.executor import ExecResult
+from locus_runtime.harness.workspace import Workspace
+from locus_runtime.loop_runner.delivery import (
+    DeliveryError,
+    GitOps,
+    HostWorkspaceGit,
+    git_metadata_digest,
+)
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 
@@ -103,3 +110,94 @@ def test_remove_worktree_drops_the_seal(worktree: Path, source_repo: Path) -> No
     GitOps().remove_worktree(source_repo, worktree)
     assert not worktree.exists()
     assert not (worktree.parent / "run-1.gitseal").exists()
+
+
+# --------------------------------------------------------------------------- #
+# Host-side workspace diff for the verify gate (LOCUS-362)
+# --------------------------------------------------------------------------- #
+class _NoGitInJail:
+    """An executor where git cannot run, like the Windows AppContainer."""
+
+    backend = "windows-appcontainer"
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.calls: list[str] = []
+
+    def run_shell(self, script: str, *, timeout: int = 60) -> ExecResult:
+        self.calls.append(script)
+        return ExecResult(
+            128, "", "fatal: Unable to read current working directory: Permission denied", 0.0
+        )
+
+    def workdir(self) -> str:
+        return str(self.root)
+
+
+def test_host_diff_does_not_depend_on_git_in_the_jail(worktree: Path) -> None:
+    (worktree / "a.txt").write_text("two\n", encoding="utf-8")
+    (worktree / "b.txt").write_text("new\n", encoding="utf-8")
+    (worktree / "__pycache__").mkdir()
+    (worktree / "__pycache__" / "m.cpython-312.pyc").write_bytes(b"\x00junk")
+    jail = _NoGitInJail(worktree)
+    workspace = Workspace(
+        run_id="run-1",
+        executor=jail,  # type: ignore[arg-type]
+        base_ref="HEAD",
+        host_git=HostWorkspaceGit(GitOps(), worktree),
+    )
+
+    diff = workspace.diff()
+
+    assert "+two" in diff and "-one" in diff
+    assert "b/b.txt" in diff and "+new" in diff
+    assert "__pycache__" not in diff and ".pyc" not in diff
+    assert workspace.has_uncommitted_changes() is True
+    assert jail.calls == []  # nothing ran git through the jail
+    # Without host_git the same jail yields the empty diff the bake-off saw.
+    assert Workspace(run_id="r", executor=jail).diff() == ""  # type: ignore[arg-type]
+
+
+def test_host_diff_refuses_a_tampered_working_copy(worktree: Path) -> None:
+    (worktree / "a.txt").write_text("two\n", encoding="utf-8")
+    with (worktree / ".git" / "config").open("a", encoding="utf-8") as fh:
+        fh.write('[diff "x"]\n\ttextconv = echo pwned\n')
+    workspace = Workspace(
+        run_id="run-1",
+        executor=_NoGitInJail(worktree),  # type: ignore[arg-type]
+        host_git=HostWorkspaceGit(GitOps(), worktree),
+    )
+    with pytest.raises(DeliveryError, match="workspace_git_tampered"):
+        workspace.diff()
+
+
+def test_host_diff_runs_no_diff_driver_named_by_the_working_copy(
+    worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A textconv / external diff driver the *user's* git config defines (simulated
+    # through GIT_CONFIG_*), selected by an agent-written .gitattributes.
+    marker = tmp_path / "driver-ran"
+    command = f'sh -c \'touch "{marker.as_posix()}"; cat "$1"\' -'
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "diff.evil.textconv")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", command)
+    monkeypatch.setenv("GIT_CONFIG_KEY_1", "diff.evil.command")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_1", command)
+    (worktree / ".gitattributes").write_text("*.txt diff=evil\n", encoding="utf-8")
+    (worktree / "a.txt").write_text("two\n", encoding="utf-8")
+    # Positive control: plain git diff does run the driver in this environment.
+    _git(worktree, "diff", "HEAD")
+    assert marker.exists()
+    marker.unlink()
+
+    diff = GitOps().diff(worktree, "HEAD")
+
+    assert "+two" in diff
+    assert not marker.exists()
+
+
+def test_host_diff_rejects_option_like_arguments(worktree: Path) -> None:
+    with pytest.raises(DeliveryError, match="option"):
+        GitOps().diff(worktree, "--output=/tmp/x")
+    with pytest.raises(DeliveryError, match="option"):
+        GitOps().diff(worktree, "HEAD", ["--no-index"])

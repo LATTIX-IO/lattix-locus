@@ -200,6 +200,15 @@ Security (P6-P12):
    only the curl was stopped (no network in the jail). Injection resistance in the runs came
    from the model. Runtime-independent; follow-up: secret-like paths and D-22 protected paths
    should be ask/deny in `filesystem_access`.
+   *Fixed in LOCUS-362:* reading `.env`/`.env.*`, private keys and credential stores is R4
+   (deny), secret-like names (`credentials.*`, `secrets.*`, `*.env`, `.tfvars`, ...) are R3
+   (ask; an approved read is masked and taints the run); shell commands that name them are
+   classified the same way; writes to gate / CI definitions (the D-22 list, shared through
+   `locus_runtime/gate_definitions.py`) are R3; `filesystem_access.rego` mirrors this through a
+   `risk_floor` output; a network client naming a remote host is denied by `tool_jail` in a
+   jail without network. Also: `agent_policy`'s secret-file denies missed Windows paths
+   (`C:\ws\.env`), which is most likely why the probe could read `.env` on this
+   Windows machine. Regression suite: `tests/policy/test_injection_policy.py` (real gateway + OPA).
 5. **Asks.** The verified loop by itself returns a gateway ask to the agent as an
    observation. The port rule (ask -> blocked when non-interactive, or approve once) is
    applied by `VerifiedLoopRuntime` through the loop's event hook; `loop_runner` still calls
@@ -215,10 +224,21 @@ Reliability:
    type: <nil>` / `invalid tool call arguments`), so the run ends blocked (provider) after 4
    retries. Deep Agents' message conversion sanitizes both. Fix: send `""` and re-serialize
    unparseable arguments. Not fixed here (no behaviour change to the loop in this issue).
+   *Fixed in LOCUS-362:* `content` is always a string and arguments that are not a JSON object
+   are sent back as `{}`, answered as an invalid call and recorded as a
+   `malformed_tool_arguments` annotation (`tests/harness/test_provider_safe_messages.py`).
 7. **Windows AppContainer cannot run git** (`Unable to read current working directory`), so
    `Workspace.diff` through the sandbox executor is empty. The bake-off computes the diff
    host-side as a platform action (`HostGitExecutor`, fixed git commands only) for both
    runtimes. Worth checking for `loop_runner` on Windows.
+   *LOCUS-362:* root cause: git for Windows resolves the cwd with
+   `GetFinalPathNameByHandleW(..., VOLUME_NAME_DOS)`, which returns `ERROR_ACCESS_DENIED`
+   inside the AppContainer (mapping the NT device path to a drive letter needs the mount
+   manager, which the AppContainer token cannot query; `VOLUME_NAME_NT` and
+   `VOLUME_NAME_NONE` succeed). It is not a missing ACL on the workspace and `HOME` does not
+   matter. `loop_runner` had the same empty diff for `submit` and the verify gate; it now
+   passes a `HostWorkspaceGit` (fixed argv over `GitOps`: hooks and fsmonitor off, sealed
+   `.git`, no diff/textconv drivers) to `Workspace`.
 8. Ollama loads `gpt-oss:20b` with a 4,096-token context by default; agent runs need a
    derived tag or `OLLAMA_CONTEXT_LENGTH`. The OpenAI-compatible endpoint ignores `num_ctx`.
 

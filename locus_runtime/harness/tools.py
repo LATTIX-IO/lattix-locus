@@ -13,6 +13,13 @@ Edits are exact-match: ``str_replace`` requires ``old_str`` to occur exactly
 once (0 → not-found, >1 → ambiguous), the single biggest source of wasted
 attempts on weak models — so we measure well-formed-edit rate as telemetry and
 can auto-downgrade to whole-file edits.
+
+Secret-bearing content (LOCUS-362, P10): the gateway asks before a secret-like
+file is read and denies credential stores outright. When a human approved such
+a read, the toolset masks it before it becomes a model observation: ``view`` of a
+secret-like path, command output of a command line that names one, and the
+hunks of secret-bearing files in the ``submit`` diff (the recorded patch itself
+stays exact for delivery).
 """
 
 from __future__ import annotations
@@ -22,7 +29,17 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
-from locus_runtime.gateway import GatewayBlocked, GatewayDecision, gateway_message, tool_context
+from locus_runtime.gateway import (
+    SECRET_CONTENT_NOTICE,
+    GatewayBlocked,
+    GatewayDecision,
+    command_secret_class,
+    gateway_message,
+    mask_secret_content,
+    mask_secret_diff,
+    secret_read_class,
+    tool_context,
+)
 from locus_runtime.harness.workspace import Workspace
 
 TOOL_OUTPUT_MAX_BYTES = 50_000
@@ -69,6 +86,8 @@ class CodingTelemetry:
     test_runs: int = 0
     gateway_denied: int = 0
     gateway_asked: int = 0
+    # Approved secret-bearing reads masked before reaching the model (LOCUS-362).
+    secret_reads_masked: int = 0
 
     def well_formed_edit_rate(self) -> float:
         return 1.0 if self.edits_attempted == 0 else self.edits_well_formed / self.edits_attempted
@@ -90,6 +109,7 @@ class CodingTelemetry:
             "test_runs": self.test_runs,
             "gateway_denied": self.gateway_denied,
             "gateway_asked": self.gateway_asked,
+            "secret_reads_masked": self.secret_reads_masked,
             "well_formed_edit_rate": round(self.well_formed_edit_rate(), 4),
             "well_formed_call_rate": round(self.well_formed_call_rate(), 4),
         }
@@ -314,8 +334,15 @@ class CodingToolset:
         blocked = self._exec_output(res, "execute_bash")
         if blocked is not None:
             return blocked
-        out, _ = truncate_output(res.combined())
+        out, _ = truncate_output(self._mask_if_secret(cmd, res.combined()))
         return out
+
+    def _mask_if_secret(self, command: str, output: str) -> str:
+        """Mask command output when the command line names a secret-bearing file."""
+        if command_secret_class(command) is None:
+            return output
+        self.telemetry.secret_reads_masked += 1
+        return f"{SECRET_CONTENT_NOTICE}\n{mask_secret_content(output)}"
 
     def _search(self, args: dict[str, Any]) -> str:
         query = str(args.get("query") or "")
@@ -342,7 +369,7 @@ class CodingToolset:
         blocked = self._exec_output(res, "search")
         if blocked is not None:
             return blocked
-        out, _ = truncate_output(res.stdout or "(no matches)")
+        out, _ = truncate_output(self._mask_if_secret(cmd, res.stdout or "(no matches)"))
         return out
 
     def _run_tests(self, args: dict[str, Any]) -> str:
@@ -354,7 +381,7 @@ class CodingToolset:
         blocked = self._exec_output(res, "run_tests")
         if blocked is not None:
             return blocked
-        out, _ = truncate_output(res.combined())
+        out, _ = truncate_output(self._mask_if_secret(cmd, res.combined()))
         return out
 
     def _submit(self, args: dict[str, Any]) -> str:
@@ -386,7 +413,7 @@ class CodingToolset:
             "regression_tests": args.get("regression_tests") or [],
         }
         self.submitted = True
-        out, _ = truncate_output(diff or "(no changes)")
+        out, _ = truncate_output(mask_secret_diff(diff) or "(no changes)")
         return f"Submission recorded. Workspace diff:\n{out}"
 
     # -- editor (the edit-reliability hot path) -----------------------------
@@ -465,6 +492,10 @@ class CodingToolset:
             content = ex.read_file(path)
             if content is None:
                 return f"[error] file not found: {path}"
+            secret = secret_read_class(path) is not None
+            if secret:
+                content = mask_secret_content(content)
+                self.telemetry.secret_reads_masked += 1
             view_range = args.get("view_range")
             lines = content.splitlines()
             start, end = 1, len(lines)
@@ -473,7 +504,7 @@ class CodingToolset:
                 end = min(len(lines), int(view_range[1]))
             numbered = "\n".join(f"{i:>6}\t{lines[i - 1]}" for i in range(start, end + 1))
             out, _ = truncate_output(numbered)
-            return out
+            return f"{SECRET_CONTENT_NOTICE}\n{out}" if secret else out
 
         if command == "create":
             file_text = args.get("file_text")

@@ -19,9 +19,11 @@ anywhere, including CI without extra installs.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
+from locus_runtime.harness.llm import ChatResponse
 from locus_runtime.harness.model_profiles import ModelCapabilityProfile
 
 _PY_TYPES = {
@@ -104,6 +106,73 @@ def reask_tool_message(tool_call_id: str, name: str, reason: str) -> dict[str, A
             f"[invalid tool call to '{name}': {reason}] Re-issue the call with corrected arguments."
         ),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Provider-safe assistant turns (LOCUS-362, bake-off finding 6)
+# --------------------------------------------------------------------------- #
+#: Sent back in place of tool-call arguments that are not a JSON object.
+INVALID_ARGUMENTS_PLACEHOLDER = "{}"
+INVALID_ARGUMENTS_NOTE = (
+    f"the arguments were replaced with {INVALID_ARGUMENTS_PLACEHOLDER} in the conversation"
+)
+
+
+def _reject_constant(name: str) -> Any:
+    raise ValueError(f"non-standard JSON constant {name}")
+
+
+def provider_safe_arguments(raw: Any) -> tuple[str, str]:
+    """``(arguments, error)``: a JSON-object string a provider will accept back.
+
+    OpenAI-compatible servers parse an assistant turn's ``tool_calls[].function
+    .arguments`` again on the next request; Ollama rejects the whole request
+    (HTTP 400 ``invalid tool call arguments``) when one is not a JSON object.
+    Unparseable or non-object arguments become ``{}`` and ``error`` says why
+    (it never quotes the raw text); valid ones are re-serialized canonically.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return INVALID_ARGUMENTS_PLACEHOLDER, ""
+    parsed: Any = raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw, parse_constant=_reject_constant)
+        except (ValueError, TypeError) as exc:
+            return INVALID_ARGUMENTS_PLACEHOLDER, f"arguments are not valid JSON: {exc}"
+    if not isinstance(parsed, dict):
+        return INVALID_ARGUMENTS_PLACEHOLDER, "arguments must be a JSON object"
+    try:
+        return json.dumps(parsed, ensure_ascii=False, allow_nan=False), ""
+    except (TypeError, ValueError) as exc:
+        return INVALID_ARGUMENTS_PLACEHOLDER, f"arguments are not JSON-serializable: {exc}"
+
+
+def assistant_message(resp: ChatResponse) -> tuple[dict[str, Any], dict[str, str]]:
+    """The assistant turn to append to the conversation, safe to send back.
+
+    ``content`` is always a string (``""`` when the model produced no text):
+    Ollama rejects ``content: null`` on a turn without tool calls (HTTP 400
+    ``invalid message content type: <nil>``) and OpenAI accepts ``""``. Tool-call
+    arguments go through :func:`provider_safe_arguments`. Returns the message and
+    ``{tool_call_id: error}`` for calls whose arguments were replaced.
+    """
+    msg: dict[str, Any] = {"role": "assistant", "content": str(resp.text or "")}
+    invalid: dict[str, str] = {}
+    if resp.tool_calls:
+        calls = []
+        for tc in resp.tool_calls:
+            arguments, error = provider_safe_arguments(tc.arguments)
+            if error:
+                invalid[str(tc.id)] = error
+            calls.append(
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.name, "arguments": arguments},
+                }
+            )
+        msg["tool_calls"] = calls
+    return msg, invalid
 
 
 def constraint_kwargs(

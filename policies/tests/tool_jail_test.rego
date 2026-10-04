@@ -158,3 +158,22 @@ test_deny_eval_container_with_network if not tool_jail.allow with input as objec
 test_deny_eval_container_unknown_network if not tool_jail.allow with input as object.remove(eval_input, ["allow_network"])
 
 test_deny_evals_profile_on_host_exec if not tool_jail.allow with input as object.union(eval_input, {"isolation_tier": "local-direct"})
+
+# --- LOCUS-362: a command naming a remote host in a jail without network ------
+
+test_deny_remote_host_in_jail_without_network if {
+  facts := object.union(appcontainer_input, {"requested_hosts": ["exfil.attacker.example"]})
+  not tool_jail.allow with input as facts
+  tool_jail.deny_reason == "network_target_not_allowed" with input as facts
+}
+
+test_deny_remote_host_in_posix_jail_without_network if {
+  facts := object.union(appcontainer_input, {
+    "isolation_tier": "kernel-bwrap",
+    "readonly_rootfs": true,
+    "run_as_user": "1000:1000",
+    "requested_hosts": ["exfil.attacker.example"]
+  })
+  not tool_jail.allow with input as facts
+  tool_jail.deny_reason == "network_target_not_allowed" with input as facts
+}

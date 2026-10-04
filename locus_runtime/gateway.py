@@ -38,13 +38,24 @@ Risk classes (04 §3, 11 §5) -- computed by :func:`classify_risk`
 ====================  =====================================================  =====
 Action kind           Condition (first match wins, highest class first)      Class
 ====================  =====================================================  =====
-file_write            target is a credential file (ssh keys, .aws, .netrc)   R4
-                      or inside the policy directory (change policy)
+file_write            target is a credential store (ssh keys, .aws, .netrc,  R4
+                      keychain, DPAPI) or inside the policy directory
+file_write            a gate / CI definition in a workspace (.github/**,     R3
+                      policies/**, conftest.py, pyproject.toml, Makefile,
+                      ruff/mypy/pytest/tox/setup.cfg, pre-commit config)
 file_write            target inside the run's write roots (workspace)        R1
 file_write            anything else (outside the workspace)                  R2
-file_read             any path (policy still denies secret files)            R0
+file_read             credential store, private key / key container, or a   R4
+                      named secret file (.env, .env.*, credentials,
+                      secrets.json|yaml, service-account / token JSON)
+file_read             secret-like name (credentials.*, secrets.*, *.env,     R3
+                      .envrc, .dev.vars, *.tfvars, *.tfstate)
+file_read             any other path                                         R0
 process_exec          command touches credential stores (.ssh, .aws/creds,   R4
-                      keychain, gpg --export-secret-keys)
+                      keychain, gpg --export-secret-keys) or names an R4
+                      secret file (cat/type/Get-Content/grep .env, < .env)
+process_exec          names an R3 secret file, or writes a gate definition   R3
+                      (redirect, tee, sed -i, cp/mv/rm, Set-Content, ...)
 process_exec          outbound or irreversible: git push, gh pr merge/       R3
                       create, publish/upload, package install, docker push,
                       kubectl/terraform apply, curl/wget with a body or
@@ -111,7 +122,10 @@ Policy mapping (inputs are documented on each builder below):
   (``read_file``, ``write_file``, ``process_exec``, ``network_egress``) or the
   tool name for tool/MCP calls, checked against the session's ``allowed_tools``.
 * ``tool_jail`` -- ``process_exec``; the executor reports its *real* jail facts.
-* ``filesystem_access`` -- ``file_read`` / ``file_write``.
+* ``filesystem_access`` -- ``file_read`` / ``file_write``. Its ``risk_floor``
+  output raises the risk class (never lowers it), so the Rego mirror of the
+  secret-file and gate-definition classes above decides independently of this
+  module (LOCUS-362).
 * ``network_egress`` -- ``network_egress`` and tool/MCP calls with an egress host.
 * ``budget_policy`` -- when the session carries numeric budget figures.
 * ``user_browser`` (LOCUS-350) -- every ``user_browser_*`` action instead of
@@ -127,6 +141,16 @@ Policy mapping (inputs are documented on each builder below):
   plus ``network_egress`` on the engine's host and ``budget_policy`` when the
   session carries token/cost figures. No prompt text enters the action.
 
+Secret-bearing content (LOCUS-362, P10): an action that reads a secret file
+carries ``gateway.secret_content``. Its ask is never covered by a standing grant
+(only a human approval of that exact read), and once one is allowed the session
+is tainted for the rest of the run, so no standing grant turns a later ask into
+allow either. The caller masks the content before it reaches a model
+(:func:`mask_secret_content`, :func:`mask_secret_diff`). Gate / CI definition
+writes carry ``gateway.gate_definition``. Commands that name a remote host
+through a network client report it to ``tool_jail`` (``requested_hosts``), which
+denies it in a jail without network.
+
 No decision is cached: each call evaluates policy afresh, so a policy change or
 an engine outage takes effect on the next action.
 
@@ -139,6 +163,7 @@ module is thin glue around OPA (the decision engine); it holds no rules itself.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import hmac
 import json
@@ -159,6 +184,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from urllib import parse as urlparse
 from uuid import uuid4
 
+from locus_runtime.gate_definitions import gate_write_reason
 from locus_runtime.persistence import redact_sensitive_payload
 from locus_runtime.policy_engine import Decision, PolicyEngine, default_policy_dir
 
@@ -232,6 +258,14 @@ REASON_GRANT_ERROR = "gateway.grant_verifier_error"
 REASON_TAINT_NO_GRANT = "gateway.taint_gate_grant_not_applicable"
 REASON_TIER_ASK = "gateway.user_browser_tier_requires_approval"
 REASON_OPEN_TIER = "gateway.user_browser_open_tier_consent"
+# LOCUS-362: the action reads secret-bearing content (file or command); when it
+# is allowed (an approved R3), the session is tainted from then on.
+REASON_SECRET_CONTENT = "gateway.secret_content"
+REASON_SESSION_TAINTED = "gateway.session_tainted"
+# The action writes a gate / CI definition (R3, shared list with the D-22 guard).
+REASON_GATE_DEFINITION = "gateway.gate_definition"
+# A policy raised the risk class through its ``risk_floor`` output.
+REASON_RISK_FLOOR_PREFIX = "gateway.risk_floor:"
 
 #: Canonical agent_policy operation per action kind (tool/MCP calls use the tool name).
 CANONICAL_OPERATION: Mapping[str, str] = {
@@ -294,6 +328,59 @@ def redact_text(text: str, *, limit: int = _ARG_VALUE_MAX) -> str:
     """Redact secret-looking substrings and truncate (never raw secrets in audit, P10)."""
     value = _redact_text(str(text or ""))
     return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+# Content of a secret-bearing file that a human approved reading (R3, LOCUS-362)
+# is masked before it reaches a model: keys stay visible, every value is
+# replaced. Pattern redaction alone is not enough here (``DB_PASS=hunter2`` has
+# no recognisable token shape), so the masking is structural and conservative.
+SECRET_MASK = "[redacted]"
+SECRET_CONTENT_NOTICE = (
+    "[secret-bearing content: every value is masked by the gateway (P10); keys and structure only]"
+)
+_MASK_KEY_LINE = re.compile(
+    r"^(\s*(?:export\s+|set\s+|\$env:)?[\"']?[A-Za-z0-9_.\-]{1,80}[\"']?\s*(?:=|:(?!//)))(.*)$"
+)
+_MASK_SECTION = re.compile(r"^\s*\[{1,2}[A-Za-z0-9_.\-\" ]{1,80}\]{1,2}\s*$")
+_MASK_STRUCTURE = re.compile(r"^[\s{}\[\](),;]*$")
+
+
+def _mask_secret_line(line: str) -> str:
+    stripped = line.strip()
+    if not stripped or _MASK_STRUCTURE.match(line) or _MASK_SECTION.match(line):
+        return line
+    indent = line[: len(line) - len(line.lstrip())]
+    if stripped.startswith(("#", ";", "//")):
+        return f"{indent}{stripped[0] if stripped[0] != '/' else '//'} {SECRET_MASK}"
+    match = _MASK_KEY_LINE.match(line)
+    if match:
+        key, value = match.group(1), match.group(2)
+        return key if not value.strip() else f"{key.rstrip()} {SECRET_MASK}"
+    return f"{indent}{SECRET_MASK}"
+
+
+def mask_secret_content(text: str) -> str:
+    """Mask every value of secret-bearing file content, keeping keys and structure."""
+    masked = "\n".join(_mask_secret_line(line) for line in str(text or "").splitlines())
+    return _redact_text(masked)
+
+
+def mask_secret_diff(diff: str) -> str:
+    """A unified diff with the hunks of secret-bearing files masked (R3/R4 paths)."""
+    out: list[str] = []
+    masking = False
+    for line in str(diff or "").splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            paths = [part[2:] for part in line.split()[2:4] if len(part) > 2]
+            masking = any(secret_read_class(path) is not None for path in paths)
+            out.append(line)
+            continue
+        if masking and line[:1] in {"+", "-", " "} and not line.startswith(("+++", "---")):
+            ending = "\n" if line.endswith("\n") else ""
+            out.append(line[:1] + _mask_secret_line(line[1:].rstrip("\r\n")) + ending)
+            continue
+        out.append(line)
+    return "".join(out)
 
 
 def summarize_args(args: Mapping[str, Any] | None) -> dict[str, str]:
@@ -558,11 +645,46 @@ _PAYMENT_ARG_KEYS = frozenset(
     {"amount", "price", "payment", "card_number", "iban", "account_number"}
 )
 
-_CRED_PATH = re.compile(
-    r"(^|[/\\])(\.ssh|\.gnupg|\.aws|\.kube|\.docker)([/\\]|$)|(^|[/\\])(id_rsa|id_dsa|id_ecdsa|"
-    r"id_ed25519|authorized_keys|\.netrc|\.pypirc|\.npmrc|\.git-credentials)$",
-    re.IGNORECASE,
+# --------------------------------------------------------------------------- #
+# Secret-bearing files (LOCUS-362, P10) and gate definitions (D-22)
+# --------------------------------------------------------------------------- #
+# Matched on the lower-cased, "/"-separated path (:func:`_secret_norm`). The
+# patterns are mirrored verbatim by ``policies/filesystem_access.rego``, which
+# exposes them as outputs; tests/policy/test_policy_parity.py asserts equality.
+#
+# R4 (deny, read and write): credential stores and their helper files. Their
+# whole content is the secret; there is no redacted view worth having.
+CREDENTIAL_STORE_PATTERN = (
+    r"(^|/)(\.ssh|\.gnupg|\.aws|\.kube|\.docker|\.azure|\.password-store)(/|$)"
+    r"|(^|/)\.config/gcloud(/|$)"
+    r"|(^|/)library/keychains(/|$)|\.keychain(-db)?$"
+    r"|(^|/)microsoft/(protect|credentials|vault)(/|$)"
+    r"|(^|/)(id_(rsa|dsa|ecdsa|ed25519)(_sk)?|authorized_keys|\.netrc|_netrc|\.pypirc|\.npmrc"
+    r"|\.git-credentials|\.htpasswd)$"
 )
+# R4 for reads: private keys and key containers (an ``id_*`` key file has no
+# extension, so ``id_rsa.pub`` stays readable).
+KEY_MATERIAL_PATTERN = r"\.(pem|key|p12|pfx|p8|jks|keystore|kdbx|ppk|asc|csr)$|(^|/)id_[a-z0-9_-]+$"
+# R4 for reads: the secret files agent_policy already denies by name (dotenv
+# files, ``credentials``, ``secrets.json|yaml``, service-account and token
+# JSON). R4 rather than R3 keeps that existing deny intact: relaxing it to an
+# ask would weaken policy and needs principal consent (P32).
+NAMED_SECRET_PATTERN = (
+    r"(^|/)\.env(\.[^/]*)?$|(^|/)credentials$|(^|/)secrets?\.(json|ya?ml)$"
+    r"|(^|/)service[-_]account[^/]*\.json$|(^|/)token\.json$"
+)
+# R3 for reads (ask; once approved the content is masked before it reaches the
+# model and the run is tainted): names that usually but not always hold
+# secrets -- a ``credentials.py`` module is code, a ``credentials.toml`` is data.
+SECRET_LIKE_PATTERN = (
+    r"(^|/)credentials\.[a-z0-9]+$|(^|/)secrets?\.[a-z0-9]+$|\.secrets?$"
+    r"|(^|/)\.envrc$|(^|/)[^/]+\.env$|(^|/)\.dev\.vars$"
+    r"|\.tfvars(\.json)?$|\.tfstate(\.backup)?$"
+)
+_CRED_PATH = re.compile(CREDENTIAL_STORE_PATTERN)
+_KEY_MATERIAL = re.compile(KEY_MATERIAL_PATTERN)
+_NAMED_SECRET = re.compile(NAMED_SECRET_PATTERN)
+_SECRET_LIKE = re.compile(SECRET_LIKE_PATTERN)
 _CMD_R4 = re.compile(
     r"(\.ssh/|id_rsa|id_ed25519|\.aws/credentials|\.git-credentials|\.netrc\b|\.pypirc\b|"
     r"security\s+find-(generic|internet)-password|gpg\s+.*--export-secret|keychain|"
@@ -639,12 +761,184 @@ def _tool_risk(tool: str, args: Mapping[str, Any] | None, method: str) -> RiskCl
     return RiskClass.R2
 
 
-def classify_command(command: str) -> RiskClass:
+def _secret_norm(path: str) -> str:
+    return str(path or "").replace("\\", "/").lower()
+
+
+def secret_read_class(path: str) -> RiskClass | None:
+    """Risk class of *reading* ``path`` when it is secret-bearing, else ``None``.
+
+    R4: credential stores, private keys / key containers, and the dotenv /
+    ``credentials`` / ``secrets.json`` files agent_policy denies by name.
+    R3: secret-like names (``credentials.*``, ``secrets.*``, ``*.env``,
+    ``.envrc``, ``.dev.vars``, ``*.tfvars``, ``*.tfstate``).
+    """
+    norm = _secret_norm(path).rstrip("/")
+    if not norm:
+        return None
+    if _CRED_PATH.search(norm) or _KEY_MATERIAL.search(norm) or _NAMED_SECRET.search(norm):
+        return RiskClass.R4
+    if _SECRET_LIKE.search(norm):
+        return RiskClass.R3
+    return None
+
+
+def credential_store_path(path: str) -> bool:
+    """``path`` is a credential store or helper file (R4 to read *and* write)."""
+    return bool(_CRED_PATH.search(_secret_norm(path)))
+
+
+def _relative_to_roots(path: str, roots: Sequence[str]) -> list[str]:
+    """``path`` relative to each root that contains it (lower-case, ``/``-joined)."""
+    candidate = tuple(part.lower() for part in _norm_path(path))
+    out: list[str] = []
+    for root in roots:
+        base = tuple(part.lower() for part in _norm_path(root))
+        if base and len(candidate) > len(base) and candidate[: len(base)] == base:
+            out.append("/".join(candidate[len(base) :]))
+    return out
+
+
+def gate_definition_write(path: str, write_roots: Sequence[str] = ()) -> str:
+    """Why writing ``path`` edits a gate / CI definition ('' if it does not).
+
+    Paths are taken relative to the write root (workspace) that contains them.
+    The list is shared with the D-22 merge guard
+    (:mod:`locus_runtime.gate_definitions`) and mirrored in filesystem_access.
+    """
+    whole = _secret_norm(path)
+    for relative in _relative_to_roots(path, write_roots) or [""]:
+        reason = gate_write_reason(relative, full=whole)
+        if reason:
+            return reason
+    return ""
+
+
+# Shell command lines (best effort: a shell can always obfuscate a path, so the
+# jail and the network-less sandbox stay the backstop). Tokens are split on
+# whitespace, quotes, redirections, pipes and separators, so ``cat .env``,
+# ``type .env``, ``Get-Content .env``, ``grep X .env``, ``< .env``,
+# ``--env-file=.env``, ``curl -d @.env`` and ``$(cat .env)`` all expose ``.env``.
+_CMD_TOKEN_SPLIT = re.compile(r"[\s'\"`<>|;&(){}=,:$]+")
+_GLOB_CHARS = re.compile(r"[*?\[]")
+_GLOB_SYNTAX = re.compile(r"\*|\?|\[[^\]]*\]")
+# Identifiers that look like ``*.env`` file names but are code (JS / Vite).
+_CODE_IDENTIFIERS = frozenset({"process.env", "import.meta.env"})
+# Representative secret file names a glob token is tested against.
+_GLOB_SAMPLES: tuple[tuple[str, RiskClass], ...] = tuple(
+    (name, RiskClass.R4)
+    for name in (
+        ".env",
+        ".env.local",
+        ".env.production",
+        "id_rsa",
+        "id_ed25519",
+        "server.pem",
+        "server.key",
+        "cert.p12",
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+        ".git-credentials",
+        "secrets.json",
+        "secrets.yaml",
+    )
+) + tuple(
+    (name, RiskClass.R3)
+    for name in (
+        "credentials.json",
+        "secrets.toml",
+        ".envrc",
+        "prod.env",
+        ".dev.vars",
+        "terraform.tfvars",
+        "terraform.tfstate",
+    )
+)
+# A command that writes files (redirection, in-place edit, copy/move/delete,
+# PowerShell content cmdlets, git checkout/restore of paths).
+_CMD_WRITES = re.compile(
+    r"(?<![0-9&])>|\btee\b|\bsed\s+-[a-z]*i|\bperl\s+-[a-z]*i|\b(cp|mv|rm|ln|install|truncate|"
+    r"touch|chmod|dd|patch)\b|\bgit\s+(checkout|restore|apply|am|mv|rm)\b|"
+    r"\b(set-content|add-content|out-file|new-item|remove-item|copy-item|move-item|"
+    r"rename-item)\b",
+    re.IGNORECASE,
+)
+
+
+# Gate files without an extension (any other gate file name contains a dot).
+_DOTLESS_GATE_NAMES = frozenset({"makefile", "gnumakefile", "jenkinsfile", "codeowners"})
+
+
+def _command_tokens(text: str) -> list[str]:
+    return [tok.lstrip("@") for tok in _CMD_TOKEN_SPLIT.split(text) if tok.lstrip("@")]
+
+
+def _token_secret_class(token: str) -> RiskClass | None:
+    norm = _secret_norm(token)
+    name = norm.rstrip("/").rsplit("/", 1)[-1]
+    if "/" not in norm.rstrip("/"):
+        # A bare word: a file name only when it has a dot or is an ``id_*`` key
+        # (so ``grep credentials`` / ``SECRET_KEY`` are search terms, not files).
+        if "." not in name and not name.startswith("id_"):
+            return None
+        if name in _CODE_IDENTIFIERS:
+            return None
+    if _GLOB_CHARS.search(name):
+        literal = _GLOB_SYNTAX.sub("", name)
+        if len(literal) < 2 and not name.startswith("."):
+            return None  # ``*`` / ``x*`` match everything; not a secret reference
+        found: RiskClass | None = None
+        for sample, risk in _GLOB_SAMPLES:
+            if fnmatch.fnmatchcase(sample, name):
+                found = max(found or risk, risk)
+        return found
+    return secret_read_class(norm)
+
+
+def command_secret_class(command: str) -> RiskClass | None:
+    """Highest secret-read class among the paths a command line names (else ``None``)."""
+    found: RiskClass | None = None
+    for token in _command_tokens(str(command or "")):
+        risk = _token_secret_class(token)
+        if risk is not None and (found is None or risk > found):
+            found = risk
+    return found
+
+
+def command_gate_write(command: str, write_roots: Sequence[str] = ()) -> str:
+    """Why a command line may write a gate / CI definition ('' if it does not)."""
+    text = str(command or "")
+    if not _CMD_WRITES.search(text):
+        return ""
+    for token in _command_tokens(text):
+        bare = "/" not in _secret_norm(token) and "." not in token
+        if bare and token.lower() not in _DOTLESS_GATE_NAMES:
+            continue  # a bare word that is not a gate file name (a flag, a command)
+        relative = _secret_norm(token)
+        while relative.startswith("./"):
+            relative = relative[2:]
+        reason = gate_definition_write(token, write_roots) or gate_write_reason(
+            relative, full=relative
+        )
+        if reason:
+            return reason
+    return ""
+
+
+def classify_command(command: str, *, write_roots: Sequence[str] = ()) -> RiskClass:
     """Risk class of a shell command line (see the module table)."""
     text = str(command or "")
     if _CMD_R4.search(text):
         return RiskClass.R4
-    if any(pattern.search(text) for pattern in _CMD_R3):
+    secret = command_secret_class(text)
+    if secret == RiskClass.R4:
+        return RiskClass.R4
+    if (
+        secret == RiskClass.R3
+        or any(pattern.search(text) for pattern in _CMD_R3)
+        or command_gate_write(text, write_roots)
+    ):
         return RiskClass.R3
     if _CMD_R2.search(text):
         return RiskClass.R2
@@ -934,18 +1228,18 @@ def classify_risk(
     if kind in COMPUTER_USE_KINDS:
         return classify_ui(kind, ui)
     if kind == "file_read":
-        return RiskClass.R0
+        return secret_read_class(target) or RiskClass.R0
     if kind == "file_write":
         policy_root = policy_dir if policy_dir is not None else str(default_policy_dir())
-        if _CRED_PATH.search(str(target or "")) or (
-            policy_root and path_within(target, policy_root)
-        ):
+        if credential_store_path(target) or (policy_root and path_within(target, policy_root)):
             return RiskClass.R4
+        if gate_definition_write(target, write_roots):
+            return RiskClass.R3
         if any(path_within(target, root) for root in write_roots):
             return RiskClass.R1
         return RiskClass.R2
     if kind == "process_exec":
-        return classify_command(command or target)
+        return classify_command(command or target, write_roots=write_roots)
     if kind == "network_egress":
         return RiskClass.R2
     if kind == "model_call":
@@ -1318,6 +1612,9 @@ class _SessionRecord:
     capabilities: Capabilities
     listener: DecisionListener | None
     tool_calls_used: int = 0
+    # Set by the gateway once it allowed an action that releases secret-bearing
+    # content into the run (LOCUS-362); never cleared for the session.
+    tainted: bool = False
 
 
 class GatewaySession:
@@ -1340,6 +1637,11 @@ class GatewaySession:
 
     def close(self) -> None:
         self._gateway.close_session(self)
+
+    @property
+    def tainted(self) -> bool:
+        """The gateway released secret-bearing content into this run (LOCUS-362)."""
+        return self._gateway.session_tainted(self)
 
     def report_budget(self, figures: BudgetFigures) -> BudgetFigures | None:
         """Report the run's current budget usage; see :meth:`Gateway.report_budget`."""
@@ -1451,6 +1753,11 @@ class Gateway:
             record.capabilities = replace(record.capabilities, budget=merged)
             return merged
 
+    def session_tainted(self, session: GatewaySession) -> bool:
+        """True once this session was allowed an action that reads secret content."""
+        record = self._authenticate(session.caller)
+        return bool(record is not None and record.tainted)
+
     def _authenticate(self, caller: GatewayCaller) -> _SessionRecord | None:
         if not caller.token:
             return None
@@ -1497,6 +1804,10 @@ class Gateway:
 
         # Step 4: policy.
         reasons: list[str] = []
+        if secret_content_class(action) is not None:
+            reasons.append(REASON_SECRET_CONTENT)
+        if gate_definition_action(action, caps.write_roots):
+            reasons.append(REASON_GATE_DEFINITION)
         versions: set[str] = set()
         denied = False
         # User browser tier outputs (LOCUS-350). Both start closed: a missing or
@@ -1515,6 +1826,12 @@ class Gateway:
                 tier_ask, open_tier_consent = _user_browser_tier_outputs(result, payload)
             if result.policy_version:
                 versions.add(result.policy_version)
+            # A policy may raise (never lower) the risk class: filesystem_access
+            # reports R3 for secret-like reads and gate-definition writes.
+            floor = _risk_floor(result)
+            if floor is not None and floor > action.risk:
+                action = replace(action, risk=floor)
+                reasons.append(f"{REASON_RISK_FLOOR_PREFIX}{policy}:{floor.label}")
             if result.allow is not True:
                 denied = True
                 reasons.extend(result.reasons or [f"{policy}.not_allowed"])
@@ -1564,10 +1881,20 @@ class Gateway:
             # Taint gate (13 §6, P8): screen / page text never justifies turning an
             # ask into allow, so standing grants do not apply to tainted actions.
             # Only a human approval of this exact action can (_ask_or_approved).
-            tainted = action.tainted or action.kind in COMPUTER_USE_KINDS
+            # A session that has received secret-bearing content is tainted for
+            # the rest of the run (step-level taint, 13 §6), and releasing secret
+            # content itself needs a human approval of this exact read (P10).
+            tainted = (
+                action.tainted
+                or record.tainted
+                or action.kind in COMPUTER_USE_KINDS
+                or REASON_SECRET_CONTENT in reasons
+            )
             grant_id = None
             if tainted:
                 reasons.append(REASON_TAINT_NO_GRANT)
+                if record.tainted:
+                    reasons.append(REASON_SESSION_TAINTED)
             else:
                 grant_id = self._covering_grant(action, caps, reasons)
             if grant_id is not None:
@@ -1662,12 +1989,45 @@ class Gateway:
                 args_digest=action.args_digest,
             )
         )
+        if record is not None and decision.outcome == "allow" and REASON_SECRET_CONTENT in reasons:
+            # Secret-bearing content is about to enter the run (P10: the caller
+            # masks it); from now on no standing grant covers this session's asks.
+            with self._lock:
+                record.tainted = True
         if record is not None and record.listener is not None:
             try:
                 record.listener(action, decision)
             except Exception:  # noqa: BLE001 - listeners report; they never change the decision
                 logger.exception("gateway.listener_error", extra={"audit_id": audit_id})
         return decision
+
+
+def secret_content_class(action: GatewayAction) -> RiskClass | None:
+    """Secret-read class of an action (file read or command line), else ``None``."""
+    if action.kind == "file_read":
+        return secret_read_class(action.target)
+    if action.kind == "process_exec":
+        return command_secret_class(action.command_summary)
+    return None
+
+
+def gate_definition_action(action: GatewayAction, write_roots: Sequence[str]) -> bool:
+    """The action writes a gate / CI definition (file write or command line)."""
+    if action.kind == "file_write":
+        return bool(gate_definition_write(action.target, write_roots))
+    if action.kind == "process_exec":
+        return bool(command_gate_write(action.command_summary, write_roots))
+    return False
+
+
+def _risk_floor(result: Decision) -> RiskClass | None:
+    """A policy's ``risk_floor`` output (0-4) as a risk class; malformed is ignored."""
+    value = (getattr(result, "outputs", None) or {}).get("risk_floor")
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if value != int(value) or not 0 <= int(value) <= int(RiskClass.R4):
+        return None
+    return RiskClass(int(value))
 
 
 def _merge_budget(current: BudgetFigures | None, new: BudgetFigures) -> BudgetFigures:
@@ -1859,7 +2219,10 @@ def tool_jail_input(action: GatewayAction, caps: Capabilities) -> dict[str, Any]
         "require_appcontainer": jail.require_appcontainer,
         "runtime_profile": str(caps.runtime_profile or "").strip().lower(),
         "allowed_hosts": [],
-        "requested_hosts": [],
+        # Hosts a network client in the command line names (LOCUS-362): a jail
+        # without network then denies the exfiltration attempt by policy rather
+        # than leaving it to fail at connect time.
+        "requested_hosts": command_network_hosts(action.command_summary),
     }
 
 
@@ -1870,6 +2233,23 @@ def filesystem_access_input(action: GatewayAction, caps: Capabilities) -> dict[s
         "allowed_paths": list(caps.read_roots),
         "allowed_write_paths": list(caps.write_roots),
     }
+
+
+_NET_CLIENT = re.compile(
+    r"\b(curl|wget|nc|ncat|netcat|telnet|ftp|sftp|httpie|xh|aria2c|invoke-webrequest|"
+    r"invoke-restmethod|iwr|irm)\b",
+    re.IGNORECASE,
+)
+_URL_HOST = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://(?:[^/\s@'\"]*@)?(\[[^\]]+\]|[^/\s:'\"?#]+)")
+
+
+def command_network_hosts(command: str) -> list[str]:
+    """Non-loopback URL hosts named by a command line that invokes a network client."""
+    text = str(command or "")
+    if not _NET_CLIENT.search(text):
+        return []
+    hosts = {match.group(1).strip("[]").lower() for match in _URL_HOST.finditer(text)}
+    return sorted(host for host in hosts if host and not is_loopback_host(host))
 
 
 def network_egress_input(host: str, caps: Capabilities) -> dict[str, Any]:

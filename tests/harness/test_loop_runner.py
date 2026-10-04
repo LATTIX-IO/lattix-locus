@@ -5,6 +5,7 @@ the FakeEngine, and the real VerifiedLoop + workspace.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -14,7 +15,7 @@ from typing import Any
 import pytest
 
 from locus_runtime import gateway as gw
-from locus_runtime.harness.executor import LocalDirectExecutor
+from locus_runtime.harness.executor import ExecResult, LocalDirectExecutor
 from locus_runtime.harness.llm import ChatResponse, ScriptedChatClient
 from locus_runtime.harness.run_envelope import FileCheck
 from locus_runtime.loop_runner.delivery import PullRequestInfo
@@ -566,3 +567,36 @@ def test_runner_builds_toolset_from_envelope_tools_and_releases_it(
     assert len(built) == 1 and len(released) == 1
     assert "execute_bash" in built[0]["tools"]
     assert isinstance(built[0]["session"], gw.GatewaySession)
+
+
+class _AppContainerLikeExecutor(LocalDirectExecutor):
+    """git fails in the jail exactly as in the Windows AppContainer (LOCUS-362)."""
+
+    def run_shell(self, script: str, *, timeout: int = 60) -> ExecResult:
+        if script.lstrip().startswith("git "):
+            return ExecResult(
+                128, "", "fatal: Unable to read current working directory: Permission denied", 0.0
+            )
+        return super().run_shell(script, timeout=timeout)
+
+
+def test_verify_gate_diff_is_taken_host_side_when_git_cannot_run_in_the_jail(
+    repo: Path, tmp_path: Path
+) -> None:
+    tracker = FakeTracker([_issue()])
+    runner = _runner(repo, tmp_path, tracker, [_plan(), _fix(), _submit()])
+    runner.executor_factory = lambda root, session: _AppContainerLikeExecutor(
+        root, gateway_session=session
+    )
+
+    result = runner.run_once()
+
+    assert result.status == "done", result.detail
+    lines = (tmp_path / "home" / "runs" / result.run_id / "trajectory.jsonl").read_text(
+        encoding="utf-8"
+    )
+    records = [json.loads(line) for line in lines.splitlines() if line.strip()]
+    outcome = next(r for r in records if r.get("kind") == "outcome")
+    # submit and the verify gate saw the real change; the empty-diff rejection never fired.
+    assert "+fixed" in outcome["submission"]["patch"]
+    assert "Submit rejected" not in lines
