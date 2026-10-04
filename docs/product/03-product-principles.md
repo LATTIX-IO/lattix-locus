@@ -70,7 +70,7 @@ These are constraints, not aspirations. A feature or screen that violates one is
 
 ## Supply-chain principles
 
-**P28 · Provenance-clean dependencies.** No software, models, images or services from China, Russia, Iran, North Korea, Cuba, Venezuela or Belarus, matching the policy already adopted in Kepler. This applies to local models too: Qwen, DeepSeek, Yi, GLM and Kimi families are excluded.
+**P28 · Provenance-inspected dependencies.** Open-source software and **locally run** model weights that originate in China, Russia, Iran, North Korea, Cuba, Venezuela or Belarus are admitted only after they pass the Locus provenance inspection, and only at the inspected version (D-29). Hosted, API-based or web-based services and inference from those origins are excluded. Everything else still meets the supply-chain controls in [13](13-security-architecture.md).
 
 **P29 · Licenses compatible with AGPL distribution.** No dependency whose license requires per-deployment commercial keys or forbids redistribution (this rules out the tldraw SDK; see [17](17-canvas-and-whiteboard.md) §5).
 
