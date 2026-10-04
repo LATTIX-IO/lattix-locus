@@ -20027,11 +20027,15 @@ def list_workspace_folders(request: Request, path: str = "") -> dict[str, Any]:
     # against the real projects root (the root itself is allowed here).
     real_root = os.path.realpath(str(root))
     candidate = os.path.normpath(base)
-    if not (candidate == real_root or candidate.startswith(real_root.rstrip(os.sep) + os.sep)):
+    if candidate == real_root:
+        listed = real_root
+    elif candidate.startswith(real_root.rstrip(os.sep) + os.sep):
+        listed = candidate
+    else:
         return result
-    if not os.path.isdir(candidate):
+    if not os.path.isdir(listed):
         return result
-    base_path = Path(candidate)
+    base_path = Path(listed)
     result["exists"] = True
     result["is_git"] = (base_path / ".git").exists()
     folders: list[dict[str, str]] = []
