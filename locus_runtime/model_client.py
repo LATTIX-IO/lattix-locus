@@ -50,6 +50,7 @@ from locus_runtime.gateway import (
     redact_text,
 )
 
+from locus_runtime.policy_engine import REASON_UNAVAILABLE
 from locus_runtime.telemetry import semconv as telemetry_semconv
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,23 @@ _HTTP_STATUS: dict[str, int] = {
     PROVIDER_CALL_FAILED: 424,
     MODEL_CALL_DENIED: 403,
 }
+
+#: Shown instead of a generic gateway denial when the gateway has no running
+#: policy engine (``policy_engine_unavailable``): the gateway stays fail closed,
+#: but the person learns what is wrong and how to fix it.
+POLICY_ENGINE_MISSING_MESSAGE = (
+    "Policy engine missing: reinstall Lattix Locus. The gateway could not start its "
+    "policy engine (OPA), so it denies every model call. From a source or server "
+    "install, run `lattix install-opa` or set LOCUS_OPA_BIN."
+)
+
+
+def model_call_denied_message(provider: str, model: str, reason: str) -> str:
+    """The user-facing text for a gateway denial of a model call."""
+    if REASON_UNAVAILABLE in str(reason or ""):
+        return f"{POLICY_ENGINE_MISSING_MESSAGE} (model call to '{provider}' denied: {reason})"
+    return f"Model call to '{provider}' (model '{model}') was denied by the gateway: {reason}"
+
 
 #: Gateway tool label prefix for model calls (``model:<provider>``).
 MODEL_TOOL_PREFIX = "model:"
@@ -194,10 +212,7 @@ class ModelProviderError(RuntimeError):
                 f"'{self.model}': {self.reason}."
             )
         if self.code == MODEL_CALL_DENIED:
-            return (
-                f"Model call to '{self.provider}' (model '{self.model}') was denied by the "
-                f"gateway: {self.reason}"
-            )
+            return model_call_denied_message(self.provider, self.model, self.reason)
         return (
             f"Model provider '{self.provider}' call failed for model '{self.model}': {self.reason}"
         )

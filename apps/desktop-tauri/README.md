@@ -44,11 +44,18 @@ pyinstaller packaging/locus-backend.spec
 #    e.g. apps/desktop-tauri/src-tauri/bin/locus-backend-x86_64-pc-windows-msvc.exe
 #    (Tauri appends the triple; copy/rename accordingly per target.)
 
-# 3. Vendor the sidecar binaries the supervisor needs (nats/caddy/ollama/...):
+# 3. The policy engine (required: the gateway denies everything without it).
+#    The pinned OPA release, sha256-verified, beside the backend for the
+#    self-check, then as the externalBin `sidecars/locus-opa-<triple>(.exe)`:
+python -m locus_tooling.opa_release fetch --triple x86_64-pc-windows-msvc --dest dist/locus-opa.exe
+dist/locus-backend.exe --self-check   # fails unless OPA runs over the bundled policies
+#    copy to apps/desktop-tauri/src-tauri/sidecars/locus-opa-x86_64-pc-windows-msvc.exe
+
+# 4. Vendor the sidecar binaries the supervisor needs (nats/caddy/ollama/...):
 python -m locus_tooling.cli native-fetch        # → app-home/bin (dev)
 #    For a self-contained bundle, copy these into src-tauri/bin/ as resources.
 
-# 4. Build the desktop app
+# 5. Build the desktop app
 cd apps/desktop-tauri/src-tauri
 cargo tauri build       # produces MSI/NSIS (Win), .dmg/.app (mac), .deb/AppImage (Linux)
 ```
@@ -67,6 +74,16 @@ one origin, plus `core:event:allow-listen`/`allow-unlisten` and
 confirmations are shown from Rust. Adding a command means adding it to both the
 manifest and the capability; `tests/backend/test_desktop_packaging.py` fails
 otherwise.
+
+## Policy engine (OPA)
+
+The gateway evaluates `policies/*.rego` with OPA and denies every model call,
+tool call and computer-use action when it cannot (fail closed). The bundle ships
+the pinned OPA release (`locus_tooling/opa_release.py`: version and one sha256
+per platform) as the externalBin `locus-opa`, installed beside the backend
+sidecar; the supervisor sets `LOCUS_OPA_BIN` to it before the backend starts, and
+the Rego policies ship inside the sidecar (`packaging/locus-backend.spec`). If it
+is missing anyway, chat shows "Policy engine missing: reinstall Lattix Locus".
 
 ## Code signing
 

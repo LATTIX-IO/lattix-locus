@@ -235,6 +235,24 @@ describe("Computer use", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("says the policy engine is missing and re-checks the OS access status", async () => {
+    api.getPlatformSecurityPolicy.mockResolvedValue({
+      control_status: {
+        controls: [
+          { id: "policy_engine_rego", label: "Policy engine (Rego)", state: "off", evidence: "No Rego engine is available." },
+          { id: "computer_use", label: "Computer use containment", state: "unverified", evidence: "every UI action is denied" },
+        ],
+        summary: {},
+      },
+    });
+    render(<ComputerUseSection />);
+
+    expect(await screen.findByText(/policy engine missing: reinstall lattix locus/i)).toBeInTheDocument();
+    const calls = api.getPlatformSecurityPolicy.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: /re-check/i }));
+    await waitFor(() => expect(api.getPlatformSecurityPolicy.mock.calls.length).toBeGreaterThan(calls));
+  });
+
   it("stops computer use from the panic button", async () => {
     api.triggerComputerUsePanic.mockResolvedValue({ panicked: true });
     render(<ComputerUseSection />);

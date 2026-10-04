@@ -18,6 +18,7 @@ import atexit
 import os
 import signal
 import sys
+from collections.abc import MutableMapping
 from pathlib import Path
 
 from .common import default_app_home, source_repo_root
@@ -86,6 +87,41 @@ def bundled_root() -> Path:
 def bundled_bin_dir() -> Path:
     """Where the vendored sidecar binaries live inside the bundle."""
     return bundled_root() / "bin"
+
+
+def bundled_opa_binary() -> Path | None:
+    """The OPA policy engine the desktop bundle ships beside this sidecar.
+
+    Tauri installs ``externalBin`` binaries next to the app executable with the
+    target-triple suffix stripped, so the frozen sidecar finds ``locus-opa(.exe)``
+    in its own directory on every platform (``Contents/MacOS`` on macOS). None
+    outside a frozen bundle (a checkout uses ``.tools/opa``, the bin dir or PATH).
+    """
+    if not is_frozen():
+        return None
+    from .opa_release import bundled_binary_name
+
+    return bundled_root() / bundled_binary_name()
+
+
+def configure_bundled_opa(environ: MutableMapping[str, str] | None = None) -> Path | None:
+    """Point ``LOCUS_OPA_BIN`` at the bundled OPA; call before importing the backend.
+
+    The backend's gateway starts its policy engine at import and denies every
+    action without one (fail closed), so the bundled binary must be found first.
+    An explicit ``LOCUS_OPA_BIN`` naming an existing file wins. Returns the path
+    now configured, or None when there is none (the gateway then denies, and the
+    UI says the policy engine is missing).
+    """
+    env: MutableMapping[str, str] = os.environ if environ is None else environ
+    explicit = str(env.get("LOCUS_OPA_BIN") or "").strip()
+    if explicit and Path(explicit).is_file():
+        return Path(explicit)
+    bundled = bundled_opa_binary()
+    if bundled is not None and bundled.is_file():
+        env["LOCUS_OPA_BIN"] = str(bundled)
+        return bundled
+    return None
 
 
 def desktop_app_home() -> Path:

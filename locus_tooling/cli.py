@@ -326,26 +326,16 @@ def policy_lint() -> None:
 
 @cli.command("install-opa")
 def install_opa() -> None:
-    if os.name != "nt":
-        click.echo(
-            "Automatic OPA installation is currently implemented in the PowerShell helper on Windows. Install 'opa' on PATH or place it under .tools/opa/."
-        )
-        return
-    opa_dir = ROOT / ".tools" / "opa"
-    opa_dir.mkdir(parents=True, exist_ok=True)
-    opa_path = opa_dir / "opa.exe"
-    run_command(
-        [
-            python_executable(),
-            "-c",
-            (
-                "from urllib.request import urlopen; from pathlib import Path; "
-                f"data=urlopen('https://openpolicyagent.org/downloads/v0.68.0/opa_windows_amd64.exe').read(); "
-                f"Path(r'{opa_path}').write_bytes(data)"
-            ),
-        ],
-        cwd=ROOT,
-    )
+    """Fetch the pinned OPA release into .tools/opa/ (sha256-verified; fails closed)."""
+    from .native_binaries import current_platform
+    from .opa_release import OpaReleaseError, asset_for, fetch
+
+    os_name, arch = current_platform()
+    opa_path = ROOT / ".tools" / "opa" / ("opa.exe" if os_name == "windows" else "opa")
+    try:
+        fetch(asset_for(os_name, arch), opa_path)
+    except OpaReleaseError as exc:
+        raise click.ClickException(str(exc)) from exc
     click.echo(str(opa_path))
 
 

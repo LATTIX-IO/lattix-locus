@@ -111,10 +111,20 @@ jobs:
           # The shell refuses a backend whose stamp differs from the app version.
           python -m locus_tooling.build_info "$VERSION"
           pyinstaller packaging/locus-backend.spec
+          # The gateway's policy engine (fail closed without it): the pinned OPA
+          # release, sha256-verified against locus_tooling/opa_release.py (the
+          # step fails on a mismatch), placed beside the backend exactly as the
+          # installed app lays it out, so --self-check runs it over the bundled
+          # policies and fails the build when it is missing or broken.
+          python -m locus_tooling.opa_release fetch --triple "${{ matrix.triple }}" \
+            --dest "dist/locus-opa${{ matrix.ext }}"
           "dist/locus-backend${{ matrix.ext }}" --self-check
-          mkdir -p apps/desktop-tauri/src-tauri/bin
+          mkdir -p apps/desktop-tauri/src-tauri/bin apps/desktop-tauri/src-tauri/sidecars
           cp "dist/locus-backend${{ matrix.ext }}" \
              "apps/desktop-tauri/src-tauri/bin/locus-backend-${{ matrix.triple }}${{ matrix.ext }}"
+          # Tauri externalBin "sidecars/locus-opa": installed beside the app as locus-opa.
+          cp "dist/locus-opa${{ matrix.ext }}" \
+             "apps/desktop-tauri/src-tauri/sidecars/locus-opa-${{ matrix.triple }}${{ matrix.ext }}"
 
       - uses: actions/setup-node@v4
         with:

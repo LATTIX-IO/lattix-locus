@@ -166,12 +166,33 @@ def _postgres_spec(os_name: str, arch: str) -> BinarySpec:
     )
 
 
+def _opa_spec(os_name: str, arch: str) -> BinarySpec:
+    # The policy engine the gateway needs (it fails closed without one). Version
+    # and per-platform sha256 are pinned in opa_release, shared with the desktop
+    # workflows that bundle the same build; no env override (unpinned = unverified).
+    from .opa_release import OpaReleaseError, asset_for
+
+    try:
+        asset = asset_for(os_name, arch)
+    except OpaReleaseError as exc:
+        raise UnsupportedPlatformError(str(exc)) from exc
+    return BinarySpec(
+        name="opa",
+        exe="opa" + _exe_suffix(os_name),
+        kind="auto",
+        url=asset.url,
+        archive="raw",
+        sha256=asset.sha256,
+    )
+
+
 # World-models live in Postgres (relational graph) — no Neo4j, no Java/JRE.
 _BUILDERS: dict[str, Callable[[str, str], BinarySpec]] = {
     "nats-server": _nats_spec,
     "caddy": _caddy_spec,
     "ollama": _ollama_spec,
     "postgres": _postgres_spec,
+    "opa": _opa_spec,
 }
 
 
@@ -396,7 +417,10 @@ def _which(names: list[str], bin_dir: Path | None) -> str | None:
 
 
 # Default sidecars to provision for a native install (world-models ride on Postgres).
-DEFAULT_TARGETS = ("nats-server", "ollama", "postgres")
+# OPA is the gateway's policy engine; without it every model and tool call is
+# denied (fail closed). The desktop bundle ships its own (opa_release), so first
+# run skips it there.
+DEFAULT_TARGETS = ("nats-server", "ollama", "postgres", "opa")
 
 
 def provision(

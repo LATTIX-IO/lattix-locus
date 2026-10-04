@@ -182,6 +182,18 @@ psycopg, filetype), all on the allowlist pending sign-off. None is P28-listed. T
 never-imported nats-py, opa-python-client, structlog and zeroconf were dropped with their
 records (LOCUS-352).
 
+### Bundled native binaries
+
+The gate reads Python dependencies only (`origins.json` has PyPI entries), so native
+binaries that Locus downloads or bundles are recorded where they are pinned:
+
+| Binary | Version | Origin | Pin |
+|---|---|---|---|
+| Open Policy Agent (`opa`, bundled in the desktop app as `locus-opa`) | 0.68.0 | not listed: Cloud Native Computing Foundation graduated project (US; Linux Foundation), Apache-2.0; https://github.com/open-policy-agent/opa | `locus_tooling/opa_release.py`: official GitHub release URL and one sha256 per platform, the values the release publishes beside each asset (`<asset>.sha256`, also served at openpolicyagent.org/downloads). The desktop workflows and first-run fetch fail closed on a mismatch. |
+
+The Windows agent toolchain (CPython embeddable, BusyBox-w64) is pinned the same way in
+`locus_tooling/native_binaries.py` (docs/SANDBOXING.md).
+
 ## 9. Known limits
 
 - **Coverage.** The gate covers the declared dependencies and the transitive packages

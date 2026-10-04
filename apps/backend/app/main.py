@@ -973,10 +973,8 @@ class ProviderUnavailableError(HTTPException):
                 "and retry."
             )
         if self.code == "model_call_denied":
-            return (
-                f"Model call to '{self.provider}' (model '{self.model}') was denied by the "
-                f"gateway: {self.reason}"
-            )
+            # "Policy engine missing: reinstall ..." when the gateway has no engine.
+            return model_calls.model_call_denied_message(self.provider, self.model, self.reason)
         return (
             f"Model provider '{self.provider}' call failed for model '{self.model}': {self.reason}"
         )

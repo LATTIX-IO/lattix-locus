@@ -621,3 +621,16 @@ def test_provenance_allows_clean_models(model: str) -> None:
 
 def test_default_nim_model_is_provenance_clean() -> None:
     assert not mc.is_provenance_excluded(mc.provider_default_model("nim"))
+
+
+def test_denial_without_a_policy_engine_says_how_to_fix_it() -> None:
+    missing = mc.ModelCallDenied(
+        provider="ollama", model="gpt-oss:20b", reason="deny: policy_engine_unavailable"
+    )
+    assert missing.message.startswith("Policy engine missing: reinstall Lattix Locus.")
+    assert "policy_engine_unavailable" in missing.message  # the reason code stays visible
+    assert missing.http_status == 403  # still a denial: the gateway stays fail closed
+    other = mc.ModelCallDenied(provider="ollama", model="m", reason="deny: model_call.not_allowed")
+    assert other.message == (
+        "Model call to 'ollama' (model 'm') was denied by the gateway: deny: model_call.not_allowed"
+    )
