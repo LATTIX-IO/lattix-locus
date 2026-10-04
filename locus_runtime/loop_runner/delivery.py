@@ -219,6 +219,30 @@ class GitOps:
         out = self.run(worktree, "diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD")
         return [p for p in out.split("\0") if p]
 
+    def diff(self, worktree: Path, base: str = "HEAD", pathspecs: Sequence[str] = ()) -> str:
+        """Unified diff of the working copy vs ``base`` (stages the change, like
+        :meth:`changed_paths`). Diff and textconv drivers are off: the agent can
+        write ``.gitattributes``, and host git must not run a driver for it."""
+        if not base or base.startswith("-") or any(str(p).startswith("-") for p in pathspecs):
+            raise DeliveryError("git diff refused: an argument looks like an option")
+        self.run(worktree, "add", "-A", "--", ".", *pathspecs)
+        self.run(worktree, "add", "--renormalize", "--", ".")
+        return self.run(
+            worktree,
+            "diff",
+            "--cached",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            base,
+            "--",
+            ".",
+            *pathspecs,
+        )
+
+    def has_tracked_changes(self, worktree: Path) -> bool:
+        return bool(self.run(worktree, "status", "--porcelain", "--untracked-files=no").strip())
+
     def tracked_files(self, worktree: Path) -> list[str]:
         """Every file in the index (after :meth:`changed_paths`, includes new files)."""
         return [p for p in self.run(worktree, "ls-files", "-z").split("\0") if p]
@@ -231,6 +255,27 @@ class GitOps:
     def push(self, worktree: Path, remote: str, branch: str) -> None:
         # No ``-u``: an upstream entry would rewrite the sealed .git/config.
         self.run(worktree, "push", "--quiet", "--no-verify", remote, f"HEAD:refs/heads/{branch}")
+
+
+@dataclass
+class HostWorkspaceGit:
+    """:class:`~locus_runtime.harness.workspace.HostGit` over :class:`GitOps`.
+
+    Gives the agent's ``submit`` and the verify gate a real diff on Windows,
+    where git cannot run inside the AppContainer (LOCUS-362). Host git here is a
+    platform step with fixed argv: hooks and fsmonitor off and the ``.git`` seal
+    verified on every call (a tampered working copy raises
+    :class:`DeliveryError`, which fails the run).
+    """
+
+    git: GitOps
+    worktree: Path
+
+    def diff(self, base: str, pathspecs: Sequence[str]) -> str:
+        return self.git.diff(self.worktree, base, pathspecs)
+
+    def has_uncommitted_changes(self) -> bool:
+        return self.git.has_tracked_changes(self.worktree)
 
 
 # --------------------------------------------------------------------------- #

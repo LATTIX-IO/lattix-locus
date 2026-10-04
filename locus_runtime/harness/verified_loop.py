@@ -51,9 +51,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
-from locus_runtime.gateway import BudgetFigures, GatewaySession
+from locus_runtime.gateway import BudgetFigures, GatewaySession, mask_secret_diff
 from locus_runtime.harness.enforcement import (
+    INVALID_ARGUMENTS_NOTE,
     ReaskPolicy,
+    assistant_message,
     constraint_kwargs,
     reask_tool_message,
     schema_by_name,
@@ -565,14 +567,20 @@ class VerifiedLoop:
                 resp = self._call_model(st.messages, tools)
                 st.usage.steps += 1
                 step = st.usage.steps
-                assistant = _assistant_message(resp)
+                assistant, invalid_args = assistant_message(resp)
                 st.messages.append(assistant)
                 rec.message(assistant, step=step, usage=resp.usage or None)
+                for call_id, error in invalid_args.items():
+                    # The raw arguments are not echoed back to the provider (it would
+                    # reject the next request) nor recorded verbatim.
+                    rec.annotation(
+                        "malformed_tool_arguments", step=step, call_id=call_id, error=error
+                    )
                 self._emit(
                     "model_step", step=step, has_tools=bool(resp.tool_calls), text=resp.text[:200]
                 )
                 if resp.tool_calls:
-                    self._dispatch(resp.tool_calls, schemas, step)
+                    self._dispatch(resp.tool_calls, schemas, step, invalid_args)
                 else:
                     self._handle_text(resp.text, step)
                 self._checkpoint()
@@ -739,12 +747,22 @@ class VerifiedLoop:
     def _plan_phase(self) -> bool:
         return self._st.plan is None
 
-    def _dispatch(self, tool_calls: list[ToolCall], schemas: dict[str, Any], step: int) -> None:
+    def _dispatch(
+        self,
+        tool_calls: list[ToolCall],
+        schemas: dict[str, Any],
+        step: int,
+        invalid_args: dict[str, str] | None = None,
+    ) -> None:
         st = self._st
         self._pending_calls = [tc.id for tc in tool_calls]
         for tc in tool_calls:
             name, raw_args = _normalize_tool_name(tc.name, tc.arguments)
-            args, reason = validate_tool_call(name, raw_args, schemas)
+            if invalid_args and str(tc.id) in invalid_args:
+                # Same verdict the transcript got: the call is answered as invalid.
+                args, reason = None, f"{invalid_args[str(tc.id)]}; {INVALID_ARGUMENTS_NOTE}"
+            else:
+                args, reason = validate_tool_call(name, raw_args, schemas)
             if args is None:
                 self.toolset.telemetry.tool_calls_malformed += 1
                 if st.reasks_used < self.reask_policy.max_reasks_per_run:
@@ -947,7 +965,9 @@ class VerifiedLoop:
             self.envelope,
             executor=self.toolset.workspace.executor,
             judge=self._judge(),
-            diff=str(submission.get("patch") or ""),
+            # The judge is a model and the evidence is logged: secret-bearing
+            # hunks are masked (P10). The recorded patch stays exact for delivery.
+            diff=mask_secret_diff(str(submission.get("patch") or "")),
             answer=str(submission.get("answer") or ""),
             attempt=attempt,
         )
@@ -1188,22 +1208,8 @@ class VerifiedLoop:
 # Module helpers
 # --------------------------------------------------------------------------- #
 def _assistant_message(resp: ChatResponse) -> dict[str, Any]:
-    msg: dict[str, Any] = {"role": "assistant", "content": resp.text or None}
-    if resp.tool_calls:
-        msg["tool_calls"] = [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {
-                    "name": tc.name,
-                    "arguments": tc.arguments
-                    if isinstance(tc.arguments, str)
-                    else _to_json(tc.arguments),
-                },
-            }
-            for tc in resp.tool_calls
-        ]
-    return msg
+    """The provider-safe assistant turn (see :func:`enforcement.assistant_message`)."""
+    return assistant_message(resp)[0]
 
 
 def _plan_from_text(text: str) -> dict[str, Any]:

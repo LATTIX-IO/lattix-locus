@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from locus_runtime.harness.enforcement import (
     ReaskPolicy,
+    assistant_message,
     constraint_kwargs,
     reask_tool_message,
     schema_by_name,
@@ -252,22 +253,8 @@ class AgentLoop:
 
     # -- helpers ------------------------------------------------------------
     def _assistant_message(self, resp: ChatResponse) -> dict[str, Any]:
-        msg: dict[str, Any] = {"role": "assistant", "content": resp.text or None}
-        if resp.tool_calls:
-            msg["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.name,
-                        "arguments": tc.arguments
-                        if isinstance(tc.arguments, str)
-                        else _to_json(tc.arguments),
-                    },
-                }
-                for tc in resp.tool_calls
-            ]
-        return msg
+        # Provider-safe: string content, malformed arguments replaced (LOCUS-362).
+        return assistant_message(resp)[0]
 
     def _dispatch_tool_calls(
         self,

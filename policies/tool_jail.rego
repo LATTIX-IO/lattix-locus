@@ -147,6 +147,11 @@ deny_reason := "no_confining_sandbox" if {
   not allow
   jailed
   not executable_safe
+} else := "network_target_not_allowed" if {
+  # The command names a remote host (requested_hosts, LOCUS-362) the jail may not reach.
+  not allow
+  jailed
+  not network_targets_safe
 } else := "not_jailed" if {
   not allow
 }

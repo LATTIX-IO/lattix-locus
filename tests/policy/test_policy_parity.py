@@ -13,6 +13,8 @@ from typing import Any
 
 import pytest
 
+from locus_runtime import gateway as gw
+from locus_runtime.gate_definitions import GATE_WRITE_BASENAMES, GATE_WRITE_PATHS
 from locus_runtime.policy_engine import (
     KNOWN_POLICIES,
     OpaSidecarEngine,
@@ -712,3 +714,123 @@ def test_stopped_sidecar_denies(opa_engine: OpaSidecarEngine) -> None:
     assert decision.allow is False
     assert decision.reasons == [REASON_UNAVAILABLE]
     engine.close()
+
+
+# --------------------------------------------------------------------------- #
+# LOCUS-362: filesystem_access mirrors the gateway's secret-file and
+# gate-definition classes (patterns, lists and decisions)
+# --------------------------------------------------------------------------- #
+def _fs_outputs(opa_engine: OpaSidecarEngine) -> dict[str, Any]:
+    decision = opa_engine.decide(
+        "filesystem_access", {"action": "read", "path": "/w/a", "allowed_paths": ["/w"]}
+    )
+    return dict(decision.outputs)
+
+
+def test_filesystem_access_patterns_equal_the_gateway_patterns(
+    opa_engine: OpaSidecarEngine,
+) -> None:
+    outputs = _fs_outputs(opa_engine)
+    assert outputs["credential_store_pattern"] == gw.CREDENTIAL_STORE_PATTERN
+    assert outputs["key_material_pattern"] == gw.KEY_MATERIAL_PATTERN
+    assert outputs["named_secret_pattern"] == gw.NAMED_SECRET_PATTERN
+    assert outputs["secret_like_pattern"] == gw.SECRET_LIKE_PATTERN
+
+
+def test_filesystem_access_gate_lists_equal_the_shared_gate_definitions(
+    opa_engine: OpaSidecarEngine,
+) -> None:
+    outputs = _fs_outputs(opa_engine)
+    assert set(outputs["gate_write_basenames"]) == set(GATE_WRITE_BASENAMES)
+    assert set(outputs["gate_write_paths"]) == set(GATE_WRITE_PATHS)
+
+
+FS_ROOT = "/workspace/project"
+FS_WIN_ROOT = "C:/ws"
+FS_PARITY_PATHS = [
+    f"{FS_ROOT}/src/app.py",
+    f"{FS_ROOT}/README.md",
+    f"{FS_ROOT}/.env",
+    f"{FS_ROOT}/.env.example",
+    f"{FS_ROOT}/sub/.ENV.local",
+    r"C:\ws\.env",
+    r"C:\ws\src\app.py",
+    f"{FS_ROOT}/certs/server.pem",
+    f"{FS_ROOT}/deploy/tls.key",
+    f"{FS_ROOT}/keys/id_ed25519",
+    f"{FS_ROOT}/keys/id_ed25519.pub",
+    f"{FS_ROOT}/.npmrc",
+    f"{FS_ROOT}/.pypirc",
+    f"{FS_ROOT}/.git-credentials",
+    f"{FS_ROOT}/.netrc",
+    f"{FS_ROOT}/.ssh/config",
+    f"{FS_ROOT}/.aws/credentials",
+    f"{FS_ROOT}/credentials",
+    f"{FS_ROOT}/config/credentials.toml",
+    f"{FS_ROOT}/app/credentials.py",
+    f"{FS_ROOT}/secrets.yaml",
+    f"{FS_ROOT}/secrets.toml",
+    f"{FS_ROOT}/deploy/prod.env",
+    f"{FS_ROOT}/.envrc",
+    f"{FS_ROOT}/.dev.vars",
+    f"{FS_ROOT}/infra/prod.tfvars",
+    f"{FS_ROOT}/infra/terraform.tfstate.backup",
+    f"{FS_ROOT}/backup/service-account-prod.json",
+    f"{FS_ROOT}/tests/test_secrets.py",
+    f"{FS_ROOT}/.github/workflows/ci.yml",
+    f"{FS_ROOT}/.github/CODEOWNERS",
+    f"{FS_ROOT}/.github/actions/setup/action.yml",
+    f"{FS_ROOT}/.circleci/config.yml",
+    f"{FS_ROOT}/policies/agent_policy.rego",
+    f"{FS_ROOT}/src/policies/rules.py",
+    f"{FS_ROOT}/tests/conftest.py",
+    f"{FS_ROOT}/pyproject.toml",
+    f"{FS_ROOT}/Makefile",
+    f"{FS_ROOT}/.pre-commit-config.yaml",
+    f"{FS_ROOT}/ruff.toml",
+    f"{FS_ROOT}/mypy.ini",
+    f"{FS_ROOT}/pytest.ini",
+    f"{FS_ROOT}/setup.cfg",
+    f"{FS_ROOT}/tox.ini",
+    f"{FS_ROOT}/scripts/run_opa.py",
+    f"{FS_ROOT}/vendor/lib/.github/workflows/x.yml",
+    r"C:\ws\.github\workflows\ci.yml",
+    "/Users/dev/Library/Keychains/login.keychain-db",
+    r"C:\Users\dev\AppData\Roaming\Microsoft\Protect\S-1-5\k",
+]
+
+
+def _python_classes(action: str, path: str) -> int:
+    roots = (FS_ROOT, FS_WIN_ROOT)
+    if action == "read":
+        return int(gw.secret_read_class(path) or 0)
+    if gw.credential_store_path(path):
+        return 4
+    return 3 if gw.gate_definition_write(path, roots) else 0
+
+
+@pytest.mark.parametrize("action", ["read", "write"])
+@pytest.mark.parametrize("path", FS_PARITY_PATHS)
+def test_filesystem_access_risk_floor_matches_python(
+    opa_engine: OpaSidecarEngine, action: str, path: str
+) -> None:
+    roots = [FS_ROOT, FS_WIN_ROOT, "/Users/dev", "C:/Users/dev"]
+    decision = opa_engine.decide(
+        "filesystem_access",
+        {"action": action, "path": path, "allowed_paths": roots, "allowed_write_paths": roots},
+    )
+    expected = _python_classes(action, path)
+    assert decision.outputs.get("risk_floor") == expected, (action, path)
+    # Inside the roots, the policy denies exactly the R4 class.
+    assert decision.allow is (expected < 4), (action, path, decision.reasons)
+    # The gateway's own classification agrees (it keeps the higher of the two).
+    kind = "file_read" if action == "read" else "file_write"
+    python_class = gw.classify_risk(
+        kind=kind, target=path, write_roots=tuple(roots), policy_dir="/nonexistent-policy-dir"
+    )
+    if expected == 4:
+        assert python_class == gw.RiskClass.R4
+    elif expected == 3:
+        assert python_class == gw.RiskClass.R3
+    else:
+        assert python_class < gw.RiskClass.R3
