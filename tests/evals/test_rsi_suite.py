@@ -558,3 +558,16 @@ def test_builtin_engine_without_inspect(tmp_path: Path, monkeypatch: pytest.Monk
 
 def test_tamper_check_defaults_are_clean() -> None:
     assert TamperCheck(verified_before=True, verified_after=True).ok
+
+
+def test_suite_digests_do_not_depend_on_line_endings(tmp_path: Path) -> None:
+    from locus_evals.suite.loader import split_digest
+
+    crlf = tmp_path / "crlf"
+    for split in ("dev", "heldout"):
+        (crlf / split).mkdir(parents=True)
+        for path in (TASKS_DIR / split).glob("*.yaml"):
+            data = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+            (crlf / split / path.name).write_bytes(data)
+    for split in ("dev", "heldout"):
+        assert split_digest(crlf, split) == split_digest(TASKS_DIR, split)

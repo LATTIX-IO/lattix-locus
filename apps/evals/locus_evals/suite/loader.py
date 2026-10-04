@@ -56,13 +56,16 @@ def load_tasks(tasks_dir: Path, splits: Iterable[str] = SPLITS) -> list[SuiteTas
     return tasks
 
 
-def file_digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def content_digest(path: Path) -> str:
+    """sha256 of the file with CRLF normalized to LF (the same on every OS)."""
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def split_digest(tasks_dir: Path, split: str) -> str:
-    """sha256 over the split's task files (name + content), order independent."""
+    """sha256 over the split's task files (name + content), independent of order and
+    line endings: it identifies the suite across machines (scorecard comparability),
+    unlike the store manifest, which seals the exact bytes of one install."""
     h = hashlib.sha256()
     for path in task_files(tasks_dir, split):
-        h.update(f"{split}/{path.name}\0{file_digest(path)}\n".encode())
+        h.update(f"{split}/{path.name}\0{content_digest(path)}\n".encode())
     return h.hexdigest()
