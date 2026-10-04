@@ -14,6 +14,7 @@ source checkout or a local build has no stamp (``""``).
 
 from __future__ import annotations
 
+import importlib
 import re
 import sys
 from pathlib import Path
@@ -34,10 +35,10 @@ def is_semver(value: str) -> bool:
 def backend_build_version() -> str:
     """The version CI stamped into this build, or ``""`` when unstamped."""
     try:
-        from locus_tooling._build_stamp import BUILD_VERSION  # type: ignore[import-not-found]
+        stamp = importlib.import_module("locus_tooling._build_stamp")
     except ImportError:
         return ""
-    value = str(BUILD_VERSION or "").strip()
+    value = str(getattr(stamp, "BUILD_VERSION", "") or "").strip()
     return value if is_semver(value) else ""
 
 
