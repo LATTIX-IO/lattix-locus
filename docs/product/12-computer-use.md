@@ -61,7 +61,7 @@ Computer use runs in a separate, signed **native helper** process, not in the Py
 ## 7. Browser control
 
 - A **dedicated agent browser profile** (Chromium via CDP) is the default: separate cookies and storage, its own egress via the per-run proxy, and downloads into the run workspace.
-- Using the user's own browser profile (logged-in sessions) is an H2 capability gated by an R3 grant per site.
+- Using the user's own browser profile (logged-in sessions) goes through the Locus extension under a principal-only browser tier (Strict / Assisted / Trusted / Open), with per-site lists and grants and a floor no tier removes (D-25, LOCUS-350; see [COMPUTER-USE](../COMPUTER-USE.md#your-own-browser-locus-350-d-25)).
 - Page content is untrusted. Form submission is R2 or R3 depending on the target (payment and account-changing forms are R3).
 
 ## 8. Isolated mode (H2)

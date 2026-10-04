@@ -22,3 +22,11 @@ paths = [
   '''^\.claude/worktrees/''',
   '''^apps/frontend/\.next/''',
 ]
+
+[[allowlists]]
+# The Locus browser extension's manifest "key" is a PUBLIC key (SubjectPublicKeyInfo,
+# base64) that pins the Chromium extension ID (LOCUS-350). No private key exists in the repo.
+description = "Public key pinning the Locus browser extension ID"
+condition = "AND"
+paths = ['''^apps/browser-extension/manifest\.json$''']
+regexes = ['''MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA[A-Za-z0-9+/=]+''']

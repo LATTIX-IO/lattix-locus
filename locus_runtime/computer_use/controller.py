@@ -40,9 +40,19 @@ Mode = Literal["observe", "assist", "takeover"]
 MODES: tuple[Mode, ...] = ("observe", "assist", "takeover")
 
 #: Kinds that only perceive (allowed in every mode).
-OBSERVE_KINDS = frozenset({"ui_observe", "browser_read"})
-#: Kinds that act on the agent browser or the desktop.
-ACT_KINDS = frozenset({"ui_click", "ui_type", "ui_key", "browser_navigate", "browser_act"})
+OBSERVE_KINDS = frozenset({"ui_observe", "browser_read", "user_browser_read"})
+#: Kinds that act on the agent browser, the principal's own browser or the desktop.
+ACT_KINDS = frozenset(
+    {
+        "ui_click",
+        "ui_type",
+        "ui_key",
+        "browser_navigate",
+        "browser_act",
+        "user_browser_navigate",
+        "user_browser_act",
+    }
+)
 
 
 class ComputerUseCancelled(RuntimeError):

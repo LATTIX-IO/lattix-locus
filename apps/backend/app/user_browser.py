@@ -1,0 +1,136 @@
+"""Backend glue for the principal's own browser (LOCUS-350, decision D-25).
+
+The HTTP handlers live in ``app.main`` next to the computer-use endpoints;
+this module holds the checks they share:
+
+* :func:`ensure_user_browser` -- install the persisted tier store and the relay
+  hub (attached to the process computer-use controller, so panic reaches the
+  extension).
+* :func:`is_human_principal` -- tier and pairing changes are principal-only:
+  an authenticated human user, never an agent token, a service or an internal
+  caller.
+* :func:`relay_request_refusal` -- the extension relay accepts loopback,
+  non-browser callers only (the native host), before any pairing check.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import logging
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+from locus_runtime.computer_use.controller import get_controller
+from locus_runtime.computer_use.user_browser.pairing import (
+    CHROMIUM_EXTENSION_ID,
+    FIREFOX_EXTENSION_ID,
+    NATIVE_HOST_NAME,
+)
+from locus_runtime.computer_use.user_browser.relay import RelayHub, get_hub
+from locus_runtime.computer_use.user_browser.tiers import (
+    TIER_RISKS,
+    TierStore,
+    get_tier_store,
+    install_tier_store,
+)
+
+LOGGER = logging.getLogger(__name__)
+
+#: Largest relay request body accepted (a PNG screenshot result, base64).
+MAX_RELAY_BODY_BYTES = 16 * 1024 * 1024
+_LOOPBACK_NAMES = frozenset({"localhost"})
+# Headers browsers attach to page-initiated requests; the native host sends none.
+_BROWSER_HEADERS = ("origin", "sec-fetch-site", "sec-fetch-mode", "referer")
+
+
+def tier_store_path(app_home: Path) -> Path:
+    return Path(app_home) / "computer_use" / "user-browser-tier.json"
+
+
+def ensure_user_browser(app_home: Path | None) -> RelayHub:
+    """Install the persisted tier store (idempotent) and return the relay hub."""
+    store = get_tier_store()
+    if app_home is not None and getattr(store, "_path", None) is None:
+        install_tier_store(TierStore(tier_store_path(app_home)))
+    hub = get_hub()
+    hub.attach(get_controller())
+    return hub
+
+
+def is_human_principal(auth_context: Mapping[str, Any] | None) -> bool:
+    """An authenticated human user: not an agent, service, NPE or internal caller."""
+    if not isinstance(auth_context, Mapping) or auth_context.get("authenticated") is not True:
+        return False
+    if str(auth_context.get("principal_type") or "") != "user":
+        return False
+    if str(auth_context.get("agent_id") or "").strip():
+        return False
+    if auth_context.get("internal_service_authenticated") is True:
+        return False
+    return auth_context.get("trusted_subject_authenticated") is not True
+
+
+def _is_loopback(host: str) -> bool:
+    text = str(host or "").strip().lower().strip("[]")
+    if text in _LOOPBACK_NAMES:
+        return True
+    try:
+        return ipaddress.ip_address(text).is_loopback
+    except ValueError:
+        return False
+
+
+def relay_request_refusal(client_host: str, headers: Mapping[str, str]) -> str | None:
+    """Why a relay request is refused before pairing is checked, or ``None``.
+
+    Only the native host may call the relay: a loopback peer that is not a
+    browser page (no ``Origin`` / ``Sec-Fetch-*`` / ``Referer``), so a web page
+    in any browser cannot reach it even on loopback.
+    """
+    if not _is_loopback(client_host):
+        return "not_loopback"
+    lowered = {str(k).lower() for k in headers.keys()}
+    if any(name in lowered for name in _BROWSER_HEADERS):
+        return "browser_origin"
+    return None
+
+
+def cross_site_refusal(headers: Mapping[str, str], allowed_origins: list[str]) -> str | None:
+    """Refuse browser requests from another site for principal-only changes.
+
+    ``Sec-Fetch-Site: cross-site`` (every current browser sends it) or an
+    ``Origin`` outside the CORS allowlist is refused. Non-browser clients (the
+    desktop shell, curl) send neither and pass to normal authentication.
+    """
+    lowered = {str(k).lower(): str(v) for k, v in headers.items()}
+    if lowered.get("sec-fetch-site", "").strip().lower() == "cross-site":
+        return "cross_site"
+    origin = lowered.get("origin", "").strip().rstrip("/")
+    if origin and origin not in {o.rstrip("/") for o in allowed_origins}:
+        return "origin_not_allowed"
+    return None
+
+
+def status_payload(hub: RelayHub) -> dict[str, Any]:
+    settings = get_tier_store().settings
+    return {
+        "paired": hub.paired,
+        "connected": hub.connected(),
+        "clients": hub.clients(),
+        "native_host": NATIVE_HOST_NAME,
+        "extension_ids": {"chromium": CHROMIUM_EXTENSION_ID, "firefox": FIREFOX_EXTENSION_ID},
+        "tier": settings.as_dict(),
+        "tier_risks": dict(TIER_RISKS),
+    }
+
+
+__all__ = [
+    "MAX_RELAY_BODY_BYTES",
+    "cross_site_refusal",
+    "ensure_user_browser",
+    "is_human_principal",
+    "relay_request_refusal",
+    "status_payload",
+    "tier_store_path",
+]

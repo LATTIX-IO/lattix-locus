@@ -41,6 +41,13 @@ from pathlib import Path
 from typing import Any
 from urllib import parse as urlparse
 
+from locus_runtime.computer_use.browser_contract import (
+    PORT_VERSION,
+    BrowserAction,
+    BrowserObservation,
+    BrowserProfile,
+    unsupported,
+)
 from locus_runtime.computer_use.common import (
     UiResult,
     cancelled_result,
@@ -247,8 +254,19 @@ def _form_is_sensitive(fields: list[dict[str, Any]]) -> bool:
     return False
 
 
-def ui_facts_from_dom(control: str, facts: dict[str, Any], *, key: str = "") -> UiFacts:
-    """UiFacts for a browser action from the element description ``_FACTS_JS`` returns."""
+def ui_facts_from_dom(
+    control: str,
+    facts: dict[str, Any],
+    *,
+    key: str = "",
+    app: str = AGENT_BROWSER_APP,
+    **extra: Any,
+) -> UiFacts:
+    """UiFacts for a browser action from the element description ``_FACTS_JS`` returns.
+
+    The user-browser driver passes its own ``app`` and the ``site`` /
+    ``tab_shared`` facts in ``extra`` (the extension returns the same shape).
+    """
     in_form = bool(facts.get("in_form"))
     enter = key.strip().lower() in {"enter", "return", "numpadenter"}
     submits = (control == "click" and bool(facts.get("is_submit"))) or (
@@ -257,7 +275,7 @@ def ui_facts_from_dom(control: str, facts: dict[str, Any], *, key: str = "") -> 
     return UiFacts.create(
         surface="browser",
         control=control,
-        app=AGENT_BROWSER_APP,
+        app=app,
         role=facts.get("role", ""),
         name=facts.get("name", ""),
         label=facts.get("label", ""),
@@ -269,6 +287,7 @@ def ui_facts_from_dom(control: str, facts: dict[str, Any], *, key: str = "") -> 
         form_sensitive=_form_is_sensitive(list(facts.get("form_fields") or [])),
         form_text=facts.get("form_text", ""),
         key=key,
+        **extra,
     )
 
 
@@ -280,7 +299,14 @@ class BlockedRequest:
 
 
 class AgentBrowser:
-    """Gated browser tools over a dedicated Playwright Chromium profile."""
+    """Gated browser tools over a dedicated Playwright Chromium profile.
+
+    Implements the ``BrowserDriver`` port (``browser_contract``) as the
+    ``"agent"`` profile.
+    """
+
+    profile: BrowserProfile = "agent"
+    port_version: str = PORT_VERSION
 
     def __init__(
         self,
@@ -404,6 +430,32 @@ class AgentBrowser:
         """Close and stop listening for panics (end of the run)."""
         self.close()
         self._controller.remove_panic_listener(self._on_panic)
+
+    # -- BrowserDriver port ------------------------------------------------------
+    def perform(self, action: BrowserAction) -> BrowserObservation:
+        """Dispatch one port action to the gated tool methods below."""
+        if action.op == "navigate":
+            result = self.navigate(action.url)
+        elif action.op == "read":
+            result = self.read()
+        elif action.op == "screenshot":
+            result = self.screenshot()
+        elif action.op == "act":
+            if action.control is None or action.control == "scroll":
+                return unsupported(
+                    self.profile, action, "the agent browser acts with click, fill, press or select."
+                )
+            result = self.act(
+                action.control,
+                ref=action.ref,
+                selector=action.selector,
+                role=action.role,
+                name=action.name,
+                value=action.value,
+            )
+        else:
+            return unsupported(self.profile, action, "the agent browser has a single page; no tabs.")
+        return BrowserObservation.from_ui_result(self.profile, result)
 
     # -- egress ----------------------------------------------------------------
     def _authorize_host(self, host: str, *, via: str, port: int = 0) -> bool:

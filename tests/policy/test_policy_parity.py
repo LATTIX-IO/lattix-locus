@@ -93,6 +93,30 @@ def _eval_container(**overrides: Any) -> dict[str, Any]:
 
 
 # (case id, policy, input, expected allow)
+_UB_CLICK: dict[str, Any] = {"action": "user_browser_act", "control": "click", "risk": "R2"}
+
+
+def _ub(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "action": "user_browser_read",
+        "profile": "user",
+        "control": "observe",
+        "site": "example.com",
+        "url_scheme": "",
+        "tab_shared": True,
+        "sensitive_field": False,
+        "risk": "R0",
+        "tier": "strict",
+        "tier_consent": False,
+        "allowlisted_sites": ["example.com"],
+        "granted_sites": ["example.com"],
+        "extension_paired": True,
+        "panicked": False,
+    }
+    base.update(overrides)
+    return base
+
+
 def _cu(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "action": "ui_click",
@@ -517,7 +541,58 @@ ALLOW_CASES: list[tuple[str, str, dict[str, Any], bool]] = [
         _cu(action="browser_navigate", surface="browser", control="navigate", url_scheme="file"),
         False,
     ),
+    # --- user_browser (policies/tests/user_browser_test.rego, LOCUS-350) ---
+    ("ub.allow_strict_observe_shared_tab", "user_browser", _ub(), True),
+    ("ub.deny_strict_observe_unshared_tab", "user_browser", _ub(tab_shared=False), False),
+    ("ub.allow_strict_click_asks", "user_browser", _ub(**_UB_CLICK), True),
+    (
+        "ub.allow_trusted_granted_click",
+        "user_browser",
+        _ub(**_UB_CLICK, tier="trusted", tier_consent=True, granted_sites=["example.com"]),
+        True,
+    ),
+    ("ub.deny_unpaired", "user_browser", _ub(extension_paired=False), False),
+    ("ub.deny_panicked", "user_browser", _ub(panicked=True), False),
+    (
+        "ub.deny_secret_field_entry_open_tier",
+        "user_browser",
+        _ub(**{**_UB_CLICK, "control": "fill"}, tier="open", tier_consent=True, sensitive_field=True),
+        False,
+    ),
+    (
+        "ub.deny_navigate_javascript",
+        "user_browser",
+        _ub(action="user_browser_navigate", control="navigate", url_scheme="javascript", risk="R2"),
+        False,
+    ),
 ]
+
+# --- user_browser decisions (the gateway reads these outputs) -----------------
+@pytest.mark.parametrize(
+    ("overrides", "decision", "require_approval", "irreversible_ok"),
+    [
+        ({}, "allow", False, False),
+        (_UB_CLICK, "ask", True, False),
+        ({**_UB_CLICK, "tier": "assisted", "tier_consent": True}, "ask", True, False),
+        ({**_UB_CLICK, "tier": "trusted", "tier_consent": True}, "allow", False, False),
+        ({**_UB_CLICK, "tier": "trusted", "tier_consent": True, "risk": "R3"}, "ask", True, False),
+        ({**_UB_CLICK, "tier": "open", "tier_consent": True, "risk": "R3"}, "allow", False, True),
+        ({**_UB_CLICK, "tier": "open", "tier_consent": False, "risk": "R3"}, "ask", True, False),
+        ({"panicked": True, "tier": "open", "tier_consent": True}, "deny", True, False),
+    ],
+)
+def test_user_browser_outputs(
+    opa_engine: OpaSidecarEngine,
+    overrides: dict[str, Any],
+    decision: str,
+    require_approval: bool,
+    irreversible_ok: bool,
+) -> None:
+    result = opa_engine.decide("user_browser", _ub(**overrides))
+    assert result.outputs.get("decision") == decision
+    assert result.outputs.get("require_approval") is require_approval
+    assert result.outputs.get("tier_allows_irreversible") is irreversible_ok
+
 
 # Rules the .rego tests assert on directly (``agent_policy.deny``).
 EXPECTED_DENY_RULE = {

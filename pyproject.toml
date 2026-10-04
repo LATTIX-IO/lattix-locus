@@ -41,6 +41,9 @@ dependencies = [
   "PyYAML>=6.0",
   "redis>=5.2.1",
   "structlog>=24.4.0",
+  # User-browser sites (LOCUS-350): Public Suffix List, BSD-3-Clause; already a
+  # presidio-analyzer dependency, declared because we import it directly.
+  "tldextract>=5.1.0",
   "uvicorn[standard]>=0.34.0",
   "zeroconf>=0.145.0"
 ]
