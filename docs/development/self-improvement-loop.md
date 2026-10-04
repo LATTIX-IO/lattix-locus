@@ -8,7 +8,9 @@ LOCUS-336) and a delivery step with an auto-merge guard (D-22).
 
 Code: `locus_runtime/loop_runner/` (`linear.py`, `runner.py`, `merge_guard.py`,
 `delivery.py`, `state.py`; LOCUS-339 adds `quality_gates.py`, `perf_budget.py`,
-`eval_gate.py`, `feedback.py`, `report.py`). CLI: `lattix loop …`.
+`eval_gate.py`, `feedback.py`, `report.py`; LOCUS-351 adds `scorecard_gate.py`).
+CLI: `lattix loop …`. What "better" means for the loop (the RSI scorecard, its
+suite, held-out split and promotion rule) is in [rsi-scorecard.md](rsi-scorecard.md).
 
 ## Setup
 
@@ -41,7 +43,7 @@ Code: `locus_runtime/loop_runner/` (`linear.py`, `runner.py`, `merge_guard.py`,
 lattix loop run --once      # or: make loop-once
 lattix loop serve           # poll every WORKFLOW.md polling.interval_ms (30 s)
 lattix loop status          # or: make loop-status
-lattix loop report          # throughput, success rate, cost, gate failures, eval/perf trends
+lattix loop report          # throughput, success rate, cost, gate failures, eval/perf/scorecard trends
 lattix loop report --json --days 7
 lattix loop disable         # file kill switch; `lattix loop enable` removes it
 ```
@@ -71,6 +73,10 @@ Useful settings (environment):
 | `LOCUS_LOOP_PROPOSE_SKILLS` | `1` | propose a quarantined `SKILL.md` after a done run |
 | `LOCUS_LOOP_FILE_FAILURE_ISSUES` | `1` | file Linear issues for recurring failure patterns |
 | `LOCUS_LOOP_FAILURE_ISSUE_MIN_OCCURRENCES` / `_MAX_FAILURE_ISSUES_PER_DAY` | `2` / `3` | how often a pattern must recur; filings per UTC day |
+| `LOCUS_LOOP_SCORECARD` | `advisory` | RSI scorecard (LOCUS-351): `off`, `advisory` (run, archive, report) or `required` (the D-22 auto-merge also needs `promote`) |
+| `LOCUS_LOOP_SCORECARD_{TRIALS,SPLITS,MODEL,PYTHON}` | `1` / `dev,heldout` / `gpt-oss:20b-ctx32k` / runner's | trials per task, splits, the keyless (Ollama) model, the candidate interpreter |
+| `LOCUS_LOOP_TAG_VARIANTS` | off | `1` tags each evaluated commit `variant/<sha12>` in the runner's repository (local, never pushed) |
+| `LOCUS_EVAL_HELDOUT_DIR` | unset | a private held-out task directory replacing the committed one |
 
 This repository's whole-repo `mypy .` and `pytest` are not green today (see
 `AGENTS.md`, known gate gaps), so set scoped check commands before the first
@@ -96,7 +102,7 @@ targeted `LOCUS_LOOP_TEST_COMMAND`.
 
 | Run end | Linear | Git/GitHub |
 |---|---|---|
-| done (criteria verified, pre-PR gates green) | comment with the PR link, link attachment, `In Review` | branch `loop/<issue-key>-<slug>`, push, PR with evidence (envelope, verifier results, judge verdicts, quality gates, eval gate, usage, fallback events, trajectory path) |
+| done (criteria verified, pre-PR gates green) | comment with the PR link, link attachment, `In Review` | branch `loop/<issue-key>-<slug>`, RSI scorecard on the run's tree, commit, variant archived under the commit sha, push, PR with evidence (envelope, verifier results, judge verdicts, quality gates, eval gate, RSI scorecard + comparison, usage, fallback events, trajectory path) |
 | done, but a pre-PR gate failed | stopped (`quality_gate`), counted as a failure | none |
 | done, but a pre-PR gate could not run | blocked (`quality_gate`) | none |
 | done, but no change | blocked (`no_changes`) | none |
@@ -166,7 +172,32 @@ Only `required` makes the D-22 auto-merge hold unless the PR's eval passed.
 
 The eval measures the model chain and the runner's installed harness, not the
 PR's code (running the PR's harness would execute agent-authored code on the
-host with model egress). The PR's code is covered by the verifier suite.
+host with model egress). The PR's code is covered by the verifier suite and,
+since LOCUS-351, by the RSI scorecard below.
+
+### RSI scorecard (LOCUS-351)
+
+With `LOCUS_LOOP_SCORECARD=advisory` (the default for `lattix loop`) or
+`required`, the runner evaluates the run's tree after the verifier suite passed
+(then commits it and archives the variant under the commit sha) with the RSI
+suite: 12 dev and 8 held-out tasks from
+`apps/evals/locus_evals/suite/`, loaded from the runner's own checkout (never
+from the run's working copy), sealed read-only and hash-verified before and
+after every sample. The candidate commit runs in a separate, secret-free
+candidate instance (own temp app home, scrubbed environment, no keychain, its
+own telemetry DB, the evaluator's metering proxy as its only model endpoint, the
+trusted policy bundle on real OPA). The scorecard (pass rates with Wilson CIs per
+split, tokens / cost / time, gate regressions, injection attack success rate,
+mediation coverage) is compared with the base branch's latest scorecard in
+`LOCUS_LOOP_HOME/variants/`: `promote` only when nothing regresses beyond noise
+and at least one held-out dimension improves; otherwise `hold` with reasons. The
+variant is archived, the PR body gets the scorecard and the decision, and with
+`required` anything but `promote` holds the D-22 auto-merge. Without a reachable
+keyless model endpoint or OPA the scorecard is `skipped`, never a promote.
+
+This executes agent-authored code outside the jail, as the principal's OS user
+(without secrets): see the limits in [rsi-scorecard.md §4](rsi-scorecard.md#4-the-candidate-instance)
+before switching to `required` for Dev publishing.
 
 ### Feedback
 
@@ -194,11 +225,12 @@ host with model egress). The PR's code is covered by the verifier suite.
 ### Report
 
 `lattix loop report [--json] [--days N]` reads `runs.jsonl`, `eval-history.jsonl`,
-`perf-history.jsonl`, `perf-baseline.json` and `state.json`: runs and PRs per
-day, outcomes, success rate (done over attempted runs; kill-switch stops are not
-attempts), cost (sum of usage `cost_usd`; about 0 on the NIM free tier and
-Ollama), gate failures by check, the eval resolve-rate trend and the perf trend
-per metric.
+`perf-history.jsonl`, `perf-baseline.json`, `scorecard-history.jsonl` and
+`state.json`: runs and PRs per day, outcomes, success rate (done over attempted
+runs; kill-switch stops are not attempts), cost (sum of usage `cost_usd`; about 0
+on the NIM free tier and Ollama), gate failures by check, the eval resolve-rate
+trend, the perf trend per metric and the RSI scorecard trend (held-out pass rate
+and decisions).
 
 ## Delivery to the desktop: update channels (D-26, LOCUS-349)
 
@@ -259,7 +291,11 @@ The update never sets or clears the kill switch (`DISABLED` / `LOCUS_LOOP_DISABL
   merge guard's built-in baseline: `apps/desktop-tauri/src-tauri/` (pubkey,
   endpoints, updater code), `scripts/desktop_channel.py`,
   `locus_tooling/{update_contract,desktop_update,build_info}.py` and
-  `.github/workflows/`. LOCUS-351's scorecard is planned as a further gate.
+  `.github/workflows/`. The RSI scorecard (LOCUS-351) gates the loop's
+  auto-merge in `required` mode, which is what reaches the Dev channel; a check
+  of the merged commit's scorecard inside `desktop-dev.yml` itself is a
+  follow-up ([rsi-scorecard.md §11](rsi-scorecard.md#11-known-limits-follow-ups-and-decisions)).
+  The suite, graders, held-out split and scorecard code are protected paths too.
 
 ## Safety model
 
