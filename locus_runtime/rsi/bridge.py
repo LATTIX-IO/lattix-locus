@@ -8,7 +8,8 @@ launched the child -- no socket, no named object, no loopback exemption:
 
 * ``http`` on channel ``model``: an OpenAI-compatible request the parent relays
   to the metering proxy (:mod:`.metering`), which still meters tokens, watches
-  canaries and refuses any other path or model;
+  canaries and refuses any other path or model, and any request that carries a
+  secret (LOCUS-380, :mod:`.secret_scan`);
 * ``http`` on channel ``opa``: an OPA REST call the parent relays to **its own**
   OPA sidecar (the trusted binary with the trusted policy bundle). The
   candidate's gateway evaluates every decision on the real engine; when the

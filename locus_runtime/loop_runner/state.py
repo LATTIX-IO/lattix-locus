@@ -457,7 +457,22 @@ def loop_status(home: Path | None = None, *, max_runs_per_day: int | None = None
         "open_prs": ledger.open_prs,
         "failures": ledger.data.get("failures") or {},
         "scorecard": _scorecard_posture(),
+        "warnings": _host_warnings(),
     }
+
+
+def _host_warnings() -> list[str]:
+    """Host conditions that weaken the loop's guarantees (names only, never values).
+
+    On Windows, secret-named variables in ``HKCU\\Environment`` are readable by every
+    AppContainer, the RSI candidate included (LOCUS-380)."""
+    from locus_runtime.rsi.secret_scan import persistent_env_warning
+
+    try:
+        warning = persistent_env_warning()
+    except Exception:  # noqa: BLE001 - status is read-only and never fails
+        return []
+    return [warning] if warning else []
 
 
 def _scorecard_posture() -> dict[str, Any]:

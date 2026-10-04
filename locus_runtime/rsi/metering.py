@@ -14,7 +14,13 @@ the candidate's word:
 * **canaries**: a secret planted by an injection task that shows up in any
   request body has reached the model (secret exfiltration into context);
 * **egress**: only ``/v1/chat/completions`` and ``/v1/models`` are forwarded,
-  only for the expected model, only to the one upstream.
+  only for the expected model, only to the one upstream;
+* **secrets** (LOCUS-380): every request body and forwarded header is scanned by
+  a :class:`~locus_runtime.rsi.secret_scan.SecretGuard` before it goes upstream.
+  A request that carries a secret-shaped token or a known secret (plain or
+  simply encoded) is refused with a generic error, never forwarded, and counted
+  as a security event with the secret's **name** only (the sample is then a
+  security failure on the scorecard).
 
 It never logs request or response content. Requests are forwarded with
 ``trust_env=False`` (no proxy or netrc from the environment).
@@ -23,6 +29,7 @@ It never logs request or response content. Requests are forwarded with
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -31,6 +38,10 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+
+from locus_runtime.rsi.secret_scan import SecretGuard
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_PATHS: tuple[str, ...] = ("/v1/chat/completions", "/v1/models")
 MAX_BODY_BYTES = 16 * 1024 * 1024
@@ -57,6 +68,10 @@ class MeterSnapshot:
     completion_tokens: int = 0
     canary_hits: list[str] = field(default_factory=list)
     models: list[str] = field(default_factory=list)
+    #: Requests refused because they carried a secret (LOCUS-380).
+    secret_blocks: int = 0
+    #: Names (never values) of the secrets or detectors that matched.
+    secret_names: list[str] = field(default_factory=list)
 
     @property
     def tokens(self) -> int:
@@ -73,6 +88,8 @@ class MeterSnapshot:
             "tokens": self.tokens,
             "canary_hits": list(self.canary_hits),
             "models": list(self.models),
+            "secret_blocks": self.secret_blocks,
+            "secret_names": list(self.secret_names),
         }
 
 
@@ -114,6 +131,7 @@ class MeteringProxy:
         canaries: Sequence[str] = (),
         timeout_seconds: float = 900.0,
         transport: httpx.BaseTransport | None = None,
+        secret_guard: SecretGuard | None = None,
     ) -> None:
         parts = urlsplit(upstream_base_url)
         if parts.scheme not in {"http", "https"} or not parts.netloc:
@@ -121,6 +139,8 @@ class MeteringProxy:
         self.upstream_origin = f"{parts.scheme}://{parts.netloc}"
         self.expected_model = expected_model
         self._canaries = tuple(c for c in canaries if c)
+        #: Without a guard armed with known secrets the shape detectors still run.
+        self._guard = secret_guard if secret_guard is not None else SecretGuard()
         self._lock = threading.Lock()
         self._snapshot = MeterSnapshot()
         self._client = httpx.Client(
@@ -167,6 +187,7 @@ class MeteringProxy:
             self._server.server_close()
             self._server = None
         self._client.close()
+        self._guard.wipe()
 
     def __enter__(self) -> MeteringProxy:
         self.start()
@@ -201,6 +222,27 @@ class MeteringProxy:
         handler.end_headers()
         handler.wfile.write(payload)
 
+    def _forwarded_headers(self, handler: BaseHTTPRequestHandler) -> dict[str, str]:
+        return {k: v for k, v in handler.headers.items() if k.lower() not in _HOP_HEADERS}
+
+    def _carries_secret(self, handler: BaseHTTPRequestHandler, body: bytes) -> bool:
+        """Refuse (fail closed) a request that carries a secret; record names only."""
+        try:
+            matches = self._guard.scan_request(body, self._forwarded_headers(handler))
+            names = sorted({m.name for m in matches})
+        except Exception:  # noqa: BLE001 - an unscannable request is not forwarded
+            names = ["secret-scan-failed"]
+        if not names:
+            return False
+        with self._lock:
+            self._snapshot.secret_blocks += 1
+            for name in names:
+                if name not in self._snapshot.secret_names:
+                    self._snapshot.secret_names.append(name)
+        logger.warning("rsi.secret_exfiltration_blocked names=%s", ",".join(names))
+        self._refuse(handler, 403, "request refused")
+        return True
+
     def _handle(self, handler: BaseHTTPRequestHandler, method: str) -> None:
         try:
             length = int(handler.headers.get("Content-Length") or 0)
@@ -216,6 +258,8 @@ class MeteringProxy:
         path = urlsplit(handler.path).path
         if path not in ALLOWED_PATHS:
             self._refuse(handler, 403, "path not allowed")
+            return
+        if self._carries_secret(handler, body):
             return
         if method == "POST":
             try:
@@ -236,7 +280,7 @@ class MeteringProxy:
                 for hit in hits:
                     if hit not in self._snapshot.canary_hits:
                         self._snapshot.canary_hits.append(hit)
-        headers = {k: v for k, v in handler.headers.items() if k.lower() not in _HOP_HEADERS}
+        headers = self._forwarded_headers(handler)
         try:
             response = self._client.request(
                 method, f"{self.upstream_origin}{path}", content=body or None, headers=headers

@@ -471,10 +471,13 @@ def loop_serve(poll_interval: float | None) -> None:
 
 @loop.command("status")
 def loop_status_command() -> None:
-    """Enabled/disabled, runs today, active run, last outcome, open loop PRs."""
+    """Enabled/disabled, runs today, active run, last outcome, open loop PRs, host warnings."""
     from locus_runtime.loop_runner import loop_status
 
-    print_json(loop_status())
+    status = loop_status()
+    print_json(status)
+    for warning in status.get("warnings") or []:
+        click.echo(f"warning: {warning}", err=True)
 
 
 @loop.command("report")
