@@ -8,9 +8,14 @@ runtime. ``LOCUS_AGENT_RUNTIME`` picks the default (``verified-loop``).
   existing :class:`~locus_runtime.harness.verified_loop.VerifiedLoop`. The loop
   itself is unchanged; the adapter adds the port's ask rule (an unapproved
   gateway ask ends the run ``blocked``) through the loop's event hook.
-* ``deep-agents`` -- :class:`~locus_runtime.harness.deep_agents_runtime.DeepAgentsRuntime`
-  (LangChain Deep Agents on LangGraph). Optional dependency; imported lazily so
-  this module never needs ``deepagents``.
+* ``deep-agents`` -- :class:`~locus_runtime.harness.deep_agents.runtime.DeepAgentsRuntime`
+  (LangChain Deep Agents on LangGraph, extended by
+  :mod:`locus_runtime.harness.deep_agents`; LOCUS-361). Imported lazily: the
+  third-party stack (and the vendor SDKs it carries) loads only when this
+  runtime is created.
+
+The default stays ``verified-loop`` until the extended Deep Agents runtime
+matches or beats it on the scorecard (D-27); flipping it is a separate decision.
 """
 
 from __future__ import annotations
@@ -104,12 +109,12 @@ class VerifiedLoopRuntime:
 
 def _deep_agents_factory() -> AgentRuntime:
     try:
-        module = importlib.import_module("locus_runtime.harness.deep_agents_runtime")
+        module = importlib.import_module("locus_runtime.harness.deep_agents.runtime")
         runtime: AgentRuntime = module.DeepAgentsRuntime()
     except ImportError as exc:
         raise RuntimeUnavailable(
-            "the deep-agents runtime needs the optional 'deepagents' dependency "
-            f"(langgraph/langchain 1.x): {exc}"
+            "the deep-agents runtime needs the pinned 'deepagents' stack "
+            f"(langgraph/langchain 1.x, audited versions): {exc}"
         ) from exc
     return runtime
 

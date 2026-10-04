@@ -1,9 +1,11 @@
 """LOCUS-375: one trace per run, across runtime -> model -> tool -> gateway -> sandbox.
 
-Runs the real verified loop behind the runtime port (the contract suite's
-production path: gated model client against a scripted endpoint, real gateway
-session, real executor) with an in-memory exporter, and checks that every span
-of the run shares one trace rooted at the ``invoke_agent`` span. A second test
+Runs every runtime behind the port (the contract suite's production path:
+gated model client against a scripted endpoint, real gateway session, real
+executor) with an in-memory exporter, and checks that every span of the run
+shares one trace rooted at the ``invoke_agent`` span, with the same span shapes
+(``invoke_agent``, ``chat``, ``execute_tool``, ``gateway``, ``sandbox``, the verify
+``gate``) for the verified loop and Deep Agents (LOCUS-361). A second test
 drives :class:`RunController` (the Deep Agents path) from a framework thread
 that has lost the run's context.
 """
@@ -32,6 +34,7 @@ from tests.gateway_support import FakeEngine
 from tests.harness.conftest import requires_bash, requires_git, tool_response
 from tests.harness.test_runtime_contract import (
     PROFILE,
+    RUNTIMES,
     ScriptedEndpoint,
     _tests_envelope,
     fix_step,
@@ -60,15 +63,19 @@ def _op(span: ReadableSpan) -> str:
     return str((span.attributes or {}).get(sc.GEN_AI_OPERATION_NAME) or "")
 
 
+@pytest.mark.parametrize("runtime_name", RUNTIMES)
 def test_one_run_is_one_trace(
-    memory: InMemorySpanExporter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runtime_name: str,
+    memory: InMemorySpanExporter,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _make_repo(tmp_path)
     run = run_task(
-        VERIFIED_LOOP,
+        runtime_name,
         tmp_path,
         [
-            plan_step(VERIFIED_LOOP),
+            plan_step(runtime_name),
             tool_response("v", "str_replace_editor", command="view", path="mathlib/core.py"),
             tool_response("b", "execute_bash", command="echo probe"),
             fix_step(),
@@ -111,7 +118,7 @@ def test_one_run_is_one_trace(
     assert sc.OP_EXECUTE_TOOL in sandbox_parents
 
     root_attrs = dict(root.attributes or {})
-    assert root_attrs[sc.LOCUS_RUNTIME] == "verified-loop"
+    assert root_attrs[sc.LOCUS_RUNTIME] == runtime_name
     assert root_attrs[sc.LOCUS_END_STATE] == "done" and root_attrs[sc.LOCUS_VERIFIED] is True
     (gate,) = [s for s in run_spans if _op(s) == sc.OP_GATE]
     (score,) = [e for e in gate.events if e.name == sc.GEN_AI_EVALUATION_EVENT]

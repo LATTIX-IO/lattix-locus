@@ -37,6 +37,12 @@ _SELF_CHECK_MODULES = (
     "locus_runtime.grants",
     "locus_runtime.model_client",
     "locus_runtime.harness.verified_loop",
+    # Agent runtime (LOCUS-361): the Deep Agents stack and the Locus extensions
+    # (importing the runtime module loads deepagents, LangChain/LangGraph 1.x and
+    # the SQLite checkpointer) must be bundled.
+    "locus_runtime.harness.deep_agents.runtime",
+    "deepagents",
+    "langgraph.checkpoint.sqlite",
     "locus_tooling.native_secrets",
     "biscuit_auth",
     "keyring",
@@ -70,6 +76,23 @@ def self_check() -> int:
             modules[name] = f"error: {type(exc).__name__}: {exc}"
             report["ok"] = False
     report["modules"] = modules
+    # Every agent runtime must build in the bundle (LOCUS-361): deep-agents also
+    # checks the bundled package metadata against its audited pins.
+    try:
+        from locus_runtime.harness.runtimes import RUNTIME_NAMES, create_runtime
+
+        runtimes: dict[str, str] = {}
+        for runtime_name in RUNTIME_NAMES:
+            try:
+                create_runtime(runtime_name)
+                runtimes[runtime_name] = "ok"
+            except Exception as exc:  # noqa: BLE001 - report, then fail
+                runtimes[runtime_name] = f"error: {type(exc).__name__}: {exc}"
+                report["ok"] = False
+        report["agent_runtimes"] = runtimes
+    except Exception as exc:  # noqa: BLE001
+        report["agent_runtimes"] = f"error: {type(exc).__name__}: {exc}"
+        report["ok"] = False
     try:
         import keyring
 

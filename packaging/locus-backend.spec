@@ -31,6 +31,14 @@ _DYNAMIC_PKGS = [
     "locus_tooling",
     "langgraph",
     "langchain_core",
+    # Agent runtime (LOCUS-361): Deep Agents on LangChain/LangGraph 1.x. Deep
+    # Agents loads its harness profiles and middleware dynamically, and its hard
+    # dependencies (Anthropic/Google integrations, LangSmith) import lazily.
+    "deepagents",
+    "langchain",
+    "langchain_anthropic",
+    "langchain_google_genai",
+    "langsmith",
     "fastapi",
     "uvicorn",
     "psycopg",
@@ -104,6 +112,25 @@ hiddenimports += [
     "opentelemetry.exporter.otlp.proto.http.trace_exporter",
 ]
 for _dist in ("opentelemetry-api", "opentelemetry-sdk"):
+    datas += copy_metadata(_dist)
+# Agent runtime (LOCUS-361): the deep-agents runtime refuses a stack whose
+# installed versions differ from the audited pins (importlib.metadata), so the
+# dist-info of every audited package must ship; langchain-core and langsmith
+# also read their own versions at import.
+hiddenimports += [
+    "locus_runtime.harness.deep_agents.runtime",
+    "langgraph.checkpoint.sqlite",
+    "langgraph.checkpoint.memory",
+]
+for _dist in (
+    "deepagents",
+    "langchain",
+    "langchain-core",
+    "langgraph",
+    "langgraph-checkpoint",
+    "langgraph-checkpoint-sqlite",
+    "langsmith",
+):
     datas += copy_metadata(_dist)
 # The CI version stamp (written before this build) is imported dynamically.
 hiddenimports += ["locus_tooling._build_stamp"]
