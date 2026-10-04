@@ -437,6 +437,48 @@ def get_secret(name: str, *, app_home: Path | None = None) -> str | None:
     return None
 
 
+def peek_secrets(names: Iterable[str], *, app_home: Path | None = None) -> dict[str, str]:
+    """Read-only lookup of several secrets: env → keychain → DPAPI or plaintext file.
+
+    For scanners that must know a value to refuse it (LOCUS-380, the RSI
+    candidate's model requests). Unlike :func:`get_secret` it never migrates,
+    creates directories, writes, raises or records the resolution for the
+    posture report. Absent or unreadable secrets are left out. Values are never
+    logged."""
+    found: dict[str, str] = {}
+    pending = [n for n in dict.fromkeys(names) if n]
+    for name in pending:
+        env_value = str(os.getenv(name) or "").strip()
+        if env_value:
+            found[name] = env_value
+    pending = [n for n in pending if n not in found]
+    if not pending:
+        return found
+    backend = _keychain_backend()
+    secrets_dir = (app_home or default_app_home()) / ".secrets"
+    for name in pending:
+        value: str | None = None
+        if backend is not None:
+            value = _keychain_get(backend, name)
+        if not value and _platform() == "windows":
+            path = secrets_dir / f"{_safe_name(name)}.dpapi"
+            try:
+                if path.is_file():
+                    value = _dpapi_unprotect(path.read_bytes(), _dpapi_entropy(name)).decode(
+                        "utf-8"
+                    )
+            except Exception:  # noqa: BLE001 - wrong user / corrupt blob: not readable
+                value = None
+        if not value:
+            try:
+                value = _read_text(secrets_dir / f"{_safe_name(name)}.secret")
+            except OSError:
+                value = None
+        if value:
+            found[name] = value
+    return found
+
+
 def set_secret(name: str, value: str, *, app_home: Path | None = None) -> SecretStorageMode:
     """Persist a secret to the strongest usable store. Returns the storage mode.
 
