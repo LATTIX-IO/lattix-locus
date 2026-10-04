@@ -60,7 +60,13 @@ def _card(sha: str, branch: str, heldout_passes: int, *, n: int = 20) -> Scoreca
         records,
         tamper=TamperCheck(verified_before=True, verified_after=True, manifest_digest="m"),
         gate_failures=[],
-        meta={"git_sha": sha, "branch": branch, "model": MODEL, "split_digests": DIGESTS},
+        meta={
+            "git_sha": sha,
+            "branch": branch,
+            "model": MODEL,
+            "split_digests": DIGESTS,
+            "isolation": "bwrap",
+        },
     )
 
 

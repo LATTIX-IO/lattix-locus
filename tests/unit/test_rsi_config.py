@@ -17,6 +17,7 @@ _ENV = (
     "LOCUS_LOOP_SCORECARD_MODEL",
     "LOCUS_LOOP_SCORECARD_PYTHON",
     "LOCUS_LOOP_TAG_VARIANTS",
+    "LOCUS_RSI_CANDIDATE_UNJAILED",
 )
 
 
@@ -26,15 +27,60 @@ def _clean(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def test_loop_scorecard_is_off_by_default(tmp_path: Path) -> None:
-    # The candidate runs agent-written code outside the jail, so running the
-    # scorecard is an explicit principal opt-in (P32).
+def _jail(monkeypatch: pytest.MonkeyPatch, tier: str | None) -> None:
+    from locus_runtime.rsi import jail
+
+    reason = "Linux bubblewrap" if tier else "bubblewrap is not installed"
+    monkeypatch.setattr(
+        jail, "jail_availability", lambda: jail.JailAvailability(tier, "linux", reason)
+    )
+
+
+def test_loop_scorecard_is_advisory_by_default_where_the_candidate_can_be_jailed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # LOCUS-379: the candidate runs in an OS jail, so the scorecard runs (advisory).
+    _jail(monkeypatch, "bwrap")
     cfg = LoopConfig.load(tmp_path, home=tmp_path / "home")
-    assert cfg.scorecard_mode == "off"
+    assert cfg.scorecard_mode == "advisory"
     assert (cfg.scorecard_trials, cfg.scorecard_splits) == (1, ("dev", "heldout"))
     assert cfg.scorecard_model == "" and cfg.tag_variants is False
     # The bare dataclass (tests, embedders) stays off.
     assert LoopConfig(repo_path=tmp_path, home=tmp_path, project_slug="s").scorecard_mode == "off"
+
+
+def test_loop_scorecard_stays_off_without_a_jail_and_says_why(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from locus_runtime.loop_runner.report import build_report, render_text
+    from locus_runtime.loop_runner.scorecard_gate import scorecard_posture
+    from locus_runtime.loop_runner.state import loop_status
+
+    _jail(monkeypatch, None)
+    assert LoopConfig.load(tmp_path, home=tmp_path / "home").scorecard_mode == "off"
+    posture = scorecard_posture({})
+    assert posture["mode"] == "off" and posture["candidate_jail"] is None
+    assert "no OS jail for the candidate" in posture["reason"]
+    assert "bubblewrap is not installed" in posture["reason"]
+    status = loop_status(tmp_path / "home")
+    assert status["scorecard"]["mode"] == "off"
+    assert "no OS jail" in status["scorecard"]["reason"]
+    text = render_text(build_report([], [], [], scorecard_posture=posture))
+    assert "RSI scorecard mode: off (no OS jail for the candidate" in text
+    # An explicit setting still wins (and the candidate then refuses or is skipped).
+    monkeypatch.setenv("LOCUS_LOOP_SCORECARD", "advisory")
+    assert LoopConfig.load(tmp_path, home=tmp_path / "home").scorecard_mode == "advisory"
+    assert scorecard_posture()["configured"] is True
+
+
+def test_scorecard_posture_with_a_jail(monkeypatch: pytest.MonkeyPatch) -> None:
+    from locus_runtime.loop_runner.scorecard_gate import scorecard_posture
+
+    _jail(monkeypatch, "bwrap")
+    posture = scorecard_posture({"LOCUS_LOOP_SCORECARD": "off"})
+    assert posture["mode"] == "off" and posture["default"] == "advisory"
+    assert posture["candidate_jail"] == "bwrap" and posture["unjailed_opt_out"] is False
+    assert scorecard_posture({"LOCUS_RSI_CANDIDATE_UNJAILED": "1"})["unjailed_opt_out"] is True
 
 
 def test_loop_scorecard_settings_from_the_environment(

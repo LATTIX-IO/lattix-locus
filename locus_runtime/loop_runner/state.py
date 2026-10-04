@@ -146,7 +146,9 @@ class LoopConfig:
     file_failure_issues: bool = False
     max_failure_issues_per_day: int = 3
     failure_issue_min_occurrences: int = 2
-    # -- LOCUS-351 RSI scorecard (off by default everywhere; opting in is a principal decision).
+    # -- LOCUS-351 RSI scorecard. ``LoopConfig.load`` defaults it to ``advisory``
+    # when the candidate can run in an OS jail here (LOCUS-379), else ``off``; the
+    # bare dataclass (tests, embedders) stays off.
     scorecard_mode: str = "off"  # off | advisory | required
     scorecard_trials: int = 1
     scorecard_splits: tuple[str, ...] = ("dev", "heldout")
@@ -230,11 +232,16 @@ def _eval_mode(value: str | None) -> str:
 
 
 def _scorecard_mode(value: str | None) -> str:
-    from locus_runtime.loop_runner.scorecard_gate import parse_scorecard_mode
+    from locus_runtime.loop_runner.scorecard_gate import (
+        default_scorecard_mode,
+        parse_scorecard_mode,
+    )
 
-    # Off by default: the candidate instance runs agent-written code as the OS
-    # user outside the jail (no secrets, but user file access). Opting in is a
-    # principal decision (P32) until the candidate runs in a jail or VM.
+    # LOCUS-379: the candidate runs in an OS jail (AppContainer / seatbelt /
+    # bubblewrap), so the scorecard is advisory by default where that jail exists.
+    # Without one it stays off (P32): the candidate would run as the OS user.
+    if not str(value or "").strip():
+        return default_scorecard_mode()[0]
     return parse_scorecard_mode(value, "off")
 
 
@@ -449,4 +456,14 @@ def loop_status(home: Path | None = None, *, max_runs_per_day: int | None = None
         "last_run": ledger.data.get("last_run"),
         "open_prs": ledger.open_prs,
         "failures": ledger.data.get("failures") or {},
+        "scorecard": _scorecard_posture(),
     }
+
+
+def _scorecard_posture() -> dict[str, Any]:
+    from locus_runtime.loop_runner.scorecard_gate import scorecard_posture
+
+    try:
+        return scorecard_posture()
+    except Exception as exc:  # noqa: BLE001 - status is read-only and never fails
+        return {"mode": "off", "reason": f"scorecard posture unavailable ({type(exc).__name__})"}

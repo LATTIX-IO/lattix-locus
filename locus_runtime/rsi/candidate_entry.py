@@ -13,22 +13,38 @@ sandboxed executor and the metering proxy as the only model endpoint.
 
 What it reports is the candidate's account of the run. The evaluator does not
 grade from it: grading, tokens and canaries are measured outside this process.
+
+**Jailed (LOCUS-379, the default).** With ``LOCUS_RSI_BRIDGE=stdio`` the process
+runs in the OS jail (:mod:`locus_runtime.rsi.jail`) with no network. Its stdin and
+(saved) stdout carry the bridge (:mod:`locus_runtime.rsi.bridge`); stray prints go
+to stderr. The gateway's engine is the parent's OPA sidecar reached over the
+bridge (real OPA, trusted policy bundle, fail closed), model calls go to the
+metering proxy over the bridge, the agent's commands run in the parent's tool
+jail and host git runs in the parent. Mode ``escape-probe`` tries to escape the
+jail (read/write/list paths, connect, keychain) and reports each outcome; it
+uses only the standard library.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import os
 import re
 import sys
 import time
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 _SECRET_NAME = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|_PAT\b|AUTH)", re.I)
 MODEL_CALL_TOOL = "llm_call"
+BRIDGE_ENV = "LOCUS_RSI_BRIDGE"
+#: The OPA origin the jailed engine is configured with; the bridge ignores the
+#: host and reaches the parent's sidecar (validate_loopback_url needs loopback).
+BRIDGED_OPA_URL = "http://127.0.0.1:8181"
 
 
 def isolation_facts() -> dict[str, Any]:
@@ -75,6 +91,116 @@ def isolation_facts() -> dict[str, Any]:
     return facts
 
 
+def _attempt(action: Callable[[], object]) -> str:
+    try:
+        action()
+    except BaseException as exc:  # noqa: BLE001 - every failure is a blocked attempt
+        return f"blocked:{type(exc).__name__}"
+    return "ok"
+
+
+def _read(path: str) -> None:
+    with open(path, "rb") as fh:
+        fh.read(64)
+
+
+def _write(path: str) -> None:
+    with open(path, "ab") as fh:
+        fh.write(b"escape")
+
+
+def _connect(host: str, port: int) -> None:
+    import socket
+
+    with socket.create_connection((host, port), timeout=3.0):
+        pass
+
+
+def _windows_credentials() -> None:
+    if sys.platform != "win32":
+        raise OSError("the Windows Credential Manager exists only on Windows")
+    import ctypes
+    from ctypes import wintypes
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    count = wintypes.DWORD()
+    creds = ctypes.c_void_p()
+    if not advapi.CredEnumerateW(None, 1, ctypes.byref(count), ctypes.byref(creds)):
+        raise OSError(ctypes.get_last_error(), "CredEnumerateW")
+    advapi.CredFree(creds)
+
+
+def _secret_service_bus() -> None:
+    import socket
+
+    bus = os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
+    getuid = getattr(os, "getuid", None)
+    uid = getuid() if callable(getuid) else 0
+    path = bus.split("path=", 1)[1].split(",")[0] if "path=" in bus else f"/run/user/{uid}/bus"
+    family = getattr(socket, "AF_UNIX", None)
+    if family is None:
+        raise OSError("no unix sockets here")
+    with socket.socket(family, socket.SOCK_STREAM) as sock:
+        sock.settimeout(3.0)
+        sock.connect(path)
+
+
+def _keychain() -> dict[str, str]:
+    """Try the OS credential store directly (not through ``keyring``)."""
+    out: dict[str, str] = {}
+    if os.name == "nt":
+        out["windows_credential_manager"] = _attempt(_windows_credentials)
+    else:
+        out["secret_service_bus"] = _attempt(_secret_service_bus)
+    try:
+        import keyring
+
+        out["keyring_backend"] = type(keyring.get_keyring()).__module__
+    except Exception as exc:  # noqa: BLE001
+        out["keyring_backend"] = f"unavailable:{type(exc).__name__}"
+    return out
+
+
+def escape_probe(spec: dict[str, Any]) -> dict[str, Any]:
+    """Try to leave the jail; every entry is ``ok`` (escaped) or ``blocked:<error>``.
+
+    Standard library only: it must run before (and without) any candidate import."""
+
+    def each(key: str, action: Callable[[str], object]) -> dict[str, str]:
+        return {str(p): _attempt(functools.partial(action, str(p))) for p in spec.get(key) or []}
+
+    connect: dict[str, str] = {}
+    for host, port in spec.get("connect") or []:
+        connect[f"{host}:{port}"] = _attempt(functools.partial(_connect, str(host), int(port)))
+    return {
+        "read": each("read", _read),
+        "write": each("write", _write),
+        "list": each("list", os.listdir),
+        "connect": connect,
+        "keychain": _keychain(),
+        "env": sorted(os.environ),
+        "secret_like_env": sorted(
+            name
+            for name in os.environ
+            if _SECRET_NAME.search(name) and name not in {"PYTHON_KEYRING_BACKEND"}
+        ),
+        "executable": sys.executable,
+    }
+
+
+def open_bridge() -> Any:
+    """Take stdin/stdout for the bridge; send stray output to stderr."""
+    from locus_runtime.rsi.bridge import BridgeClient
+
+    out_fd = os.dup(1)
+    in_fd = os.dup(0)
+    os.dup2(2, 1)  # print() and child output now land on stderr, not in the protocol
+    null = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null, 0)  # nothing else can read the parent's frames
+    os.close(null)
+    return BridgeClient(os.fdopen(in_fd, "rb", buffering=0), os.fdopen(out_fd, "wb", buffering=0))
+
+
 def _tool_calls(messages: list[dict[str, Any]]) -> list[list[str]]:
     calls: list[list[str]] = []
     for message in messages:
@@ -84,8 +210,11 @@ def _tool_calls(messages: list[dict[str, Any]]) -> list[list[str]]:
     return calls[:400]
 
 
-def run(request: dict[str, Any]) -> dict[str, Any]:
-    """One sample with the candidate's runtime. Never raises (errors are reported)."""
+def run(request: dict[str, Any], bridge: Any = None) -> dict[str, Any]:
+    """One sample with the candidate's runtime. Never raises (errors are reported).
+
+    With ``bridge`` (jailed) the policy engine, model endpoint, process execution
+    and host git are the parent's, reached over the bridge."""
     from locus_runtime import gateway as gw
     from locus_runtime import telemetry
     from locus_runtime.harness.executor import default_executor
@@ -118,11 +247,26 @@ def run(request: dict[str, Any]) -> dict[str, Any]:
     }
     started = time.time()
     telemetry.ensure_configured()
-    binary = find_opa_binary()
-    if binary is None:
-        record.update(end_state="error", error="no OPA binary (LOCUS_OPA_BIN)")
-        return record
-    engine = OpaSidecarEngine(opa_binary=binary, timeout_seconds=10.0)
+    hello: dict[str, Any] = {}
+    if bridge is not None:
+        from locus_runtime.rsi.bridge import http_transport
+
+        try:
+            hello = bridge.call("hello", {})
+        except Exception as exc:  # noqa: BLE001 - no bridge, no run
+            record.update(end_state="error", error=f"the bridge failed ({type(exc).__name__})")
+            return record
+        engine = OpaSidecarEngine(
+            base_url=BRIDGED_OPA_URL,
+            transport=http_transport(bridge, "opa", timeout=30.0),
+            timeout_seconds=10.0,
+        )
+    else:
+        binary = find_opa_binary()
+        if binary is None:
+            record.update(end_state="error", error="no OPA binary (LOCUS_OPA_BIN)")
+            return record
+        engine = OpaSidecarEngine(opa_binary=binary, timeout_seconds=10.0)
     try:
         engine.start()
         audit_path = out_dir / f"{run_id}.audit.jsonl"
@@ -143,20 +287,48 @@ def run(request: dict[str, Any]) -> dict[str, Any]:
             run_id=run_id, principal="locus-rsi-eval", engine=runtime_name, capabilities=caps
         )
         try:
-            executor = default_executor(root, gateway_session=session)
+            http_client: Any = None
+            host_git: Any
+            executor: Any
+            if bridge is not None:
+                import httpx
+
+                from locus_runtime.rsi.bridge import (
+                    BridgeHostGit,
+                    bridged_executor,
+                    http_transport,
+                )
+
+                executor = bridged_executor(
+                    bridge,
+                    str(root),
+                    gateway_session=session,
+                    jail=hello.get("tool_jail") or {},
+                    shell=str(hello.get("shell") or "sh"),
+                )
+                # The parent sealed the workspace's .git before this process started.
+                host_git = BridgeHostGit(bridge)
+                http_client = httpx.Client(
+                    transport=http_transport(bridge, "model"), timeout=900.0, trust_env=False
+                )
+            else:
+                executor = default_executor(root, gateway_session=session)
+                git = GitOps()
+                git.seal(root)
+                host_git = HostWorkspaceGit(git, root)
             monitor.attach(executor)
-            git = GitOps()
-            git.seal(root)
             workspace = Workspace(
                 run_id=run_id,
                 executor=executor,
                 test_command=str(request.get("test_command") or ""),
-                host_git=HostWorkspaceGit(git, root),
+                host_git=host_git,
             )
             gate = GatewayModelGate(session=session)
             router = ModelRouter(
                 [ModelTier(provider, model)],
-                client_factory=lambda tier: build_client(tier, gate=gate, run_id=run_id),
+                client_factory=lambda tier: build_client(
+                    tier, gate=gate, run_id=run_id, http_client=http_client
+                ),
             )
             client = monitor.wrap_client(GatedChatClient(router))
             profile = resolve_profile(provider, model)
@@ -245,11 +417,17 @@ def main(argv: list[str]) -> int:
         sys.stderr.write("usage: candidate_entry.py <request.json> <result.json>\n")
         return 2
     request = json.loads(Path(argv[0]).read_text(encoding="utf-8"))
+    result: dict[str, Any]
+    if request.get("mode") == "escape-probe":
+        result = {"escape": escape_probe(dict(request.get("escape") or {}))}
+        Path(argv[1]).write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
+        return 0
+    bridge = open_bridge() if os.environ.get(BRIDGE_ENV) == "stdio" else None
     facts = isolation_facts()
     if request.get("mode") == "probe":
-        result: dict[str, Any] = {"isolation": facts}
+        result = {"isolation": facts}
     else:
-        result = run(request)
+        result = run(request, bridge)
         result["isolation"] = facts
     Path(argv[1]).write_text(json.dumps(result, sort_keys=True, default=str), encoding="utf-8")
     return 0
