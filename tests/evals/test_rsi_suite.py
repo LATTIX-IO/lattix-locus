@@ -310,9 +310,13 @@ def test_any_store_change_is_detected(tmp_path: Path, attack: str) -> None:
         os.chmod(target, stat.S_IREAD)
     elif attack == "add":
         os.chmod(target, stat.S_IREAD)
+        # A same-user attacker can make the read-only folder writable first
+        # (POSIX needs it; Windows ignores the folder's read-only bit).
+        os.chmod(target.parent, 0o755)
         extra = sealed.root / "tasks" / "heldout" / "ho-extra.yaml"
         extra.write_text("id: ho-extra\n", encoding="utf-8")
     elif attack == "remove":
+        os.chmod(target.parent, 0o755)
         target.unlink()
     elif attack == "manifest-only":
         # Rewriting the on-disk manifest proves nothing: verification uses the
