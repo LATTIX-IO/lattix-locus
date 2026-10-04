@@ -124,10 +124,6 @@ vi.mock("@/lib/api", () => ({
   })),
   getRuntimeProviders: vi.fn(async () => ({
     providers: [],
-    framework_adapters: {
-      langgraph: { engine: "langgraph", available: true, missing_modules: [] },
-      langchain: { engine: "langchain", available: false, missing_modules: ["langchain_openai"] },
-    },
   })),
   getPlatformSettings: vi.fn(async () => ({
     local_only_mode: true,
@@ -137,18 +133,6 @@ vi.mock("@/lib/api", () => ({
     global_blocked_keywords: [],
     tenant_scoped_skills: ["/tenant-oncall", "/incident-triage"],
     collaboration_max_agents: 8,
-    default_runtime_engine: "native",
-    default_runtime_strategy: "single",
-    default_hybrid_runtime_routing: {
-      default: "native",
-      orchestration: "native",
-      retrieval: "native",
-      tooling: "native",
-      collaboration: "native",
-    },
-    allowed_runtime_engines: ["native", "langgraph", "langchain"],
-    allow_runtime_engine_override: true,
-    enforce_runtime_engine_allowlist: true,
   })),
   getUserSkills: getUserSkillsMock,
   getMemorySession: vi.fn(async () => ({ session_id: "s", count: 0, entries: [] })),
@@ -333,7 +317,7 @@ describe("StudioFullCanvas", () => {
     expect(autoLayoutSpy).toHaveBeenCalledWith({ fitView: true });
   });
 
-  it("shows framework adapter readiness indicators", async () => {
+  it("shows the model runtime panel without engine or strategy pickers", async () => {
     await renderStudioFullCanvas({
       entityType: "agent",
       entityId: "agent-1",
@@ -346,14 +330,15 @@ describe("StudioFullCanvas", () => {
       onPublish: async () => {},
     });
 
-    expect(await screen.findByText("Framework adapters")).toBeInTheDocument();
-    expect(await screen.findByLabelText(/runtime engine/i)).toBeInTheDocument();
-    const adapterBadges = await screen.findAllByLabelText(/Runtime adapter .* (ready|missing dependencies)/i);
-    expect(adapterBadges.length).toBeGreaterThan(0);
+    expect(await screen.findByText("Model Runtime")).toBeInTheDocument();
+    expect(await screen.findByLabelText(/runtime model/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/runtime engine/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/runtime strategy/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Framework adapters")).not.toBeInTheDocument();
     expect(getNodeDefinitionsMock).toHaveBeenCalledWith({ includeInternal: true });
   });
 
-  it("passes selected runtime engine to graph run payload", async () => {
+  it("sends no engine selection in the graph run payload", async () => {
     await renderStudioFullCanvas({
       entityType: "agent",
       entityId: "agent-1",
@@ -366,60 +351,15 @@ describe("StudioFullCanvas", () => {
       onPublish: async () => {},
     });
 
-    const runtimeEngineSelect = await screen.findByLabelText(/runtime engine/i);
-    fireEvent.change(runtimeEngineSelect, { target: { value: "langgraph" } });
-    fireEvent.click(screen.getByRole("button", { name: /run test/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /run test/i }));
 
     await waitFor(() => expect(runGraphMock).toHaveBeenCalledTimes(1));
     const calls = runGraphMock.mock.calls as unknown as Array<[unknown]>;
-    const payload = calls[0]?.[0];
-    expect(payload).toBeDefined();
-    const call = payload as unknown as {
-      input?: {
-        runtime?: {
-          engine?: string;
-        };
-      };
-    };
-    expect(call.input?.runtime?.engine).toBe("langgraph");
-  });
-
-  it("passes hybrid strategy routing to graph run payload", async () => {
-    await renderStudioFullCanvas({
-      entityType: "agent",
-      entityId: "agent-1",
-      entityName: "Agent One",
-      builderMode: "internal",
-      description: "desc",
-      initialNodes: [],
-      initialLinks: [],
-      onSave: async () => {},
-      onPublish: async () => {},
-    });
-
-    fireEvent.change(await screen.findByLabelText(/runtime strategy/i), { target: { value: "hybrid" } });
-    fireEvent.change(await screen.findByLabelText(/hybrid route retrieval/i), { target: { value: "langchain" } });
-    fireEvent.change(await screen.findByLabelText(/hybrid route collaboration/i), { target: { value: "autogen" } });
-    fireEvent.click(screen.getByRole("button", { name: /run test/i }));
-
-    await waitFor(() => expect(runGraphMock).toHaveBeenCalledTimes(1));
-    const calls = runGraphMock.mock.calls as unknown as Array<[unknown]>;
-    const payload = calls[0]?.[0];
-    expect(payload).toBeDefined();
-    const call = payload as unknown as {
-      input?: {
-        runtime?: {
-          strategy?: string;
-          hybrid_routing?: {
-            retrieval?: string;
-            collaboration?: string;
-          };
-        };
-      };
-    };
-    expect(call.input?.runtime?.strategy).toBe("hybrid");
-    expect(call.input?.runtime?.hybrid_routing?.retrieval).toBe("langchain");
-    expect(call.input?.runtime?.hybrid_routing?.collaboration).toBe("autogen");
+    const call = calls[0]?.[0] as { input?: { runtime?: Record<string, unknown> } } | undefined;
+    expect(call?.input?.runtime).toBeDefined();
+    expect(call?.input?.runtime).not.toHaveProperty("engine");
+    expect(call?.input?.runtime).not.toHaveProperty("strategy");
+    expect(call?.input?.runtime).not.toHaveProperty("hybrid_routing");
   });
 
   it("supports playbook mode without a publish action", async () => {

@@ -110,7 +110,6 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
   const [allowedEgressHosts, setAllowedEgressHosts] = useState(listToText(value.allowed_egress_hosts));
   const [allowedRetrievalSources, setAllowedRetrievalSources] = useState(listToText(value.allowed_retrieval_sources));
   const [allowedMcpServers, setAllowedMcpServers] = useState(listToText(value.allowed_mcp_server_urls));
-  const [allowedRuntimeEngines, setAllowedRuntimeEngines] = useState(listToText(value.allowed_runtime_engines));
   const [allowedMemoryScopes, setAllowedMemoryScopes] = useState(listToText(value.allowed_memory_scopes));
   const [maxToolCalls, setMaxToolCalls] = useState(value.max_tool_calls_per_run ? String(value.max_tool_calls_per_run) : "");
   const [maxRetrievalItems, setMaxRetrievalItems] = useState(value.max_retrieval_items ? String(value.max_retrieval_items) : "");
@@ -121,7 +120,6 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
     setAllowedEgressHosts(listToText(value.allowed_egress_hosts));
     setAllowedRetrievalSources(listToText(value.allowed_retrieval_sources));
     setAllowedMcpServers(listToText(value.allowed_mcp_server_urls));
-    setAllowedRuntimeEngines(listToText(value.allowed_runtime_engines));
     setAllowedMemoryScopes(listToText(value.allowed_memory_scopes));
     setMaxToolCalls(value.max_tool_calls_per_run ? String(value.max_tool_calls_per_run) : "");
     setMaxRetrievalItems(value.max_retrieval_items ? String(value.max_retrieval_items) : "");
@@ -174,7 +172,6 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
     }
     return [
       `Classification resolves to ${policy.effective.classification}`,
-      `Effective engines: ${policy.effective.allowed_runtime_engines.join(", ") || "none"}`,
       `Effective tool-call cap: ${policy.effective.max_tool_calls_per_run}`,
       `Effective retrieval cap: ${policy.effective.max_retrieval_items}`,
       `Signals: ${policy.effective.enable_platform_signals ? policy.effective.platform_signal_enforcement : "off"}`,
@@ -291,16 +288,6 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
                 patchConfig({ allowed_mcp_server_urls: textToList(next) });
               }}
               placeholder="http://localhost:8787"
-            />
-            <TextListField
-              label="Allowed runtime engines"
-              description="Optional narrower engine allowlist for this scope."
-              value={allowedRuntimeEngines}
-              onChange={(next) => {
-                setAllowedRuntimeEngines(next);
-                patchConfig({ allowed_runtime_engines: textToList(next) });
-              }}
-              placeholder="native, langgraph"
             />
             <TextListField
               label="Allowed memory scopes"

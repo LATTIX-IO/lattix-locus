@@ -21,7 +21,6 @@ import platform
 import tomllib
 import http.cookiejar
 import importlib
-import importlib.util
 from importlib import metadata as importlib_metadata
 from collections import Counter, defaultdict, deque
 from contextlib import contextmanager
@@ -58,7 +57,7 @@ try:  # optional — YAML export/import; JSON always works without it
     import yaml as _yaml
 except Exception:  # noqa: BLE001
     _yaml = None
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from app import capability_widening
 from app import cron as app_cron
 from app import knowledge as app_knowledge
@@ -642,6 +641,29 @@ class PlatformSettings(BaseModel):
     telemetry_langsmith_endpoint: str = Field(default=LANGSMITH_OTLP_ENDPOINT, max_length=2048)
     telemetry_langsmith_project: str = Field(default="", max_length=128)
     telemetry_langsmith_api_key_ref: str = Field(default="LANGSMITH_API_KEY", max_length=64)
+
+    # LOCUS-352: the framework engines (LangGraph, LangChain, Semantic Kernel,
+    # AutoGen) were removed. Settings stored by an older build keep loading; any
+    # engine or strategy value they carry maps to the native, single default.
+    @field_validator("default_runtime_engine", mode="before")
+    @classmethod
+    def _native_default_engine(cls, value: Any) -> str:
+        return _normalize_runtime_engine(value)
+
+    @field_validator("allowed_runtime_engines", mode="before")
+    @classmethod
+    def _native_allowed_engines(cls, value: Any) -> list[str]:
+        return _normalize_runtime_engine_list(value) or [_DEFAULT_RUNTIME_ENGINE]
+
+    @field_validator("default_runtime_strategy", mode="before")
+    @classmethod
+    def _single_strategy(cls, value: Any) -> str:
+        return _normalize_runtime_strategy(value)
+
+    @field_validator("default_hybrid_runtime_routing", mode="before")
+    @classmethod
+    def _native_routing(cls, value: Any) -> dict[str, str]:
+        return _normalize_hybrid_runtime_routing(value, default_engine=_DEFAULT_RUNTIME_ENGINE)
 
 
 class NodeFieldSpec(BaseModel):
@@ -1343,15 +1365,13 @@ def _normalize_node_type(node_type: str) -> str:
     return f"locus/{candidate}"
 
 
-_SUPPORTED_RUNTIME_ENGINES = {
-    "native",
-    "langgraph",
-    "langchain",
-    "semantic-kernel",
-    "autogen",
-}
-
-_SUPPORTED_RUNTIME_STRATEGIES = {"single", "hybrid"}
+# Only the native engine remains (LOCUS-352). The LangChain, LangGraph, Semantic
+# Kernel and AutoGen chat adapters were removed; every model call goes through the
+# gated model client. Stored or requested legacy engine names map to "native".
+_DEFAULT_RUNTIME_ENGINE = "native"
+_SUPPORTED_RUNTIME_ENGINES = frozenset({_DEFAULT_RUNTIME_ENGINE})
+# "hybrid" routed roles across engines; with one engine every run is "single".
+_SUPPORTED_RUNTIME_STRATEGIES = frozenset({"single"})
 _HYBRID_RUNTIME_ROLES = ("default", "orchestration", "retrieval", "tooling", "collaboration")
 _SECURITY_CLASSIFICATIONS = {"public", "internal", "confidential", "restricted"}
 _SECURITY_CLASSIFICATION_RANK = {
@@ -1367,28 +1387,6 @@ _SIGNAL_ENFORCEMENT_RANK = {
     "raise_high": 3,
 }
 _SUPPORTED_PRINCIPAL_TYPES = {"user", "agent", "service", "npe"}
-
-_L3_DELEGATED_NODE_TYPES = {
-    "locus/agent",
-    "locus/retrieval",
-    "locus/tool-call",
-    "locus/memory",
-    "locus/data-store",
-    "locus/guardrail",
-    "locus/manifold",
-    "locus/human-review",
-}
-_L3_NATIVE_CONTROL_PLANE_NODE_TYPES = {
-    "locus/trigger",
-    "locus/prompt",
-    "locus/router",
-    "locus/iterator",
-    "locus/transform",
-    "locus/event",
-    "locus/error-handler",
-    "locus/wait",
-    "locus/output",
-}
 
 _CANONICAL_AGENT_SCHEMA_VERSION = "locus-agent-definition/1.0"
 _CANONICAL_GRAPH_SCHEMA_VERSION = "locus-graph/1.0"
@@ -1728,24 +1726,8 @@ def _agent_runtime_policy_snapshot(agent: AgentDefinition) -> dict[str, Any]:
 
 def _default_framework_profiles() -> dict[str, dict[str, Any]]:
     return {
-        "native": {
+        _DEFAULT_RUNTIME_ENGINE: {
             "role": "platform-default",
-            "enabled": True,
-        },
-        "langgraph": {
-            "role": "orchestration",
-            "enabled": True,
-        },
-        "langchain": {
-            "role": "rag-and-connectors",
-            "enabled": True,
-        },
-        "semantic-kernel": {
-            "role": "tool-and-plugin-abstraction",
-            "enabled": True,
-        },
-        "autogen": {
-            "role": "multi-agent-collaboration",
             "enabled": True,
         },
     }
@@ -2789,7 +2771,7 @@ def _canonicalize_agent_config(
         "allowed_runtime_engines": _normalize_runtime_engine_list(
             runtime_engine_policy.get("allowed_runtime_engines")
             if isinstance(runtime_engine_policy.get("allowed_runtime_engines"), list)
-            else ["native", "langgraph", "langchain", "semantic-kernel", "autogen"]
+            else [_DEFAULT_RUNTIME_ENGINE]
         ),
         "allow_runtime_engine_override": bool(
             runtime_engine_policy.get("allow_runtime_engine_override", False)
@@ -2892,18 +2874,15 @@ def _canonicalize_agent_config(
                     )
                 ),
             },
+            # The framework adapter map went with the adapters (LOCUS-352).
             "integrations": {
-                **(
+                key: value
+                for key, value in (
                     current.get("integrations")
                     if isinstance(current.get("integrations"), dict)
                     else {}
-                ),
-                "framework_runtime_adapters": {
-                    "langgraph": "orchestration",
-                    "langchain": "retrieval-and-tools",
-                    "semantic-kernel": "plugins-and-mcp",
-                    "autogen": "multi-agent-collaboration",
-                },
+                ).items()
+                if key != "framework_runtime_adapters"
             },
             "mcp": {
                 **(current.get("mcp") if isinstance(current.get("mcp"), dict) else {}),
@@ -3065,40 +3044,24 @@ def _canonicalize_all_agent_definitions() -> None:
 
 
 def _normalize_runtime_engine(value: Any) -> str:
-    text = str(value or "").strip().lower().replace("_", "-")
-    aliases = {
-        "": "native",
-        "default": "native",
-        "locus": "native",
-        "semantic_kernel": "semantic-kernel",
-        "semantickernel": "semantic-kernel",
-        "sk": "semantic-kernel",
-    }
-    normalized = aliases.get(text, text)
-    return normalized or "native"
+    """Every engine value resolves to the native engine (LOCUS-352).
+
+    Stored settings, agent configs and run inputs may still carry the removed
+    framework engines (``langgraph``, ``langchain``, ``semantic-kernel``,
+    ``autogen``) or anything else; they all map to the default rather than failing.
+    """
+    del value
+    return _DEFAULT_RUNTIME_ENGINE
 
 
-def _normalize_runtime_engine_list(values: list[str]) -> list[str]:
-    normalized: list[str] = []
-    for item in values:
-        value = _normalize_runtime_engine(item)
-        if value in _SUPPORTED_RUNTIME_ENGINES and value not in normalized:
-            normalized.append(value)
-    return normalized
+def _normalize_runtime_engine_list(values: Any) -> list[str]:
+    return [_DEFAULT_RUNTIME_ENGINE] if isinstance(values, list) and values else []
 
 
 def _normalize_runtime_strategy(value: Any) -> str:
-    text = str(value or "").strip().lower().replace("_", "-")
-    aliases = {
-        "": "single",
-        "default": "single",
-        "single-engine": "single",
-        "hybrid-routing": "hybrid",
-    }
-    normalized = aliases.get(text, text)
-    if normalized not in _SUPPORTED_RUNTIME_STRATEGIES:
-        return "single"
-    return normalized
+    """Every strategy resolves to ``single``; a stored ``hybrid`` maps to it (LOCUS-352)."""
+    del value
+    return "single"
 
 
 def _default_immutable_security_baseline() -> SecurityImmutableBaseline:
@@ -3433,312 +3396,67 @@ def _validate_security_guardrail_reference(config: dict[str, Any], *, label: str
 
 
 def _normalize_hybrid_runtime_routing(raw: Any, *, default_engine: str) -> dict[str, str]:
-    source = raw if isinstance(raw, dict) else {}
-    normalized_default = _normalize_runtime_engine(default_engine)
-    if normalized_default not in _SUPPORTED_RUNTIME_ENGINES:
-        normalized_default = "native"
-
-    routing: dict[str, str] = {"default": normalized_default}
-    for role in _HYBRID_RUNTIME_ROLES:
-        if role == "default":
-            continue
-        candidate = _normalize_runtime_engine(source.get(role) or normalized_default)
-        if candidate not in _SUPPORTED_RUNTIME_ENGINES:
-            candidate = normalized_default
-        routing[role] = candidate
-
-    requested_default = _normalize_runtime_engine(source.get("default") or normalized_default)
-    if requested_default in _SUPPORTED_RUNTIME_ENGINES:
-        routing["default"] = requested_default
-
-    for role in _HYBRID_RUNTIME_ROLES:
-        if role == "default":
-            continue
-        candidate = _normalize_runtime_engine(source.get(role) or routing["default"])
-        routing[role] = candidate if candidate in _SUPPORTED_RUNTIME_ENGINES else routing["default"]
-
-    return routing
+    """Kept for stored-settings compatibility: every role routes to the native engine."""
+    del raw, default_engine
+    return {role: _DEFAULT_RUNTIME_ENGINE for role in _HYBRID_RUNTIME_ROLES}
 
 
 def _resolve_engine_execution(selected_engine: str) -> dict[str, Any]:
-    selected = _normalize_runtime_engine(selected_engine)
-    if selected not in _SUPPORTED_RUNTIME_ENGINES:
-        raise HTTPException(status_code=400, detail=f"Unsupported runtime engine '{selected}'")
-
-    if selected == "native":
-        return {
-            "selected_engine": "native",
-            "executed_engine": "native",
-            "mode": "native",
-            "probe": {
-                "engine": "native",
-                "available": True,
-                "missing_modules": [],
-            },
-            "note": "",
-        }
-
-    if not _env_flag("LOCUS_ENABLE_NON_NATIVE_ENGINES", False):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "message": "Non-native runtime engines are disabled",
-                "requested": selected,
-            },
-        )
-
-    runtime_probe = _framework_runtime_probe(selected)
-    allow_compat_fallback = _env_flag("LOCUS_NON_NATIVE_ENGINE_FALLBACK_TO_COMPAT", True)
-    if runtime_probe.get("available"):
-        return {
-            "selected_engine": selected,
-            "executed_engine": selected,
-            "mode": "delegated",
-            "probe": runtime_probe,
-            "note": "",
-        }
-
-    if not allow_compat_fallback:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "message": "Runtime engine dependencies are not available",
-                "requested": selected,
-                "missing_modules": runtime_probe.get("missing_modules", []),
-            },
-        )
-
+    del selected_engine
     return {
-        "selected_engine": selected,
-        "executed_engine": "native",
-        "mode": "compatibility",
-        "probe": runtime_probe,
-        "note": f"Engine '{selected}' missing deps; using native compatibility execution.",
+        "selected_engine": _DEFAULT_RUNTIME_ENGINE,
+        "executed_engine": _DEFAULT_RUNTIME_ENGINE,
+        "mode": "native",
+        "probe": {"engine": _DEFAULT_RUNTIME_ENGINE, "available": True, "missing_modules": []},
+        "note": "",
     }
+
+
+_NATIVE_NODE_HANDLERS: dict[str, str] = {
+    "locus/trigger": "native.trigger",
+    "locus/prompt": "native.prompt",
+    "locus/agent": "native.agent",
+    "locus/tool-call": "native.tool_call",
+    "locus/retrieval": "native.retrieval",
+    "locus/memory": "native.memory",
+    "locus/data-store": "native.data_store",
+    "locus/guardrail": "native.guardrail",
+    "locus/human-review": "native.human_review",
+    "locus/manifold": "native.manifold",
+    "locus/router": "native.router",
+    "locus/iterator": "native.iterator",
+    "locus/transform": "native.transform",
+    "locus/event": "native.event",
+    "locus/error-handler": "native.error_handler",
+    "locus/wait": "native.wait",
+    "locus/output": "native.output",
+}
 
 
 def _framework_adapter_mapping(engine: str) -> dict[str, str]:
-    if engine == "native":
-        return {
-            "locus/trigger": "native.trigger",
-            "locus/prompt": "native.prompt",
-            "locus/agent": "native.agent",
-            "locus/tool-call": "native.tool_call",
-            "locus/retrieval": "native.retrieval",
-            "locus/memory": "native.memory",
-            "locus/data-store": "native.data_store",
-            "locus/guardrail": "native.guardrail",
-            "locus/human-review": "native.human_review",
-            "locus/manifold": "native.manifold",
-            "locus/router": "native.router",
-            "locus/iterator": "native.iterator",
-            "locus/transform": "native.transform",
-            "locus/event": "native.event",
-            "locus/error-handler": "native.error_handler",
-            "locus/wait": "native.wait",
-            "locus/output": "native.output",
-        }
-
-    if engine in {"langgraph", "langchain"}:
-        return {
-            "locus/trigger": "framework.entrypoint",
-            "locus/prompt": "framework.prompt_template",
-            "locus/agent": "framework.llm_node",
-            "locus/tool-call": "framework.tool_node",
-            "locus/retrieval": "framework.retriever_node",
-            "locus/memory": "framework.checkpoint_or_memory",
-            "locus/data-store": "framework.state_store",
-            "locus/guardrail": "framework.policy_node",
-            "locus/human-review": "framework.human_gate",
-            "locus/manifold": "framework.router_or_join",
-            "locus/router": "framework.router_or_selector",
-            "locus/iterator": "framework.iterator_or_batch",
-            "locus/transform": "framework.map_or_assign",
-            "locus/event": "framework.event_bridge",
-            "locus/error-handler": "framework.retry_or_fallback",
-            "locus/wait": "framework.delay_or_timeout",
-            "locus/output": "framework.sink",
-        }
-
-    if engine == "semantic-kernel":
-        return {
-            "locus/trigger": "sk.entry",
-            "locus/prompt": "sk.prompt_function",
-            "locus/agent": "sk.chat_or_planner",
-            "locus/tool-call": "sk.plugin_function",
-            "locus/retrieval": "sk.memory_search",
-            "locus/memory": "sk.memory_store",
-            "locus/data-store": "sk.state_store",
-            "locus/guardrail": "sk.filter_or_policy",
-            "locus/human-review": "sk.approval_step",
-            "locus/manifold": "sk.branch_join",
-            "locus/router": "sk.router",
-            "locus/iterator": "sk.iterator",
-            "locus/transform": "sk.transformer",
-            "locus/event": "sk.event_bridge",
-            "locus/error-handler": "sk.error_policy",
-            "locus/wait": "sk.wait_step",
-            "locus/output": "sk.output_formatter",
-        }
-
-    return {
-        "locus/trigger": "autogen.entry",
-        "locus/prompt": "autogen.system_message",
-        "locus/agent": "autogen.assistant_agent",
-        "locus/tool-call": "autogen.tool_executor",
-        "locus/retrieval": "autogen.retrieval_agent",
-        "locus/memory": "autogen.state_store",
-        "locus/data-store": "autogen.state_store",
-        "locus/guardrail": "autogen.policy_gate",
-        "locus/human-review": "autogen.user_proxy_gate",
-        "locus/manifold": "autogen.selector",
-        "locus/router": "autogen.selector",
-        "locus/iterator": "autogen.loop_agent",
-        "locus/transform": "autogen.transformer",
-        "locus/event": "autogen.event_bridge",
-        "locus/error-handler": "autogen.fallback_gate",
-        "locus/wait": "autogen.wait_gate",
-        "locus/output": "autogen.result_sink",
-    }
+    """Node type -> native handler. Only the native engine remains (LOCUS-352)."""
+    del engine
+    return dict(_NATIVE_NODE_HANDLERS)
 
 
 def _resolve_runtime_engine(
     run_input: dict[str, Any], platform: PlatformSettings
 ) -> dict[str, Any]:
-    runtime = run_input.get("runtime") if isinstance(run_input.get("runtime"), dict) else {}
-    requested_raw = ""
-    strategy_raw = ""
-    if isinstance(runtime, dict):
-        requested_raw = str(runtime.get("engine") or runtime.get("framework") or "")
-        strategy_raw = str(runtime.get("strategy") or "")
-
-    requested = _normalize_runtime_engine(requested_raw)
-    default_strategy = _normalize_runtime_strategy(platform.default_runtime_strategy)
-    strategy = default_strategy
-    if platform.allow_runtime_engine_override and strategy_raw:
-        strategy = _normalize_runtime_strategy(strategy_raw)
-    default_engine = _normalize_runtime_engine(platform.default_runtime_engine)
-    if default_engine not in _SUPPORTED_RUNTIME_ENGINES:
-        default_engine = "native"
-
-    selected = default_engine
-    if platform.allow_runtime_engine_override and requested:
-        selected = requested
-
-    if selected not in _SUPPORTED_RUNTIME_ENGINES:
-        raise HTTPException(status_code=400, detail=f"Unsupported runtime engine '{selected}'")
-
-    allowed = _normalize_runtime_engine_list(platform.allowed_runtime_engines)
-    if not allowed:
-        allowed = ["native"]
-
-    if platform.enforce_runtime_engine_allowlist and selected not in allowed:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "message": "Runtime engine is not allowed by platform policy",
-                "requested": selected,
-                "allowed": allowed,
-            },
-        )
-
-    if strategy == "hybrid":
-        policy_default_routing = _normalize_hybrid_runtime_routing(
-            platform.default_hybrid_runtime_routing,
-            default_engine=selected,
-        )
-        requested_routing = dict(policy_default_routing)
-        if platform.allow_runtime_engine_override and isinstance(
-            runtime.get("hybrid_routing"), dict
-        ):
-            requested_routing = _normalize_hybrid_runtime_routing(
-                {**policy_default_routing, **runtime.get("hybrid_routing")},
-                default_engine=selected,
-            )
-        if platform.enforce_runtime_engine_allowlist:
-            disallowed = [
-                {"role": role, "engine": engine}
-                for role, engine in requested_routing.items()
-                if engine not in allowed
-            ]
-            if disallowed:
-                raise HTTPException(
-                    status_code=403,
-                    detail={
-                        "message": "Runtime engine is not allowed by platform policy",
-                        "requested": disallowed,
-                        "allowed": allowed,
-                    },
-                )
-
-        effective_routing: dict[str, str] = {}
-        role_modes: dict[str, str] = {}
-        role_probes: dict[str, dict[str, Any]] = {}
-        notes: list[str] = []
-        for role, role_engine in requested_routing.items():
-            role_resolution = _resolve_engine_execution(role_engine)
-            effective_routing[role] = _normalize_runtime_engine(
-                role_resolution.get("executed_engine") or "native"
-            )
-            role_modes[role] = str(role_resolution.get("mode") or "native")
-            role_probes[role] = (
-                role_resolution.get("probe")
-                if isinstance(role_resolution.get("probe"), dict)
-                else {
-                    "engine": role_engine,
-                    "available": False,
-                    "missing_modules": [],
-                }
-            )
-            note = str(role_resolution.get("note") or "").strip()
-            if note:
-                notes.append(f"{role}: {note}")
-
-        return {
-            "requested_engine": requested or default_engine,
-            "selected_engine": selected,
-            "executed_engine": effective_routing.get("default", "native"),
-            "mode": "hybrid",
-            "strategy": "hybrid",
-            "allow_override": platform.allow_runtime_engine_override,
-            "allowed_engines": allowed,
-            "node_mapping": _framework_adapter_mapping(selected),
-            "adapter_probe": role_probes.get(
-                "default", {"engine": selected, "available": True, "missing_modules": []}
-            ),
-            "hybrid_routing": requested_routing,
-            "hybrid_effective_routing": effective_routing,
-            "hybrid_role_modes": role_modes,
-            "hybrid_adapter_probes": role_probes,
-            "hybrid_resolution_notes": notes,
-            "policy_default_hybrid_routing": policy_default_routing,
-        }
-
-    single_resolution = _resolve_engine_execution(selected)
-    runtime_mode = str(single_resolution.get("mode") or "native")
-    executed_engine = _normalize_runtime_engine(
-        single_resolution.get("executed_engine") or "native"
-    )
-    runtime_probe = (
-        single_resolution.get("probe")
-        if isinstance(single_resolution.get("probe"), dict)
-        else {
-            "engine": selected,
-            "available": True,
-            "missing_modules": [],
-        }
-    )
-
+    """Runtime info for a run. Engine and strategy requests are accepted for
+    compatibility but always resolve to the native engine, single strategy
+    (LOCUS-352): model calls go through the gated model client."""
+    del run_input
+    resolution = _resolve_engine_execution(_DEFAULT_RUNTIME_ENGINE)
     return {
-        "requested_engine": requested or default_engine,
-        "selected_engine": selected,
-        "executed_engine": executed_engine,
-        "mode": runtime_mode,
+        "requested_engine": _DEFAULT_RUNTIME_ENGINE,
+        "selected_engine": _DEFAULT_RUNTIME_ENGINE,
+        "executed_engine": _DEFAULT_RUNTIME_ENGINE,
+        "mode": str(resolution["mode"]),
         "strategy": "single",
         "allow_override": platform.allow_runtime_engine_override,
-        "allowed_engines": allowed,
-        "node_mapping": _framework_adapter_mapping(selected),
-        "adapter_probe": runtime_probe,
+        "allowed_engines": [_DEFAULT_RUNTIME_ENGINE],
+        "node_mapping": _framework_adapter_mapping(_DEFAULT_RUNTIME_ENGINE),
+        "adapter_probe": resolution["probe"],
     }
 
 
@@ -3828,54 +3546,13 @@ def _infer_graph_node_runtime_role(
 
 
 def _resolve_node_runtime_engine(runtime_info: dict[str, Any], role: str) -> dict[str, str]:
-    strategy = _normalize_runtime_strategy(runtime_info.get("strategy"))
-    normalized_role = role if role in _HYBRID_RUNTIME_ROLES else "default"
-
-    if strategy == "hybrid":
-        requested_routing = (
-            runtime_info.get("hybrid_routing")
-            if isinstance(runtime_info.get("hybrid_routing"), dict)
-            else {}
-        )
-        effective_routing = (
-            runtime_info.get("hybrid_effective_routing")
-            if isinstance(runtime_info.get("hybrid_effective_routing"), dict)
-            else {}
-        )
-        role_modes = (
-            runtime_info.get("hybrid_role_modes")
-            if isinstance(runtime_info.get("hybrid_role_modes"), dict)
-            else {}
-        )
-
-        selected_engine = _normalize_runtime_engine(
-            requested_routing.get(normalized_role)
-            or requested_routing.get("default")
-            or runtime_info.get("selected_engine")
-            or "native"
-        )
-        executed_engine = _normalize_runtime_engine(
-            effective_routing.get(normalized_role)
-            or effective_routing.get("default")
-            or selected_engine
-        )
-        node_mode = str(
-            role_modes.get(normalized_role)
-            or role_modes.get("default")
-            or ("native" if executed_engine == "native" else "delegated")
-        )
-        return {
-            "selected_engine": selected_engine,
-            "executed_engine": executed_engine,
-            "mode": node_mode,
-        }
-
-    selected_engine = _normalize_runtime_engine(runtime_info.get("selected_engine") or "native")
-    executed_engine = _normalize_runtime_engine(runtime_info.get("executed_engine") or "native")
+    """Every node runs on the native engine (LOCUS-352). Runtime info stored by an
+    older build (hybrid routing, framework engines) resolves the same way."""
+    del runtime_info, role
     return {
-        "selected_engine": selected_engine,
-        "executed_engine": executed_engine,
-        "mode": str(runtime_info.get("mode") or "native"),
+        "selected_engine": _DEFAULT_RUNTIME_ENGINE,
+        "executed_engine": _DEFAULT_RUNTIME_ENGINE,
+        "mode": "native",
     }
 
 
@@ -4670,416 +4347,6 @@ def _get_chat_client(provider: str) -> tuple[Any | None, str]:
     return client, ""
 
 
-def _module_available(module_name: str) -> bool:
-    try:
-        return importlib.util.find_spec(module_name) is not None
-    except Exception:  # noqa: BLE001
-        return False
-
-
-_OPTIONAL_MODULE_LOADERS: dict[str, Callable[[], Any]] = {
-    "autogen": lambda: importlib.import_module("autogen"),
-    "autogen_agentchat": lambda: importlib.import_module("autogen_agentchat"),
-    "autogen_agentchat.agents": lambda: importlib.import_module("autogen_agentchat.agents"),
-    "autogen_ext.models.openai": lambda: importlib.import_module("autogen_ext.models.openai"),
-    "langchain_core": lambda: importlib.import_module("langchain_core"),
-    "langchain_core.documents": lambda: importlib.import_module("langchain_core.documents"),
-    "langchain_core.messages": lambda: importlib.import_module("langchain_core.messages"),
-    "langchain_core.tools": lambda: importlib.import_module("langchain_core.tools"),
-    "langchain_openai": lambda: importlib.import_module("langchain_openai"),
-    "langgraph": lambda: importlib.import_module("langgraph"),
-    "langgraph.graph": lambda: importlib.import_module("langgraph.graph"),
-    "semantic_kernel": lambda: importlib.import_module("semantic_kernel"),
-    "semantic_kernel.connectors.ai.open_ai": lambda: importlib.import_module(
-        "semantic_kernel.connectors.ai.open_ai"
-    ),
-}
-
-
-def _import_module(module_name: str) -> Any:
-    loader = _OPTIONAL_MODULE_LOADERS.get(module_name)
-    if loader is None:
-        raise ValueError(f"Unsupported optional module import '{module_name}'")
-    return loader()
-
-
-def _framework_runtime_probe(engine: str) -> dict[str, Any]:
-    normalized = _normalize_runtime_engine(engine)
-    required_modules: list[str] = []
-
-    if normalized == "langgraph":
-        required_modules = ["langgraph", "langchain_openai"]
-    elif normalized == "langchain":
-        required_modules = ["langchain_core", "langchain_openai"]
-    elif normalized == "semantic-kernel":
-        required_modules = ["semantic_kernel"]
-    elif normalized == "autogen":
-        # Either modern agentchat or legacy autogen package is acceptable.
-        if _module_available("autogen_agentchat") or _module_available("autogen"):
-            required_modules = []
-        else:
-            required_modules = ["autogen_agentchat|autogen"]
-
-    if not required_modules:
-        return {
-            "engine": normalized,
-            "available": True,
-            "missing_modules": [],
-        }
-
-    missing_modules: list[str] = [name for name in required_modules if not _module_available(name)]
-    return {
-        "engine": normalized,
-        "available": len(missing_modules) == 0,
-        "missing_modules": missing_modules,
-    }
-
-
-def _extract_langchain_content(content: Any) -> str:
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        chunks: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                chunks.append(item)
-            elif isinstance(item, dict):
-                text = item.get("text") if isinstance(item.get("text"), str) else None
-                if text:
-                    chunks.append(text)
-                else:
-                    chunks.append(_safe_json(item))
-            else:
-                chunks.append(str(item))
-        return "\n".join(part for part in chunks if part).strip()
-    return str(content).strip()
-
-
-def _run_langchain_chat(
-    *,
-    system_prompt: str,
-    user_prompt: str,
-    model: str,
-    temperature: float,
-    runtime: dict[str, Any] | None = None,
-) -> tuple[str, dict[str, Any]]:
-    key = str((runtime or {}).get("api_key") or os.getenv("OPENAI_API_KEY", "")).strip()
-    if not key:
-        raise _provider_not_configured("langchain-openai", model, "OPENAI_API_KEY missing")
-
-    try:
-        langchain_messages = _import_module("langchain_core.messages")
-        langchain_openai = _import_module("langchain_openai")
-        HumanMessage = getattr(langchain_messages, "HumanMessage")
-        SystemMessage = getattr(langchain_messages, "SystemMessage")
-        ChatOpenAI = getattr(langchain_openai, "ChatOpenAI")
-
-        llm = ChatOpenAI(
-            model=model,
-            temperature=temperature,
-            api_key=key,
-        )
-        messages: list[Any] = []
-        if system_prompt.strip():
-            messages.append(SystemMessage(content=system_prompt))
-        messages.append(HumanMessage(content=user_prompt))
-
-        response = llm.invoke(messages)
-        text = _extract_langchain_content(getattr(response, "content", ""))
-        if not text:
-            text = "[empty-response]"
-        return (
-            text,
-            {
-                "provider": "langchain-openai",
-                "model": model,
-                "mode": "live",
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise _provider_call_failed("langchain-openai", model, f"LangChain call failed: {exc}")
-
-
-def _run_langgraph_chat(
-    *,
-    system_prompt: str,
-    user_prompt: str,
-    model: str,
-    temperature: float,
-    runtime: dict[str, Any] | None = None,
-) -> tuple[str, dict[str, Any]]:
-    try:
-        langgraph_graph = _import_module("langgraph.graph")
-        END = getattr(langgraph_graph, "END")
-        StateGraph = getattr(langgraph_graph, "StateGraph")
-
-        def _invoke_node(state: dict[str, Any]) -> dict[str, Any]:
-            text, meta = _run_langchain_chat(
-                system_prompt=str(state.get("system_prompt") or ""),
-                user_prompt=str(state.get("user_prompt") or ""),
-                model=model,
-                temperature=temperature,
-                runtime=runtime,
-            )
-            return {
-                "response": text,
-                "meta": meta,
-            }
-
-        workflow = StateGraph(dict)
-        workflow.add_node("agent", _invoke_node)
-        workflow.set_entry_point("agent")
-        workflow.add_edge("agent", END)
-        compiled = workflow.compile()
-        result = compiled.invoke(
-            {
-                "system_prompt": system_prompt,
-                "user_prompt": user_prompt,
-            }
-        )
-
-        response_text = str(result.get("response") or "").strip()
-        meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
-        if not response_text:
-            raise _provider_call_failed("langgraph", model, "LangGraph returned no response")
-        return (
-            response_text,
-            {
-                "provider": "langgraph",
-                "model": model,
-                "mode": str(meta.get("mode") or "live"),
-                "upstream_provider": meta.get("provider") or "langchain-openai",
-            },
-        )
-    except ProviderUnavailableError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise _provider_call_failed("langgraph", model, f"LangGraph call failed: {exc}")
-
-
-def _run_semantic_kernel_chat(
-    *,
-    system_prompt: str,
-    user_prompt: str,
-    model: str,
-    temperature: float,
-    runtime: dict[str, Any] | None = None,
-) -> tuple[str, dict[str, Any]]:
-    key = str((runtime or {}).get("api_key") or os.getenv("OPENAI_API_KEY", "")).strip()
-    if not key:
-        raise _provider_not_configured("semantic-kernel", model, "OPENAI_API_KEY missing")
-
-    try:
-        semantic_kernel = _import_module("semantic_kernel")
-        semantic_kernel_openai = _import_module("semantic_kernel.connectors.ai.open_ai")
-        Kernel = getattr(semantic_kernel, "Kernel")
-        OpenAIChatCompletion = getattr(semantic_kernel_openai, "OpenAIChatCompletion")
-
-        kernel = Kernel()
-        service_id = "locus-chat"
-        kernel.add_service(
-            OpenAIChatCompletion(service_id=service_id, ai_model_id=model, api_key=key)
-        )
-
-        prompt = "{{$system}}\n\nUser message:\n{{$input}}"
-        result = kernel.invoke_prompt(
-            prompt=prompt,
-            service_id=service_id,
-            arguments={
-                "system": system_prompt,
-                "input": user_prompt,
-                "temperature": temperature,
-            },
-        )
-        text = str(result).strip()
-        if not text:
-            text = "[empty-response]"
-        return (
-            text,
-            {
-                "provider": "semantic-kernel",
-                "model": model,
-                "mode": "live",
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise _provider_call_failed("semantic-kernel", model, f"Semantic Kernel call failed: {exc}")
-
-
-def _run_coroutine_sync(coro: Any) -> Any:
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-
-    if loop.is_running():
-        new_loop = asyncio.new_event_loop()
-        try:
-            return new_loop.run_until_complete(coro)
-        finally:
-            new_loop.close()
-
-    return loop.run_until_complete(coro)
-
-
-def _run_autogen_chat(
-    *,
-    system_prompt: str,
-    user_prompt: str,
-    model: str,
-    temperature: float,
-    runtime: dict[str, Any] | None = None,
-) -> tuple[str, dict[str, Any]]:
-    key = str((runtime or {}).get("api_key") or os.getenv("OPENAI_API_KEY", "")).strip()
-    if not key:
-        raise _provider_not_configured("autogen", model, "OPENAI_API_KEY missing")
-
-    # Try modern AutoGen first.
-    try:
-        autogen_agentchat_agents = _import_module("autogen_agentchat.agents")
-        autogen_ext_openai = _import_module("autogen_ext.models.openai")
-        AssistantAgent = getattr(autogen_agentchat_agents, "AssistantAgent")
-        OpenAIChatCompletionClient = getattr(autogen_ext_openai, "OpenAIChatCompletionClient")
-
-        model_client = OpenAIChatCompletionClient(model=model, api_key=key, temperature=temperature)
-        assistant = AssistantAgent(
-            name="locus_assistant",
-            model_client=model_client,
-            system_message=system_prompt or "You are a helpful assistant.",
-        )
-        run_result = _run_coroutine_sync(assistant.run(task=user_prompt))
-
-        text = ""
-        messages = getattr(run_result, "messages", None)
-        if isinstance(messages, list) and messages:
-            last = messages[-1]
-            text = str(getattr(last, "content", "") or "").strip()
-        if not text:
-            text = str(getattr(run_result, "summary", "") or "").strip()
-        if not text:
-            text = "[empty-response]"
-
-        return (
-            text,
-            {
-                "provider": "autogen",
-                "model": model,
-                "mode": "live",
-            },
-        )
-    except Exception:  # noqa: BLE001
-        pass
-
-    # Fall back to legacy pyautogen surface.
-    try:
-        autogen = _import_module("autogen")
-
-        llm_config = {
-            "config_list": [{"model": model, "api_key": key, "temperature": temperature}],
-        }
-        assistant = autogen.AssistantAgent(
-            name="locus_assistant",
-            system_message=system_prompt or "You are a helpful assistant.",
-            llm_config=llm_config,
-        )
-        user_proxy = autogen.UserProxyAgent(
-            name="locus_user_proxy",
-            human_input_mode="NEVER",
-            code_execution_config=False,
-        )
-        chat_result = user_proxy.initiate_chat(
-            assistant,
-            message=user_prompt,
-            max_turns=1,
-            silent=True,
-        )
-        text = str(getattr(chat_result, "summary", "") or "").strip()
-        if not text:
-            text = "[empty-response]"
-        return (
-            text,
-            {
-                "provider": "autogen",
-                "model": model,
-                "mode": "live",
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise _provider_call_failed("autogen", model, f"AutoGen call failed: {exc}")
-
-
-def _run_framework_chat(
-    *,
-    engine: str,
-    system_prompt: str,
-    user_prompt: str,
-    model: str,
-    temperature: float,
-    runtime: dict[str, Any] | None = None,
-) -> tuple[str, dict[str, Any]]:
-    resolved_engine = _normalize_runtime_engine(engine)
-    if resolved_engine == "langchain":
-        return _run_langchain_chat(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=model,
-            temperature=temperature,
-            runtime=runtime,
-        )
-    if resolved_engine == "langgraph":
-        return _run_langgraph_chat(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=model,
-            temperature=temperature,
-            runtime=runtime,
-        )
-    if resolved_engine == "semantic-kernel":
-        return _run_semantic_kernel_chat(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=model,
-            temperature=temperature,
-            runtime=runtime,
-        )
-    if resolved_engine == "autogen":
-        return _run_autogen_chat(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            model=model,
-            temperature=temperature,
-            runtime=runtime,
-        )
-    return _run_openai_chat(
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        model=model,
-        temperature=temperature,
-        runtime=runtime,
-    )
-
-
-def _simulate_tool_execution_payload(
-    *,
-    tool_id: str,
-    request_payload: Any,
-    context_payload: Any,
-    call_index: int,
-    endpoint_url: str,
-    method: str,
-) -> dict[str, Any]:
-    return {
-        "ok": True,
-        "tool_id": tool_id,
-        "policy_checked": True,
-        "call_index": call_index,
-        "request": request_payload,
-        "context": context_payload,
-        "endpoint_url": endpoint_url,
-        "method": method,
-    }
-
-
 def _normalize_skill_match_tokens(values: list[str]) -> set[str]:
     tokens: set[str] = set()
     for value in values:
@@ -5589,338 +4856,8 @@ def _native_retrieval_documents(
     return docs[:top_k], grounding_context
 
 
-def _run_framework_retrieval(
-    *,
-    engine: str,
-    query_payload: Any,
-    source_id: str,
-    top_k: int,
-    filters_payload: Any,
-) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
-    resolved_engine = _normalize_runtime_engine(engine)
-    query_text = _safe_json(query_payload)[:1000]
-
-    if resolved_engine == "langchain":
-        try:
-            langchain_documents = _import_module("langchain_core.documents")
-            Document = getattr(langchain_documents, "Document")
-            docs = [
-                Document(
-                    page_content=f"[langchain] Retrieved context {idx} for query: {query_text}",
-                    metadata={"source": source_id, "rank": idx, "filters": filters_payload},
-                )
-                for idx in range(1, top_k + 1)
-            ]
-            normalized = [
-                {
-                    "id": f"doc-{idx}",
-                    "score": round(0.95 - (idx * 0.03), 2),
-                    "source": str(getattr(doc, "metadata", {}).get("source") or source_id),
-                    "text": str(getattr(doc, "page_content", ""))[:500],
-                }
-                for idx, doc in enumerate(docs, start=1)
-            ]
-            return (
-                normalized,
-                f"LangChain retriever produced {len(normalized)} documents.",
-                {
-                    "framework": "langchain",
-                    "mode": "live",
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            return (
-                [],
-                "LangChain retrieval fallback (framework unavailable).",
-                {
-                    "framework": "langchain",
-                    "mode": "framework_unavailable",
-                    "reason": f"LangChain retrieval failed: {str(exc)[:180]}",
-                },
-            )
-
-    if resolved_engine == "langgraph":
-        try:
-            langgraph_graph = _import_module("langgraph.graph")
-            StateGraph = getattr(langgraph_graph, "StateGraph")
-            START = getattr(langgraph_graph, "START")
-            END = getattr(langgraph_graph, "END")
-
-            def _retrieve_node(state: dict[str, Any]) -> dict[str, Any]:
-                query = str(state.get("query") or "")[:1000]
-                output_docs = [
-                    {
-                        "id": f"doc-{idx}",
-                        "score": round(0.93 - (idx * 0.02), 2),
-                        "source": source_id,
-                        "text": f"[langgraph] Retrieved context {idx} for query: {query}",
-                    }
-                    for idx in range(1, top_k + 1)
-                ]
-                return {"docs": output_docs}
-
-            graph = StateGraph(dict)
-            graph.add_node("retrieve", _retrieve_node)
-            graph.add_edge(START, "retrieve")
-            graph.add_edge("retrieve", END)
-            app_graph = graph.compile()
-            result_state = app_graph.invoke({"query": query_text, "filters": filters_payload})
-            docs = result_state.get("docs", []) if isinstance(result_state, dict) else []
-            normalized = [dict(item) for item in docs if isinstance(item, dict)]
-            return (
-                normalized,
-                f"LangGraph retrieval produced {len(normalized)} documents.",
-                {
-                    "framework": "langgraph",
-                    "mode": "live",
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            return (
-                [],
-                "LangGraph retrieval fallback (framework unavailable).",
-                {
-                    "framework": "langgraph",
-                    "mode": "framework_unavailable",
-                    "reason": f"LangGraph retrieval failed: {str(exc)[:180]}",
-                },
-            )
-
-    if resolved_engine == "semantic-kernel":
-        try:
-            semantic_kernel = _import_module("semantic_kernel")
-            Kernel = getattr(semantic_kernel, "Kernel")
-            kernel = Kernel()
-            docs = [
-                {
-                    "id": f"doc-{idx}",
-                    "score": round(0.92 - (idx * 0.025), 2),
-                    "source": source_id,
-                    "text": f"[semantic-kernel] Retrieved context {idx} for query: {query_text}",
-                    "filters": filters_payload,
-                }
-                for idx in range(1, top_k + 1)
-            ]
-            _ = kernel  # intentional: ensure semantic-kernel runtime path is exercised
-            return (
-                docs,
-                f"Semantic Kernel retrieval produced {len(docs)} documents.",
-                {
-                    "framework": "semantic-kernel",
-                    "mode": "live",
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            return (
-                [],
-                "Semantic Kernel retrieval fallback (framework unavailable).",
-                {
-                    "framework": "semantic-kernel",
-                    "mode": "framework_unavailable",
-                    "reason": f"Semantic Kernel retrieval failed: {str(exc)[:180]}",
-                },
-            )
-
-    if resolved_engine == "autogen":
-        try:
-            if _module_available("autogen_agentchat"):
-                _ = _import_module("autogen_agentchat")
-            elif _module_available("autogen"):
-                _ = _import_module("autogen")
-            docs = [
-                {
-                    "id": f"doc-{idx}",
-                    "score": round(0.9 - (idx * 0.02), 2),
-                    "source": source_id,
-                    "text": f"[autogen] Retrieved context {idx} for query: {query_text}",
-                }
-                for idx in range(1, top_k + 1)
-            ]
-            return (
-                docs,
-                f"AutoGen retrieval produced {len(docs)} documents.",
-                {
-                    "framework": "autogen",
-                    "mode": "live",
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            return (
-                [],
-                "AutoGen retrieval fallback (framework unavailable).",
-                {
-                    "framework": "autogen",
-                    "mode": "framework_unavailable",
-                    "reason": f"AutoGen retrieval failed: {str(exc)[:180]}",
-                },
-            )
-
-    docs = [
-        {
-            "id": f"doc-{idx}",
-            "score": round(0.95 - (idx * 0.04), 2),
-            "source": source_id,
-            "text": f"[native] Retrieved context {idx} for query: {query_text}",
-        }
-        for idx in range(1, top_k + 1)
-    ]
-    return (
-        docs,
-        f"Native retrieval produced {len(docs)} documents.",
-        {
-            "framework": "native",
-            "mode": "live",
-        },
-    )
-
-
-def _run_framework_tool_call(
-    *,
-    engine: str,
-    tool_id: str,
-    request_payload: Any,
-    context_payload: Any,
-    skill_hints: list[str],
-    call_index: int,
-    endpoint_url: str,
-    method: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    resolved_engine = _normalize_runtime_engine(engine)
-
-    def _simulate() -> dict[str, Any]:
-        return _simulate_tool_execution_payload(
-            tool_id=tool_id,
-            request_payload=request_payload,
-            context_payload=context_payload,
-            call_index=call_index,
-            endpoint_url=endpoint_url,
-            method=method,
-        )
-
-    if resolved_engine == "langchain":
-        try:
-            langchain_tools = _import_module("langchain_core.tools")
-            StructuredTool = getattr(langchain_tools, "StructuredTool")
-            tool = StructuredTool.from_function(
-                func=lambda payload=None, context=None: _simulate(),
-                name="locus_tool_call",
-                description=(
-                    "Locus framework delegated tool call"
-                    + (f" with active skills: {', '.join(skill_hints)}" if skill_hints else "")
-                ),
-            )
-            output = tool.invoke(
-                {
-                    "payload": request_payload,
-                    "context": {
-                        **(context_payload if isinstance(context_payload, dict) else {}),
-                        "skills": list(skill_hints),
-                    },
-                }
-            )
-            if not isinstance(output, dict):
-                output = _simulate()
-            return output, {
-                "framework": "langchain",
-                "mode": "live",
-                "skill_hints": list(skill_hints),
-            }
-        except Exception as exc:  # noqa: BLE001
-            return _simulate(), {
-                "framework": "langchain",
-                "mode": "native_fallback",
-                "skill_hints": list(skill_hints),
-                "reason": f"LangChain tool call failed: {str(exc)[:180]}",
-            }
-
-    if resolved_engine == "langgraph":
-        try:
-            langgraph_graph = _import_module("langgraph.graph")
-            StateGraph = getattr(langgraph_graph, "StateGraph")
-            START = getattr(langgraph_graph, "START")
-            END = getattr(langgraph_graph, "END")
-
-            def _tool_node(state: dict[str, Any]) -> dict[str, Any]:
-                return {"tool_output": _simulate()}
-
-            graph = StateGraph(dict)
-            graph.add_node("tool", _tool_node)
-            graph.add_edge(START, "tool")
-            graph.add_edge("tool", END)
-            app_graph = graph.compile()
-            result_state = app_graph.invoke(
-                {
-                    "payload": request_payload,
-                    "context": {
-                        **(context_payload if isinstance(context_payload, dict) else {}),
-                        "skills": list(skill_hints),
-                    },
-                }
-            )
-            output = result_state.get("tool_output") if isinstance(result_state, dict) else None
-            if not isinstance(output, dict):
-                output = _simulate()
-            return output, {
-                "framework": "langgraph",
-                "mode": "live",
-                "skill_hints": list(skill_hints),
-            }
-        except Exception as exc:  # noqa: BLE001
-            return _simulate(), {
-                "framework": "langgraph",
-                "mode": "native_fallback",
-                "skill_hints": list(skill_hints),
-                "reason": f"LangGraph tool call failed: {str(exc)[:180]}",
-            }
-
-    if resolved_engine == "semantic-kernel":
-        try:
-            semantic_kernel = _import_module("semantic_kernel")
-            Kernel = getattr(semantic_kernel, "Kernel")
-            kernel = Kernel()
-            _ = kernel
-            return _simulate(), {
-                "framework": "semantic-kernel",
-                "mode": "live",
-                "skill_hints": list(skill_hints),
-            }
-        except Exception as exc:  # noqa: BLE001
-            return _simulate(), {
-                "framework": "semantic-kernel",
-                "mode": "native_fallback",
-                "skill_hints": list(skill_hints),
-                "reason": f"Semantic Kernel tool call failed: {str(exc)[:180]}",
-            }
-
-    if resolved_engine == "autogen":
-        try:
-            if _module_available("autogen_agentchat"):
-                _ = _import_module("autogen_agentchat")
-            elif _module_available("autogen"):
-                _ = _import_module("autogen")
-            return _simulate(), {
-                "framework": "autogen",
-                "mode": "live",
-                "skill_hints": list(skill_hints),
-            }
-        except Exception as exc:  # noqa: BLE001
-            return _simulate(), {
-                "framework": "autogen",
-                "mode": "native_fallback",
-                "skill_hints": list(skill_hints),
-                "reason": f"AutoGen tool call failed: {str(exc)[:180]}",
-            }
-
-    return _simulate(), {
-        "framework": "native",
-        "mode": "live",
-        "skill_hints": list(skill_hints),
-    }
-
-
 def _run_framework_memory(
     *,
-    engine: str,
     action: str,
     scope: str,
     bucket_id: str,
@@ -5928,8 +4865,6 @@ def _run_framework_memory(
     message: str,
     source_payload: Any,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    resolved_engine = _normalize_runtime_engine(engine)
-
     def _native_memory_flow() -> dict[str, Any]:
         runtime_role = (
             str(source_payload.get("runtime_role") or "")
@@ -6056,136 +4991,28 @@ def _run_framework_memory(
             "out": {"state": "completed"},
         }
 
-    if resolved_engine == "langchain":
-        try:
-            _import_module("langchain_core.messages")
-            return _native_memory_flow(), {"framework": "langchain", "mode": "live"}
-        except Exception as exc:  # noqa: BLE001
-            result = _native_memory_flow()
-            return result, {
-                "framework": "langchain",
-                "mode": "native_fallback",
-                "reason": f"LangChain memory failed: {str(exc)[:180]}",
-            }
-
-    if resolved_engine == "langgraph":
-        try:
-            _import_module("langgraph")
-            return _native_memory_flow(), {"framework": "langgraph", "mode": "live"}
-        except Exception as exc:  # noqa: BLE001
-            result = _native_memory_flow()
-            return result, {
-                "framework": "langgraph",
-                "mode": "native_fallback",
-                "reason": f"LangGraph memory failed: {str(exc)[:180]}",
-            }
-
-    if resolved_engine == "semantic-kernel":
-        try:
-            _import_module("semantic_kernel")
-            return _native_memory_flow(), {"framework": "semantic-kernel", "mode": "live"}
-        except Exception as exc:  # noqa: BLE001
-            result = _native_memory_flow()
-            return result, {
-                "framework": "semantic-kernel",
-                "mode": "native_fallback",
-                "reason": f"Semantic Kernel memory failed: {str(exc)[:180]}",
-            }
-
-    if resolved_engine == "autogen":
-        try:
-            if _module_available("autogen_agentchat"):
-                _import_module("autogen_agentchat")
-            elif _module_available("autogen"):
-                _import_module("autogen")
-            return _native_memory_flow(), {"framework": "autogen", "mode": "live"}
-        except Exception as exc:  # noqa: BLE001
-            result = _native_memory_flow()
-            return result, {
-                "framework": "autogen",
-                "mode": "native_fallback",
-                "reason": f"AutoGen memory failed: {str(exc)[:180]}",
-            }
-
     return _native_memory_flow(), {"framework": "native", "mode": "live"}
 
 
 def _run_framework_guardrail(
     *,
-    engine: str,
     candidate_payload: Any,
     guardrail_config: dict[str, Any],
     stage: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    resolved_engine = _normalize_runtime_engine(engine)
-
     def _evaluate() -> dict[str, Any]:
         return _evaluate_guardrail(candidate_payload, guardrail_config, stage=stage)
-
-    if resolved_engine == "langchain":
-        try:
-            _import_module("langchain_core.messages")
-            return _evaluate(), {"framework": "langchain", "mode": "live", "stage": stage}
-        except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {
-                "framework": "langchain",
-                "mode": "native_fallback",
-                "stage": stage,
-                "reason": f"LangChain guardrail failed: {str(exc)[:180]}",
-            }
-
-    if resolved_engine == "langgraph":
-        try:
-            _import_module("langgraph")
-            return _evaluate(), {"framework": "langgraph", "mode": "live", "stage": stage}
-        except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {
-                "framework": "langgraph",
-                "mode": "native_fallback",
-                "stage": stage,
-                "reason": f"LangGraph guardrail failed: {str(exc)[:180]}",
-            }
-
-    if resolved_engine == "semantic-kernel":
-        try:
-            _import_module("semantic_kernel")
-            return _evaluate(), {"framework": "semantic-kernel", "mode": "live", "stage": stage}
-        except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {
-                "framework": "semantic-kernel",
-                "mode": "native_fallback",
-                "stage": stage,
-                "reason": f"Semantic Kernel guardrail failed: {str(exc)[:180]}",
-            }
-
-    if resolved_engine == "autogen":
-        try:
-            if _module_available("autogen_agentchat"):
-                _import_module("autogen_agentchat")
-            elif _module_available("autogen"):
-                _import_module("autogen")
-            return _evaluate(), {"framework": "autogen", "mode": "live", "stage": stage}
-        except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {
-                "framework": "autogen",
-                "mode": "native_fallback",
-                "stage": stage,
-                "reason": f"AutoGen guardrail failed: {str(exc)[:180]}",
-            }
 
     return _evaluate(), {"framework": "native", "mode": "live", "stage": stage}
 
 
 def _run_framework_manifold(
     *,
-    engine: str,
     sources: list[dict[str, Any]],
     mode: str,
     min_required: int,
     fallback_payload: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    resolved_engine = _normalize_runtime_engine(engine)
-
     def _evaluate() -> dict[str, Any]:
         active_count = len([item for item in sources if item])
         passed = active_count >= min_required
@@ -6200,65 +5027,15 @@ def _run_framework_manifold(
             "sources": sources,
         }
 
-    if resolved_engine == "langchain":
-        try:
-            _import_module("langchain_core")
-            return _evaluate(), {"framework": "langchain", "mode": "live"}
-        except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {
-                "framework": "langchain",
-                "mode": "native_fallback",
-                "reason": f"LangChain manifold failed: {str(exc)[:180]}",
-            }
-
-    if resolved_engine == "langgraph":
-        try:
-            _import_module("langgraph")
-            return _evaluate(), {"framework": "langgraph", "mode": "live"}
-        except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {
-                "framework": "langgraph",
-                "mode": "native_fallback",
-                "reason": f"LangGraph manifold failed: {str(exc)[:180]}",
-            }
-
-    if resolved_engine == "semantic-kernel":
-        try:
-            _import_module("semantic_kernel")
-            return _evaluate(), {"framework": "semantic-kernel", "mode": "live"}
-        except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {
-                "framework": "semantic-kernel",
-                "mode": "native_fallback",
-                "reason": f"Semantic Kernel manifold failed: {str(exc)[:180]}",
-            }
-
-    if resolved_engine == "autogen":
-        try:
-            if _module_available("autogen_agentchat"):
-                _import_module("autogen_agentchat")
-            elif _module_available("autogen"):
-                _import_module("autogen")
-            return _evaluate(), {"framework": "autogen", "mode": "live"}
-        except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {
-                "framework": "autogen",
-                "mode": "native_fallback",
-                "reason": f"AutoGen manifold failed: {str(exc)[:180]}",
-            }
-
     return _evaluate(), {"framework": "native", "mode": "live"}
 
 
 def _run_framework_human_review(
     *,
-    engine: str,
     candidate_payload: Any,
     reviewer_group: str,
     auto_approve: bool,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    resolved_engine = _normalize_runtime_engine(engine)
-
     def _evaluate() -> dict[str, Any]:
         if auto_approve:
             return {
@@ -6277,53 +5054,6 @@ def _run_framework_human_review(
             "candidate": candidate_payload,
             "review_status": "pending_approval",
         }
-
-    if resolved_engine == "langchain":
-        try:
-            _import_module("langchain_core")
-            return _evaluate(), {"framework": "langchain", "mode": "live"}
-        except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {
-                "framework": "langchain",
-                "mode": "native_fallback",
-                "reason": f"LangChain human-review failed: {str(exc)[:180]}",
-            }
-
-    if resolved_engine == "langgraph":
-        try:
-            _import_module("langgraph")
-            return _evaluate(), {"framework": "langgraph", "mode": "live"}
-        except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {
-                "framework": "langgraph",
-                "mode": "native_fallback",
-                "reason": f"LangGraph human-review failed: {str(exc)[:180]}",
-            }
-
-    if resolved_engine == "semantic-kernel":
-        try:
-            _import_module("semantic_kernel")
-            return _evaluate(), {"framework": "semantic-kernel", "mode": "live"}
-        except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {
-                "framework": "semantic-kernel",
-                "mode": "native_fallback",
-                "reason": f"Semantic Kernel human-review failed: {str(exc)[:180]}",
-            }
-
-    if resolved_engine == "autogen":
-        try:
-            if _module_available("autogen_agentchat"):
-                _import_module("autogen_agentchat")
-            elif _module_available("autogen"):
-                _import_module("autogen")
-            return _evaluate(), {"framework": "autogen", "mode": "live"}
-        except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {
-                "framework": "autogen",
-                "mode": "native_fallback",
-                "reason": f"AutoGen human-review failed: {str(exc)[:180]}",
-            }
 
     return _evaluate(), {"framework": "native", "mode": "live"}
 
@@ -11245,7 +9975,6 @@ def _execute_node(
             min_required = 1
 
         manifold_result, manifold_meta = _run_framework_manifold(
-            engine=manifold_executed_engine,
             sources=sources,
             mode=mode,
             min_required=min_required,
@@ -11507,24 +10236,14 @@ def _execute_node(
             _conversation_manager.add_turn("user", user_prompt)
             conversation_messages = _conversation_manager.get_messages()
 
-        if executed_engine != "native":
-            response_text, model_meta = _run_framework_chat(
-                engine=executed_engine,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                model=model,
-                temperature=temperature,
-                runtime=runtime,
-            )
-        else:
-            response_text, model_meta = _run_openai_chat(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                model=model,
-                temperature=temperature,
-                messages=conversation_messages,
-                runtime=runtime,
-            )
+        response_text, model_meta = _run_openai_chat(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=model,
+            temperature=temperature,
+            messages=conversation_messages,
+            runtime=runtime,
+        )
 
         # WS1: Persist conversation state after LLM call
         if _conversation_manager is not None:
@@ -11676,13 +10395,6 @@ def _execute_node(
             node_type=node_type,
             incoming_by_port=by_port,
             execution_state=execution_state,
-        )
-        node_runtime = _resolve_node_runtime_engine(runtime_info, node_role)
-        tool_selected_engine = _normalize_runtime_engine(
-            node_runtime.get("selected_engine") or "native"
-        )
-        tool_executed_engine = _normalize_runtime_engine(
-            node_runtime.get("executed_engine") or "native"
         )
 
         tool_calls = int(execution_state.get("tool_call_count") or 0) + 1
@@ -11981,10 +10693,10 @@ def _execute_node(
         if gateway_rejection is not None:
             return gateway_rejection
 
-        if tool_executed_engine != "native":
-            delegated_result, delegated_meta = _run_framework_tool_call(
-                engine=tool_executed_engine,
+        try:
+            tool_result_payload = _execute_native_tool_call(
                 tool_id=tool_id,
+                tool_config=tool_config,
                 request_payload=request_payload,
                 context_payload=context_payload,
                 skill_hints=skill_hints,
@@ -11992,45 +10704,19 @@ def _execute_node(
                 endpoint_url=endpoint_url,
                 method=str(tool_config.get("method") or "POST"),
             )
-            tool_result_payload = (
-                dict(delegated_result)
-                if isinstance(delegated_result, dict)
-                else {
-                    "ok": False,
-                    "rejected": True,
-                    "message": "Framework tool execution returned invalid payload.",
-                }
-            )
-            tool_result_payload["framework"] = tool_selected_engine
-            tool_result_payload["executed_engine"] = tool_executed_engine
-            tool_result_payload["runtime_mode"] = str(node_runtime.get("mode") or "native")
-            if isinstance(delegated_meta, dict):
-                tool_result_payload["framework_meta"] = delegated_meta
-        else:
-            try:
-                tool_result_payload = _execute_native_tool_call(
-                    tool_id=tool_id,
-                    tool_config=tool_config,
-                    request_payload=request_payload,
-                    context_payload=context_payload,
-                    skill_hints=skill_hints,
-                    call_index=tool_calls,
-                    endpoint_url=endpoint_url,
-                    method=str(tool_config.get("method") or "POST"),
-                )
-            except Exception as exc:  # noqa: BLE001
-                tool_result_payload = {
-                    "ok": False,
-                    "rejected": True,
-                    "message": f"Tool call failed: {exc}",
-                    "tool_id": tool_id,
-                    "call_index": tool_calls,
-                    "endpoint_url": _sanitize_base_url(endpoint_url),
-                    "method": str(tool_config.get("method") or "POST"),
-                }
-            tool_result_payload["framework"] = "native"
-            tool_result_payload["executed_engine"] = "native"
-            tool_result_payload["runtime_mode"] = "native"
+        except Exception as exc:  # noqa: BLE001
+            tool_result_payload = {
+                "ok": False,
+                "rejected": True,
+                "message": f"Tool call failed: {exc}",
+                "tool_id": tool_id,
+                "call_index": tool_calls,
+                "endpoint_url": _sanitize_base_url(endpoint_url),
+                "method": str(tool_config.get("method") or "POST"),
+            }
+        tool_result_payload["framework"] = "native"
+        tool_result_payload["executed_engine"] = "native"
+        tool_result_payload["runtime_mode"] = "native"
 
         result = {
             "result": tool_result_payload,
@@ -12176,25 +10862,14 @@ def _execute_node(
             requested_count_int = 3
         doc_count = min(requested_count_int, max(1, int(platform.max_retrieval_items)))
 
-        if retrieval_executed_engine != "native":
-            docs, grounding_context, retrieval_meta = _run_framework_retrieval(
-                engine=retrieval_executed_engine,
-                query_payload=query_payload,
-                source_id=source_id,
-                top_k=doc_count,
-                filters_payload=filters_payload,
-            )
-            if not isinstance(docs, list):
-                docs = []
-        else:
-            docs, grounding_context = _native_retrieval_documents(
-                query_payload=query_payload,
-                source_id=source_id,
-                source_url=source_url,
-                top_k=doc_count,
-                execution_state=execution_state,
-            )
-            retrieval_meta = {"framework": "native", "mode": "live"}
+        docs, grounding_context = _native_retrieval_documents(
+            query_payload=query_payload,
+            source_id=source_id,
+            source_url=source_url,
+            top_k=doc_count,
+            execution_state=execution_state,
+        )
+        retrieval_meta = {"framework": "native", "mode": "live"}
 
         return {
             "documents": docs,
@@ -12250,7 +10925,6 @@ def _execute_node(
         if isinstance(source, dict):
             source = {**source, "runtime_role": node_role}
         memory_result, memory_meta = _run_framework_memory(
-            engine=memory_executed_engine,
             action=action,
             scope=scope,
             bucket_id=bucket_id,
@@ -12319,7 +10993,6 @@ def _execute_node(
             )
         stage = str(guardrail_config.get("stage") or "output")
         evaluation, guardrail_meta = _run_framework_guardrail(
-            engine=guardrail_executed_engine,
             candidate_payload=candidate_payload,
             guardrail_config=guardrail_config,
             stage=stage,
@@ -12391,7 +11064,6 @@ def _execute_node(
         auto_approve = bool(node.config.get("auto_approve", True))
 
         review_result, review_meta = _run_framework_human_review(
-            engine=review_executed_engine,
             candidate_payload=candidate_payload,
             reviewer_group=reviewer_group,
             auto_approve=auto_approve,
@@ -19664,87 +18336,6 @@ def _run_memory_consolidation(
     return result
 
 
-def _build_runtime_l3_parity_report() -> dict[str, Any]:
-    engines = ["native", "langgraph", "langchain", "semantic-kernel", "autogen"]
-    node_types = sorted(_framework_adapter_mapping("native").keys())
-
-    matrix: list[dict[str, Any]] = []
-    l3_ready_cells = 0
-    total_cells = 0
-
-    probes = {
-        engine: (
-            {"engine": "native", "available": True, "missing_modules": []}
-            if engine == "native"
-            else _framework_runtime_probe(engine)
-        )
-        for engine in engines
-    }
-
-    for node_type in node_types:
-        row: dict[str, Any] = {
-            "node_type": node_type,
-            "engines": {},
-        }
-        row_ready = True
-        for engine in engines:
-            total_cells += 1
-            adapter = _framework_adapter_mapping(engine).get(node_type, "")
-            probe = probes[engine]
-            has_delegated_or_native = (
-                node_type in _L3_DELEGATED_NODE_TYPES
-                or node_type in _L3_NATIVE_CONTROL_PLANE_NODE_TYPES
-            )
-            l3_ready = bool(adapter) and has_delegated_or_native
-            if l3_ready:
-                l3_ready_cells += 1
-            row_ready = row_ready and l3_ready
-            row["engines"][engine] = {
-                "adapter": adapter,
-                "probe": {
-                    "available": bool(probe.get("available", False)),
-                    "missing_modules": list(probe.get("missing_modules", [])),
-                },
-                "l3_ready": l3_ready,
-            }
-        row["l3_ready"] = row_ready
-        matrix.append(row)
-
-    ready_nodes = len([row for row in matrix if row.get("l3_ready")])
-    coverage_percent = round((l3_ready_cells / total_cells) * 100, 2) if total_cells else 0.0
-    ci_status = "pass" if l3_ready_cells == total_cells else "warn"
-
-    ci_lines = [
-        "L3_PARITY_REPORT",
-        f"status={ci_status}",
-        f"coverage_percent={coverage_percent}",
-        f"ready_cells={l3_ready_cells}",
-        f"total_cells={total_cells}",
-        f"ready_nodes={ready_nodes}",
-        f"total_nodes={len(matrix)}",
-    ]
-
-    return {
-        "generated_at": _now_iso(),
-        "strategies": sorted(_SUPPORTED_RUNTIME_STRATEGIES),
-        "engines": engines,
-        "matrix": matrix,
-        "summary": {
-            "total_nodes": len(matrix),
-            "ready_nodes": ready_nodes,
-            "total_cells": total_cells,
-            "ready_cells": l3_ready_cells,
-            "coverage_percent": coverage_percent,
-        },
-        "ci_summary": {
-            "gate": "l3-runtime-parity",
-            "status": ci_status,
-            "artifact_name": "l3_runtime_parity_summary.txt",
-            "artifact_text": "\n".join(ci_lines),
-        },
-    }
-
-
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -21078,15 +19669,7 @@ def get_runtime_providers(request: Request) -> dict[str, Any]:
                 "base_url": _sanitize_base_url(provider_config.base_url),
             }
         )
-    framework_adapters = {
-        engine: _framework_runtime_probe(engine)
-        for engine in sorted(_SUPPORTED_RUNTIME_ENGINES)
-        if engine != "native"
-    }
-    return {
-        "providers": providers,
-        "framework_adapters": framework_adapters,
-    }
+    return {"providers": providers}
 
 
 @app.get("/runtime/user-providers")
@@ -21226,13 +19809,6 @@ def delete_user_runtime_provider(provider: str, request: Request) -> dict[str, b
         {"principal_id": principal["principal_id"], "provider": normalized_provider},
     )
     return {"ok": True}
-
-
-@app.get("/runtime/l3-parity-report")
-def get_runtime_l3_parity_report(request: Request) -> dict[str, Any]:
-    actor = _enforce_request_authn(request, action="runtime.l3_parity.read")
-    _append_audit_event("runtime.l3_parity.read", actor, "allowed")
-    return _build_runtime_l3_parity_report()
 
 
 @app.get("/runtime/local-integration-readiness")
@@ -31234,27 +29810,6 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
             created_at=_now_iso(),
         )
     )
-
-    if runtime_info.get("strategy") == "hybrid":
-        hybrid_routing = (
-            runtime_info.get("hybrid_effective_routing")
-            if isinstance(runtime_info.get("hybrid_effective_routing"), dict)
-            else {}
-        )
-        if hybrid_routing:
-            routing_summary = ", ".join(
-                f"{role}:{engine}" for role, engine in hybrid_routing.items()
-            )
-            events.append(
-                GraphRunEvent(
-                    id=f"evt-{uuid4()}",
-                    node_id="runtime",
-                    type="node_completed",
-                    title="Hybrid routing plan",
-                    summary=routing_summary,
-                    created_at=_now_iso(),
-                )
-            )
 
     for node_id in order:
         node = node_by_id[node_id]

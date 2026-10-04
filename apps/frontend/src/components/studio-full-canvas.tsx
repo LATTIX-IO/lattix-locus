@@ -26,11 +26,6 @@ import {
   type GraphRunResponse,
   type ObservabilityDashboardResponse,
   type ObservabilityRunTrace,
-  type PlatformRuntimePolicySettings,
-  type RuntimeHybridRouting,
-  type RuntimeEngineName,
-  type RuntimeStrategyName,
-  type RuntimeFrameworkAdapterProbe,
   type RuntimeProvider,
   validateGraph,
 } from "@/lib/api";
@@ -252,30 +247,6 @@ export function StudioFullCanvas({
   const [runtimeLoadError, setRuntimeLoadError] = useState<string | null>(null);
   const [catalogLoadError, setCatalogLoadError] = useState<string | null>(null);
   const [memoryError, setMemoryError] = useState<string | null>(null);
-  const [frameworkAdapters, setFrameworkAdapters] = useState<Record<string, RuntimeFrameworkAdapterProbe>>({});
-  const [runtimePolicy, setRuntimePolicy] = useState<PlatformRuntimePolicySettings>({
-    default_runtime_engine: "native",
-    default_runtime_strategy: "single",
-    default_hybrid_runtime_routing: {
-      default: "native",
-      orchestration: "native",
-      retrieval: "native",
-      tooling: "native",
-      collaboration: "native",
-    },
-    allowed_runtime_engines: ["native"],
-    allow_runtime_engine_override: false,
-    enforce_runtime_engine_allowlist: true,
-  });
-  const [runtimeEngine, setRuntimeEngine] = useState<RuntimeEngineName>("native");
-  const [runtimeStrategy, setRuntimeStrategy] = useState<RuntimeStrategyName>("single");
-  const [hybridRouting, setHybridRouting] = useState<RuntimeHybridRouting>({
-    default: "native",
-    orchestration: "langgraph",
-    retrieval: "langchain",
-    tooling: "semantic-kernel",
-    collaboration: "autogen",
-  });
   const [runtimeModel, setRuntimeModel] = useState("gpt-5.2");
   const [runtimeTemperature, setRuntimeTemperature] = useState("0.2");
   const [sessionId, setSessionId] = useState(`${entityType}:${entityId}`);
@@ -803,51 +774,21 @@ export function StudioFullCanvas({
 
     async function loadRuntimeProvider() {
       try {
-        const [response, platformSettings] = await Promise.all([getRuntimeProviders(), getPlatformSettings()]);
+        const response = await getRuntimeProviders();
         if (cancelled) {
           return;
         }
         setRuntimeLoadError(null);
         const openai = response.providers.find((provider) => provider.provider === "openai") ?? null;
         setProviderStatus(openai);
-        setFrameworkAdapters(response.framework_adapters ?? {});
         if (openai?.model) {
           setRuntimeModel(openai.model);
         }
-
-        const nextPolicy: PlatformRuntimePolicySettings = {
-          default_runtime_engine: (platformSettings.default_runtime_engine ?? "native") as RuntimeEngineName,
-          default_runtime_strategy: (platformSettings.default_runtime_strategy ?? "single") as RuntimeStrategyName,
-          default_hybrid_runtime_routing: {
-            default: (platformSettings.default_hybrid_runtime_routing?.default ?? "native") as RuntimeEngineName,
-            orchestration: (platformSettings.default_hybrid_runtime_routing?.orchestration ?? platformSettings.default_hybrid_runtime_routing?.default ?? "native") as RuntimeEngineName,
-            retrieval: (platformSettings.default_hybrid_runtime_routing?.retrieval ?? platformSettings.default_hybrid_runtime_routing?.default ?? "native") as RuntimeEngineName,
-            tooling: (platformSettings.default_hybrid_runtime_routing?.tooling ?? platformSettings.default_hybrid_runtime_routing?.default ?? "native") as RuntimeEngineName,
-            collaboration: (platformSettings.default_hybrid_runtime_routing?.collaboration ?? platformSettings.default_hybrid_runtime_routing?.default ?? "native") as RuntimeEngineName,
-          },
-          allowed_runtime_engines: ((platformSettings.allowed_runtime_engines ?? ["native"]) as string[]).filter(Boolean),
-          allow_runtime_engine_override: Boolean(platformSettings.allow_runtime_engine_override),
-          enforce_runtime_engine_allowlist: Boolean(platformSettings.enforce_runtime_engine_allowlist),
-        };
-        if ((nextPolicy.allowed_runtime_engines ?? []).length === 0) {
-          nextPolicy.allowed_runtime_engines = ["native"];
-        }
-        setRuntimePolicy(nextPolicy);
-        setRuntimeEngine(nextPolicy.default_runtime_engine as RuntimeEngineName);
-        setRuntimeStrategy(nextPolicy.default_runtime_strategy ?? "single");
-        setHybridRouting({
-          default: nextPolicy.default_hybrid_runtime_routing?.default ?? nextPolicy.default_runtime_engine ?? "native",
-          orchestration: nextPolicy.default_hybrid_runtime_routing?.orchestration ?? nextPolicy.default_hybrid_runtime_routing?.default ?? nextPolicy.default_runtime_engine ?? "native",
-          retrieval: nextPolicy.default_hybrid_runtime_routing?.retrieval ?? nextPolicy.default_hybrid_runtime_routing?.default ?? nextPolicy.default_runtime_engine ?? "native",
-          tooling: nextPolicy.default_hybrid_runtime_routing?.tooling ?? nextPolicy.default_hybrid_runtime_routing?.default ?? nextPolicy.default_runtime_engine ?? "native",
-          collaboration: nextPolicy.default_hybrid_runtime_routing?.collaboration ?? nextPolicy.default_hybrid_runtime_routing?.default ?? nextPolicy.default_runtime_engine ?? "native",
-        });
       } catch (error) {
         if (cancelled) {
           return;
         }
         setProviderStatus(null);
-        setFrameworkAdapters({});
         setRuntimeLoadError(error instanceof Error ? error.message : "Unable to load runtime provider status.");
       }
     }
@@ -857,50 +798,6 @@ export function StudioFullCanvas({
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  const frameworkAdapterRows = useMemo(() => {
-    const preferredOrder = ["langgraph", "langchain", "semantic-kernel", "autogen"];
-    const keys = Object.keys(frameworkAdapters);
-    const orderedKeys = preferredOrder.filter((engine) => keys.includes(engine));
-    const extras = keys.filter((engine) => !preferredOrder.includes(engine)).sort();
-    const resolved = [...orderedKeys, ...extras];
-
-    return resolved.map((engine) => {
-      const probe = frameworkAdapters[engine];
-      return {
-        engine,
-        available: Boolean(probe?.available),
-        missingModules: Array.isArray(probe?.missing_modules) ? probe.missing_modules : [],
-      };
-    });
-  }, [frameworkAdapters]);
-
-  const runtimeEngineOptions = useMemo(
-    () => ["native", "langgraph", "langchain", "semantic-kernel", "autogen"] as RuntimeEngineName[],
-    [],
-  );
-
-  const selectedEngineProbe = useMemo(
-    () => frameworkAdapters[runtimeStrategy === "hybrid" ? (hybridRouting.default ?? "native") : runtimeEngine],
-    [frameworkAdapters, hybridRouting.default, runtimeEngine, runtimeStrategy],
-  );
-
-  const effectiveRuntimeEngine = useMemo<RuntimeEngineName>(() => {
-    if (!runtimePolicy.allow_runtime_engine_override) {
-      return (runtimePolicy.default_runtime_engine as RuntimeEngineName) ?? "native";
-    }
-    if (runtimeStrategy === "hybrid") {
-      return hybridRouting.default ?? "native";
-    }
-    return runtimeEngine;
-  }, [hybridRouting.default, runtimeEngine, runtimePolicy.allow_runtime_engine_override, runtimePolicy.default_runtime_engine, runtimeStrategy]);
-
-  const setHybridRoleEngine = useCallback((role: keyof RuntimeHybridRouting, engine: RuntimeEngineName) => {
-    setHybridRouting((current) => ({
-      ...current,
-      [role]: engine,
-    }));
   }, []);
 
   const mergedWidgetOptionOverrides = useMemo(() => {
@@ -985,18 +882,6 @@ export function StudioFullCanvas({
             temperature: Number(runtimeTemperature),
             session_id: sessionId,
             use_memory: useMemory,
-            engine: effectiveRuntimeEngine,
-            strategy: runtimeStrategy,
-            hybrid_routing:
-              runtimeStrategy === "hybrid"
-                ? {
-                    default: hybridRouting.default ?? effectiveRuntimeEngine,
-                    orchestration: hybridRouting.orchestration ?? hybridRouting.default ?? effectiveRuntimeEngine,
-                    retrieval: hybridRouting.retrieval ?? hybridRouting.default ?? effectiveRuntimeEngine,
-                    tooling: hybridRouting.tooling ?? hybridRouting.default ?? effectiveRuntimeEngine,
-                    collaboration: hybridRouting.collaboration ?? hybridRouting.default ?? effectiveRuntimeEngine,
-                  }
-                : undefined,
           },
         },
       });
@@ -1273,16 +1158,6 @@ export function StudioFullCanvas({
                   <div className="font-mono text-[var(--foreground)]">
                     strategy={runResult.runtime.strategy ?? "single"} requested={runResult.runtime.requested_engine ?? "native"} selected={runResult.runtime.selected_engine ?? "native"} executed={runResult.runtime.executed_engine ?? "native"} mode={runResult.runtime.mode ?? "native"}
                   </div>
-                  {runResult.runtime.strategy === "hybrid" && runResult.runtime.hybrid_effective_routing && (
-                    <>
-                      <div className="mt-1 fx-muted">hybrid routing</div>
-                      <div className="font-mono text-[var(--foreground)]">
-                        {Object.entries(runResult.runtime.hybrid_effective_routing)
-                          .map(([role, engine]) => `${role}:${engine}`)
-                          .join(" | ") || "(none)"}
-                      </div>
-                    </>
-                  )}
                   {Array.isArray(runResult.runtime.node_dispatches) && runResult.runtime.node_dispatches.length > 0 && (
                     <>
                       <div className="mt-1 fx-muted">node dispatches</div>
@@ -1320,140 +1195,7 @@ export function StudioFullCanvas({
               </div>
               {runtimeLoadError ? <div className="mb-1 text-[9px] text-[var(--fx-danger)]">{runtimeLoadError}</div> : null}
               {catalogLoadError ? <div role="alert" className="mb-1 text-[9px] text-[var(--fx-danger)]">{catalogLoadError}</div> : null}
-              <div className="mb-1 flex items-center justify-between gap-2 text-[9px]">
-                <span className="fx-muted">engine_override={runtimePolicy.allow_runtime_engine_override ? "enabled" : "disabled"}</span>
-                <span className="fx-muted">effective={effectiveRuntimeEngine}</span>
-              </div>
-              <div className="mb-1 text-[9px] fx-muted">allowed={(runtimePolicy.allowed_runtime_engines ?? []).join(", ") || "native"}</div>
-              <div className="mb-1 text-[9px] fx-muted">Framework adapters</div>
-              <ul className="mb-1 max-h-20 overflow-auto rounded-[0.85rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-1.5">
-                {frameworkAdapterRows.length === 0 ? (
-                  <li className="fx-muted">No adapter probe data.</li>
-                ) : (
-                  frameworkAdapterRows.map((row) => (
-                    <li key={row.engine} className="mb-1 border-b border-[var(--fx-border)] pb-1 last:mb-0 last:border-b-0 last:pb-0">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-[var(--foreground)]">{row.engine}</span>
-                        <span
-                          className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold ${row.available ? "border-[color-mix(in_srgb,var(--fx-success)_60%,var(--fx-border)_40%)] bg-[color-mix(in_srgb,var(--fx-success)_20%,transparent)] text-[var(--foreground)]" : "border-[color-mix(in_srgb,var(--fx-warning)_60%,var(--fx-border)_40%)] bg-[color-mix(in_srgb,var(--fx-warning)_18%,transparent)] text-[var(--foreground)]"}`}
-                          aria-label={`Runtime adapter ${row.engine} ${row.available ? "ready" : "missing dependencies"}`}
-                          title={row.available ? "Adapter dependencies detected" : "Adapter dependencies missing"}
-                        >
-                          {row.available ? "READY" : "MISSING"}
-                        </span>
-                      </div>
-                      {!row.available && row.missingModules.length > 0 && (
-                        <div className="mt-0.5 break-all text-[9px] fx-muted">{row.missingModules.join(", ")}</div>
-                      )}
-                    </li>
-                  ))
-                )}
-              </ul>
               <div className="grid grid-cols-2 gap-1">
-                <label className="col-span-2 flex flex-col gap-0.5 fx-muted">
-                  <span>runtime_strategy</span>
-                  <select
-                    aria-label="Runtime strategy"
-                    value={runtimeStrategy}
-                    onChange={(event) => setRuntimeStrategy(event.target.value as RuntimeStrategyName)}
-                    className="fx-field px-1 py-0.5 text-[10px]"
-                  >
-                    <option value="single">single</option>
-                    <option value="hybrid">hybrid (task-routed)</option>
-                  </select>
-                </label>
-                <label className="col-span-2 flex flex-col gap-0.5 fx-muted">
-                  <span>runtime_engine</span>
-                  <select
-                    aria-label="Runtime engine"
-                    value={runtimeEngine}
-                    onChange={(event) => setRuntimeEngine(event.target.value as RuntimeEngineName)}
-                    className="fx-field px-1 py-0.5 text-[10px]"
-                    disabled={!runtimePolicy.allow_runtime_engine_override || runtimeStrategy === "hybrid"}
-                  >
-                    {runtimeEngineOptions.map((engine) => {
-                      const probe = frameworkAdapters[engine];
-                      const depsReady = engine === "native" || Boolean(probe?.available);
-                      const allowed = (runtimePolicy.allowed_runtime_engines ?? []).includes(engine);
-                      const blockedByAllowlist = runtimePolicy.enforce_runtime_engine_allowlist && !allowed;
-                      const label = `${engine}${depsReady ? "" : " (deps missing)"}${blockedByAllowlist ? " (not allowed)" : ""}`;
-                      return (
-                        <option key={engine} value={engine}>
-                          {label}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </label>
-                {runtimeStrategy === "hybrid" && (
-                  <>
-                    <label className="flex flex-col gap-0.5 fx-muted">
-                      <span>route.default</span>
-                      <select
-                        aria-label="Hybrid route default"
-                        value={hybridRouting.default ?? "native"}
-                        onChange={(event) => setHybridRoleEngine("default", event.target.value as RuntimeEngineName)}
-                        className="fx-field px-1 py-0.5 text-[10px]"
-                      >
-                        {runtimeEngineOptions.map((engine) => (
-                          <option key={`hy-default-${engine}`} value={engine}>{engine}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="flex flex-col gap-0.5 fx-muted">
-                      <span>route.retrieval</span>
-                      <select
-                        aria-label="Hybrid route retrieval"
-                        value={hybridRouting.retrieval ?? hybridRouting.default ?? "native"}
-                        onChange={(event) => setHybridRoleEngine("retrieval", event.target.value as RuntimeEngineName)}
-                        className="fx-field px-1 py-0.5 text-[10px]"
-                      >
-                        {runtimeEngineOptions.map((engine) => (
-                          <option key={`hy-retrieval-${engine}`} value={engine}>{engine}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="flex flex-col gap-0.5 fx-muted">
-                      <span>route.tooling</span>
-                      <select
-                        aria-label="Hybrid route tooling"
-                        value={hybridRouting.tooling ?? hybridRouting.default ?? "native"}
-                        onChange={(event) => setHybridRoleEngine("tooling", event.target.value as RuntimeEngineName)}
-                        className="fx-field px-1 py-0.5 text-[10px]"
-                      >
-                        {runtimeEngineOptions.map((engine) => (
-                          <option key={`hy-tooling-${engine}`} value={engine}>{engine}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="flex flex-col gap-0.5 fx-muted">
-                      <span>route.orchestration</span>
-                      <select
-                        aria-label="Hybrid route orchestration"
-                        value={hybridRouting.orchestration ?? hybridRouting.default ?? "native"}
-                        onChange={(event) => setHybridRoleEngine("orchestration", event.target.value as RuntimeEngineName)}
-                        className="fx-field px-1 py-0.5 text-[10px]"
-                      >
-                        {runtimeEngineOptions.map((engine) => (
-                          <option key={`hy-orchestration-${engine}`} value={engine}>{engine}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="col-span-2 flex flex-col gap-0.5 fx-muted">
-                      <span>route.collaboration</span>
-                      <select
-                        aria-label="Hybrid route collaboration"
-                        value={hybridRouting.collaboration ?? hybridRouting.default ?? "native"}
-                        onChange={(event) => setHybridRoleEngine("collaboration", event.target.value as RuntimeEngineName)}
-                        className="fx-field px-1 py-0.5 text-[10px]"
-                      >
-                        {runtimeEngineOptions.map((engine) => (
-                          <option key={`hy-collaboration-${engine}`} value={engine}>{engine}</option>
-                        ))}
-                      </select>
-                    </label>
-                  </>
-                )}
                 <label className="flex flex-col gap-0.5 fx-muted">
                   <span>model</span>
                   <input
@@ -1486,21 +1228,6 @@ export function StudioFullCanvas({
                 <input type="checkbox" checked={useMemory} onChange={(event) => setUseMemory(event.target.checked)} />
                 <span>Enable memory context</span>
               </label>
-              {!runtimePolicy.allow_runtime_engine_override && (
-                <div className="mt-1 text-[9px] fx-muted">
-                  Engine override is disabled by platform policy; runs will use default engine ({runtimePolicy.default_runtime_engine}).
-                </div>
-              )}
-              {runtimeStrategy === "hybrid" && (
-                <div className="mt-1 text-[9px] fx-muted">
-                  Hybrid mode routes agent tasks by role: retrieval/tooling/orchestration/collaboration/default.
-                </div>
-              )}
-              {runtimePolicy.allow_runtime_engine_override && effectiveRuntimeEngine !== "native" && selectedEngineProbe && !selectedEngineProbe.available && (
-                <div className="mt-1 text-[9px] text-[var(--fx-warning)]">
-                  Selected engine dependencies are missing; runtime may fall back to compatibility mode or fail in strict mode.
-                </div>
-              )}
               <div className="mt-1 flex items-center justify-between">
                 <span className="fx-muted">memory entries: {memoryCount}</span>
                 {memoryError ? <span role="alert" className="text-[var(--fx-danger)]">{memoryError}</span> : null}

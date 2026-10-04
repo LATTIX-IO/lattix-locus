@@ -39,7 +39,7 @@ services:
     working_dir: /workspace/apps/backend
     # Dependencies install into a venv on a named volume, keyed by a hash of
     # requirements.txt — restarts reuse it instead of re-downloading every boot.
-    command: sh -lc "VENV=/opt/locus-venv; HASH_FILE=$$VENV/.reqhash; CURRENT_HASH=$$(sha256sum requirements.txt | awk '{print $$1}'); SAVED_HASH=$$(cat $$HASH_FILE 2>/dev/null || true); if [ ! -x $$VENV/bin/python ] || [ \"$$CURRENT_HASH\" != \"$$SAVED_HASH\" ]; then python -m venv $$VENV && $$VENV/bin/pip install --no-cache-dir -r requirements.txt && if [ \"${LOCUS_INSTALL_RUNTIME_ENGINES:-0}\" = \"1\" ]; then $$VENV/bin/pip install --no-cache-dir -r requirements-runtime-engines.txt; fi && echo $$CURRENT_HASH > $$HASH_FILE; fi; exec $$VENV/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    command: sh -lc "VENV=/opt/locus-venv; HASH_FILE=$$VENV/.reqhash; CURRENT_HASH=$$(sha256sum requirements.txt | awk '{print $$1}'); SAVED_HASH=$$(cat $$HASH_FILE 2>/dev/null || true); if [ ! -x $$VENV/bin/python ] || [ \"$$CURRENT_HASH\" != \"$$SAVED_HASH\" ]; then python -m venv $$VENV && $$VENV/bin/pip install --no-cache-dir -r requirements.txt && echo $$CURRENT_HASH > $$HASH_FILE; fi; exec $$VENV/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
     environment:
       # Backend + repo root on the path so `app` and `locus_runtime` imports resolve.
       PYTHONPATH: /workspace/apps/backend:/workspace
@@ -65,7 +65,6 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
       LOCUS_AGENT_ASSETS_ROOT: ${LOCUS_AGENT_ASSETS_ROOT:-/workspace/examples/agents}
-      LOCUS_INSTALL_RUNTIME_ENGINES: ${LOCUS_INSTALL_RUNTIME_ENGINES:-0}
       LOCUS_SECRETS_ENCRYPTION_KEY: ${LOCUS_SECRETS_ENCRYPTION_KEY:-}
       POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://frontier:frontier@postgres:5432/frontier}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}

@@ -185,12 +185,6 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     ),
     RouteAccessRule(
         ("GET",),
-        "/runtime/l3-parity-report",
-        RouteAccessCategory.AUTHENTICATED_READ,
-        "runtime.l3_parity.read",
-    ),
-    RouteAccessRule(
-        ("GET",),
         "/runtime/local-integration-readiness",
         RouteAccessCategory.AUTHENTICATED_READ,
         "runtime.local_integration_readiness.read",

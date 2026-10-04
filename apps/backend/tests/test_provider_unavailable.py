@@ -131,16 +131,6 @@ def test_streaming_provider_error_is_typed_and_redacts_url_key(
     assert "403" in exc.message
 
 
-def test_framework_chat_without_key_raises_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    with pytest.raises(main_module.ProviderUnavailableError) as caught:
-        main_module._run_langchain_chat(
-            system_prompt="", user_prompt=PROMPT, model="gpt-test-model", temperature=0.2
-        )
-    assert caught.value.code == "provider_not_configured"
-    assert caught.value.model == "gpt-test-model"
-
-
 def test_runtime_providers_reports_not_configured(no_provider_credentials: None) -> None:
     response = client.get("/runtime/providers", headers=AUTH_HEADERS)
     assert response.status_code == 200

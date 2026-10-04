@@ -331,15 +331,13 @@ export type PlatformSettings = {
   collaboration_max_agents: number;
   max_tool_calls_per_run?: number;
   max_retrieval_items?: number;
-  default_runtime_engine?: "native" | "langgraph" | "langchain" | "semantic-kernel" | "autogen";
-  default_runtime_strategy?: "single" | "hybrid";
-  default_hybrid_runtime_routing?: {
-    default?: "native" | "langgraph" | "langchain" | "semantic-kernel" | "autogen";
-    orchestration?: "native" | "langgraph" | "langchain" | "semantic-kernel" | "autogen";
-    retrieval?: "native" | "langgraph" | "langchain" | "semantic-kernel" | "autogen";
-    tooling?: "native" | "langgraph" | "langchain" | "semantic-kernel" | "autogen";
-    collaboration?: "native" | "langgraph" | "langchain" | "semantic-kernel" | "autogen";
-  };
+  // Kept for stored-settings compatibility; the backend resolves every value to
+  // the native engine and the single strategy (LOCUS-352).
+  default_runtime_engine?: "native";
+  default_runtime_strategy?: "single";
+  default_hybrid_runtime_routing?: Partial<
+    Record<"default" | "orchestration" | "retrieval" | "tooling" | "collaboration", "native">
+  >;
   allowed_runtime_engines?: string[];
   allow_runtime_engine_override?: boolean;
   enforce_runtime_engine_allowlist?: boolean;

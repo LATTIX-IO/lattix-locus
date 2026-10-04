@@ -1743,7 +1743,6 @@ def test_memory_node_append_persists_short_and_long_term_memory() -> None:
     main_module._POSTGRES_MEMORY.clear_entries(bucket_id=bucket_id, memory_scope="agent")
 
     result, _meta = main_module._run_framework_memory(
-        engine="native",
         action="append",
         scope="agent",
         bucket_id=bucket_id,
@@ -2405,7 +2404,6 @@ def test_memory_read_returns_world_graph_context() -> None:
     )
 
     result, _meta = main_module._run_framework_memory(
-        engine="native",
         action="read",
         scope="workflow",
         bucket_id=bucket_id,
@@ -3292,7 +3290,6 @@ def test_secure_local_mode_fail_closes_sensitive_diagnostics(monkeypatch) -> Non
         assert client.get("/platform/security-policy").status_code == 401
         assert client.get("/runtime/providers").status_code == 401
         assert client.get("/runtime/local-integration-readiness").status_code == 401
-        assert client.get("/runtime/l3-parity-report").status_code == 401
 
         headers = AUTH_HEADERS
         assert client.get("/platform/security-policy", headers=headers).status_code == 200
@@ -3300,7 +3297,6 @@ def test_secure_local_mode_fail_closes_sensitive_diagnostics(monkeypatch) -> Non
         assert (
             client.get("/runtime/local-integration-readiness", headers=headers).status_code == 200
         )
-        assert client.get("/runtime/l3-parity-report", headers=headers).status_code == 200
 
         assert any(
             event.action == "platform.security_policy.read" and event.outcome == "blocked"

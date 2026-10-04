@@ -238,15 +238,8 @@ export type RuntimeProvider = {
   mode: "live" | "not_configured";
 };
 
-export type RuntimeFrameworkAdapterProbe = {
-  engine: string;
-  available: boolean;
-  missing_modules: string[];
-};
-
 export type RuntimeProvidersResponse = {
   providers: RuntimeProvider[];
-  framework_adapters?: Record<string, RuntimeFrameworkAdapterProbe>;
 };
 
 export type UserRuntimeProviderConfig = {
@@ -273,23 +266,8 @@ export type UserSkillsResponse = {
   updated_at?: string;
 };
 
-export type RuntimeEngineName = "native" | "langgraph" | "langchain" | "semantic-kernel" | "autogen";
-
-export type RuntimeStrategyName = "single" | "hybrid";
-
-export type RuntimeHybridRole = "default" | "orchestration" | "retrieval" | "tooling" | "collaboration";
-
-export type RuntimeHybridRouting = Partial<Record<RuntimeHybridRole, RuntimeEngineName>>;
-
-export type PlatformRuntimePolicySettings = Pick<
-  PlatformSettings,
-  | "default_runtime_engine"
-  | "default_runtime_strategy"
-  | "default_hybrid_runtime_routing"
-  | "allowed_runtime_engines"
-  | "allow_runtime_engine_override"
-  | "enforce_runtime_engine_allowlist"
->;
+/** One strategy remains (LOCUS-352); the backend maps a stored "hybrid" to it. */
+export type RuntimeStrategyName = "single";
 
 export type GraphValidationResponse = {
   valid: boolean;
@@ -324,10 +302,6 @@ export type GraphRunResponse = {
       available?: boolean;
       missing_modules?: string[];
     };
-    hybrid_routing?: RuntimeHybridRouting;
-    hybrid_effective_routing?: RuntimeHybridRouting;
-    hybrid_role_modes?: Partial<Record<RuntimeHybridRole, string>>;
-    hybrid_resolution_notes?: string[];
     node_dispatches?: Array<{
       node_id: string;
       node_title?: string;
