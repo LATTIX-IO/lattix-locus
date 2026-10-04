@@ -739,6 +739,30 @@ _USER_BROWSER_R3_WORDS = frozenset(
         "subscription",
     }
 )
+# Words on a control in the principal's own browser that make an R3 action a
+# payment / purchase or an account-security change. These ask in every tier,
+# Open included (D-25, principal decision 2026-10-04).
+_PAYMENT_UI_WORDS = frozenset(
+    {
+        "pay",
+        "payment",
+        "purchase",
+        "buy",
+        "order",
+        "checkout",
+        "transfer",
+        "refund",
+        "charge",
+        "wire",
+        "donate",
+        "subscribe",
+        "withdraw",
+        "billing",
+        "subscription",
+        "book",
+    }
+)
+_ACCOUNT_SECURITY_UI_WORDS = _USER_BROWSER_R3_WORDS - {"billing", "subscription"}
 _OS_LEVEL_KEYS = frozenset({"win", "windows", "meta", "cmd", "command", "super", "os"})
 _ENTER_KEYS = frozenset({"enter", "return", "numpadenter"})
 _UI_TEXT_MAX = 300
@@ -859,6 +883,38 @@ def classify_ui(kind: str, ui: UiFacts | None) -> RiskClass:
         ):
             return RiskClass.R3
     return RiskClass.R2
+
+
+def protected_ui_kind(kind: str, ui: UiFacts | None) -> str:
+    """``"payment"``, ``"account_security"`` or ``""`` for a user-browser action.
+
+    Payments / purchases and account-security changes ask in every browser
+    tier, Open included. Like :func:`classify_ui` this reads only perceived
+    screen facts and can only add protection: missing facts on an acting
+    control count as protected, and submitting a form that holds a secret or
+    payment-card field counts as a payment (the form can't be told apart from
+    a checkout by its fields alone).
+    """
+    if kind != "user_browser_act":
+        return ""
+    if ui is None:
+        return "payment"
+    if ui.control not in {"click", "select", "press", "type", "fill"}:
+        return ""
+    chord = _name_tokens(ui.key.replace("+", " "))
+    activates = ui.control in {"click", "select"} or bool(chord & _ENTER_KEYS)
+    if not activates:
+        return ""
+    words = _name_tokens(_norm_ui_text(ui.name, ui.label))
+    if ui.submits_form:
+        words = words | _name_tokens(_norm_ui_text(ui.form_text))
+        if ui.form_sensitive:
+            return "payment"
+    if words & _PAYMENT_UI_WORDS:
+        return "payment"
+    if words & _ACCOUNT_SECURITY_UI_WORDS:
+        return "account_security"
+    return ""
 
 
 def classify_risk(
@@ -1747,6 +1803,8 @@ def user_browser_input(action: GatewayAction, caps: Capabilities) -> dict[str, A
         "tab_shared": bool(ui is not None and ui.tab_shared),
         "sensitive_field": bool(ui is not None and ui.sensitive_field),
         "risk": action.risk.label,
+        # Payments and account-security changes ask in every tier (D-25).
+        "protected_action": bool(protected_ui_kind(action.kind, ui)),
         **user_browser_snapshot(),
     }
 

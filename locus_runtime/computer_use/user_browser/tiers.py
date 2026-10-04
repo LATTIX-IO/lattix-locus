@@ -52,8 +52,9 @@ TIER_RISKS: Mapping[str, str] = {
     ),
     "open": (
         "The agent acts in every tab and site of your signed-in browser without asking, including "
-        "irreversible actions such as sending, paying, purchasing and deleting. A prompt injection "
-        "on any page can make it do so. Secret fields, panic and audit still apply."
+        "irreversible actions such as sending and deleting. A prompt injection on any page can "
+        "make it do so. Payments, purchases and account-security changes still ask. Secret "
+        "fields, panic and audit still apply."
     ),
 }
 

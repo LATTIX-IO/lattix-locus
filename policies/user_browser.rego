@@ -34,7 +34,9 @@ package lattix.user_browser
 #            submit ask
 #   trusted  granted sites: everything allowed except irreversible (R3)
 #            actions, which ask
-#   open     no prompts (R3 covered by the recorded consent)
+#   open     no prompts (R3 covered by the recorded consent), except payments /
+#            purchases and account-security changes, which ask in every tier
+#            (input.protected_action, set by the gateway; missing = protected)
 #
 # The floor, in every tier, is a deny here: no paired extension, panic,
 # entering data into a secret field, R4, non-http(s) navigation, a malformed
@@ -196,6 +198,16 @@ needs_ask if {
 needs_ask if {
 	level == "trusted"
 	risk == "R3"
+}
+
+# Payments / purchases and account-security changes ask in every tier, Open
+# included (D-25, principal decision 2026-10-04). The gateway derives the fact
+# from the perceived control; a missing or malformed fact counts as protected.
+protected_action if object.get(input, "protected_action", true) != false
+
+needs_ask if {
+	action == "user_browser_act"
+	protected_action
 }
 
 decision := "deny" if {

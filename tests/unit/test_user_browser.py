@@ -478,6 +478,49 @@ def test_user_browser_classification() -> None:
     assert gw.classify_ui("browser_act", settings_click) == 2  # agent browser unchanged
 
 
+def test_protected_ui_kind_payments_and_account_security() -> None:
+    ui = UiFacts.create
+    kind = gw.protected_ui_kind
+    act = "user_browser_act"
+    assert kind(act, ui(surface="browser", control="click", name="Place order")) == "payment"
+    assert kind(act, ui(surface="browser", control="click", name="Buy now")) == "payment"
+    assert (
+        kind(act, ui(surface="browser", control="click", label="Proceed to checkout")) == "payment"
+    )
+    change_password = ui(surface="browser", control="click", name="Change password")
+    assert kind(act, change_password) == "account_security"
+    assert (
+        kind(act, ui(surface="browser", control="click", name="Recovery email"))
+        == "account_security"
+    )
+    # A form holding a card or secret field counts as a payment, whatever its button says.
+    form = ui(
+        surface="browser", control="click", name="Continue", submits_form=True, form_sensitive=True
+    )
+    assert kind(act, form) == "payment"
+    # Enter in a form whose submit control says "Pay".
+    enter = ui(
+        surface="browser", control="press", key="Enter", submits_form=True, form_text="Pay $20"
+    )
+    assert kind(act, enter) == "payment"
+    # Not protected: ordinary sends, typing, reads, the agent browser.
+    assert kind(act, ui(surface="browser", control="click", name="Send")) == ""
+    assert kind(act, ui(surface="browser", control="type", name="Search")) == ""
+    assert kind("user_browser_read", ui(surface="browser", control="observe")) == ""
+    assert kind("browser_act", ui(surface="browser", control="click", name="Buy now")) == ""
+    # Missing facts on an acting user-browser action fail closed.
+    assert kind(act, None) == "payment"
+
+
+def test_user_browser_input_carries_protected_action() -> None:
+    action = gw.GatewayAction.create(
+        caller=gw.UNBOUND_CALLER, **_click("Buy now", site="example.com", tab_shared=True)
+    )
+    payload = gw.user_browser_input(action, Capabilities())
+    assert payload["protected_action"] is True
+    assert payload["risk"] == "R3"
+
+
 # --------------------------------------------------------------------------- #
 # The user driver: gate first, redact always
 # --------------------------------------------------------------------------- #

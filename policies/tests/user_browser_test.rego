@@ -21,6 +21,7 @@ base(overrides) := object.union(
 		"granted_sites": ["example.com"],
 		"extension_paired": true,
 		"panicked": false,
+		"protected_action": false,
 	},
 	overrides,
 )
@@ -41,7 +42,31 @@ fill := {"action": "user_browser_act", "control": "fill", "risk": "R2"}
 
 scroll := {"action": "user_browser_act", "control": "scroll", "risk": "R1"}
 
-pay := {"action": "user_browser_act", "control": "click", "risk": "R3"}
+send := {"action": "user_browser_act", "control": "click", "risk": "R3"}
+
+# A payment / purchase or account-security change (the gateway sets the fact).
+buy := object.union(send, {"protected_action": true})
+
+# --- payments and account security ask in every tier, Open included -----------
+
+test_protected_actions_ask_in_every_tier if {
+	every name in ["strict", "assisted", "trusted", "open"] {
+		decision(name, buy, {}) == "ask"
+	}
+	not user_browser.tier_allows_irreversible with input as tier("open", buy)
+	user_browser.require_approval with input as tier("open", buy)
+}
+
+test_missing_protected_fact_counts_as_protected if {
+	user_browser.decision == "ask" with input as object.remove(tier("open", send), ["protected_action"])
+	decision("open", send, {"protected_action": "false"}) == "ask"
+	decision("open", send, {"protected_action": null}) == "ask"
+}
+
+test_protected_fact_does_not_affect_reads_or_navigation if {
+	decision("open", observe, {"protected_action": true}) == "allow"
+	decision("open", navigate, {"protected_action": true}) == "allow"
+}
 
 decision(name, act, extra) := d if {
 	d := user_browser.decision with input as tier(name, object.union(act, extra))
@@ -57,7 +82,7 @@ test_strict_matrix if {
 	decision("strict", navigate, {}) == "ask"
 	decision("strict", click, {}) == "ask"
 	decision("strict", fill, {}) == "ask"
-	decision("strict", pay, {}) == "ask"
+	decision("strict", send, {}) == "ask"
 }
 
 test_assisted_matrix if {
@@ -68,7 +93,7 @@ test_assisted_matrix if {
 	decision("assisted", navigate, {}) == "allow"
 	decision("assisted", click, {}) == "ask"
 	decision("assisted", fill, {}) == "ask"
-	decision("assisted", pay, {}) == "ask"
+	decision("assisted", send, {}) == "ask"
 }
 
 test_trusted_matrix if {
@@ -78,7 +103,7 @@ test_trusted_matrix if {
 	decision("trusted", navigate, {}) == "allow"
 	decision("trusted", click, {}) == "allow"
 	decision("trusted", fill, {}) == "allow"
-	decision("trusted", pay, {}) == "ask"
+	decision("trusted", send, {}) == "ask"
 }
 
 test_open_matrix if {
@@ -87,14 +112,14 @@ test_open_matrix if {
 	decision("open", navigate, {}) == "allow"
 	decision("open", click, {}) == "allow"
 	decision("open", fill, {}) == "allow"
-	decision("open", pay, {}) == "allow"
-	user_browser.tier_allows_irreversible with input as tier("open", pay)
+	decision("open", send, {}) == "allow"
+	user_browser.tier_allows_irreversible with input as tier("open", send)
 }
 
 test_only_open_covers_irreversible if {
-	not user_browser.tier_allows_irreversible with input as tier("trusted", pay)
-	not user_browser.tier_allows_irreversible with input as tier("assisted", pay)
-	not user_browser.tier_allows_irreversible with input as tier("strict", pay)
+	not user_browser.tier_allows_irreversible with input as tier("trusted", send)
+	not user_browser.tier_allows_irreversible with input as tier("assisted", send)
+	not user_browser.tier_allows_irreversible with input as tier("strict", send)
 	not user_browser.tier_allows_irreversible with input as tier("open", click)
 }
 
@@ -146,7 +171,7 @@ test_strict_observe_needs_shared_tab if {
 
 test_widened_tier_without_consent_is_strict if {
 	user_browser.effective_tier == "strict" with input as base({"tier": "open", "tier_consent": false})
-	user_browser.decision == "ask" with input as base(object.union(pay, {"tier": "open", "tier_consent": false}))
+	user_browser.decision == "ask" with input as base(object.union(send, {"tier": "open", "tier_consent": false}))
 	user_browser.decision == "ask" with input as base(object.union(click, {"tier": "trusted"}))
 }
 
@@ -221,5 +246,5 @@ test_malformed_actions_denied if {
 
 test_deny_keeps_require_approval_closed if {
 	user_browser.require_approval with input as tier("open", {"extension_paired": false})
-	not user_browser.tier_allows_irreversible with input as tier("open", object.union(pay, {"panicked": true}))
+	not user_browser.tier_allows_irreversible with input as tier("open", object.union(send, {"panicked": true}))
 }

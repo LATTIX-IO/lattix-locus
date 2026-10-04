@@ -112,6 +112,7 @@ def _ub(**overrides: Any) -> dict[str, Any]:
         "granted_sites": ["example.com"],
         "extension_paired": True,
         "panicked": False,
+        "protected_action": False,
     }
     base.update(overrides)
     return base
@@ -556,7 +557,9 @@ ALLOW_CASES: list[tuple[str, str, dict[str, Any], bool]] = [
     (
         "ub.deny_secret_field_entry_open_tier",
         "user_browser",
-        _ub(**{**_UB_CLICK, "control": "fill"}, tier="open", tier_consent=True, sensitive_field=True),
+        _ub(
+            **{**_UB_CLICK, "control": "fill"}, tier="open", tier_consent=True, sensitive_field=True
+        ),
         False,
     ),
     (
@@ -566,6 +569,7 @@ ALLOW_CASES: list[tuple[str, str, dict[str, Any], bool]] = [
         False,
     ),
 ]
+
 
 # --- user_browser decisions (the gateway reads these outputs) -----------------
 @pytest.mark.parametrize(
@@ -578,6 +582,18 @@ ALLOW_CASES: list[tuple[str, str, dict[str, Any], bool]] = [
         ({**_UB_CLICK, "tier": "trusted", "tier_consent": True, "risk": "R3"}, "ask", True, False),
         ({**_UB_CLICK, "tier": "open", "tier_consent": True, "risk": "R3"}, "allow", False, True),
         ({**_UB_CLICK, "tier": "open", "tier_consent": False, "risk": "R3"}, "ask", True, False),
+        (
+            {
+                **_UB_CLICK,
+                "tier": "open",
+                "tier_consent": True,
+                "risk": "R3",
+                "protected_action": True,
+            },
+            "ask",
+            True,
+            False,
+        ),
         ({"panicked": True, "tier": "open", "tier_consent": True}, "deny", True, False),
     ],
 )

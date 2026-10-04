@@ -83,6 +83,7 @@ ACTIONS: dict[str, tuple[str, dict[str, Any]]] = {
     "navigate": ("user_browser_navigate", {"control": "navigate", "url_scheme": "https"}),
     "click": ("user_browser_act", {"control": "click", "role": "button", "name": "Next"}),
     "fill": ("user_browser_act", {"control": "fill", "role": "textbox", "name": "Note"}),
+    "send": ("user_browser_act", {"control": "click", "role": "button", "name": "Send message"}),
     "pay": ("user_browser_act", {"control": "click", "role": "button", "name": "Pay now"}),
     "security": (
         "user_browser_act",
@@ -125,10 +126,14 @@ MATRIX: dict[str, dict[str, str]] = {
         "navigate": "allow",
         "click": "allow",
         "fill": "allow",
-        "pay": "allow",
-        "security": "allow",
+        "send": "allow",
+        # Payments and account-security changes ask even in Open (2026-10-04).
+        "pay": "ask",
+        "security": "ask",
     },
 }
+for _below_open in ("strict", "assisted", "trusted"):
+    MATRIX[_below_open]["send"] = "ask"
 
 
 def _authorize(
@@ -172,9 +177,12 @@ def test_open_tier_records_consent_reason_and_floor_still_holds(
 ) -> None:
     _, sess, audit = session
     _tier(env["store"], "open")
-    paid = _authorize(sess, "pay")
-    assert paid.outcome == "allow" and gw.REASON_OPEN_TIER in paid.reasons
+    sent = _authorize(sess, "send")
+    assert sent.outcome == "allow" and gw.REASON_OPEN_TIER in sent.reasons
     assert audit[-1].outcome == "allow" and audit[-1].risk_class == "R3"
+    # Payments and account-security changes ask even in Open (principal decision 2026-10-04).
+    assert _authorize(sess, "pay").outcome == "ask"
+    assert _authorize(sess, "security").outcome == "ask"
     for name in ("Password", "Card number", "One-time code"):
         typed = _authorize(sess, "fill", name=name)
         assert typed.outcome == "deny" and typed.risk == RiskClass.R4, name

@@ -48,7 +48,7 @@ const MAX_SITE_CHARS: usize = 253;
 const RISK_STRICT: &str = "Every action asks; the agent only reads tabs you share.";
 const RISK_ASSISTED: &str = "On allowlisted sites the agent reads pages and navigates without asking, using your signed-in sessions. Clicks and typing still ask.";
 const RISK_TRUSTED: &str = "On granted sites the agent clicks and types in your signed-in sessions without asking. Only irreversible actions (send, pay, purchase, delete, account or security settings) ask.";
-const RISK_OPEN: &str = "The agent acts in every tab and site of your signed-in browser without asking, including irreversible actions such as sending, paying, purchasing and deleting. A prompt injection on any page can make it do so. Secret fields, panic and audit still apply.";
+const RISK_OPEN: &str = "The agent acts in every tab and site of your signed-in browser without asking, including irreversible actions such as sending and deleting. A prompt injection on any page can make it do so. Payments, purchases and account-security changes still ask. Secret fields, panic and audit still apply.";
 
 /// The per-launch secret. Set once at sidecar spawn; never logged or exposed.
 static SHELL_SECRET: OnceLock<[u8; 32]> = OnceLock::new();
