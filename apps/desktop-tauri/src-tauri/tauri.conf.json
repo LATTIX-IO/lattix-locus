@@ -55,7 +55,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNEOERDMjlGMzAxN0Q4MTkKUldRWjJCY3duOEtOUFk0Z1JjaThlV3BOU1JDaGtzMmVmdTY3UGJEZnhPTDhzTGFCa2Q1K1doU2UK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZCMDdDQTNDQTJBRUFBRTEKUldUaHFxNmlQTW9IKyswamZ4MzF0ZDJ3aEZ4VmtZcmdURzNKb1lqdmNqUTRGVFluU01LNlhGb2kK",
       "endpoints": [
         "https://github.com/LATTIX-IO/lattix-locus/releases/download/channel-stable/latest.json"
       ]
