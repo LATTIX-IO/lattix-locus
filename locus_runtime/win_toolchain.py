@@ -144,7 +144,17 @@ class WindowsToolchain:
         return [head, *rest]
 
 
+#: The app home whose (read-only) toolchain to use when it differs from
+#: ``LOCUS_APP_HOME``: an RSI candidate instance (LOCUS-351) runs with a separate,
+#: empty app home but shares the installed BusyBox / embedded Python.
+TOOLCHAIN_HOME_ENV = "LOCUS_TOOLCHAIN_HOME"
+
+
 def toolchain_for(app_home: Path | None = None) -> WindowsToolchain:
+    if app_home is None:
+        shared = str(os.getenv(TOOLCHAIN_HOME_ENV) or "").strip()
+        if shared:
+            app_home = Path(shared).expanduser()
     return WindowsToolchain(root=toolchain_dir(app_home or toolchain_app_home()))
 
 
