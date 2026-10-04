@@ -38,7 +38,6 @@ Locus separates a control plane that owns definitions, versioning, and policy fr
 
 - **`apps/backend/app/main.py` is a monolith** (21,228 LOC, 139 routes). New work should extract cohesive routers and services rather than append. Extraction is the preferred refactor when touching a domain area substantially.
 - **The control-plane store is in-memory with a Postgres snapshot**, not a database-backed repository. Definitions live in `InMemoryStore` and are serialized on mutation. Moving to a real repository boundary is the durable fix for the silent-persistence failure mode.
-- **Microsoft Agent Framework is stated as a layer but is only a code emitter.** `generated_artifacts.py` writes `agent_framework` source as a downloadable artifact; nothing executes it. Either wire it as a real engine or describe it accurately as codegen.
 - **The cognitive slice is 4 of 10+ planned columns.** Evaluation, Uncertainty, State, Decomposition, Prediction, and Adaptation are unimplemented; see `PLANS.md` and `docs/COLOUMN_LAYER_IMPLEMENTATION_PLAN.md`.
 
 ## Design docs

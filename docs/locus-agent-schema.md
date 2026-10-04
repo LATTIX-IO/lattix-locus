@@ -170,20 +170,16 @@ See [enterprise-node-taxonomy.md](enterprise-node-taxonomy.md) for the detailed 
 
 The canonical schema is framework-agnostic. Runtime adapters consume it.
 
-### Supported runtime engines
+### Runtime engine
 
-- `native`
-- `langgraph`
-- `langchain`
-- `semantic-kernel`
-- `autogen`
+One engine: `native`. Every model call goes through the gated model client
+(`locus_runtime/model_client.py`). The LangGraph, LangChain, Semantic Kernel and
+AutoGen adapters were removed (LOCUS-352).
 
-### Runtime policy controls
-
-- `default_runtime_engine`
-- `allowed_runtime_engines`
-- `allow_runtime_engine_override`
-- `enforce_runtime_engine_allowlist`
+The policy fields `default_runtime_engine`, `allowed_runtime_engines`,
+`allow_runtime_engine_override` and `enforce_runtime_engine_allowlist` are still
+accepted so stored definitions keep loading, but any engine value, including a
+removed one, resolves to `native`, and the `hybrid` strategy resolves to `single`.
 
 ### Required runtime metadata output
 
@@ -192,20 +188,19 @@ Each run must emit:
 ```json
 {
   "runtime": {
-    "requested_engine": "langgraph",
-    "selected_engine": "langgraph",
+    "requested_engine": "native",
+    "selected_engine": "native",
     "executed_engine": "native",
-    "mode": "compatibility|native",
-    "allow_override": true,
-    "allowed_engines": ["native", "langgraph"],
+    "mode": "native",
+    "strategy": "single",
+    "allow_override": false,
+    "allowed_engines": ["native"],
     "node_mapping": {
-      "locus/agent": "framework.llm_node"
+      "locus/agent": "native.agent"
     }
   }
 }
 ```
-
-This guarantees observability and auditability regardless of adapter implementation.
 
 ---
 
@@ -410,7 +405,7 @@ Adds:
       },
       "engine_policy": {
         "default_runtime_engine": "native",
-        "allowed_runtime_engines": ["native", "langgraph", "autogen"],
+        "allowed_runtime_engines": ["native"],
         "allow_runtime_engine_override": false,
         "enforce_runtime_engine_allowlist": true
       }
