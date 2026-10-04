@@ -312,9 +312,11 @@
     "rationale": "No P28-listed origin found for maintainers, organization or funding; the Entity List, the rest of the Consolidated Screening List and the 1260H notice show no hit. All 32 wheel files are byte-identical to the v0.6.4 git tag, and the sdist differs from it only in build metadata (PKG-INFO, egg-info, setup.cfg). The release commit and the upload were made by a current maintainer from the tagged commit. The static ruleset found no telemetry, network, obfuscated-execution, install-hook or native-code finding; OSV lists no vulnerability for 0.6.4; the sandboxed import plus a DER/BER/CER round trip made no connection attempt. The conditions cover the unidentified PyPI owner, token-based uploads without PEP 740 provenance, and hash pinning."
   },
   "review": {
-    "reviewer": "agent-prepared, principal sign-off pending",
+    "reviewer": "principal",
     "date": "2026-10-04",
-    "prepared_by": "Claude Code (agent) for LOCUS-358, 2026-10-04"
+    "prepared_by": "Claude Code (agent) for LOCUS-358, 2026-10-04",
+    "name": "jpbooth@lattix.io (principal)",
+    "notes": "Approved by the principal in the Claude Code session on 2026-10-04; the decision's conditions are accepted as stated."
   },
   "notes": [
     "pyasn1 is pulled transitively by google-auth (deepagents -> langchain-google-genai -> google-genai -> google-auth), not imported by Locus code paths (docs/development/deep-agents-harness.md section 8).",

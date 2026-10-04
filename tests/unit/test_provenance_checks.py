@@ -182,7 +182,8 @@ def test_cli_verify_accepts_committed_attestations_and_rejects_a_broken_one(tmp_
     runner = CliRunner()
     ok = runner.invoke(cli.provenance, ["verify"])
     assert ok.exit_code == 0, ok.output
-    assert "not passing (principal sign-off pending" in ok.output
+    # The committed LOCUS-358 attestations carry the principal's sign-off (2026-10-04).
+    assert ": passing" in ok.output
     broken = tmp_path / "broken@1.json"
     broken.write_text(json.dumps({"schema_version": "1"}), encoding="utf-8")
     bad = runner.invoke(cli.provenance, ["verify", str(broken)])

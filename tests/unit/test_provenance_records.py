@@ -49,12 +49,21 @@ def test_committed_attestations_validate_and_summaries_are_current(path: Path) -
     )
 
 
-def test_committed_attestations_are_agent_prepared_not_signed() -> None:
+def test_committed_attestations_are_pending_or_carry_a_principal_sign_off() -> None:
+    # Agents only ever write "agent-prepared, principal sign-off pending". A record
+    # marked "principal" must name the signer and carry the sign-off note, and it
+    # must then pass; a pending record must not pass.
     assert ATTESTATIONS, "the LOCUS-358 inspections must be committed"
     for path in ATTESTATIONS:
         record = records.load_record(path)
-        assert record["review"]["reviewer"] == records.REVIEWER_AGENT_PENDING
-        assert not records.evaluate(record).passing
+        review = record["review"]
+        if review["reviewer"] == records.REVIEWER_PRINCIPAL:
+            assert review.get("name"), path
+            assert "principal" in (review.get("notes") or "").lower(), path
+            assert records.evaluate(record).passing, (path, records.evaluate(record).reason)
+        else:
+            assert review["reviewer"] == records.REVIEWER_AGENT_PENDING, path
+            assert not records.evaluate(record).passing, path
 
 
 def test_signed_passing_record_passes() -> None:
