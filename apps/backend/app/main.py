@@ -97,6 +97,9 @@ from locus_runtime.grants import (
 from locus_runtime.legacy import normalize_legacy_identifiers
 from locus_runtime import skills as skill_format
 from locus_runtime import model_client as model_calls
+from locus_runtime.memory import bootstrap as memory_bootstrap
+from locus_runtime.memory.backfill import EmbeddingBackfillWorker
+from locus_runtime.memory.embedder import GatedEmbedder
 from locus_runtime import telemetry as locus_telemetry
 from locus_runtime.telemetry.contract import (
     LANGSMITH_OTLP_ENDPOINT,
@@ -4156,7 +4159,8 @@ def _build_state_backends() -> tuple[Any, Any | None]:
 # actual backend may be Postgres or SQLite depending on environment.
 _POSTGRES_STATE, _AUDIT_LOG = _build_state_backends()
 _REDIS_MEMORY = RedisMemoryStore(os.getenv("REDIS_URL", ""))
-_POSTGRES_MEMORY = PostgresLongTermMemoryStore(os.getenv("POSTGRES_DSN", ""))
+# The long-term memory store (_POSTGRES_MEMORY) is composed below, once the
+# provider settings its gated embedder resolves through are defined.
 
 
 def _build_world_graph() -> Any:
@@ -4199,6 +4203,127 @@ class _BackendProviderSettings:
 
 
 _BACKEND_PROVIDER_SETTINGS = _BackendProviderSettings()
+
+
+# --------------------------------------------------------------------------- #
+# Long-term memory: composition of the memory port (D-28, LOCUS-387)
+# --------------------------------------------------------------------------- #
+# Embeddings run on a local engine through the gated model client, so each one is
+# a gateway ``model_call`` with its usage audited (LOCUS-378, D-29).
+_MEMORY_EMBEDDER = GatedEmbedder(settings=_BACKEND_PROVIDER_SETTINGS)
+_MEMORY_BACKFILL: EmbeddingBackfillWorker | None = None
+_MEMORY_STORE_CHOICES = frozenset({"postgres", "sqlite"})
+
+
+def _memory_store_choice() -> str:
+    """Which long-term memory adapter this process uses: ``sqlite`` or ``postgres``.
+
+    ``LOCUS_MEMORY_STORE`` chooses explicitly. Otherwise ``POSTGRES_DSN`` selects
+    Postgres + pgvector (the full stack), and the zero-container profiles -- the
+    desktop (``local-native``) or the SQLite state backend -- use the embedded
+    SQLite store, so memory is on with no setup. Anything else keeps the Postgres
+    adapter, which stays disabled until a DSN is configured.
+    """
+    explicit = str(os.getenv("LOCUS_MEMORY_STORE") or "").strip().lower()
+    if explicit in _MEMORY_STORE_CHOICES:
+        return explicit
+    if explicit:
+        LOGGER.warning("Ignoring unknown LOCUS_MEMORY_STORE value; choosing by profile")
+    if str(os.getenv("POSTGRES_DSN") or "").strip():
+        return "postgres"
+    if (
+        str(os.getenv("LOCUS_SQLITE_STATE_PATH") or "").strip()
+        or _active_runtime_profile().name == "local-native"
+    ):
+        return "sqlite"
+    return "postgres"
+
+
+def _memory_sqlite_path() -> Path:
+    explicit = str(os.getenv("LOCUS_MEMORY_SQLITE_PATH") or "").strip()
+    if explicit:
+        return Path(explicit)
+    state_path = str(os.getenv("LOCUS_SQLITE_STATE_PATH") or "").strip()
+    if (
+        state_path
+        and not str(os.getenv("LOCUS_APP_HOME") or "").strip()
+        and _active_runtime_profile().name != "local-native"
+    ):
+        # A SQLite-state deployment without an app home: keep memory beside the state.
+        return Path(state_path).parent / memory_bootstrap.MEMORY_DB_FILENAME
+    return memory_bootstrap.default_store_path(_native_app_home())
+
+
+def _wake_memory_backfill() -> None:
+    worker = _MEMORY_BACKFILL
+    if worker is not None:
+        worker.wake()
+
+
+def _build_long_term_memory_store() -> Any:
+    """Select the long-term memory adapter (classes resolved like the state backends,
+    so injected fake ``platform_services`` modules keep working)."""
+    if _memory_store_choice() == "sqlite":
+        services = importlib.import_module("app.platform_services")
+        sqlite_cls = getattr(services, "SQLiteLongTermMemoryStore", None)
+        if sqlite_cls is not None:
+            return sqlite_cls(
+                str(_memory_sqlite_path()),
+                embedder=_MEMORY_EMBEDDER,
+                on_pending=_wake_memory_backfill,
+                # sqlite-vec (D-29 attested, conditional); 0 = pure-Python vectors.
+                load_extension=_env_flag("LOCUS_MEMORY_SQLITE_VEC", True),
+            )
+    return PostgresLongTermMemoryStore(os.getenv("POSTGRES_DSN", ""), embedder=_MEMORY_EMBEDDER)
+
+
+# Name kept for backward compatibility (tests and call sites use it); the adapter
+# may be SQLite (desktop / local profile) or Postgres (full stack).
+_POSTGRES_MEMORY = _build_long_term_memory_store()
+
+
+def _start_memory_backfill() -> None:
+    """Embed pending memory entries in the background (stores that defer embedding)."""
+    global _MEMORY_BACKFILL
+    if _MEMORY_BACKFILL is not None or not _env_flag("LOCUS_MEMORY_EMBEDDING_BACKFILL", True):
+        return
+    if not callable(getattr(_POSTGRES_MEMORY, "backfill_embeddings", None)):
+        return
+    if not getattr(_POSTGRES_MEMORY, "enabled", False):
+        return
+    interval = _env_int(
+        "LOCUS_MEMORY_EMBEDDING_BACKFILL_INTERVAL_SECONDS", 300, minimum=30, maximum=86_400
+    )
+    worker = EmbeddingBackfillWorker(_POSTGRES_MEMORY, interval=float(interval))
+    _MEMORY_BACKFILL = worker
+    worker.start()
+
+
+def _ensure_memory_collections() -> bool:
+    """Register the default Personal collection and list every collection the memory
+    store holds in the knowledge catalog (LOCUS-387). Idempotent; returns whether the
+    catalog changed. Only stores with a collection registry (SQLite) take part."""
+    ensure = getattr(_POSTGRES_MEMORY, "ensure_collection", None)
+    lister = getattr(_POSTGRES_MEMORY, "list_collections", None)
+    if not (callable(ensure) and callable(lister) and getattr(_POSTGRES_MEMORY, "enabled", False)):
+        return False
+    try:
+        memory_bootstrap.ensure_personal_collection(_POSTGRES_MEMORY)
+        registered = lister()
+    except Exception:  # noqa: BLE001 - startup continues; memory reports itself degraded
+        LOGGER.exception("Failed to bootstrap the default memory collection")
+        return False
+    changed = False
+    for item in registered:
+        record = memory_bootstrap.catalog_entry(
+            str(item.get("id") or ""),
+            name=str(item.get("name") or ""),
+            description=str(item.get("description") or ""),
+            created_at=str(item.get("created_at") or ""),
+        )
+        if memory_bootstrap.ensure_catalog_entry(store.knowledge_collections, record):
+            changed = True
+    return changed
 
 
 def _build_model_client(
@@ -15651,7 +15776,8 @@ def _startup_initialize_state() -> None:
     long_term_status, long_term_reason = _service_status_with_reason(_POSTGRES_MEMORY)
     if long_term_status != "connected":
         LOGGER.warning(
-            "Postgres long-term memory unavailable at startup: status=%s reason=%s",
+            "Long-term memory (%s) unavailable at startup: status=%s reason=%s",
+            getattr(_POSTGRES_MEMORY, "store_kind", "postgres"),
             long_term_status,
             long_term_reason or "unspecified",
         )
@@ -15664,7 +15790,7 @@ def _startup_initialize_state() -> None:
     try:
         _POSTGRES_MEMORY.initialize()
     except Exception:
-        LOGGER.exception("Failed to initialize Postgres long-term memory store")
+        LOGGER.exception("Failed to initialize the long-term memory store")
 
     try:
         state = _POSTGRES_STATE.load_state()
@@ -15697,6 +15823,10 @@ def _startup_initialize_state() -> None:
             pass
 
     _merge_missing_bootstrap_content()
+    # Memory is on by default (LOCUS-387): the Personal collection exists, and
+    # entries written before an embedding model was available get embedded.
+    _ensure_memory_collections()
+    _start_memory_backfill()
 
     sync_repo_agents = _env_flag("LOCUS_SYNC_REPO_AGENTS", True)
     sync_repo_updates_existing = _env_flag("LOCUS_REPO_AGENTS_UPDATE_EXISTING", False)
@@ -19499,6 +19629,7 @@ def _build_health_payload() -> dict[str, Any]:
         "postgres": postgres_status,
         "redis": "connected" if redis_ok else "disabled",
         "long_term_memory": long_term_status,
+        "long_term_memory_store": str(getattr(_POSTGRES_MEMORY, "store_kind", "") or "postgres"),
         "memory_consolidation": "enabled"
         if long_term_ok and _env_flag("LOCUS_MEMORY_CONSOLIDATION_ENABLED", True)
         else "disabled",
@@ -24011,12 +24142,47 @@ def _knowledge_collection_view(collection: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _long_term_memory_ready() -> bool:
+    return bool(_POSTGRES_MEMORY.enabled and _POSTGRES_MEMORY.healthcheck())
+
+
+def _long_term_memory_label() -> str:
+    return str(getattr(_POSTGRES_MEMORY, "backend_label", "") or "Postgres + pgvector")
+
+
+def _long_term_memory_facts() -> dict[str, Any]:
+    """Store kind, search modes and embedding state (no content) for status endpoints."""
+    describe = getattr(_POSTGRES_MEMORY, "describe", None)
+    facts: dict[str, Any] = {}
+    if callable(describe):
+        try:
+            facts = dict(describe())
+        except Exception:  # noqa: BLE001 - status reporting never fails the request
+            LOGGER.warning("long-term memory describe() failed", exc_info=False)
+    facts.setdefault("store", str(getattr(_POSTGRES_MEMORY, "store_kind", "") or "postgres"))
+    facts.setdefault("embedding_model", str(getattr(_POSTGRES_MEMORY, "embedding_model", "")))
+    return facts
+
+
 def _platform_vector_store_ready() -> bool:
-    """The built-in pgvector long-term store is the default RAG backend."""
-    return bool(
-        _POSTGRES_MEMORY.enabled
-        and _POSTGRES_MEMORY.healthcheck()
-        and _POSTGRES_MEMORY.vector_enabled
+    """The built-in long-term store is the default RAG backend. It can serve a
+    collection when it is healthy and can search: by vector (pgvector / sqlite-vec
+    with an embedding model) or, for the embedded store, by keyword (FTS5) while
+    the embedding model is pending."""
+    return _long_term_memory_ready() and bool(
+        _POSTGRES_MEMORY.vector_enabled
+        or getattr(_POSTGRES_MEMORY, "keyword_search_enabled", False)
+    )
+
+
+def _platform_vector_store_note(ready: bool, facts: dict[str, Any]) -> str:
+    if not ready:
+        return f"Long-term memory store ({_long_term_memory_label()}) is not available."
+    if facts.get("semantic_search") == "ready" or bool(_POSTGRES_MEMORY.vector_enabled):
+        return ""
+    reason = str(facts.get("semantic_search_reason") or "").strip()
+    return "Keyword search is on; semantic search is pending a local embedding model" + (
+        f" ({reason})." if reason else "."
     )
 
 
@@ -24030,17 +24196,18 @@ def _knowledge_vector_stores() -> list[dict[str, Any]]:
     not yet implemented, so they list with ``ready: false`` until one ships.
     """
     platform_ready = _platform_vector_store_ready()
+    facts = _long_term_memory_facts()
     stores: list[dict[str, Any]] = [
         {
             "id": PLATFORM_VECTOR_STORE_ID,
-            "name": "Platform vector store (pgvector)",
+            "name": f"Platform vector store ({_long_term_memory_label()})",
             "kind": "builtin",
+            "store": facts.get("store", ""),
             "ready": platform_ready,
             "status": "configured" if platform_ready else "unavailable",
             "embedding_model": _POSTGRES_MEMORY.embedding_model,
-            "note": ""
-            if platform_ready
-            else "Long-term memory store (Postgres + pgvector + embeddings) is not available.",
+            "semantic_search": facts.get("semantic_search", ""),
+            "note": _platform_vector_store_note(platform_ready, facts),
         }
     ]
     for integration in store.integrations.values():
@@ -24068,7 +24235,9 @@ def _knowledge_memory_layers() -> list[dict[str, Any]]:
     """Honest snapshot of every memory/knowledge tier the platform exposes."""
     total_docs = sum(int(c.get("document_count", 0)) for c in store.knowledge_collections.values())
     total_chunks = sum(int(c.get("chunk_count", 0)) for c in store.knowledge_collections.values())
-    long_term_ready = bool(_POSTGRES_MEMORY.enabled and _POSTGRES_MEMORY.healthcheck())
+    long_term_ready = _long_term_memory_ready()
+    long_term_facts = _long_term_memory_facts()
+    label = _long_term_memory_label()
     return [
         {
             "id": "short_term",
@@ -24082,11 +24251,12 @@ def _knowledge_memory_layers() -> list[dict[str, Any]]:
         {
             "id": "long_term",
             "name": "Long-term memory",
-            "backend": "Postgres + pgvector",
+            "backend": label,
             "scope": "Durable, embedded memories with semantic recall across sessions.",
             "enabled": bool(_POSTGRES_MEMORY.enabled),
             "healthy": long_term_ready,
             "stats": {
+                **long_term_facts,
                 "vector_search": bool(_POSTGRES_MEMORY.vector_enabled),
                 "embedding_model": _POSTGRES_MEMORY.embedding_model,
             },
@@ -24103,11 +24273,12 @@ def _knowledge_memory_layers() -> list[dict[str, Any]]:
         {
             "id": "knowledge",
             "name": "Knowledge collections",
-            "backend": "pgvector (RAG)",
+            "backend": f"{label} (RAG)",
             "scope": "Document collections chunked and embedded for retrieval and citation.",
             "enabled": long_term_ready,
-            "healthy": long_term_ready and bool(_POSTGRES_MEMORY.vector_enabled),
+            "healthy": _platform_vector_store_ready(),
             "stats": {
+                "store": long_term_facts.get("store", ""),
                 "collections": len(store.knowledge_collections),
                 "documents": total_docs,
                 "chunks": total_chunks,
@@ -24162,11 +24333,44 @@ def create_knowledge_collection(
         "chunk_count": 0,
         "vector_store_id": vector_store_id,
     }
+    _memory_register_collection(store.knowledge_collections[collection_id])
     _append_audit_event(
         "knowledge.collection.create", actor, "allowed", {"collection_id": collection_id}
     )
     _persist_store_state()
     return _knowledge_collection_view(store.knowledge_collections[collection_id])
+
+
+def _memory_register_collection(collection: dict[str, Any]) -> None:
+    """Record a platform-store collection in the memory store's registry (SQLite)."""
+    if str(collection.get("vector_store_id") or "") != PLATFORM_VECTOR_STORE_ID:
+        return
+    ensure = getattr(_POSTGRES_MEMORY, "ensure_collection", None)
+    if not callable(ensure) or not _long_term_memory_ready():
+        return
+    try:
+        ensure(
+            str(collection.get("id") or ""),
+            name=str(collection.get("name") or "")[:200] or "Collection",
+            description=str(collection.get("description") or ""),
+        )
+    except Exception:  # noqa: BLE001 - the catalog entry stands; startup re-syncs
+        LOGGER.warning("Failed to register a knowledge collection in the memory store")
+
+
+def _memory_forget_collection(collection_id: str) -> None:
+    """Delete a collection's indexed chunks and its registry entry (forget, 14 §3)."""
+    if not _long_term_memory_ready():
+        return
+    try:
+        _POSTGRES_MEMORY.clear_entries(
+            bucket_id=app_knowledge.collection_bucket(collection_id), memory_scope="knowledge"
+        )
+        remove = getattr(_POSTGRES_MEMORY, "remove_collection", None)
+        if callable(remove):
+            remove(collection_id)
+    except Exception:  # noqa: BLE001 - the catalog entry is gone either way
+        LOGGER.warning("Failed to remove a deleted collection's memory entries")
 
 
 @app.delete("/knowledge/collections/{collection_id}")
@@ -24175,6 +24379,7 @@ def delete_knowledge_collection(collection_id: str, request: Request) -> dict[st
     _enforce_emergency_write_policy("knowledge.collection.delete", actor)
     if store.knowledge_collections.pop(collection_id, None) is None:
         raise HTTPException(status_code=404, detail="Collection not found")
+    _memory_forget_collection(collection_id)
     _append_audit_event(
         "knowledge.collection.delete", actor, "allowed", {"collection_id": collection_id}
     )
@@ -24200,7 +24405,7 @@ def add_knowledge_document(
     if not (_POSTGRES_MEMORY.enabled and _POSTGRES_MEMORY.healthcheck()):
         raise HTTPException(
             status_code=503,
-            detail="Knowledge ingestion requires the long-term memory store (Postgres + embeddings)",
+            detail=f"Knowledge ingestion requires the long-term memory store ({_long_term_memory_label()})",
         )
     text = str(payload.get("text") or "").strip()
     if not text:

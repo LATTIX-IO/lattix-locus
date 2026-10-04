@@ -77,6 +77,139 @@ def test_degrade_uses_sqlite_when_postgres_absent(tmp_path):
     assert plan.env["LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED"] == "false"
     assert "NATS_URL" not in plan.env
     assert any("postgres not present" in w for w in plan.warnings)
+    # Long-term memory stays ON, in the embedded SQLite store (LOCUS-387).
+    assert plan.env["LOCUS_MEMORY_ENABLE_LONG_TERM"] == "true"
+    assert plan.env["LOCUS_MEMORY_STORE"] == "sqlite"
+    assert plan.env["LOCUS_MEMORY_SQLITE_PATH"] == str(
+        tmp_path / "data" / "memory" / "locus-memory.db"
+    )
+
+
+def test_ollama_pulls_the_embedding_model_before_the_chat_model(tmp_path, monkeypatch):
+    monkeypatch.delenv("LOCUS_MEMORY_EMBEDDING_MODEL", raising=False)
+    cfg = nl.NativeConfig(app_home=tmp_path, degrade_when_missing=True)
+    plan = nl.build_native_plan(cfg, which=_which_factory({"ollama"}))
+    ollama = next(s for s in plan.services if s.name == "ollama")
+    pulls = [step.argv[-1] for step in ollama.post_start]
+    assert pulls == ["nomic-embed-text", cfg.ollama_model]
+    assert plan.env["LOCUS_MEMORY_EMBEDDING_MODEL"] == "nomic-embed-text"
+
+
+def test_embedding_model_can_be_disabled_or_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCUS_MEMORY_EMBEDDING_MODEL", "")
+    plan = nl.build_native_plan(
+        nl.NativeConfig(app_home=tmp_path, degrade_when_missing=True),
+        which=_which_factory({"ollama"}),
+    )
+    ollama = next(s for s in plan.services if s.name == "ollama")
+    assert [step.argv[-1] for step in ollama.post_start] == ["gpt-oss:20b"]
+    assert plan.env["LOCUS_MEMORY_EMBEDDING_MODEL"] == ""
+
+    monkeypatch.setenv("LOCUS_MEMORY_EMBEDDING_MODEL", "--insecure")
+    plan = nl.build_native_plan(
+        nl.NativeConfig(app_home=tmp_path, degrade_when_missing=True),
+        which=_which_factory({"ollama"}),
+    )
+    ollama = next(s for s in plan.services if s.name == "ollama")
+    assert [step.argv[-1] for step in ollama.post_start] == ["gpt-oss:20b"]
+    assert any("invalid memory embedding model" in w for w in plan.warnings)
+
+
+# --- long-term memory first run (LOCUS-387) ----------------------------------
+def test_ensure_memory_store_is_idempotent(tmp_path):
+    from locus_runtime.memory.bootstrap import default_store_path
+    from locus_runtime.memory.sqlite_store import SQLiteLongTermMemoryStore
+
+    progress: list[str] = []
+    assert fr.ensure_memory_store(tmp_path, progress=progress.append)
+    assert fr.ensure_memory_store(tmp_path, progress=progress.append)
+    assert progress == ["memory: created the Personal collection", "memory: ready"]
+    db = default_store_path(tmp_path)
+    assert db == tmp_path / "data" / "memory" / "locus-memory.db" and db.is_file()
+    store = SQLiteLongTermMemoryStore(str(db), load_extension=False)
+    try:
+        (personal,) = store.list_collections()  # once, however many first runs
+        assert personal["id"] == "personal" and personal["name"] == "Personal"
+    finally:
+        store.close()
+
+
+def test_desktop_supervisor_turns_long_term_memory_on(tmp_path, monkeypatch):
+    """The installed desktop build used to force LOCUS_MEMORY_ENABLE_LONG_TERM=false
+    (memory "off"); it now selects the embedded store and bootstraps it first."""
+    import os
+    import types
+
+    from locus_tooling import desktop
+
+    monkeypatch.setenv("LOCUS_APP_HOME", str(tmp_path))
+    for key in (
+        "LOCUS_MEMORY_ENABLE_LONG_TERM",
+        "LOCUS_MEMORY_STORE",
+        "LOCUS_MEMORY_SQLITE_PATH",
+        "LOCUS_SQLITE_STATE_PATH",
+        "LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED",
+        "PLAYWRIGHT_BROWSERS_PATH",
+        "POSTGRES_DSN",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    class _Supervisor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start_all(self):
+            return {}
+
+        def stop_all(self):
+            return None
+
+    served: dict[str, str] = {}
+
+    def _serve(*_args, **_kwargs):
+        served.update({k: v for k, v in os.environ.items() if k.startswith("LOCUS_MEMORY")})
+
+    monkeypatch.setattr(desktop, "build_native_plan", lambda cfg: nl.NativePlan([], {}, []))
+    monkeypatch.setattr(desktop, "NativeSupervisor", _Supervisor)
+    monkeypatch.setattr(desktop, "_install_shutdown_hooks", lambda: None)
+    monkeypatch.setattr(desktop, "_safe", lambda *a, **k: None)
+    monkeypatch.setattr(desktop, "resume_loop_after_start", lambda **k: None)
+    monkeypatch.setattr(desktop, "_LIVE_SUPERVISORS", [])
+    monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace(run=_serve))
+    monkeypatch.setitem(sys.modules, "app", types.ModuleType("app"))
+    monkeypatch.setitem(sys.modules, "app.main", types.SimpleNamespace(app=object()))
+
+    log: list[str] = []
+    desktop.run_desktop_supervisor(log=log.append)
+
+    db = tmp_path / "data" / "memory" / "locus-memory.db"
+    assert served["LOCUS_MEMORY_ENABLE_LONG_TERM"] == "true"
+    assert served["LOCUS_MEMORY_STORE"] == "sqlite"
+    assert served["LOCUS_MEMORY_SQLITE_PATH"] == str(db)
+    assert db.is_file()
+    assert "memory: created the Personal collection" in log
+
+
+def test_ensure_memory_store_never_raises(tmp_path):
+    progress: list[str] = []
+    blocker = tmp_path / "data"
+    blocker.write_text("not a directory", encoding="utf-8")
+    assert fr.ensure_memory_store(tmp_path, progress=progress.append) is False
+    assert progress and progress[0].startswith("FAILED memory store")
+
+
+def test_ensure_memory_store_is_owner_only(tmp_path):
+    import os
+    import stat
+
+    import pytest
+
+    if os.name == "nt":
+        pytest.skip("POSIX permission bits; Windows inherits the per-user app-home ACL")
+    assert fr.ensure_memory_store(tmp_path, progress=lambda _m: None)
+    db = tmp_path / "data" / "memory" / "locus-memory.db"
+    assert stat.S_IMODE(db.stat().st_mode) == 0o600
+    assert stat.S_IMODE(db.parent.stat().st_mode) == 0o700
 
 
 def test_strict_mode_still_raises_without_postgres(tmp_path):

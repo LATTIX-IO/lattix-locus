@@ -46,7 +46,7 @@ Columns are the "thousand brains" layer on top of the store.
 
 ## 5. Storage and retrieval
 
-- **Store:** PostgreSQL + pgvector (existing), embedded in the desktop service. Memory items are typed rows with JSONB attributes; embeddings per chunk; full-text index.
+- **Store:** on the desktop, an embedded SQLite file (FTS5 full-text index + sqlite-vec vectors) behind the memory port, on by default with no setup and a default **Personal** collection (LOCUS-387); PostgreSQL + pgvector on the full stack. Memory items are rows with JSON attributes; embeddings per chunk; full-text index.
 - **Retrieval:** hybrid lexical + vector shortlist → Laya rerank (score) → top-k with citations. Graph hops along relationships (task ↔ memory ↔ board ↔ source) for "what's related" queries.
 - **Embeddings:** a local embedding model by default (provenance-filtered); hosted embeddings only where area policy allows.
 - **World graph:** the earlier world-graph and consolidation features (behind ~40 flags, mostly off) are consolidated into this model: one store, relationship tables, a deterministic consolidation job. Flags that never ship are removed.

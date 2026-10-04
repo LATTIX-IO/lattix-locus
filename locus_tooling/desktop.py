@@ -204,14 +204,25 @@ def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
     # The backend hard-fails startup if its STATE store can't connect, but
     # Postgres comes up asynchronously in the background and isn't ready yet.
     # Pin state to SQLite (no startup DB dependency) so the app boots fast and
-    # reliably; long-term/world-graph memory (Postgres-backed) attaches on a
-    # later launch once Postgres is initialized.
+    # reliably. The world graph (Postgres-backed) stays off on the desktop.
     sqlite_state = Path(cfg.app_home) / "data" / "state" / "locus-state.db"
     sqlite_state.parent.mkdir(parents=True, exist_ok=True)
     os.environ["LOCUS_SQLITE_STATE_PATH"] = str(sqlite_state)
     os.environ.pop("POSTGRES_DSN", None)
-    os.environ["LOCUS_MEMORY_ENABLE_LONG_TERM"] = "false"
     os.environ["LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED"] = "false"
+    # Long-term memory is ON by default (LOCUS-387): the embedded SQLite store
+    # (FTS5 + sqlite-vec) under the app home, with no server to start. First run
+    # creates it (owner-only) and its Personal collection before the backend is
+    # imported; embeddings come from the local engine once its model is pulled.
+    from locus_runtime.memory.bootstrap import default_store_path
+
+    from .desktop_firstrun import ensure_memory_store
+
+    memory_db = default_store_path(Path(cfg.app_home))
+    os.environ["LOCUS_MEMORY_ENABLE_LONG_TERM"] = "true"
+    os.environ["LOCUS_MEMORY_STORE"] = "sqlite"
+    os.environ["LOCUS_MEMORY_SQLITE_PATH"] = str(memory_db)
+    ensure_memory_store(Path(cfg.app_home), progress=log, path=memory_db)
     # The agent browser (computer use) launches the Chromium first-run installs
     # under <app_home>/playwright, never a system or user browser.
     from .desktop_firstrun import playwright_browsers_dir

@@ -79,7 +79,20 @@ This tier is used for active context injection and recent execution continuity. 
 
 ### 3.2 Long-term memory
 
-Long-term memory is stored in PostgreSQL through `PostgresLongTermMemoryStore`.
+Long-term memory sits behind the memory port `LongTermMemoryStore`
+(`locus_runtime/memory/contract.py`, port version 1.0, D-28). Two adapters pass its
+contract suite (`tests/unit/test_memory_store_contract.py`):
+
+- **Embedded SQLite** (`locus_runtime/memory/sqlite_store.py`), the default on the
+  desktop / local profile (LOCUS-387): one file at `<app_home>/data/memory/locus-memory.db`,
+  FTS5 keyword search and sqlite-vec semantic search fused by reciprocal rank. No server
+  runs, so memory is on with zero setup. First run creates the file owner-only (0600 in a
+  0700 directory on POSIX; the per-user app-home ACL on Windows) and registers the default
+  **Personal** knowledge collection; the backend re-checks both on every start.
+- **Postgres + pgvector** (`PostgresLongTermMemoryStore`), selected when `POSTGRES_DSN`
+  is set (the full stack).
+
+`LOCUS_MEMORY_STORE=sqlite|postgres` overrides the choice.
 
 Each entry carries at least:
 
@@ -91,7 +104,15 @@ Each entry carries at least:
 - `content`
 - `metadata`
 
-When available, pgvector embeddings are added so the platform can support semantic recall, similarity search, and ranking instead of relying only on exact filters. Embeddings are optional at runtime, but the store is designed to benefit from them when the OpenAI embedding client is configured.
+Embeddings add semantic recall, similarity search and ranking. They come from a **local**
+embedding model (default `nomic-embed-text` on Ollama, `LOCUS_MEMORY_EMBEDDING_MODEL`)
+through the gated model client: each request is a gateway `model_call`
+(`operation: embeddings`) under the same policy and usage audit as chat calls, and hosted
+providers are refused (D-29; LOCUS-378 closed the old direct OpenAI path). Embeddings are
+optional at runtime: without a model, entries are still stored and keyword search answers,
+the status endpoints report semantic search as `pending_embedding_model`, and a background
+backfill embeds pending entries once the model is available. Memory content is never
+logged; the gateway audit records counts only.
 
 ### 3.3 Consolidation pipeline
 
