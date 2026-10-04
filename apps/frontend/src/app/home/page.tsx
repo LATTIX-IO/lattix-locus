@@ -1,7 +1,5 @@
-import { CommandCenter } from "@/components/command-center";
-import { getInbox, getWorkflowRuns } from "@/lib/api";
+import { HomeScreen } from "@/components/home-screen";
 
-export default async function HomePage() {
-  const [runs, inbox] = await Promise.all([getWorkflowRuns(), getInbox()]);
-  return <CommandCenter initialRuns={runs} initialInbox={inbox} />;
+export default function HomePage() {
+  return <HomeScreen />;
 }
