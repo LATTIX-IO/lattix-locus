@@ -55,7 +55,13 @@ gate_write_paths := {
 	".claude/", ".cursor/", ".ai-memory/",
 	# RSI scorecard (LOCUS-351): eval suite, graders, held-out split, comparator.
 	"apps/evals/locus_evals/suite/", "locus_runtime/rsi/",
+	# Release-version gate (D-31): the VERSION / Release-Impact check.
+	"locus_tooling/versioning.py",
 }
+
+# The release VERSION file (D-31) is deliberately NOT listed: the loop may bump
+# MINOR, and a path-only rule cannot tell MINOR from MAJOR. The D-22 merge guard
+# compares its content and holds a MAJOR bump for the principal.
 
 # --- facts -------------------------------------------------------------------
 

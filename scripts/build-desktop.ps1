@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
   Build the Lattix Locus desktop installer locally on Windows (unsigned —
-  fine for testing the install/first-run UX). Produces an .msi + .exe under
+  fine for testing the install/first-run UX). Produces an NSIS .exe under
   apps/desktop-tauri/src-tauri/target/<triple>/release/bundle/.
 
 .PREREQUISITES (install once)
@@ -116,12 +116,12 @@ $installers = @(
   (Join-Path $tauri "target/release/bundle"),
   (Join-Path $tauri "target/$triple/release/bundle")
 ) | Where-Object { Test-Path $_ } |
-  ForEach-Object { Get-ChildItem -Recurse $_ -Include *.msi, *.exe -ErrorAction SilentlyContinue }
+  ForEach-Object { Get-ChildItem -Recurse $_ -Include *.exe -ErrorAction SilentlyContinue }
 
 if ($installers) {
   Write-Host "`n== DONE. Installers built: =="
   $installers | ForEach-Object { Write-Host "  $($_.FullName)" }
   Write-Host "`nSmartScreen will warn on the unsigned installer: click 'More info' -> 'Run anyway'."
 } else {
-  throw "Build finished but no .msi/.exe found under target/**/release/bundle."
+  throw "Build finished but no .exe found under target/**/release/bundle."
 }

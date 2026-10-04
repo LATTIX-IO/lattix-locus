@@ -36,6 +36,37 @@ jobs:
         working-directory: apps/frontend
         run: npm run build
 
+  # D-31 (docs/VERSIONING.md): VERSION is well-formed and matches the pinned
+  # manifests; on a PR, a VERSION change is one MINOR/MAJOR step with a matching
+  # `Release-Impact:` line in the PR body and a docs/release-notes/ fragment, and
+  # a detected "bump required" signal (port contract version, schema version,
+  # migration, changed default) is not shipped as a PATCH. Standard library only:
+  # no install. The PR body is the event payload: after editing the declaration,
+  # push a commit (a re-run reuses the old payload).
+  release-version:
+    name: Release version (D-31)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # pull_request checks out the merge commit; HEAD^1 is the base it merges into.
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Check VERSION and the release impact
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+            python locus_tooling/versioning.py check --base-ref 'HEAD^1' \
+              --pr-body-file "$RUNNER_TEMP/pr-body.md"
+          else
+            python locus_tooling/versioning.py check
+          fi
+
   backend-unit:
     runs-on: ubuntu-latest
     steps:
@@ -317,6 +348,7 @@ jobs:
   required-gates:
     if: always()
     needs:
+      - release-version
       - frontend-unit
       - backend-unit
       - integration

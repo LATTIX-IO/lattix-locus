@@ -138,13 +138,14 @@ def test_dev_build_stamps_the_backend_and_skips_msi() -> None:
 def test_promote_is_manual_serialized_and_least_privilege() -> None:
     wf = _load("desktop-promote.yml")
     assert set(wf["on"]) == {"workflow_dispatch"}
-    assert wf["on"]["workflow_dispatch"]["inputs"]["dev_version"]["required"] is True
+    assert wf["on"]["workflow_dispatch"]["inputs"]["version"]["required"] is True
     assert wf["concurrency"] == {"group": "desktop-stable-channel", "cancel-in-progress": False}
     assert wf["permissions"] == {"contents": "read"}
     assert wf["jobs"]["promote"]["permissions"] == {"contents": "write"}
     # The input reaches scripts only through env, never by interpolation.
+    assert wf["jobs"]["promote"]["env"]["VERSION"] == "${{ inputs.version }}"
     for step in _steps(wf["jobs"]["promote"]):
-        assert "inputs.dev_version" not in _run(step)
+        assert "inputs." not in _run(step)
 
 
 def test_promote_reuses_dev_artifacts_and_never_publishes_unsigned_metadata() -> None:
@@ -152,7 +153,7 @@ def test_promote_reuses_dev_artifacts_and_never_publishes_unsigned_metadata() ->
     steps = _steps(wf["jobs"]["promote"])
     joined = "\n".join(_run(s) for s in steps)
     assert "cargo" not in joined and "pyinstaller" not in joined  # no rebuild
-    assert 'gh release download "dev-v$DEV_VERSION"' in joined
+    assert 'gh release download "dev-v$VERSION"' in joined
     manifest = next(s for s in steps if s.get("name") == "Write the Stable manifest")
     assert "if [ -f dev/latest.json ]" in _run(manifest)
     channel = next(s for s in steps if s.get("name") == "Advance the Stable channel")
@@ -276,8 +277,9 @@ def test_manual_release_path_builds_the_version_it_names() -> None:
     # The input reaches the script only through env, never by interpolation.
     assert "inputs.version" not in _run(plan)
     assert plan["env"]["VERSION_INPUT"] == "${{ github.event.inputs.version }}"
-    # WiX rejects non-numeric pre-release versions: NSIS only on Windows then.
-    assert '"bundles": "nsis" if prerelease else ""' in _run(plan)
+    # D-31: same version rules as every build; Windows is NSIS only (MSI caps PATCH at 65535).
+    assert '"locus_tooling/versioning.py", "validate"' in _run(plan)
+    assert '"bundles": "nsis"}' in _run(plan)
     build = wf["jobs"]["build"]
     assert build["env"]["VERSION"] == "${{ needs.plan.outputs.version }}"
     sidecar = next(s for s in _steps(build) if s.get("name") == "Build backend sidecar")
@@ -311,3 +313,82 @@ def test_dev_build_sets_the_full_dev_version_in_the_app() -> None:
     assert "--config dev-channel.conf.json" in _run(installers)
     main_rs = (TAURI / "src" / "main.rs").read_text(encoding="utf-8")
     assert '.env("LOCUS_APP_VERSION", app.package_info().version.to_string())' in main_rs
+
+
+# --------------------------------------------------------------------------- #
+# D-31: MAJOR.MINOR from VERSION, PATCH = build counter, immutable releases
+# --------------------------------------------------------------------------- #
+def test_dev_version_is_the_next_patch_of_version_from_the_remote_tags() -> None:
+    wf = _load("desktop-dev.yml")
+    step = next(s for s in _steps(wf["jobs"]["plan"]) if s.get("id") == "version")
+    body = _run(step)
+    assert "git ls-remote --tags --refs origin" in body
+    assert "python locus_tooling/versioning.py next" in body
+    assert "--version-file VERSION" in body
+    # The run number no longer names builds.
+    assert "run_number" not in json.dumps(wf) and "-dev." not in body
+
+
+def test_dev_publish_refuses_an_existing_version_and_never_clobbers_it() -> None:
+    wf = _load("desktop-dev.yml")
+    steps = _steps(wf["jobs"]["publish"])
+    names = [s.get("name") for s in steps]
+    refuse = next(s for s in steps if s.get("name") == "Refuse an already published version")
+    body = _run(refuse)
+    for tag in (
+        '"refs/tags/dev-v$VERSION"',
+        '"refs/tags/stable-v$VERSION"',
+        '"refs/tags/v$VERSION"',
+    ):
+        assert tag in body
+    assert "validate" in body and "exit 1" in body
+    assert names.index("Refuse an already published version") < names.index(
+        "Write the signed Dev manifest"
+    )
+    release = next(s for s in steps if s.get("name") == "Publish the Dev prerelease")
+    assert "--clobber" not in _run(release) and "gh release upload" not in _run(release)
+    assert 'gh release create "$tag"' in _run(release)
+    assert '--title "Lattix Locus $VERSION (Dev)"' in _run(release)
+    # The rolling channel pointer is the only thing ever replaced.
+    channel = next(s for s in steps if s.get("name") == "Advance the Dev channel")
+    assert "gh release upload channel-dev assets/latest.json --clobber" in _run(channel)
+
+
+def test_promote_validates_the_patch_counter_version() -> None:
+    wf = _load("desktop-promote.yml")
+    validate = next(
+        s for s in _steps(wf["jobs"]["promote"]) if s.get("name") == "Validate the version"
+    )
+    body = _run(validate)
+    assert r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]{0,4})$" in body
+    assert 'python locus_tooling/versioning.py validate "$VERSION"' in body
+    assert 'gh release view "stable-v$VERSION"' in body
+    pattern = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]{0,4})$")
+    for good in ("0.2.0", "0.2.42", "1.0.99999"):
+        assert pattern.match(good)
+    for bad in ("0.2.100000", "0.2.01", "0.1.0-dev.42", "v0.2.1", "0.2"):
+        assert not pattern.match(bad)
+
+
+def test_windows_ships_nsis_only_everywhere() -> None:
+    # Windows Installer caps the third version field at 65535, below the 99999 PATCH cap.
+    conf = json.loads((TAURI / "tauri.conf.json").read_text(encoding="utf-8"))
+    targets = conf["bundle"]["targets"]
+    assert "msi" not in targets and "nsis" in targets
+    for name in ("desktop-dev.yml", "desktop-release.yml"):
+        text = (WORKFLOWS / name).read_text(encoding="utf-8")
+        assert '"bundles": "nsis"' in text, name
+        assert "*.msi" not in text, name
+
+
+def test_ci_runs_the_release_version_check_from_env_only() -> None:
+    wf = _load("ci.yml")
+    job = wf["jobs"]["release-version"]
+    assert "release-version" in wf["jobs"]["required-gates"]["needs"]
+    assert job.get("permissions") is None and wf["permissions"] == {"contents": "read"}
+    step = next(s for s in _steps(job) if s.get("name") == "Check VERSION and the release impact")
+    body = _run(step)
+    assert step["env"]["PR_BODY"] == "${{ github.event.pull_request.body }}"
+    assert "${{" not in body  # the untrusted PR body reaches the script only through env
+    assert "python locus_tooling/versioning.py check --base-ref 'HEAD^1'" in body
+    assert "python locus_tooling/versioning.py check" in body

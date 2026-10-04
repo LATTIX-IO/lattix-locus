@@ -372,7 +372,9 @@ def test_public_locus_installer_imports_packaged_module() -> None:
     assert "def update() -> None:" in packaged_installer
     assert 'os.environ["LOCUS_INSTALLER_OUTPUT"] = "tui"' in packaged_installer
     assert "lattix update" in manifest
-    assert '"version": "0.1.0"' in manifest
+    # D-31: pinned to <VERSION>.0 like every manifest (docs/VERSIONING.md).
+    release_base = _read("VERSION").strip()
+    assert f'"version": "{release_base}.0"' in manifest
     assert 'DEFAULT_LOCAL_STACK_HOST = "locus.local"' in tooling_common
 
 

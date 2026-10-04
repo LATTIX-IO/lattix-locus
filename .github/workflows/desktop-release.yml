@@ -1,4 +1,8 @@
-# Build the native desktop installers (.msi/.exe, .dmg/.app, .deb/AppImage).
+# Build the native desktop installers (NSIS .exe, .dmg/.app, .deb/AppImage).
+#
+# Versions follow D-31 (docs/VERSIONING.md): MAJOR.MINOR.PATCH, integers, PATCH
+# <= 99999, MAJOR.MINOR equal to the commit's VERSION file. Windows ships NSIS
+# only: Windows Installer (MSI/WiX) caps the third version field at 65535.
 #
 # Pipeline per OS: PyInstaller backend sidecar → Next.js standalone + vendored
 # Node → `cargo tauri build` (Tauri bundles installers) → (Windows) Authenticode
@@ -21,9 +25,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version label (e.g. 0.1.0). Test builds can leave the default."
-        required: false
-        default: "0.1.0-dev"
+        description: "MAJOR.MINOR.PATCH to build (e.g. 0.2.7); MAJOR.MINOR must match VERSION"
+        required: true
+        type: string
       platforms:
         description: "Which installers to build"
         type: choice
@@ -48,12 +52,19 @@ jobs:
       release: ${{ steps.m.outputs.release }}
       version: ${{ steps.m.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       # The version is what the app, the backend (/platform/version) and the
-      # installer report: the tag without its "v", or the dispatch input. It was
-      # previously used only for artifact and tag names, so every build from this
-      # path reported tauri.conf.json's base version (0.1.0) and an unstamped
-      # backend. MSI (WiX) rejects non-numeric pre-release versions, so a
-      # pre-release builds NSIS only on Windows (as desktop-dev.yml does).
+      # installer report: the tag without its "v", or the dispatch input,
+      # validated by the same rules as every other build (D-31): numeric
+      # MAJOR.MINOR.PATCH, PATCH <= 99999, MAJOR.MINOR == this commit's VERSION.
+      # A build that creates a release must not reuse a version the update
+      # channels already published (dev-v / stable-v), and a dispatched one not
+      # an existing v<version> either: releases are immutable.
       - id: m
         shell: python
         env:
@@ -63,22 +74,31 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           VERSION_INPUT: ${{ github.event.inputs.version }}
         run: |
-          import json, os, re
-          raw = os.environ["REF_NAME"] if os.environ["EVENT_NAME"] == "push" else os.environ["VERSION_INPUT"]
+          import json, os, subprocess, sys
+          push = os.environ["EVENT_NAME"] == "push"
+          raw = os.environ["REF_NAME"] if push else os.environ["VERSION_INPUT"]
           version = (raw or "").strip()
-          version = version[1:] if version[:1] in ("v", "V") else version
-          semver = re.compile(
-              r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
-              r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
-              r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z"
+          version = version[1:] if version[:1] == "v" else version
+          check = subprocess.run(
+              [sys.executable, "locus_tooling/versioning.py", "validate", version,
+               "--version-file", "VERSION"],
+              capture_output=True, text=True, check=False,
           )
-          match = semver.match(version)
-          if not match:
-              raise SystemExit(f"::error::not a semantic version: {version!r}")
-          prerelease = bool(match.group(4))
+          if check.returncode != 0:
+              raise SystemExit("::error::" + check.stderr.strip())
+          version = check.stdout.strip()
+          release = os.environ["CREATE_RELEASE"].lower() == "true"
+          if release:
+              tags = ["dev-v" + version, "stable-v" + version] + ([] if push else ["v" + version])
+              taken = subprocess.run(
+                  ["git", "ls-remote", "--tags", "origin"] + ["refs/tags/" + t for t in tags],
+                  capture_output=True, text=True, check=True,
+              ).stdout.strip()
+              if taken:
+                  raise SystemExit("::error::" + version + " is already published: " + taken)
           rows = {
               "windows": {"os": "windows-latest", "triple": "x86_64-pc-windows-msvc", "ext": ".exe",
-                          "bundles": "nsis" if prerelease else ""},
+                          "bundles": "nsis"},
               "macos": {"os": "macos-latest", "triple": "aarch64-apple-darwin", "ext": "", "bundles": ""},
               "macos-intel": {"os": "macos-13", "triple": "x86_64-apple-darwin", "ext": "", "bundles": ""},
               "linux": {"os": "ubuntu-latest", "triple": "x86_64-unknown-linux-gnu", "ext": "", "bundles": ""},
@@ -91,9 +111,9 @@ jobs:
           }[os.environ["PLATFORMS"]]
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               out.write("matrix=" + json.dumps({"include": [rows[k] for k in pick]}) + chr(10))
-              out.write("release=" + os.environ["CREATE_RELEASE"].lower() + chr(10))
+              out.write("release=" + ("true" if release else "false") + chr(10))
               out.write("version=" + version + chr(10))
-          print(json.dumps({"version": version, "prerelease": prerelease}))
+          print(json.dumps({"version": version, "release": release}))
 
   build:
     needs: plan
@@ -205,8 +225,9 @@ jobs:
           # Installers only. Updater metadata comes from the channel workflows
           # (desktop-dev.yml / desktop-promote.yml), never from this path.
           includeUpdaterJson: false
-          tagName: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
-          releaseName: "Lattix Locus ${{ github.event.inputs.version || github.ref_name }}"
+          # The validated plan version, never the raw input.
+          tagName: v${{ needs.plan.outputs.version }}
+          releaseName: "Lattix Locus ${{ needs.plan.outputs.version }}"
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.triple }} --config ${{ github.workspace }}/apps/desktop-tauri/src-tauri/release.conf.json${{ matrix.bundles != '' && format(' --bundles {0}', matrix.bundles) || '' }}
@@ -234,7 +255,7 @@ jobs:
           $st = "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe"
           $signtool = (Get-Item $st | Select-Object -First 1).FullName
           Get-ChildItem -Recurse apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle `
-            -Include *.msi,*.exe | ForEach-Object {
+            -Include *.exe | ForEach-Object {
               & $signtool sign /f $pfx /p $env:WINDOWS_PFX_PASSWORD /fd sha256 `
                 /tr http://timestamp.digicert.com /td sha256 $_.FullName
               & $signtool verify /pa $_.FullName
@@ -246,9 +267,8 @@ jobs:
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
-          name: locus-${{ github.event.inputs.version || github.ref_name }}-${{ matrix.triple }}
+          name: locus-${{ needs.plan.outputs.version }}-${{ matrix.triple }}
           path: |
-            apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.msi
             apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.exe
             apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.dmg
             apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.deb

@@ -119,17 +119,17 @@ The desktop app (Tauri) updates itself from one of two channels. The setting sit
 | | Stable | Dev |
 |---|---|---|
 | Published by | `desktop-promote.yml` (manual, a tested Dev version) | `desktop-dev.yml` (every merge to `main`, docs-only changes skipped) |
-| Version | the promoted Dev version, unchanged | `<base>-dev.<run number>`, `<base>` = `tauri.conf.json` `version` |
+| Version | the promoted Dev version, unchanged | `<MAJOR>.<MINOR>.<PATCH>`: `MAJOR.MINOR` from the repo-root `VERSION`, PATCH the next build number ([VERSIONING.md](VERSIONING.md), D-31) |
 | Update metadata | `releases/download/channel-stable/latest.json` | `releases/download/channel-dev/latest.json` |
 | In the app | background check on start and every 4 hours; an "Update available: Update & Restart" banner; installs only on click | background check, automatic download, then waits until no agent run is in progress and the self-improvement loop is held, then installs and restarts |
 
 The app only ever uses those two GitHub URLs; the setting selects one of them and never accepts a URL. Every update is verified against the minisign public key in `tauri.conf.json` before it is installed; an unsigned or foreign update is refused. Switching channel never downgrades: Stable is offered only once it is newer than the installed Dev build.
 
-**Releases.** Each Dev build is a prerelease `dev-v<version>`; each promotion is a release `stable-v<version>` (marked GitHub "latest") holding the same bytes. `channel-dev` and `channel-stable` are rolling prereleases whose only job is to hold the current `latest.json`; the workflows only move them forward (a newer version), one run at a time.
+**Releases.** Each Dev build is a prerelease `dev-v<version>`; each promotion is a release `stable-v<version>` (marked GitHub "latest") holding the same bytes. Releases are immutable: a version is published once and never replaced. `channel-dev` and `channel-stable` are rolling prereleases whose only job is to hold the current `latest.json`; the workflows only move them forward (a newer version), one run at a time.
 
-**Promoting to Stable.** Actions → `desktop-promote` → Run workflow with the Dev version you tested (for example `0.1.0-dev.42`). The job copies that prerelease's installers, updater bundles and signatures into `stable-v0.1.0-dev.42`, rewrites the URLs in its `latest.json` and moves `channel-stable`. Nothing is rebuilt, so what was tested is what ships. It refuses a version older than the current Stable, and a version that is already Stable.
+**Promoting to Stable.** Actions → `desktop-promote` → Run workflow with the Dev version you tested (for example `0.2.42`). The job copies that prerelease's installers, updater bundles and signatures into `stable-v0.2.42`, rewrites the URLs in its `latest.json` and moves `channel-stable`. Nothing is rebuilt, so what was tested is what ships. It refuses a version older than the current Stable, and a version that is already Stable.
 
-**After a Stable release.** Dev versions are pre-releases of `<base>`, so `0.1.0-dev.N` ranks below `0.1.0`. Promoted Dev builds keep their `-dev.N` version, so this only matters if a plain `0.1.0` is ever shipped another way: then bump `version` in `tauri.conf.json` (for example to `0.1.1`) so later Dev builds rank above it.
+**Version numbers (D-31).** Every build is a plain `MAJOR.MINOR.PATCH`; PATCH counts builds across the Dev, Stable and manual release tags of that `MAJOR.MINOR` and is capped at 99999 (past it a build fails until `VERSION` gets a MINOR bump). Builds from before D-31 (`0.1.0-dev.N`, the June `0.1.1`) rank below `0.2.0`, so they update forward. Windows ships the NSIS installer only: Windows Installer (MSI) cannot carry a third version field above 65535. Rules for the first two digits: [VERSIONING.md](VERSIONING.md).
 
 **Dev install sequence.** Download → `POST /system/update/prepare` every minute until it reports `ready` (no agent run in progress, and the update holds the loop's single-run lock, so no loop run is running or can start; a running loop run is never stopped) → stop the backend through its normal teardown (`/system/shutdown`, then the process-tree kill as a backstop) → install → restart. If the install fails, the old backend is started again and the loop hold is released on that start.
 

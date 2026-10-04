@@ -178,6 +178,16 @@ test_rsi_scorecard_writes_ask if {
   filesystem_access.risk_floor == 0 with input as write_input("/workspace/project/locus_runtime/rsi_notes.md")
 }
 
+# D-31: the release-version check is a gate definition; the VERSION file is not
+# (the loop may bump MINOR; the merge guard holds a MAJOR bump on content).
+test_release_version_gate_asks_but_version_file_does_not if {
+  filesystem_access.risk_floor == 3 with input as write_input("/workspace/project/locus_tooling/versioning.py")
+  filesystem_access.risk_floor == 3 with input as write_input(`C:\ws\locus_tooling\versioning.py`)
+  filesystem_access.risk_floor == 0 with input as write_input("/workspace/project/VERSION")
+  filesystem_access.allow with input as write_input("/workspace/project/VERSION")
+  filesystem_access.risk_floor == 0 with input as write_input("/workspace/project/docs/release-notes/x.md")
+}
+
 test_gate_definition_write_windows_path if {
   filesystem_access.risk_floor == 3 with input as write_input(`C:\ws\.github\workflows\ci.yml`)
 }

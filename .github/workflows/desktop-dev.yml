@@ -3,12 +3,16 @@
 # themselves from the rolling `channel-dev` release's latest.json.
 #
 #   merge to main -> build Windows x64 (NSIS) + macOS arm64 -> prerelease
-#   `dev-v<base>-dev.<run_number>` -> (signing key present) channel-dev/latest.json
+#   `dev-v<MAJOR>.<MINOR>.<PATCH>` -> (signing key present) channel-dev/latest.json
 #
-# Version: <base>-dev.<run_number>, <base> = tauri.conf.json "version". SemVer
-# compares the numeric last identifier numerically (dev.10 > dev.9), so the
-# updater sees every later run as newer. Bump <base> past the last Stable
-# release (see docs/INSTALLER.md) or Dev builds rank below it.
+# Version (D-31, docs/VERSIONING.md): MAJOR.MINOR is the repo-root VERSION file;
+# PATCH is a build counter, 1 + the highest PATCH among the release tags of that
+# MAJOR.MINOR (dev-v*, stable-v*, v*), 0 for the first build. No pre-release
+# suffix. PATCH is capped at 99999: past it the plan job fails and asks for a
+# MINOR bump (never wraps). Releases are immutable: a version that already has
+# a tag or release is never re-published (re-run the whole workflow for a new
+# PATCH). Windows ships NSIS only: Windows Installer (MSI) caps the third
+# version field at 65535, below the PATCH cap.
 #
 # Updater signing (root of trust for every Dev install): repo secrets
 # TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD. Without them
@@ -55,14 +59,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The tag list comes from the remote (complete, no pagination), not the
+      # shallow checkout. The concurrency group above keeps two main builds from
+      # picking the same PATCH; publish re-checks before it creates anything.
       - id: version
         shell: bash
-        env:
-          RUN_NUMBER: ${{ github.run_number }}
         run: |
-          version="$(python scripts/desktop_channel.py version \
-            --tauri-conf apps/desktop-tauri/src-tauri/tauri.conf.json \
-            --run-number "$RUN_NUMBER")"
+          git ls-remote --tags --refs origin > "$RUNNER_TEMP/tags.txt"
+          version="$(python locus_tooling/versioning.py next \
+            --version-file VERSION --tags-file "$RUNNER_TEMP/tags.txt")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - id: matrix
@@ -162,8 +167,8 @@ jobs:
 
       # Dev version + updater artifacts via a config overlay. Updater artifacts
       # (signed bundles) are only requested when the signing key exists; a
-      # keyless build would fail to sign them. MSI is skipped on purpose: WiX
-      # rejects non-numeric pre-release versions such as 0.1.0-dev.42.
+      # keyless build would fail to sign them. No MSI (NSIS only, see the
+      # header): WiX rejects a third version field above 65535.
       - name: Write the Dev build overlay
         shell: python
         run: |
@@ -237,6 +242,21 @@ jobs:
               echo "::error::missing the ${platform} build"; exit 1; }
           done
 
+      # Releases are immutable (D-31): each version is published once, never
+      # replaced. Refuse if any release tag of this version exists (a manual
+      # tag, or a re-run of this run's failed jobs: re-run the whole workflow,
+      # which picks the next PATCH).
+      - name: Refuse an already published version
+        shell: bash
+        run: |
+          python locus_tooling/versioning.py validate "$VERSION" --version-file VERSION
+          taken="$(git ls-remote --tags origin "refs/tags/dev-v$VERSION" \
+            "refs/tags/stable-v$VERSION" "refs/tags/v$VERSION")"
+          if [ -n "$taken" ] || gh release view "dev-v$VERSION" >/dev/null 2>&1; then
+            echo "::error::$VERSION is already published; releases are immutable"
+            exit 1
+          fi
+
       # Signed metadata only. Every signature must verify against the pubkey the
       # app ships with, or nothing is published (a mismatch would break updates).
       - name: Write the signed Dev manifest
@@ -255,12 +275,9 @@ jobs:
           tag="dev-v$VERSION"
           mapfile -t files < <(find assets -maxdepth 1 -type f ! -name '*.platform.json' | sort)
           notes="Dev build of ${GITHUB_SHA} (merge to main). Untested beyond CI; see docs/INSTALLER.md."
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "${files[@]}" --clobber
-          else
-            gh release create "$tag" "${files[@]}" --prerelease --latest=false \
-              --target "$GITHUB_SHA" --title "Lattix Locus $VERSION (Dev)" --notes "$notes"
-          fi
+          # Create only: never upload into or overwrite an existing release.
+          gh release create "$tag" "${files[@]}" --prerelease --latest=false \
+            --target "$GITHUB_SHA" --title "Lattix Locus $VERSION (Dev)" --notes "$notes"
 
       - name: Advance the Dev channel
         id: channel

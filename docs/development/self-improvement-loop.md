@@ -253,11 +253,15 @@ channel; details and the signing-key setup are in
 1. **Merge.** A loop PR merges to `main` (D-22: green required checks and no
    protected path; the update trust chain is protected, see below).
 2. **Dev release.** `desktop-dev.yml` builds Windows x64 (NSIS) and macOS arm64
-   as `<base>-dev.<run>`, stamps that version into the backend sidecar, signs the
-   updater bundles with `TAURI_SIGNING_PRIVATE_KEY`, verifies each signature
-   against the app's committed public key, publishes the prerelease
-   `dev-v<version>` and moves `channel-dev/latest.json` forward. Runs are
-   serialized; without the key it publishes installers only and no metadata.
+   as `<VERSION>.<PATCH>` (PATCH = the next build number of that MAJOR.MINOR,
+   [VERSIONING.md](../VERSIONING.md), D-31), stamps that version into the
+   backend sidecar, signs the updater bundles with `TAURI_SIGNING_PRIVATE_KEY`,
+   verifies each signature against the app's committed public key, publishes the
+   prerelease `dev-v<version>` (never over an existing one) and moves
+   `channel-dev/latest.json` forward. Runs are serialized; without the key it
+   publishes installers only and no metadata. A loop PR declares its
+   `Release-Impact`; it may bump MINOR, never MAJOR (the D-22 guard holds that
+   for the principal).
 3. **Auto-update.** Apps on the Dev channel check on start and every 4 hours,
    download the update, then poll `POST /system/update/prepare` until no agent
    run is in progress and the update holds the loop's single-run lock

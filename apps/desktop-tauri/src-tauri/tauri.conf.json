@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Lattix Locus",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.lattix.locus",
   "build": {
     "frontendDist": "loading",
@@ -26,7 +26,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "msi", "app", "dmg", "deb", "appimage"],
+    "targets": ["nsis", "app", "dmg", "deb", "appimage"],
     "category": "DeveloperTool",
     "shortDescription": "Secure, local-first multi-agent orchestration.",
     "longDescription": "Lattix Locus desktop shell — runs the backend, sidecars (Postgres+pgvector, Neo4j world models, NATS, Ollama) and confined agents locally, with no Docker.",
