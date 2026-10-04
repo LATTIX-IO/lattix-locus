@@ -5,16 +5,14 @@ import {
   connectIntegrationOAuth,
   deleteIntegration,
   disconnectIntegrationOAuth,
-  getIntegrationCatalog,
   getIntegrationOAuthStatus,
   getIntegrationStarterTemplates,
   getIntegrations,
-  installCatalogIntegration,
   refreshIntegrationOAuth,
   saveIntegration,
   testIntegration,
-  type IntegrationCatalogEntry,
 } from "@/lib/api";
+import { ConnectionCatalog } from "@/components/connection-catalog";
 import { McpConnectionsPanel } from "@/components/mcp-connections-panel";
 import type {
   IntegrationDefinition,
@@ -453,36 +451,11 @@ export function IntegrationsManager() {
   const [oauthAccountLabel, setOauthAccountLabel] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const [testingId, setTestingId] = useState<string | null>(null);
-  const [catalog, setCatalog] = useState<IntegrationCatalogEntry[]>([]);
-  const [installingId, setInstallingId] = useState<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
-  async function refreshCatalog() {
-    try {
-      setCatalog(await getIntegrationCatalog());
-    } catch {
-      // Catalog is additive; the manager remains usable without it.
-    }
-  }
-
-  useEffect(() => {
-    void refreshCatalog();
-  }, []);
-
-  async function installFromCatalog(entry: IntegrationCatalogEntry) {
-    setInstallingId(entry.catalog_id);
-    try {
-      const result = await installCatalogIntegration(entry.catalog_id);
-      setStatusMessage(
-        result.already_installed
-          ? `${entry.name} is already installed.`
-          : `${entry.name} added as a draft — configure its credentials below.`,
-      );
-      await Promise.all([refresh(), refreshCatalog()]);
-    } catch (err) {
-      setStatusMessage(err instanceof Error ? err.message : `Unable to install ${entry.name}.`);
-    } finally {
-      setInstallingId(null);
-    }
+  function openAdvanced() {
+    setAdvancedOpen(true);
+    requestAnimationFrame(() => document.getElementById("integration-form")?.scrollIntoView?.({ behavior: "smooth", block: "start" }));
   }
 
   const selectedTemplate = starterTemplates.find((item) => item.id === selectedTemplateId) ?? null;
@@ -733,6 +706,7 @@ export function IntegrationsManager() {
     setOauthRefreshTokenSecretRef(String(auth.refresh_token_secret_ref ?? ""));
     setOauthAccountLabel(String(auth.account_label ?? item.oauth_status?.account_label ?? ""));
     setStatusMessage("");
+    openAdvanced();
   }
 
   async function handleCreate() {
@@ -892,54 +866,29 @@ export function IntegrationsManager() {
         </div>
         <button
           type="button"
-          className="fx-btn-primary px-3 py-2 text-sm font-medium"
+          className="fx-btn-secondary px-3 py-2 text-sm font-medium"
           onClick={() => {
             resetForm();
             setStatusMessage("");
-            document.getElementById("integration-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
+            openAdvanced();
           }}
         >
-          Add Custom
+          Add custom
         </button>
       </header>
 
+      {statusMessage ? (
+        <p role="status" className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.84)] px-3 py-2 text-xs text-[var(--foreground)]">
+          {statusMessage}
+        </p>
+      ) : null}
+
       <div className="fx-panel p-4">
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-semibold uppercase tracking-wide">Catalog — MCP servers &amp; APIs</h2>
-          <span className="fx-muted text-xs">Preloaded, vetted entries. Credentials are configured after install.</span>
+          <span className="fx-muted text-xs">Vetted entries. Pick one, review what it may do, and add it.</span>
         </div>
-        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-          {catalog.map((entry) => {
-            const protocol = String(entry.metadata_json?.protocol ?? "http");
-            return (
-              <div key={entry.catalog_id} className="border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2.5 text-xs">
-                <div className="flex items-start justify-between gap-2">
-                  <p className="font-medium text-[var(--foreground)]">{entry.name}</p>
-                  <span className="fx-muted rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[10px] uppercase">
-                    {protocol === "mcp" ? "MCP" : "API"}
-                  </span>
-                </div>
-                <p className="fx-muted mt-1 truncate">{entry.capabilities.join(", ")}</p>
-                <div className="mt-2 flex items-center justify-between">
-                  <span className="fx-muted text-[10px] uppercase">{entry.auth_type === "none" ? "no auth" : entry.auth_type}</span>
-                  {entry.installed ? (
-                    <span className="text-[hsl(var(--state-success))]">Installed</span>
-                  ) : (
-                    <button
-                      type="button"
-                      disabled={installingId === entry.catalog_id}
-                      onClick={() => void installFromCatalog(entry)}
-                      className="fx-btn-secondary px-2 py-1 text-[11px] font-medium disabled:opacity-60"
-                    >
-                      {installingId === entry.catalog_id ? "Adding..." : "Add"}
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-          {catalog.length === 0 ? <p className="fx-muted text-xs">Catalog unavailable.</p> : null}
-        </div>
+        <ConnectionCatalog integrations={items} onChanged={() => void refresh()} />
       </div>
 
       {oauthPanelItem && oauthPanelStatus ? (
@@ -1059,6 +1008,16 @@ export function IntegrationsManager() {
         </div>
       ) : null}
 
+      <details
+        id="advanced-connections"
+        open={advancedOpen}
+        onToggle={(event) => setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open)}
+        className="fx-panel rounded-[1.6rem] p-4"
+      >
+        <summary className="cursor-pointer text-sm font-semibold">
+          Advanced: custom integrations and MCP servers (raw URLs, API keys, tokens, headers)
+        </summary>
+        <div className="mt-4 space-y-4">
       <div id="integration-form" className="fx-panel scroll-mt-24 rounded-[1.6rem] p-5 shadow-[0_20px_48px_rgba(15,23,42,0.05)]">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -1564,6 +1523,10 @@ export function IntegrationsManager() {
         </div>
       </div>
 
+      <McpConnectionsPanel />
+        </div>
+      </details>
+
       <div className="fx-panel overflow-hidden rounded-[1.6rem] shadow-[0_20px_48px_rgba(15,23,42,0.05)]">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--ui-border)] px-4 py-4">
           <div>
@@ -1656,7 +1619,7 @@ export function IntegrationsManager() {
               </tr>
             ) : items.length === 0 ? (
               <tr>
-                <td className="px-3 py-3 text-xs text-[var(--foreground)]" colSpan={8}>No integrations configured yet. Install one from the catalog above, or use Add Custom to connect an API or MCP server.</td>
+                <td className="px-3 py-3 text-xs text-[var(--foreground)]" colSpan={8}>No integrations configured yet. Add one from the catalog above, or open Advanced to connect a custom API or MCP server.</td>
               </tr>
             ) : (
               items.map((item) => {
@@ -1751,9 +1714,6 @@ export function IntegrationsManager() {
         </table>
       </div>
 
-      <McpConnectionsPanel />
-
-      {statusMessage ? <p className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.84)] px-3 py-2 text-xs text-[var(--foreground)]">{statusMessage}</p> : null}
     </section>
   );
 }
