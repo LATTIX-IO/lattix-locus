@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Lattix Locus</title>
+  <style>
+    :root { color-scheme: light dark; --fg: #111; --bg: #fff; --muted: #555; --stop: #b00020; }
+    @media (prefers-color-scheme: dark) { :root { --fg: #eee; --bg: #161616; --muted: #aaa; --stop: #ff6b7d; } }
+    body { margin: 0; padding: 12px; width: 260px; font: 13px/1.4 "IBM Plex Mono", ui-monospace, monospace;
+           color: var(--fg); background: var(--bg); }
+    h1 { font-size: 13px; margin: 0 0 8px; letter-spacing: .04em; text-transform: uppercase; }
+    p { margin: 6px 0; color: var(--muted); }
+    button { width: 100%; margin-top: 8px; padding: 8px; font: inherit; cursor: pointer; }
+    #stop { color: var(--stop); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Lattix Locus</h1>
+  <p id="status">Checking connection...</p>
+  <p id="tab">This tab is not shared.</p>
+  <button id="share" type="button">Share this tab with Locus</button>
+  <button id="connect" type="button">Reconnect to Locus</button>
+  <button id="stop" type="button">Stop the agent (panic)</button>
+  <p>Locus asks before acting unless your browser tier in Locus allows it. It never types passwords, card numbers or one-time codes.</p>
+  <script src="popup.js"></script>
+</body>
+</html>

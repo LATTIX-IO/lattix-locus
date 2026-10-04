@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Lattix Locus",
+  "short_name": "Locus",
+  "version": "0.1.0",
+  "description": "Lets your local Lattix Locus agent work in tabs you share, under the browser tier you choose. Every action is authorized by Locus first.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA9QOeGfLH4gI780+sXIO5kuVtqNzfmW0i3IcnRdBDTBWUzlJl/C+0qfDINLO3PCnPgvLPr0QJ77DhQzegyYs1rt1qAopg9jpOarPo3bf2iwcc34pCnXKjWHUc6tDyrO2DJnjSBg/Rc6oVm4hRpt+g1IprOd2OZe1jefAJILtYUMDMdM3q3TPU77vyEbFL0dasthEOEaQzkMdO/aYt+SKcLnm9CYIRG/3SRhpuCLhMSFfCkSti3Q2nQyKrNGSx9XrJcDSsDDQoiGmVgrlRC1PFQItcpa6VoVRll5HMIWMEfuoDa/bkMeGUyeV++cKFosyVMf+UwsnTTxfs+NwFfmYcmQIDAQAB",
+  "minimum_chrome_version": "121",
+  "permissions": ["nativeMessaging", "tabs", "scripting", "storage", "alarms"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
+  },
+  "action": {
+    "default_title": "Lattix Locus",
+    "default_popup": "popup.html"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "locus-browser@lattix.io",
+      "strict_min_version": "128.0"
+    }
+  }
+}

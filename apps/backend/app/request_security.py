@@ -216,6 +216,42 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         RouteAccessCategory.AUTHENTICATED_READ,
         "computer_use.status.read",
     ),
+    # User browser (LOCUS-350). Pairing and the tier are principal-only in the
+    # handlers. The relay routes serve only the native-messaging host: the
+    # handlers require loopback, no browser headers, and the pairing key.
+    RouteAccessRule(
+        ("GET",),
+        "/user-browser/status",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "user_browser.status.read",
+    ),
+    RouteAccessRule(
+        ("POST", "DELETE"),
+        "/user-browser/pairing",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "user_browser.pairing",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/user-browser/tier",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "user_browser.tier.read",
+    ),
+    RouteAccessRule(
+        ("PUT",),
+        "/user-browser/tier",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "user_browser.tier.set",
+    ),
+    *(
+        RouteAccessRule(
+            ("POST",),
+            f"/user-browser/relay/{name}",
+            RouteAccessCategory.PUBLIC_MINIMAL,
+            f"user_browser.relay.{name}",
+        )
+        for name in ("hello", "next", "result", "event", "bye")
+    ),
     # Composer capabilities (per-user settings, working folders, MCP, escalations).
     RouteAccessRule(
         ("GET",), "/user/settings", RouteAccessCategory.AUTHENTICATED_READ, "user.settings.read"

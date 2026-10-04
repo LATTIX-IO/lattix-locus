@@ -45,6 +45,9 @@ _SELF_CHECK_MODULES = (
     "locus_runtime.computer_use.wiring",
     # Update channels (LOCUS-349): readiness/hold, version handshake, loop resume.
     "locus_tooling.desktop_update",
+    "locus_runtime.computer_use.user_browser.driver",
+    "locus_runtime.computer_use.user_browser.native_host",
+    "tldextract",
 )
 
 
@@ -93,11 +96,41 @@ def loop_serve(argv: list[str]) -> int:
     return 0
 
 
+def _looks_like_native_messaging(argv: list[str]) -> bool:
+    args = argv[1:]
+    if "--native-messaging-host" in args or any(
+        str(a).startswith("chrome-extension://") for a in args
+    ):
+        return True
+    # Firefox passes the add-on ID (pairing.FIREFOX_EXTENSION_ID; kept literal
+    # so ordinary launches import nothing; a test pins the two together).
+    return "locus-browser@lattix.io" in args
+
+
 def main() -> int | None:
+    # A browser launched us as the Locus native-messaging host (LOCUS-350): the
+    # host manifest points at this binary, and browsers pass the caller's
+    # extension origin as an argument. Dispatch before anything prints to stdout;
+    # the cheap argv check keeps normal launches from importing the host.
+    if _looks_like_native_messaging(sys.argv):
+        from locus_runtime.computer_use.user_browser.native_host import (
+            is_native_messaging_invocation,
+        )
+        from locus_runtime.computer_use.user_browser.native_host import main as host_main
+
+        if is_native_messaging_invocation(sys.argv):
+            return host_main(sys.argv)
+        return 2  # an unpinned extension asked for the host: refuse
     if "--self-check" in sys.argv[1:]:
         return self_check()
     if len(sys.argv) > 1 and sys.argv[1] == "--loop-serve":
         return loop_serve(sys.argv[2:])
+
+    # Out-of-band confirmation secret from the Tauri shell (LOCUS-350): read once
+    # from stdin, kept in memory, stdin detached so no child inherits the pipe.
+    from locus_tooling.shell_confirmation import receive_from_stdin
+
+    receive_from_stdin()
     from locus_tooling.desktop import run_desktop_supervisor
 
     _prepend_bundled_bin_to_path()

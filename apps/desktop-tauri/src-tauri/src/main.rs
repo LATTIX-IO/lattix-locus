@@ -11,6 +11,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod browser_tier;
 mod computer_use;
 mod updates;
 
@@ -88,12 +89,17 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Native confirmation dialogs for widening the user-browser tier
+        // (LOCUS-350). Used from Rust only; the webview gets no dialog permission.
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             quit_now,
             updates::check_for_update,
             updates::install_update_and_restart,
             updates::get_update_status,
-            updates::set_update_channel
+            updates::set_update_channel,
+            browser_tier::confirm_browser_tier,
+            browser_tier::confirm_browser_pairing
         ])
         // Closing the window hides to the tray instead of quitting; real quit is
         // the tray "Quit" item, which runs the agent-running validation first.
@@ -215,10 +221,23 @@ pub(crate) fn start_backend(app: &AppHandle) -> Result<(), String> {
         // Single source of truth for the version: the Tauri app/package
         // version. The backend reports this (LOCUS_APP_VERSION wins in
         // _platform_version), so the UI no longer shows a stale 0.0.0.
-        .env("LOCUS_APP_VERSION", app.package_info().version.to_string());
-    let (mut rx, child) = sidecar
+        .env("LOCUS_APP_VERSION", app.package_info().version.to_string())
+        // A flag only: the confirmation secret itself goes over stdin below.
+        .env(browser_tier::SHELL_CONFIRMATION_ENV, "stdin");
+    let (mut rx, mut child) = sidecar
         .spawn()
         .map_err(|e| format!("failed to spawn the locus-backend sidecar: {e}"))?;
+    // Out-of-band confirmation secret (LOCUS-350): one per app launch (reused if
+    // the backend is restarted, e.g. after a failed update install), OS CSPRNG,
+    // written once to the backend's stdin. Never env, argv, files or logs.
+    match browser_tier::secret_line_for_backend() {
+        Some(line) => {
+            if child.write(line.as_bytes()).is_err() {
+                eprintln!("[browser-tier] could not hand the confirmation secret to the backend");
+            }
+        }
+        None => eprintln!("[browser-tier] OS random source unavailable; browser widening disabled"),
+    }
     // Remember the supervisor PID so we can kill its whole tree on quit.
     let pid = child.pid();
     BACKEND_PID.store(pid, Ordering::SeqCst);

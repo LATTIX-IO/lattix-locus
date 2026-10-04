@@ -55,6 +55,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app import cron as app_cron
 from app import knowledge as app_knowledge
 from app import local_models, mcp_client, policy_gateway, skills_catalog
+from app import user_browser as app_user_browser
 from app.control_status import (
     build_control_status_report,
     collect_posture_facts,
@@ -16878,6 +16879,15 @@ def _startup_initialize_state() -> None:
         policy_gateway.ensure_computer_use_controller()
     except Exception:  # noqa: BLE001 - not installed means no computer-use tools
         LOGGER.exception("Failed to install the computer-use controller")
+    try:
+        # User browser (LOCUS-350): the tier persists only on the desktop install;
+        # elsewhere it is in memory and restarts at strict.
+        persisted_home = (
+            _native_app_home() if _active_runtime_profile().name == "local-native" else None
+        )
+        app_user_browser.ensure_user_browser(persisted_home)
+    except Exception:  # noqa: BLE001 - without it, user-browser actions deny (not paired)
+        LOGGER.exception("Failed to install the user-browser relay")
     pre_startup_integrations = dict(store.integrations)
     postgres_status, postgres_reason = _service_status_with_reason(_POSTGRES_STATE)
     if postgres_status != "connected":
@@ -21434,6 +21444,299 @@ def computer_use_reset(request: Request) -> dict[str, Any]:
     controller.reset(actor)
     _append_audit_event("computer_use.reset", actor, "allowed", {"mode": controller.mode})
     return controller.status()
+
+
+# --- User browser: the principal's own Chrome / Edge / Firefox (LOCUS-350, D-25) --
+# Principal endpoints (status, pairing, tier) use normal authentication; pairing
+# and the tier are principal-only (a human user, never an agent token). The
+# relay endpoints are for the native-messaging host only: loopback, no browser
+# headers, and the pairing key (then a per-connection session token).
+def _enforce_principal_only(request: Request, *, action: str) -> str:
+    # A page on another site can send a "simple" cross-site POST to loopback,
+    # which the desktop's local-operator bootstrap would authenticate: refuse it.
+    cross_site = app_user_browser.cross_site_refusal(request.headers, _cors_allowed_origins())
+    if cross_site is not None:
+        _append_audit_event(action, "anonymous", "blocked", {"reason": cross_site})
+        raise HTTPException(status_code=403, detail="Cross-site request refused")
+    actor = _enforce_admin_access(request, payload={}, action=action)
+    auth_context = getattr(request.state, "locus_auth_context", None)
+    if not app_user_browser.is_human_principal(auth_context):
+        _append_audit_event(action, actor, "blocked", {"reason": "principal_only"})
+        raise HTTPException(
+            status_code=403, detail="Only the human principal can change this setting"
+        )
+    return actor
+
+
+@app.get("/user-browser/status")
+def user_browser_status(request: Request) -> dict[str, Any]:
+    from locus_runtime.computer_use.user_browser.relay import get_hub
+
+    _enforce_request_authn(request, action="user_browser.status.read", required=True)
+    return app_user_browser.status_payload(get_hub())
+
+
+@app.post("/user-browser/pairing")
+def user_browser_pair(request: Request) -> dict[str, Any]:
+    """Create (or rotate) the pairing key in the OS secret store. Never returned."""
+    from locus_runtime.computer_use.user_browser.pairing import create_pairing_key
+    from locus_runtime.computer_use.user_browser.relay import get_hub
+
+    from locus_tooling.native_secrets import SecretStorageUnavailable
+
+    from locus_tooling.shell_confirmation import ShellProofError
+
+    actor = _enforce_principal_only(request, action="user_browser.pair")
+    # Pairing lets the agent use the principal's browser at all: on the desktop
+    # it needs the shell's out-of-band confirmation (confirm_browser_pairing).
+    if app_user_browser.shell_proof_required(_active_runtime_profile().name):
+        try:
+            app_user_browser.verify_pairing_proof(request.headers)
+        except ShellProofError as exc:
+            _append_audit_event("user_browser.pair", actor, "blocked", {"reason": exc.code})
+            raise HTTPException(
+                status_code=403,
+                detail=f"Pair the browser from the Locus desktop app ({exc.code})",
+            ) from exc
+    hub = get_hub()
+    rotated = hub.paired
+    try:
+        create_pairing_key()
+    except SecretStorageUnavailable as exc:
+        _append_audit_event("user_browser.pair", actor, "error", {"reason": "no_secret_store"})
+        raise HTTPException(status_code=503, detail="No secure secret store") from exc
+    hub.revoke_all("rotated")
+    _append_audit_event("user_browser.pair", actor, "allowed", {"rotated": rotated})
+    return {**app_user_browser.status_payload(hub), "rotated": rotated}
+
+
+@app.delete("/user-browser/pairing")
+def user_browser_unpair(request: Request) -> dict[str, Any]:
+    from locus_runtime.computer_use.user_browser.pairing import delete_pairing_key
+    from locus_runtime.computer_use.user_browser.relay import get_hub
+
+    from locus_tooling.native_secrets import SecretStorageUnavailable
+
+    actor = _enforce_principal_only(request, action="user_browser.unpair")
+    hub = get_hub()
+    try:
+        delete_pairing_key()
+    except SecretStorageUnavailable as exc:
+        _append_audit_event("user_browser.unpair", actor, "error", {"reason": "not_removed"})
+        raise HTTPException(status_code=503, detail="Pairing key could not be removed") from exc
+    hub.revoke_all("unpaired")
+    _append_audit_event("user_browser.unpair", actor, "allowed", {})
+    return app_user_browser.status_payload(hub)
+
+
+@app.get("/user-browser/tier")
+def user_browser_get_tier(request: Request) -> dict[str, Any]:
+    from locus_runtime.computer_use.user_browser.tiers import TIER_RISKS, get_tier_store
+
+    _enforce_request_authn(request, action="user_browser.tier.read", required=True)
+    store = get_tier_store()
+    return {**store.settings.as_dict(), "history": store.history, "tier_risks": dict(TIER_RISKS)}
+
+
+@app.put("/user-browser/tier")
+def user_browser_set_tier(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Principal-only. Widening needs ``acknowledge_risk: true`` and, on the desktop
+    profile, the shell's out-of-band confirmation proof. Narrowing needs neither."""
+    from locus_runtime.computer_use.user_browser.tiers import (
+        TierChangeRefused,
+        TierConfirmationRequired,
+        get_tier_store,
+    )
+
+    from locus_tooling.shell_confirmation import ShellProofError
+
+    actor = _enforce_principal_only(request, action="user_browser.tier.set")
+    proof_needed = app_user_browser.shell_proof_required(_active_runtime_profile().name)
+
+    def confirm_widening() -> None:
+        if not proof_needed:
+            return
+        try:
+            app_user_browser.verify_tier_proof(request.headers, payload)
+        except ShellProofError as exc:
+            raise TierConfirmationRequired(exc.code) from exc
+
+    store = get_tier_store()
+    before = store.settings
+    lists: dict[str, Any] = {}
+    for key in ("allowlisted_sites", "granted_sites"):
+        value = payload.get(key)
+        if value is not None and not isinstance(value, list):
+            raise HTTPException(status_code=422, detail=f"{key} must be a list of sites")
+        lists[key] = value
+    try:
+        settings = store.update(
+            tier=str(payload.get("tier") or ""),
+            allowlisted_sites=lists["allowlisted_sites"],
+            granted_sites=lists["granted_sites"],
+            actor=actor,
+            principal_type="user",
+            acknowledge_risk=payload.get("acknowledge_risk") is True,
+            confirm_widening=confirm_widening,
+        )
+    except TierConfirmationRequired as exc:
+        _append_audit_event(
+            "user_browser.tier.set",
+            actor,
+            "blocked",
+            {"reason": exc.code, "requested_tier": str(payload.get("tier") or "")[:16]},
+        )
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except TierChangeRefused as exc:
+        _append_audit_event(
+            "user_browser.tier.set",
+            actor,
+            "blocked",
+            {"reason": str(exc)[:200], "requested_tier": str(payload.get("tier") or "")[:16]},
+        )
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _append_audit_event(
+        "user_browser.tier.set",
+        actor,
+        "allowed",
+        {
+            "from_tier": before.tier,
+            "to_tier": settings.tier,
+            "consent_recorded": settings.consent is not None
+            and settings.consent is not before.consent,
+            "allowlisted_sites": len(settings.allowlisted_sites),
+            "granted_sites": len(settings.granted_sites),
+        },
+    )
+    return settings.as_dict()
+
+
+def _relay_guard(request: Request, action: str) -> None:
+    host = request.client.host if request.client is not None else ""
+    refusal = app_user_browser.relay_request_refusal(host, request.headers)
+    if refusal is None:
+        length = str(request.headers.get("content-length") or "0")
+        if not length.isdigit() or int(length) > app_user_browser.MAX_RELAY_BODY_BYTES:
+            refusal = "body_too_large"
+    if refusal is not None:
+        _append_audit_event(action, "user-browser-relay", "blocked", {"reason": refusal})
+        raise HTTPException(status_code=403, detail="Relay is for the local Locus browser host")
+
+
+def _relay_session(request: Request) -> tuple[str, str]:
+    return (
+        str(request.headers.get("x-locus-relay-client") or ""),
+        str(request.headers.get("x-locus-relay-session") or ""),
+    )
+
+
+def _relay_auth_failure(action: str, exc: Exception) -> HTTPException:
+    code = str(getattr(exc, "code", "") or "refused")
+    _append_audit_event(action, "user-browser-relay", "blocked", {"reason": code})
+    return HTTPException(status_code=401, detail=f"Relay refused: {code}")
+
+
+@app.post("/user-browser/relay/hello")
+def user_browser_relay_hello(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    from locus_runtime.computer_use.user_browser.relay import RelayAuthError, get_hub
+
+    action = "user_browser.relay.hello"
+    _relay_guard(request, action)
+    hub = get_hub()
+    try:
+        client_id, token = hub.hello(
+            origin=str(payload.get("origin") or ""),
+            presented_key=str(request.headers.get("x-locus-pairing-key") or ""),
+            browser=str(payload.get("browser") or ""),
+            extension_version=str(payload.get("extension_version") or ""),
+        )
+    except RelayAuthError as exc:
+        raise _relay_auth_failure(action, exc) from exc
+    _append_audit_event(
+        action,
+        f"user-browser:{str(payload.get('browser') or '')[:20]}",
+        "allowed",
+        {"client_id": client_id},
+    )
+    return {"client_id": client_id, "session_token": token, "epoch": hub.epoch}
+
+
+@app.post("/user-browser/relay/next")
+def user_browser_relay_next(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    from locus_runtime.computer_use.user_browser.relay import RelayAuthError, get_hub
+
+    action = "user_browser.relay.next"
+    _relay_guard(request, action)
+    client_id, token = _relay_session(request)
+    try:
+        wait = float(payload.get("wait_s") or 20.0)
+    except (TypeError, ValueError):
+        wait = 20.0
+    try:
+        commands = get_hub().next_commands(client_id, token, wait_s=wait)
+    except RelayAuthError as exc:
+        raise _relay_auth_failure(action, exc) from exc
+    return {"commands": commands}
+
+
+@app.post("/user-browser/relay/result")
+def user_browser_relay_result(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    from locus_runtime.computer_use.user_browser.relay import RelayAuthError, get_hub
+
+    action = "user_browser.relay.result"
+    _relay_guard(request, action)
+    client_id, token = _relay_session(request)
+    try:
+        delivered = get_hub().post_result(client_id, token, payload)
+    except RelayAuthError as exc:
+        raise _relay_auth_failure(action, exc) from exc
+    return {"delivered": delivered}
+
+
+@app.post("/user-browser/relay/event")
+def user_browser_relay_event(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Events from the extension. Only ``panic`` (the popup's stop button) acts."""
+    from locus_runtime.computer_use.controller import get_controller
+    from locus_runtime.computer_use.user_browser.relay import RelayAuthError, get_hub
+
+    action = "user_browser.relay.event"
+    _relay_guard(request, action)
+    client_id, token = _relay_session(request)
+    try:
+        get_hub().authenticate(client_id, token)
+    except RelayAuthError as exc:
+        raise _relay_auth_failure(action, exc) from exc
+    if payload.get("event") != "panic":
+        return {"ok": False}
+    report = get_controller().panic(source=f"user-browser:{client_id}"[:64])
+    _append_audit_event(
+        "computer_use.panic", f"user-browser:{client_id}", "allowed", report.as_dict()
+    )
+    return {"ok": True, **report.as_dict()}
+
+
+@app.post("/user-browser/relay/bye")
+def user_browser_relay_bye(request: Request) -> dict[str, Any]:
+    from locus_runtime.computer_use.user_browser.relay import RelayAuthError, get_hub
+
+    action = "user_browser.relay.bye"
+    _relay_guard(request, action)
+    client_id, token = _relay_session(request)
+    try:
+        get_hub().bye(client_id, token)
+    except RelayAuthError as exc:
+        raise _relay_auth_failure(action, exc) from exc
+    return {"ok": True}
 
 
 @app.post("/platform/settings")

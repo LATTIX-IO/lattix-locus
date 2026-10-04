@@ -52,6 +52,7 @@ KNOWN_POLICIES: frozenset[str] = frozenset(
         "network_egress",
         "network_policy",
         "tool_jail",
+        "user_browser",
     }
 )
 POLICY_PACKAGE_PREFIX = "lattix"

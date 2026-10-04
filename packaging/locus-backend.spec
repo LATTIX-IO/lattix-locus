@@ -44,6 +44,9 @@ _DYNAMIC_PKGS = [
     # (locus_tooling.desktop_firstrun.ensure_playwright_chromium). Chromium
     # itself is NOT bundled; it lands in <app_home>/playwright on first run.
     "playwright",
+    # User browser (LOCUS-350): registrable sites from tldextract's bundled
+    # Public Suffix List snapshot (data file), no network fetch.
+    "tldextract",
 ]
 
 datas, binaries, hiddenimports = [], [], []
@@ -86,6 +89,10 @@ hiddenimports += [
     "playwright.sync_api",
     "playwright._impl._driver",
     "locus_runtime.computer_use.browser",
+    # User browser (LOCUS-350): the frozen backend is also the native-messaging
+    # host (desktop_main dispatches on the browser's launch arguments).
+    "locus_runtime.computer_use.user_browser.driver",
+    "locus_runtime.computer_use.user_browser.native_host",
 ]
 # The CI version stamp (written before this build) is imported dynamically.
 hiddenimports += ["locus_tooling._build_stamp"]

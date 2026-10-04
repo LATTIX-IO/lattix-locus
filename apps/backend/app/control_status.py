@@ -103,6 +103,10 @@ class PostureFacts:
     # is wired in this process, so browser / desktop tools run under its panic
     # latch and authorize every UI action at the gateway -- LOCUS-341.
     computer_use_installed: bool = False
+    # The principal's own browser (LOCUS-350, D-25): pairing, connection and the
+    # browser tier with its consent record, from
+    # locus_runtime.computer_use.user_browser (None if undeterminable).
+    user_browser: Mapping[str, Any] | None = None
 
 
 def _policy_engine(facts: PostureFacts) -> ControlStatus:
@@ -226,6 +230,52 @@ def _computer_use(facts: PostureFacts) -> ControlStatus:
         label,
         "off",
         "Computer use is not wired in this process; no browser or desktop actions run here.",
+    )
+
+
+def _user_browser(facts: PostureFacts) -> ControlStatus:
+    """P32: a tier above strict is shown with who accepted it and when."""
+    label = "User browser (own profile)"
+    info = facts.user_browser or {}
+    if not info.get("paired"):
+        return ControlStatus(
+            "user_browser",
+            label,
+            "off",
+            "No browser is paired; the agent cannot use the principal's own browser profiles.",
+        )
+    if not facts.gateway_enforcing:
+        return ControlStatus(
+            "user_browser",
+            label,
+            "unverified",
+            "A browser is paired, but no gateway with a running policy engine is installed; "
+            "every user-browser action is denied until one is.",
+        )
+    floor = (
+        "Floor in every tier: gateway mediation and audit of every action (user_browser "
+        "policy), panic stops the extension, page content is tainted, secret fields are never "
+        "read or typed (R4)."
+    )
+    tier = str(info.get("effective_tier") or "strict")
+    connected = "connected" if info.get("connected") else "not connected"
+    if tier == "strict":
+        return ControlStatus(
+            "user_browser",
+            label,
+            "enforced",
+            f"Paired ({connected}); tier strict: the agent reads only tabs the principal "
+            f"shares and every other action asks. {floor}",
+        )
+    consent = info.get("consent") if isinstance(info.get("consent"), Mapping) else {}
+    who = str(consent.get("actor") or "unknown")
+    when = str(consent.get("recorded_at_iso") or "unknown time")
+    return ControlStatus(
+        "user_browser",
+        label,
+        "degraded",
+        f"Paired ({connected}); tier {tier} accepted by {who} at {when} (informed consent, "
+        f"P32): fewer actions ask than at strict. {floor}",
     )
 
 
@@ -587,6 +637,7 @@ _CONTROL_BUILDERS = (
     _capability_tokens,
     _model_calls,
     _computer_use,
+    _user_browser,
     _vault,
     _envoy,
     _nats,
@@ -718,6 +769,24 @@ def _computer_use_installed() -> bool:
         return False
 
 
+def _user_browser_posture() -> Mapping[str, Any] | None:
+    try:
+        from locus_runtime.computer_use.user_browser.relay import get_hub
+        from locus_runtime.computer_use.user_browser.tiers import current_tier_settings
+
+        hub = get_hub()
+        settings = current_tier_settings()
+        return {
+            "paired": hub.paired,
+            "connected": hub.connected(),
+            "tier": settings.tier,
+            "effective_tier": settings.effective_tier,
+            "consent": settings.consent.as_dict() if settings.consent is not None else None,
+        }
+    except Exception:  # noqa: BLE001 - reported as "off"
+        return None
+
+
 def _detect_secret_storage_mode() -> str | None:
     try:
         from locus_tooling.native_secrets import secret_storage_mode
@@ -766,4 +835,5 @@ def collect_posture_facts(
         model_gate_installed=_model_gate_installed(),
         self_improvement_loop=_self_improvement_loop_status(),
         computer_use_installed=_computer_use_installed(),
+        user_browser=_user_browser_posture(),
     )

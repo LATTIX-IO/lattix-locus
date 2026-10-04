@@ -75,7 +75,20 @@ browser_navigate      any URL (host must also pass network_egress)           R2
 browser_read          screenshot stored under the run dir                    R1
 ui_observe /          accessibility tree / page text                         R0
 browser_read
+user_browser_act      the R4 / R3 / R2 rows above, plus (user profile only)   R3
+                      a control naming account / security / password /
+                      billing / 2FA settings; scroll is R1
+user_browser_navigate any URL in the principal's own browser                 R2
+user_browser_read     tab list / page text R0; visible-tab screenshot R1     R0/R1
 ====================  =====================================================  =====
+
+User-browser kinds (LOCUS-350, D-25) drive the principal's own signed-in
+browser through the Locus extension. On top of the table above, the
+``user_browser`` policy applies the principal's browser autonomy tier
+(Strict / Assisted / Trusted / Open): it may *add* an ask
+(``require_approval``) and, in the Open tier only, report that the
+principal's recorded consent covers an R3 action
+(``tier_allows_irreversible``). Neither output can lift a policy deny or R4.
 
 Computer-use kinds (LOCUS-341, :func:`classify_ui`) are classified from the
 :class:`UiFacts` the tool perceived, not from model claims. They are always
@@ -101,6 +114,9 @@ Policy mapping (inputs are documented on each builder below):
 * ``filesystem_access`` -- ``file_read`` / ``file_write``.
 * ``network_egress`` -- ``network_egress`` and tool/MCP calls with an egress host.
 * ``budget_policy`` -- when the session carries numeric budget figures.
+* ``user_browser`` (LOCUS-350) -- every ``user_browser_*`` action instead of
+  ``computer_use``: the principal's browser tier, the site lists and the floor
+  (pairing, panic, secret fields, http(s) navigation, shared tabs).
 * ``computer_use`` (LOCUS-341) -- every ``ui_*`` / ``browser_*`` action: app
   allow/deny lists for desktop actions, no data entry into secret fields, and
   ``http(s)`` only for ``browser_navigate`` (whose host also goes to
@@ -163,7 +179,15 @@ ActionKind = Literal[
     "browser_navigate",
     "browser_read",
     "browser_act",
+    "user_browser_read",
+    "user_browser_navigate",
+    "user_browser_act",
 ]
+#: Actions on the principal's own signed-in browser profile (LOCUS-350, D-25).
+#: Evaluated by the ``user_browser`` policy (tiers + floor), not ``computer_use``.
+USER_BROWSER_KINDS: frozenset[str] = frozenset(
+    {"user_browser_read", "user_browser_navigate", "user_browser_act"}
+)
 #: Computer-use action kinds (LOCUS-341, doc 12). Each is its own agent_policy
 #: operation, so a run's envelope must list the kinds it may use.
 COMPUTER_USE_KINDS: frozenset[str] = frozenset(
@@ -176,6 +200,7 @@ COMPUTER_USE_KINDS: frozenset[str] = frozenset(
         "browser_read",
         "browser_act",
     }
+    | USER_BROWSER_KINDS
 )
 ACTION_KINDS: frozenset[str] = frozenset(
     {
@@ -205,6 +230,8 @@ REASON_GRANT = "gateway.grant_covers_action"
 REASON_GRANT_ID_PREFIX = "gateway.grant:"
 REASON_GRANT_ERROR = "gateway.grant_verifier_error"
 REASON_TAINT_NO_GRANT = "gateway.taint_gate_grant_not_applicable"
+REASON_TIER_ASK = "gateway.user_browser_tier_requires_approval"
+REASON_OPEN_TIER = "gateway.user_browser_open_tier_consent"
 
 #: Canonical agent_policy operation per action kind (tool/MCP calls use the tool name).
 CANONICAL_OPERATION: Mapping[str, str] = {
@@ -630,8 +657,23 @@ def classify_command(command: str) -> RiskClass:
 #: Controls that put data into the UI (typing, key presses, choosing an option).
 UI_ENTRY_CONTROLS = frozenset({"fill", "type", "press", "key", "select"})
 UI_CONTROLS = frozenset(
-    {"observe", "read", "screenshot", "navigate", "click", "fill", "type", "press", "select", "key"}
+    {
+        "observe",
+        "read",
+        "screenshot",
+        "navigate",
+        "click",
+        "fill",
+        "type",
+        "press",
+        "select",
+        "key",
+        "tabs",
+        "scroll",
+    }
 )
+#: Read-shaped controls (perceive only).
+UI_READ_CONTROLS = frozenset({"observe", "read", "screenshot", "navigate", "tabs"})
 #: autocomplete tokens of secret-bearing inputs (WHATWG autofill field names).
 _SECRET_AUTOCOMPLETE = frozenset(
     {
@@ -674,6 +716,53 @@ _UI_R3_WORDS = _R3_VERBS | frozenset(
     }
 )
 # Chord modifiers that reach the OS shell rather than the focused app.
+# Words on a control in the principal's own browser that reach account or
+# security settings (D-25: those always ask below the Open tier).
+_USER_BROWSER_R3_WORDS = frozenset(
+    {
+        "account",
+        "password",
+        "passwords",
+        "passkey",
+        "passkeys",
+        "security",
+        "2fa",
+        "mfa",
+        "authenticator",
+        "recovery",
+        "billing",
+        "privacy",
+        "permission",
+        "permissions",
+        "deactivate",
+        "disable",
+        "subscription",
+    }
+)
+# Words on a control in the principal's own browser that make an R3 action a
+# payment / purchase or an account-security change. These ask in every tier,
+# Open included (D-25, principal decision 2026-10-04).
+_PAYMENT_UI_WORDS = frozenset(
+    {
+        "pay",
+        "payment",
+        "purchase",
+        "buy",
+        "order",
+        "checkout",
+        "transfer",
+        "refund",
+        "charge",
+        "wire",
+        "donate",
+        "subscribe",
+        "withdraw",
+        "billing",
+        "subscription",
+        "book",
+    }
+)
+_ACCOUNT_SECURITY_UI_WORDS = _USER_BROWSER_R3_WORDS - {"billing", "subscription"}
 _OS_LEVEL_KEYS = frozenset({"win", "windows", "meta", "cmd", "command", "super", "os"})
 _ENTER_KEYS = frozenset({"enter", "return", "numpadenter"})
 _UI_TEXT_MAX = 300
@@ -710,13 +799,18 @@ class UiFacts:
     form_text: str = ""  # text of the enclosing form's submit controls
     key: str = ""  # key chord for press / key
     url_scheme: str = ""  # browser_navigate: the URL scheme
+    # User browser (LOCUS-350): registrable site (eTLD+1) of the tab or target
+    # URL, from the browser's own tab URL; and whether the principal shared the
+    # tab with Locus from the extension UI (or the agent opened it).
+    site: str = ""
+    tab_shared: bool = False
 
     @classmethod
     def create(cls, **kwargs: Any) -> UiFacts:
         """Normalised, bounded facts (text truncated, flags coerced to bool)."""
         clean: dict[str, Any] = {}
         for key, value in kwargs.items():
-            if key in {"is_password", "submits_form", "form_sensitive"}:
+            if key in {"is_password", "submits_form", "form_sensitive", "tab_shared"}:
                 clean[key] = bool(value)
             else:
                 clean[key] = str(value or "").strip()[:_UI_TEXT_MAX]
@@ -740,6 +834,7 @@ class UiFacts:
             ("ui_role", self.role),
             ("ui_name", self.name),
             ("ui_key", self.key),
+            ("ui_site", self.site),
         )
         return {key: redact_text(value, limit=120) for key, value in pairs if value}
 
@@ -762,28 +857,64 @@ def classify_ui(kind: str, ui: UiFacts | None) -> RiskClass:
     Screen text can only *raise* the class: a page that labels its Delete
     button "OK" gets the default R2, never less.
     """
-    if kind in {"ui_observe", "browser_read"}:
+    if kind in {"ui_observe", "browser_read", "user_browser_read"}:
         return RiskClass.R1 if ui is not None and ui.control == "screenshot" else RiskClass.R0
-    if kind == "browser_navigate":
+    if kind in {"browser_navigate", "user_browser_navigate"}:
         return RiskClass.R2
     if ui is None or ui.control not in UI_CONTROLS:
         return RiskClass.R4
     control = ui.control
-    if control in {"observe", "read", "screenshot", "navigate"}:
+    if control in UI_READ_CONTROLS:
         return RiskClass.R4  # a read-shaped control on an acting kind is malformed
+    if control == "scroll":
+        # Scrolling only moves the viewport; only the user browser offers it.
+        return RiskClass.R1 if kind == "user_browser_act" else RiskClass.R4
     if control in UI_ENTRY_CONTROLS and ui.sensitive_field:
         return RiskClass.R4
     chord = _name_tokens(ui.key.replace("+", " "))
     if chord & _OS_LEVEL_KEYS:
         return RiskClass.R3
+    r3_words = _UI_R3_WORDS | (_USER_BROWSER_R3_WORDS if kind == "user_browser_act" else set())
     if control in {"click", "select"} or chord & _ENTER_KEYS:
-        if _name_tokens(_norm_ui_text(ui.name, ui.label)) & _UI_R3_WORDS:
+        if _name_tokens(_norm_ui_text(ui.name, ui.label)) & r3_words:
             return RiskClass.R3
         if ui.submits_form and (
-            ui.form_sensitive or _name_tokens(_norm_ui_text(ui.form_text)) & _UI_R3_WORDS
+            ui.form_sensitive or _name_tokens(_norm_ui_text(ui.form_text)) & r3_words
         ):
             return RiskClass.R3
     return RiskClass.R2
+
+
+def protected_ui_kind(kind: str, ui: UiFacts | None) -> str:
+    """``"payment"``, ``"account_security"`` or ``""`` for a user-browser action.
+
+    Payments / purchases and account-security changes ask in every browser
+    tier, Open included. Like :func:`classify_ui` this reads only perceived
+    screen facts and can only add protection: missing facts on an acting
+    control count as protected, and submitting a form that holds a secret or
+    payment-card field counts as a payment (the form can't be told apart from
+    a checkout by its fields alone).
+    """
+    if kind != "user_browser_act":
+        return ""
+    if ui is None:
+        return "payment"
+    if ui.control not in {"click", "select", "press", "type", "fill"}:
+        return ""
+    chord = _name_tokens(ui.key.replace("+", " "))
+    activates = ui.control in {"click", "select"} or bool(chord & _ENTER_KEYS)
+    if not activates:
+        return ""
+    words = _name_tokens(_norm_ui_text(ui.name, ui.label))
+    if ui.submits_form:
+        words = words | _name_tokens(_norm_ui_text(ui.form_text))
+        if ui.form_sensitive:
+            return "payment"
+    if words & _PAYMENT_UI_WORDS:
+        return "payment"
+    if words & _ACCOUNT_SECURITY_UI_WORDS:
+        return "account_security"
+    return ""
 
 
 def classify_risk(
@@ -1368,6 +1499,10 @@ class Gateway:
         reasons: list[str] = []
         versions: set[str] = set()
         denied = False
+        # User browser tier outputs (LOCUS-350). Both start closed: a missing or
+        # malformed output means "ask" for the tier and "no consent" for Open.
+        tier_ask = action.kind in USER_BROWSER_KINDS
+        open_tier_consent = False
         for policy, payload in policy_inputs(action, caps, tool_calls_used=tool_calls_used):
             try:
                 result: Decision = self._engine.decide(policy, payload)
@@ -1376,6 +1511,8 @@ class Gateway:
                 denied = True
                 reasons.append(f"{REASON_ENGINE_ERROR}:{policy}")
                 continue
+            if policy == "user_browser":
+                tier_ask, open_tier_consent = _user_browser_tier_outputs(result, payload)
             if result.policy_version:
                 versions.add(result.policy_version)
             if result.allow is not True:
@@ -1413,6 +1550,16 @@ class Gateway:
         needs_ask = action.risk == RiskClass.R3 or (
             action.risk == RiskClass.R2 and caps.autonomy_tier == "supervised"
         )
+        if action.kind in USER_BROWSER_KINDS:
+            # The principal's browser tier can add an ask (Strict / Assisted /
+            # Trusted) and, in the Open tier only, cover an R3 action with the
+            # principal's recorded consent. R2-under-supervised still asks.
+            if tier_ask:
+                reasons.append(REASON_TIER_ASK)
+                return self._ask_or_approved(action, record, reasons, policy_version, audit_id)
+            if open_tier_consent and action.risk == RiskClass.R3:
+                reasons.append(REASON_OPEN_TIER)
+                needs_ask = caps.autonomy_tier == "supervised"
         if needs_ask:
             # Taint gate (13 §6, P8): screen / page text never justifies turning an
             # ask into allow, so standing grants do not apply to tainted actions.
@@ -1567,7 +1714,9 @@ def policy_inputs(
     egress_host = action.egress_host or (action.target if action.kind == "network_egress" else "")
     if action.kind == "network_egress" or egress_host:
         plan.append(("network_egress", network_egress_input(egress_host, caps)))
-    if action.kind in COMPUTER_USE_KINDS:
+    if action.kind in USER_BROWSER_KINDS:
+        plan.append(("user_browser", user_browser_input(action, caps)))
+    elif action.kind in COMPUTER_USE_KINDS:
         plan.append(("computer_use", computer_use_input(action, caps)))
     if caps.budget is not None:
         plan.append(("budget_policy", caps.budget.as_input()))
@@ -1607,6 +1756,56 @@ def computer_use_input(action: GatewayAction, caps: Capabilities) -> dict[str, A
         "sensitive_field": bool(ui is not None and ui.sensitive_field),
         "url_scheme": (ui.url_scheme if ui is not None else "").lower(),
         "egress_host": action.egress_host,
+    }
+
+
+def _user_browser_tier_outputs(result: Decision, payload: Mapping[str, Any]) -> tuple[bool, bool]:
+    """``(require_approval, open_tier_consent)`` from a ``user_browser`` decision.
+
+    Fails closed: unless the policy says ``require_approval: false`` the action
+    asks; Open-tier consent counts only when the policy reports it *and* the
+    input the gateway itself built says the tier is ``open`` with consent.
+    """
+    outputs = getattr(result, "outputs", None) or {}
+    require = outputs.get("require_approval")
+    tier_ask = require is not False
+    consent = (
+        outputs.get("tier_allows_irreversible") is True
+        and payload.get("tier") == "open"
+        and payload.get("tier_consent") is True
+    )
+    return tier_ask, consent and not tier_ask
+
+
+def user_browser_input(action: GatewayAction, caps: Capabilities) -> dict[str, Any]:  # noqa: ARG001
+    """``user_browser`` policy input (LOCUS-350, D-25).
+
+    The tier, its consent record, the site lists, the pairing state and the
+    panic latch come from process state the principal controls (the backend's
+    tier store, the extension relay, the computer-use controller) -- never
+    from the action or the run envelope, so neither the agent nor page content
+    can change the tier. ``site`` and ``tab_shared`` come from the tool's
+    perceived facts (the browser's own tab URL and the extension's share list).
+    """
+    from locus_runtime.computer_use.user_browser.state import user_browser_snapshot
+
+    ui = action.ui
+    default_control = {
+        "user_browser_read": "observe",
+        "user_browser_navigate": "navigate",
+    }.get(action.kind, "")
+    return {
+        "action": action.kind,
+        "profile": "user",
+        "control": (ui.control if ui is not None else "") or default_control,
+        "site": (ui.site if ui is not None else "").strip().lower(),
+        "url_scheme": (ui.url_scheme if ui is not None else "").lower(),
+        "tab_shared": bool(ui is not None and ui.tab_shared),
+        "sensitive_field": bool(ui is not None and ui.sensitive_field),
+        "risk": action.risk.label,
+        # Payments and account-security changes ask in every tier (D-25).
+        "protected_action": bool(protected_ui_kind(action.kind, ui)),
+        **user_browser_snapshot(),
     }
 
 

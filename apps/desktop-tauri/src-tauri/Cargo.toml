@@ -19,6 +19,14 @@ tauri-plugin-updater = "2"
 # Computer-use panic hotkey (LOCUS-346): registered from Rust so it fires even
 # when the webview is frozen. Desktop targets only.
 tauri-plugin-global-shortcut = "2"
+# Out-of-band confirmation for widening the user-browser tier (LOCUS-350):
+# native OS dialogs (tauri-plugin-dialog, MIT/Apache-2.0), HMAC-SHA256 proofs
+# (RustCrypto hmac + sha2, MIT/Apache-2.0) and the OS CSPRNG (getrandom,
+# MIT/Apache-2.0).
+tauri-plugin-dialog = "2"
+hmac = "0.12"
+sha2 = "0.10"
+getrandom = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
