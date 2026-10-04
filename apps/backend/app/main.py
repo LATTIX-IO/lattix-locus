@@ -18673,6 +18673,10 @@ def complete_oidc_browser_login(request: Request) -> RedirectResponse:
         _clear_oidc_browser_flow_cookie(response, request)
         return response
 
+    # Same-origin relative path only, checked at the redirect itself.
+    target = urlsplit(return_to)
+    if target.scheme or target.netloc or not return_to.startswith("/") or return_to[1:2] in {"/", "\\"}:
+        return_to = _POST_AUTH_REDIRECT_DEFAULT
     response = RedirectResponse(url=return_to, status_code=302)
     _set_operator_session_cookie(response, request, session_token)
     _clear_oidc_browser_flow_cookie(response, request)
@@ -20017,9 +20021,17 @@ def list_workspace_folders(request: Request, path: str = "") -> dict[str, Any]:
         "is_git": False,
         "folders": [],
     }
-    if not base or not Path(base).is_dir():
+    if not base:
         return result
-    base_path = Path(base)
+    # Containment re-check before any filesystem access: pure normpath + prefix
+    # against the real projects root (the root itself is allowed here).
+    real_root = os.path.realpath(str(root))
+    candidate = os.path.normpath(base)
+    if not (candidate == real_root or candidate.startswith(real_root.rstrip(os.sep) + os.sep)):
+        return result
+    if not os.path.isdir(candidate):
+        return result
+    base_path = Path(candidate)
     result["exists"] = True
     result["is_git"] = (base_path / ".git").exists()
     folders: list[dict[str, str]] = []
