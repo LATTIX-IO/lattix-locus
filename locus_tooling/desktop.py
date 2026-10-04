@@ -21,7 +21,15 @@ import sys
 from pathlib import Path
 
 from .common import default_app_home, source_repo_root
-from .native_launcher import NativeConfig, NativePlan, NativeSupervisor, build_native_plan
+from .native_launcher import (
+    HealthCheck,
+    NativeConfig,
+    NativePlan,
+    NativeSupervisor,
+    ServiceSpec,
+    build_native_plan,
+)
+from .update_contract import LoopResumeDecision, UpdateChannel
 
 # Live supervisors so the backend's /system/shutdown (and signal/atexit hooks)
 # can tear down every spawned child process (frontend, DB, model, agents).
@@ -127,6 +135,50 @@ def _safe(fn, *args, log=print, **kwargs) -> None:
         log(f"[firstrun] background provisioning error: {exc}")
 
 
+def resume_loop_after_start(
+    *,
+    log=print,
+    channel: UpdateChannel | None = None,
+    supervisor_factory=NativeSupervisor,
+) -> LoopResumeDecision:
+    """Release an update's hold on the loop, then restart ``lattix loop serve``
+    when loop autostart is on and the kill switch is off (LOCUS-349).
+
+    Runs on every desktop start, so after an update restart the loop resumes on
+    the new code. The loop runs as a supervised child (``--loop-serve``), so
+    quit, ``/system/shutdown`` and the next update stop it with everything else;
+    a run interrupted that way resumes from its checkpoint on the next start.
+    """
+    from .desktop_update import default_update_channel, loop_serve_argv, read_loop_autostart
+
+    port = channel or default_update_channel()
+    decision = port.resume_after_restart()
+    if decision.released_update_hold:
+        log("[loop] released the update hold on the loop")
+    log(f"[loop] {'starting' if decision.start else 'not starting'}: {decision.reason}")
+    if not decision.start:
+        return decision
+    home = getattr(port, "home", None)
+    autostart = read_loop_autostart(home) if isinstance(home, Path) else None
+    if autostart is None or not autostart.repo_path:
+        return LoopResumeDecision(
+            start=False,
+            reason="loop autostart has no repository",
+            released_update_hold=decision.released_update_hold,
+        )
+    spec = ServiceSpec(
+        name="loop",
+        argv=loop_serve_argv(autostart.repo_path, frozen=is_frozen(), executable=sys.executable),
+        cwd=autostart.repo_path,
+        health=HealthCheck(kind="none"),
+        required=False,
+    )
+    supervisor = supervisor_factory(NativePlan([spec], {}, []), log=log)
+    supervisor.start_all()
+    _LIVE_SUPERVISORS.append(supervisor)
+    return decision
+
+
 def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
     """Desktop entrypoint: start the sidecars + frontend, kick off first-run
     provisioning in the background (so the UI appears immediately rather than
@@ -196,6 +248,11 @@ def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
         log("[firstrun] background services ready")
 
     threading.Thread(target=lambda: _safe(_bring_up_infra, log=log), daemon=True).start()
+    # Never let the loop block the backend: a failure here is logged, not raised.
+    try:
+        resume_loop_after_start(log=log)
+    except Exception as exc:  # noqa: BLE001
+        log(f"[loop] could not resume the loop: {type(exc).__name__}: {exc}")
 
     log("[firstrun] starting backend…")
     try:

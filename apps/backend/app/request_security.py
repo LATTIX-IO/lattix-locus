@@ -50,6 +50,25 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         RouteAccessCategory.AUTHENTICATED_MUTATE,
         "system.shutdown",
     ),
+    # Desktop update channels (LOCUS-349).
+    RouteAccessRule(
+        ("GET",),
+        "/system/update/status",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "system.update.status.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/system/update/prepare",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "system.update.prepare",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/system/update/cancel",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "system.update.cancel",
+    ),
     # Export / import (agents, workflows, playbooks, bundle) — JSON/YAML.
     RouteAccessRule(
         ("GET",),

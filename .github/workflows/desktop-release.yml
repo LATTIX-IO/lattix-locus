@@ -4,9 +4,14 @@
 # Node → `cargo tauri build` (Tauri bundles installers) → (Windows) Authenticode
 # sign → upload as release assets. Pure recipe; runs in CI, not on a dev box.
 #
-# Required secrets:
+# This is the manual / tagged installer path (D-24 test builds with
+# create_release=false, or a draft release). It publishes NO updater metadata:
+# the update channels (LOCUS-349, D-26) are fed only by desktop-dev.yml (merge
+# to main -> Dev) and desktop-promote.yml (Dev -> Stable), which sign and verify
+# every latest.json.
+#
+# Optional secrets:
 #   WINDOWS_PFX_BASE64 / WINDOWS_PFX_PASSWORD  (Authenticode signing)
-#   TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD  (updater minisign)
 # macOS is built unsigned/ad-hoc until an Apple Developer ID is added (then set
 #   APPLE_CERTIFICATE / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID).
 
@@ -31,8 +36,9 @@ on:
   push:
     tags: ["v*"]
 
+# Least privilege: read by default; the build job may create the draft release.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   plan:
@@ -70,6 +76,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     env:
       # Sign only when an Authenticode cert secret is present; otherwise the
       # build still produces an (unsigned) installer for testing.
@@ -144,16 +152,11 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Signs the auto-update artifacts (latest.json + .sig). The matching
-          # public key is committed in tauri.conf.json (public keys are safe).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop-tauri/src-tauri
-          # Create/attach to a GitHub Release so the signed installers AND the
-          # generated latest.json land as release assets — that manifest is what
-          # the in-app one-click updater reads from
-          # github.com/.../releases/latest/download/latest.json.
+          # Installers only. Updater metadata comes from the channel workflows
+          # (desktop-dev.yml / desktop-promote.yml), never from this path.
+          includeUpdaterJson: false
           tagName: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
           releaseName: "Lattix Locus ${{ github.event.inputs.version || github.ref_name }}"
           releaseDraft: true
@@ -171,6 +174,9 @@ jobs:
           args: --target ${{ matrix.triple }}
 
       # --- 4) Windows: Authenticode-sign the produced installers ----------
+      # Post-build signing changes the installer bytes. That is fine here (no
+      # updater signatures are published from this path); the channel builds
+      # must sign through Tauri's bundle.windows.signCommand instead.
       - name: Sign Windows installers
         if: matrix.os == 'windows-latest' && env.HAS_WIN_CERT == 'true'
         shell: pwsh

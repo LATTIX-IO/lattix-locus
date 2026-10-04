@@ -11,6 +11,7 @@ This is the script PyInstaller/Nuitka packages and Tauri spawns as its
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -42,6 +43,8 @@ _SELF_CHECK_MODULES = (
     "playwright.sync_api",
     "locus_runtime.computer_use.browser",
     "locus_runtime.computer_use.wiring",
+    # Update channels (LOCUS-349): readiness/hold, version handshake, loop resume.
+    "locus_tooling.desktop_update",
 )
 
 
@@ -70,9 +73,31 @@ def self_check() -> int:
     return 0 if report["ok"] else 1
 
 
+def loop_serve(argv: list[str]) -> int:
+    """``--loop-serve <repo>``: ``lattix loop serve`` on the installed code.
+
+    The desktop supervisor starts this after a restart when loop autostart is on
+    and the kill switch is off (LOCUS-349); the loop itself re-checks the kill
+    switch before every tick and step.
+    """
+    if len(argv) != 1 or not argv[0].strip():
+        print("usage: locus-backend --loop-serve <repo-path>", file=sys.stderr)
+        return 2
+    from locus_runtime.loop_runner import build_runner
+
+    try:
+        result = build_runner(argv[0]).serve()
+    except KeyboardInterrupt:
+        return 0
+    print(json.dumps(result.to_dict(), default=str))
+    return 0
+
+
 def main() -> int | None:
     if "--self-check" in sys.argv[1:]:
         return self_check()
+    if len(sys.argv) > 1 and sys.argv[1] == "--loop-serve":
+        return loop_serve(sys.argv[2:])
     from locus_tooling.desktop import run_desktop_supervisor
 
     _prepend_bundled_bin_to_path()

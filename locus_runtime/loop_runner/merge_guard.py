@@ -68,6 +68,14 @@ BASELINE_PROTECTED: tuple[str, ...] = (
     "/docs/product/",
     # The loop's own guardrails: the loop may not edit the code that guards it.
     "/locus_runtime/loop_runner/",
+    # The update trust chain (LOCUS-349, D-26): Dev installs auto-install what
+    # merges, so the updater pubkey/endpoints, the shell, the version stamp and
+    # the manifest signing/verification are never auto-merged.
+    "/apps/desktop-tauri/src-tauri/",
+    "/scripts/desktop_channel.py",
+    "/locus_tooling/update_contract.py",
+    "/locus_tooling/desktop_update.py",
+    "/locus_tooling/build_info.py",
 )
 
 #: Files whose any change redefines a gate (exact basenames, any directory).

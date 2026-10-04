@@ -16,3 +16,9 @@
 /SECURITY.md                       @jmsbooth
 /THREAT-MODEL.md                   @jmsbooth
 /docs/product/                     @jmsbooth
+# Update trust chain (LOCUS-349, D-26): Dev installs auto-install what merges.
+/apps/desktop-tauri/src-tauri/     @jmsbooth
+/scripts/desktop_channel.py        @jmsbooth
+/locus_tooling/update_contract.py  @jmsbooth
+/locus_tooling/desktop_update.py   @jmsbooth
+/locus_tooling/build_info.py       @jmsbooth

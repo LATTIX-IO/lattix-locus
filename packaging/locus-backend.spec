@@ -87,6 +87,8 @@ hiddenimports += [
     "playwright._impl._driver",
     "locus_runtime.computer_use.browser",
 ]
+# The CI version stamp (written before this build) is imported dynamically.
+hiddenimports += ["locus_tooling._build_stamp"]
 # Platform-specific backend dependencies (absent on other OSes — skip quietly).
 for _pkg in ("win32ctypes", "secretstorage", "jeepney"):
     try:
