@@ -127,7 +127,7 @@ export function LoopSection() {
             <TextField
               id="loop-autostart-repo"
               label="Repository checkout"
-              description="A local checkout that contains WORKFLOW.md."
+              description="A git checkout that contains WORKFLOW.md, inside your projects folder (your home folder unless LOCUS_PROJECTS_ROOT is set)."
               value={repoPath}
               onChange={setRepoPath}
               placeholder="C:\\src\\lattix-locus"

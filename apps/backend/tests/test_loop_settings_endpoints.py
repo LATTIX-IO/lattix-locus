@@ -26,6 +26,7 @@ if not str(os.environ.get("A2A_JWT_SECRET") or "").strip():
 if not str(os.environ.get("LOCUS_API_BEARER_TOKEN") or "").strip():
     os.environ["LOCUS_API_BEARER_TOKEN"] = "unit-test-bearer"
 
+import app.main as main_module
 from app.main import app, store
 from app.request_security import CapabilityEffect, classify_route_access, classify_shell_proof
 
@@ -145,10 +146,12 @@ def test_the_environment_switch_still_wins(
 
 
 def test_autostart_needs_a_proof_and_a_workflow_checkout(
-    desktop: None, loop_home: Path, tmp_path: Path
+    desktop: None, loop_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    (repo / ".git").mkdir(parents=True)
+    monkeypatch.setattr(main_module, "_PROJECTS_ROOT", str(projects))
     body = {"repo_path": str(repo)}
 
     assert _call("POST", "/loop/autostart", body).status_code == 403
@@ -159,6 +162,24 @@ def test_autostart_needs_a_proof_and_a_workflow_checkout(
     on = _call("POST", "/loop/autostart", body, _proof("POST", "/loop/autostart", body))
     assert on.status_code == 200, on.text
     assert on.json()["autostart"] == {"enabled": True, "repo_path": str(repo.resolve())}
+
+    # Confined to the projects root: a checkout outside it, a traversal, and a
+    # folder that isn't a git checkout are all refused.
+    outside = tmp_path / "elsewhere"
+    (outside / ".git").mkdir(parents=True)
+    (outside / "WORKFLOW.md").write_text("---\n---\n", encoding="utf-8")
+    plain = projects / "plain"
+    plain.mkdir()
+    (plain / "WORKFLOW.md").write_text("---\n---\n", encoding="utf-8")
+    for bad in (str(outside), str(projects / "repo" / ".." / ".." / "elsewhere"), str(plain)):
+        refused_body = {"repo_path": bad}
+        refused = _call(
+            "POST",
+            "/loop/autostart",
+            refused_body,
+            _proof("POST", "/loop/autostart", refused_body),
+        )
+        assert refused.status_code == 422, bad
 
     off = _call("DELETE", "/loop/autostart")
     assert off.status_code == 200, off.text

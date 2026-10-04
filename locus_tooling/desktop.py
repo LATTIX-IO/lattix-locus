@@ -117,6 +117,10 @@ def desktop_config(**overrides: object) -> NativeConfig:
         "degrade_when_missing": True,
         "manage_backend": False,
         "enable_agents": False,
+        # The folder picker and loop autostart confine paths to this root. The
+        # server default (/projects) doesn't exist on a desktop, so default to
+        # the user's home; LOCUS_PROJECTS_ROOT overrides it.
+        "projects_root": os.getenv("LOCUS_PROJECTS_ROOT") or str(Path.home()),
     }
     if is_frozen():
         kwargs["frontend_dir"] = str(bundled_root() / "resources" / "frontend")

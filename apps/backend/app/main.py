@@ -20574,11 +20574,17 @@ def loop_autostart_enable(
     from locus_tooling.desktop_update import write_loop_autostart
 
     actor = _enforce_principal_only(request, action="loop.autostart.enable")
-    repo_path = str(payload.get("repo_path") or "").strip()
-    if not repo_path or len(repo_path) > 4096:
-        raise HTTPException(status_code=422, detail="repo_path is required (<= 4096 chars)")
+    # Confined like the working-folder picker: the checkout must lie under the
+    # projects root (no "..", control characters or symlink escapes), and be a
+    # git checkout. Deny by default.
+    resolved = _resolve_working_folder(str(payload.get("repo_path") or ""))
+    if resolved is None or not (Path(resolved) / ".git").exists():
+        raise HTTPException(
+            status_code=422,
+            detail="repo_path must be a git checkout under the projects root",
+        )
     try:
-        write_loop_autostart(default_loop_home(), enabled=True, repo_path=repo_path)
+        write_loop_autostart(default_loop_home(), enabled=True, repo_path=resolved)
     except ValueError as exc:
         raise HTTPException(
             status_code=422, detail="repo_path must be a checkout that contains WORKFLOW.md"
