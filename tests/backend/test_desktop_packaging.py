@@ -316,3 +316,48 @@ def test_shell_actions_sign_the_generic_request_bound_message():
     assert "shell_actions::confirm_action" in main_rs
     cap = json.loads((_TAURI_DIR / "capabilities" / "default.json").read_text(encoding="utf-8"))
     assert not any(str(p).startswith("dialog:") for p in cap["permissions"])
+
+
+def test_webview_can_invoke_confirm_action_like_the_other_app_commands():
+    # App commands (quit_now, check_for_update, confirm_browser_tier, ...) are
+    # not ACL-gated while the app defines no ACL manifest: Tauri only checks the
+    # capability for plugin commands, so the UI at http://127.0.0.1:3000 can
+    # invoke confirm_action exactly as it invokes quit_now. Defining an app
+    # manifest would make every app command, confirm_action included, need an
+    # explicit permission; this test then fails so the capability gets one.
+    build_rs = (_TAURI_DIR / "build.rs").read_text(encoding="utf-8")
+    assert "app_manifest" not in build_rs and "AppManifest" not in build_rs
+    cap = json.loads((_TAURI_DIR / "capabilities" / "default.json").read_text(encoding="utf-8"))
+    # Nothing broader: no dialog permission and no extra plugin grants.
+    assert not any(str(p).startswith("dialog:") for p in cap["permissions"])
+    names = {p if isinstance(p, str) else p.get("identifier") for p in cap["permissions"]}
+    assert names == {"core:default", "global-shortcut:allow-is-registered", "shell:allow-spawn"}
+
+
+def test_frontend_shell_actions_mirror_the_backend_rules():
+    import re
+
+    rules = _shell_rules()  # also puts apps/backend on sys.path
+    from app.capability_widening import BODY_PREDICATES
+    from app.request_security import CapabilityEffect
+
+    source = (
+        _REPO_ROOT / "apps" / "frontend" / "src" / "lib" / "desktop-confirmation.ts"
+    ).read_text(encoding="utf-8")
+    entries = re.findall(
+        r'\{ id: "([^"]+)", method: "([A-Z]+)", path: "([^"]+)", when: "([a-z_-]+)" \}', source
+    )
+    expected = []
+    for rule in rules:
+        if rule.effect == CapabilityEffect.WIDENING:
+            when = "always"
+        elif rule.predicate in BODY_PREDICATES:
+            when = rule.predicate
+        else:
+            when = "on-refusal"  # decided by the backend from stored state
+        expected.append((rule.action, rule.method, rule.path_template, when))
+    assert sorted(entries) == sorted(expected)
+    # The UI recognises the backend's refusal for a missing shell proof.
+    assert "Locus desktop app (missing_proof)" in source
+    main_py = (_REPO_ROOT / "apps" / "backend" / "app" / "main.py").read_text(encoding="utf-8")
+    assert 'detail=f"Confirm this change in the Locus desktop app ({exc.code})"' in main_py
