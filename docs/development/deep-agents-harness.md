@@ -140,7 +140,7 @@ New transitive packages (resolved 2026-10-03):
 | langchain-protocol | 0.0.19 | MIT | LangChain Inc. (US) | langchain-core, langgraph-sdk | |
 | langgraph-checkpoint-sqlite | 3.1.1 | MIT | LangChain Inc. (US) | platform | durable checkpointer |
 | aiosqlite | 0.22.1 | MIT | Amethyst Reese (individual; omnilib project) | checkpoint-sqlite | async saver only; unused |
-| sqlite-vec | 0.1.9 | MIT OR Apache-2.0 | Alex Garcia (individual, US); wheel metadata says "TODO" | checkpoint-sqlite | D-29 inspection done (LOCUS-358): [attestation](../../provenance/attestations/pypi/sqlite-vec@0.1.9.md), conditional, signed off by the principal 2026-10-04 (#66); loaded only by LangGraph's `SqliteStore`, which Locus does not use |
+| sqlite-vec | 0.1.9 | MIT OR Apache-2.0 | Alex Garcia (individual, US); wheel metadata says "TODO" | checkpoint-sqlite | D-29 inspection done (LOCUS-358): [attestation](../../provenance/attestations/pypi/sqlite-vec@0.1.9.md), conditional, signed off by the principal 2026-10-04 (#66); since LOCUS-387 also loaded by Locus itself: the embedded long-term memory store (`locus_runtime/memory/sqlite_store.py`) loads vec0 for `vec_distance_cosine`. That meets the attestation condition "if Locus loads the extension, re-inspect and exercise that code path": re-inspection pending; `LOCUS_MEMORY_SQLITE_VEC=0` falls back to pure-Python vectors |
 | langchain-anthropic | 1.7.5 | MIT | LangChain Inc. (US) | deepagents | imported, unused |
 | anthropic | 1.11.0 | MIT | Anthropic (US) | langchain-anthropic | imported, unused |
 | docstring-parser | 0.18.0 | MIT | individual (PL) | anthropic | |
