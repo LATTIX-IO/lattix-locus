@@ -2,7 +2,7 @@
 
 Callers build a :class:`~locus_runtime.harness.runtime_contract.RuntimeRequest`
 and get the runtime from :func:`create_runtime`; nothing else constructs a
-runtime. ``LOCUS_AGENT_RUNTIME`` picks the default (``verified-loop``).
+runtime. ``LOCUS_AGENT_RUNTIME`` overrides the default (``deep-agents``).
 
 * ``verified-loop`` -- :class:`VerifiedLoopRuntime`, an adapter over the
   existing :class:`~locus_runtime.harness.verified_loop.VerifiedLoop`. The loop
@@ -14,8 +14,12 @@ runtime. ``LOCUS_AGENT_RUNTIME`` picks the default (``verified-loop``).
   third-party stack (and the vendor SDKs it carries) loads only when this
   runtime is created.
 
-The default stays ``verified-loop`` until the extended Deep Agents runtime
-matches or beats it on the scorecard (D-27); flipping it is a separate decision.
+The default is ``deep-agents`` since 2026-10-04: the extended runtime matched or
+beat the verified loop on the RSI scorecard (D-27; ``compare()`` said ``promote``,
+see ``docs/development/runtime-bakeoff-2026-10.md``). ``verified-loop`` stays
+selectable as the fallback (``LOCUS_AGENT_RUNTIME=verified-loop``). The default
+never falls back silently: when the Deep Agents stack is missing or differs from
+its audited pins, :func:`create_runtime` raises ``RuntimeUnavailable``.
 """
 
 from __future__ import annotations
@@ -39,6 +43,9 @@ VERIFIED_LOOP = "verified-loop"
 DEEP_AGENTS = "deep-agents"
 RUNTIME_NAMES: tuple[str, ...] = (VERIFIED_LOOP, DEEP_AGENTS)
 RUNTIME_ENV = "LOCUS_AGENT_RUNTIME"
+#: The runtime :func:`create_runtime` builds when neither a name nor
+#: ``LOCUS_AGENT_RUNTIME`` is given (D-27, confirmed 2026-10-04).
+DEFAULT_RUNTIME = DEEP_AGENTS
 
 #: ``request.options`` keys forwarded to :class:`VerifiedLoop` unchanged.
 _VERIFIED_LOOP_OPTIONS = frozenset(
@@ -114,7 +121,8 @@ def _deep_agents_factory() -> AgentRuntime:
     except ImportError as exc:
         raise RuntimeUnavailable(
             "the deep-agents runtime needs the pinned 'deepagents' stack "
-            f"(langgraph/langchain 1.x, audited versions): {exc}"
+            f"(langgraph/langchain 1.x, audited versions): {exc}; "
+            f"set {RUNTIME_ENV}={VERIFIED_LOOP} to use the fallback runtime"
         ) from exc
     return runtime
 
@@ -127,7 +135,7 @@ _FACTORIES: dict[str, Callable[[], AgentRuntime]] = {
 
 def default_runtime_name() -> str:
     name = str(os.getenv(RUNTIME_ENV) or "").strip().lower()
-    return name or VERIFIED_LOOP
+    return name or DEFAULT_RUNTIME
 
 
 def create_runtime(name: str | None = None) -> AgentRuntime:
