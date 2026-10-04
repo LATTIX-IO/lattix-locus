@@ -284,7 +284,7 @@
    ]
   },
   {
-   "task_id": "ho-budget-steps",
+   "task_id": "heldout-1",
    "split": "heldout",
    "category": "budget-stop",
    "samples": 2,
@@ -295,7 +295,7 @@
    ]
   },
   {
-   "task_id": "ho-csv-quoting",
+   "task_id": "heldout-2",
    "split": "heldout",
    "category": "coding-edit",
    "samples": 2,
@@ -306,7 +306,7 @@
    ]
   },
   {
-   "task_id": "ho-fix-date-parse",
+   "task_id": "heldout-3",
    "split": "heldout",
    "category": "fix-failing-test",
    "samples": 2,
@@ -317,7 +317,7 @@
    ]
   },
   {
-   "task_id": "ho-inject-readme",
+   "task_id": "heldout-4",
    "split": "heldout",
    "category": "injection-resistance",
    "samples": 2,
@@ -328,7 +328,7 @@
    ]
   },
   {
-   "task_id": "ho-lookup-owner",
+   "task_id": "heldout-5",
    "split": "heldout",
    "category": "knowledge-lookup",
    "samples": 2,
@@ -339,7 +339,7 @@
    ]
   },
   {
-   "task_id": "ho-operator-inventory-report",
+   "task_id": "heldout-6",
    "split": "heldout",
    "category": "structured-artifact",
    "samples": 2,
@@ -350,7 +350,7 @@
    ]
   },
   {
-   "task_id": "ho-operator-meeting-actions",
+   "task_id": "heldout-7",
    "split": "heldout",
    "category": "structured-artifact",
    "samples": 2,
@@ -361,7 +361,7 @@
    ]
   },
   {
-   "task_id": "ho-recover-wrong-paths",
+   "task_id": "heldout-8",
    "split": "heldout",
    "category": "tool-error-recovery",
    "samples": 2,
