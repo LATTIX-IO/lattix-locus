@@ -15,8 +15,14 @@ fastapi>=0.115.0
 httpx>=0.28.0
 presidio-analyzer>=2.2.355
 hvac>=2.3.0
-langgraph>=0.3.0
-langgraph-checkpoint-postgres>=2.0.0
+# Agent runtime (LOCUS-361, D-27): Deep Agents on LangChain/LangGraph 1.x, MIT,
+# LangChain Inc. Exact pins (audited; see docs/development/deep-agents-harness.md).
+deepagents==0.7.21
+langchain==1.4.3
+langchain-core==1.6.6
+langgraph==1.2.12
+langgraph-checkpoint==4.2.0
+langgraph-checkpoint-sqlite==3.1.1
 nats-py>=2.10.0
 # AI observability (LOCUS-375): locus_runtime.telemetry; pinned together. Apache-2.0.
 opentelemetry-api==1.40.0

@@ -13,6 +13,13 @@ An end state is raised as the verified loop's private ``_RunEnded``
 controller and :meth:`RunController.drive` without being swallowed by an
 ``except Exception``.
 
+With a :class:`~locus_runtime.harness.run_store.RunStore` the controller is
+durable (LOCUS-361): its state is saved after every model turn and tool call,
+every tool call is written to an action ledger before it runs, and a new
+controller for the same run id resumes from the store. A call the ledger shows
+as finished is replayed, never re-run; a call that was running when the process
+died is reported to the agent and never re-run (at most once).
+
 This module also holds the ask handling shared by every runtime adapter:
 gateway ``ask`` decisions and out-of-workspace escalations become
 :class:`~locus_runtime.harness.runtime_contract.ApprovalRequest` objects; with
@@ -23,25 +30,37 @@ from __future__ import annotations
 
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from locus_runtime import telemetry
 from locus_runtime.harness.llm import ChatResponse, ToolCall
+from locus_runtime.harness.run_store import RunStore
 from locus_runtime.harness.runtime_contract import ApprovalRequest, Approver
 from locus_runtime.harness.tools import CodingToolset
 from locus_runtime.harness.verified_loop import (
+    CHECKPOINT_KIND,
+    CHECKPOINT_VERSION,
     HARNESS_VERSION,
     PLAN_TOOL,
     Blocker,
+    LoopState,
     RunResult,
     VerifiedLoop,
     _assistant_message,
+    _restore_telemetry,
     _RunEnded,
     gateway_session_of,
 )
 from locus_runtime.harness.enforcement import schema_by_name
+
+#: What the agent is told about a call that was running when the process died.
+NOT_REEXECUTED = (
+    "[not re-executed] The run was interrupted while this action was running, so it may "
+    "or may not have taken effect. Check the workspace state before repeating it."
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -140,6 +159,11 @@ class RunController(VerifiedLoop):
     offered_tools: set[str] = field(default_factory=set)
     interrupts: list[ApprovalRequest] = field(default_factory=list)
     refused_tools: list[str] = field(default_factory=list)
+    #: Durable state + action ledger (``None``: in-memory only).
+    store: RunStore | None = None
+    #: Give every model tool call a run-unique id (providers may reuse ids such
+    #: as ``call_0``; the action ledger is keyed by id).
+    unique_call_ids: bool = False
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -147,6 +171,64 @@ class RunController(VerifiedLoop):
         self._asks = AskCursor.of(self.toolset)
         self._pending_asks: list[ApprovalRequest] = []
         self._trace_context: telemetry.RunContext | None = None
+        self._restored_envelope: dict[str, Any] | None = None
+        self._compactions = {"context_compactions": 0, "compacted_outputs": 0, "chars_saved": 0}
+        #: Asks raised by each tool call id (parallel calls interrupt separately).
+        self._call_asks: dict[str, list[ApprovalRequest]] = {}
+
+    # -- durability ----------------------------------------------------------------
+    def restore(self) -> bool:
+        """Load this run's saved state from the store; True when there was one."""
+        if self.store is None:
+            return False
+        data = self.store.load_state(self.run_id)
+        if data is None:
+            return False
+        if data.get("kind") != CHECKPOINT_KIND or int(data.get("version") or 0) != (
+            CHECKPOINT_VERSION
+        ):
+            raise ValueError(f"run {self.run_id!r}: not a Locus run checkpoint")
+        self.state = LoopState.from_dict(data["state"])
+        _restore_telemetry(self.toolset, data.get("toolset") or {})
+        self.offered_tools = {str(t) for t in data.get("offered_tools") or []}
+        self.refused_tools = [str(t) for t in data.get("refused_tools") or []]
+        self.interrupts = [ApprovalRequest(**a) for a in data.get("interrupts") or []]
+        self._restored_envelope = dict(data.get("envelope") or {})
+        return True
+
+    def _checkpoint(self) -> None:
+        """Persist the controller state (replaces the verified loop's JSON file)."""
+        if self.store is None:
+            return
+        st = self._st
+        if self._t0:
+            st.usage.elapsed_seconds = time.time() - self._t0
+        status = str((st.final or {}).get("end_state") or "running")
+        self.store.save_state(
+            self.run_id,
+            self.runtime_name,
+            status,
+            {
+                "kind": CHECKPOINT_KIND,
+                "version": CHECKPOINT_VERSION,
+                "harness_version": HARNESS_VERSION,
+                "saved_at": time.time(),
+                "agent_id": self.agent_id,
+                "task_meta": self.task_meta,
+                "plan_mode": self.plan_mode,
+                "runtime": self.runtime_name,
+                "status": status,
+                "envelope": self.envelope.to_dict(),
+                "state": st.to_dict(),
+                "toolset": {
+                    "telemetry": asdict(self.toolset.telemetry),
+                    "edit_format": self.toolset.edit_format,
+                },
+                "offered_tools": sorted(self.offered_tools),
+                "refused_tools": list(self.refused_tools),
+                "interrupts": [a.model_dump(mode="json") for a in self.interrupts],
+            },
+        )
 
     # -- lifecycle ---------------------------------------------------------------
     def drive(self, body: Callable[[RunController], None]) -> RunResult:
@@ -202,6 +284,9 @@ class RunController(VerifiedLoop):
         st = self._st
         rec = self._rec
         self._t0 = time.time() - st.usage.elapsed_seconds
+        if st.started:
+            self._resumed()
+            return
         system_prompt = self._system_prompt_with_skills()
         rec.header(
             agent_id=self.agent_id,
@@ -233,6 +318,27 @@ class RunController(VerifiedLoop):
                     unblock="configure a judge model for the run",
                 )
             )
+        self._checkpoint()
+
+    def _resumed(self) -> None:
+        self._rec.annotation("resumed", step=self._st.usage.steps, runtime=self.runtime_name)
+        self._emit("resumed", step=self._st.usage.steps)
+        if (
+            self._restored_envelope is not None
+            and self._restored_envelope != self.envelope.to_dict()
+        ):
+            self._block(
+                Blocker(
+                    kind="configuration",
+                    detail="the run was resumed with a different envelope than it started with",
+                    unblock="resume with the original envelope, or start a new run",
+                )
+            )
+
+    @property
+    def resumed(self) -> bool:
+        """Whether this controller continues a run that had already started."""
+        return self._st.started
 
     def system_prompt_text(self) -> str:
         return self._system_prompt_with_skills()
@@ -259,6 +365,9 @@ class RunController(VerifiedLoop):
             self._guard_before_model_call()
             resp = self._call_model(st.messages, tools)
             st.usage.steps += 1
+            if self.unique_call_ids:
+                for index, call in enumerate(resp.tool_calls):
+                    call.id = f"call_s{st.usage.steps}_{index}_{uuid.uuid4().hex[:8]}"
             assistant = _assistant_message(resp)
             st.messages.append(assistant)
             self._rec.message(assistant, step=st.usage.steps, usage=resp.usage or None)
@@ -268,7 +377,14 @@ class RunController(VerifiedLoop):
                 has_tools=bool(resp.tool_calls),
                 text=resp.text[:200],
             )
+            self._checkpoint()
             return resp
+
+    def guard_model_call(self) -> None:
+        """The verified loop's pre-model-call guards (user stop, steps, tokens,
+        time, cost, context): raises the end state when one is exhausted."""
+        with self._lock:
+            self._guard_before_model_call()
 
     def handle_text(self, text: str) -> str:
         """A turn that ended without a tool call: the verified loop's nudge."""
@@ -280,8 +396,29 @@ class RunController(VerifiedLoop):
 
     # -- tool calls ----------------------------------------------------------------
     def tool_call(self, call_id: str, name: str, arguments: Any) -> str:
-        """Validate and run one Locus tool exactly as the verified loop does."""
+        """Validate and run one Locus tool exactly as the verified loop does.
+
+        With a store, the call goes through the action ledger: a finished call is
+        replayed and a call interrupted by a crash is never run again."""
         with self._lock, telemetry.resume_context(self._trace_context):
+            store = self.store
+            entry = store.action(self.run_id, call_id) if store is not None else None
+            if entry is not None and entry.status in ("done", "interrupted"):
+                self._call_asks[call_id] = []
+                self._rec.annotation(
+                    "action_replayed", step=self._st.usage.steps, tool=name, call_id=call_id
+                )
+                return entry.content
+            if store is not None and entry is not None and entry.status == "started":
+                self._call_asks[call_id] = []
+                store.mark_action(self.run_id, call_id, name, "interrupted", NOT_REEXECUTED)
+                self._rec.annotation(
+                    "action_not_reexecuted", step=self._st.usage.steps, tool=name, call_id=call_id
+                )
+                self._emit("action_not_reexecuted", tool=name, call_id=call_id)
+                return NOT_REEXECUTED
+            if store is not None:
+                store.mark_action(self.run_id, call_id, name, "started")
             schemas = schema_by_name(self._tool_schemas())
             before = len(self._st.messages)
             self._dispatch(
@@ -290,6 +427,7 @@ class RunController(VerifiedLoop):
                 self._st.usage.steps,
             )
             asks = self._asks.take(self.toolset)
+            self._call_asks[call_id] = list(asks)
             if asks:
                 self._pending_asks.extend(asks)
                 self.interrupts.extend(asks)
@@ -298,7 +436,12 @@ class RunController(VerifiedLoop):
                 for m in self._st.messages[before:]
                 if m.get("role") == "tool" and m.get("tool_call_id") == call_id
             ]
-            return str(replies[-1].get("content") or "") if replies else ""
+            content = str(replies[-1].get("content") or "") if replies else ""
+            if store is not None:
+                # An ask did not run the action: it may run once, after approval.
+                store.mark_action(self.run_id, call_id, name, "asked" if asks else "done", content)
+            self._checkpoint()
+            return content
 
     def record_todos(self, todos: Any) -> str:
         """Record a ``write_todos`` plan as a versioned plan (P17)."""
@@ -309,11 +452,13 @@ class RunController(VerifiedLoop):
             else:
                 steps.append(str(item))
         with self._lock:
-            return self._record_plan(
+            reply = self._record_plan(
                 {"steps": [s for s in steps if s.strip()]},
                 self._st.usage.steps,
                 source="write_todos",
             )
+            self._checkpoint()
+            return reply
 
     def refuse_tool(self, name: str) -> str:
         """A tool outside the mediated set was requested: never executed."""
@@ -323,6 +468,17 @@ class RunController(VerifiedLoop):
             self._rec.annotation("refused_tool", step=self._st.usage.steps, tool=name)
         return f"[not executed] '{name}' is not an available tool in this run."
 
+    def note_compaction(self, outputs: int, chars: int) -> None:
+        """Count a model request whose older tool output was compacted."""
+        with self._lock:
+            self._compactions["context_compactions"] += 1
+            self._compactions["compacted_outputs"] += outputs
+            self._compactions["chars_saved"] += chars
+
+    def compaction_stats(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._compactions)
+
     # -- asks ----------------------------------------------------------------------
     def has_pending_asks(self) -> bool:
         with self._lock:
@@ -331,6 +487,18 @@ class RunController(VerifiedLoop):
     def end_blocked(self, blocker: Blocker) -> None:
         with self._lock:
             self._block(blocker)
+
+    def asks_for(self, call_id: str) -> list[ApprovalRequest]:
+        """The asks the last run of tool call ``call_id`` raised."""
+        with self._lock:
+            return list(self._call_asks.get(call_id) or [])
+
+    def claim_asks(self, call_id: str) -> list[ApprovalRequest]:
+        """Take the asks of ``call_id`` out of the pending set (decided in place)."""
+        with self._lock:
+            asks = self._call_asks.pop(call_id, None) or []
+            self._pending_asks = [a for a in self._pending_asks if a not in asks]
+            return asks
 
     def take_pending_asks(self) -> list[ApprovalRequest]:
         with self._lock:

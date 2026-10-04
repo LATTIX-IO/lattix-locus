@@ -25,8 +25,17 @@ dependencies = [
   "presidio-analyzer>=2.2.355",
   "pyobjc-framework-ApplicationServices==12.2.2; sys_platform == 'darwin'",
   "hvac>=2.3.0",
-  "langgraph>=0.3.0",
-  "langgraph-checkpoint-postgres>=2.0.0",
+  # Agent runtime (LOCUS-361, D-27): LangChain Deep Agents on LangGraph 1.x (MIT,
+  # LangChain Inc.), extended by locus_runtime.harness.deep_agents. Exact pins:
+  # every bump re-audits the middleware stack and the in-process vendor SDKs
+  # (docs/development/deep-agents-harness.md). The SQLite checkpointer makes runs
+  # durable across restarts. langgraph-checkpoint-postgres was dropped (unused).
+  "deepagents==0.7.21",
+  "langchain==1.4.3",
+  "langchain-core==1.6.6",
+  "langgraph==1.2.12",
+  "langgraph-checkpoint==4.2.0",
+  "langgraph-checkpoint-sqlite==3.1.1",
   "nats-py>=2.10.0",
   # AI observability (LOCUS-375): imported by locus_runtime.telemetry; pinned
   # together (the OTLP exporter requires the matching SDK). Apache-2.0.

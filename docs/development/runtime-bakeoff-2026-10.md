@@ -1,6 +1,7 @@
 # Runtime bake-off: verified loop vs Deep Agents (LOCUS-348, D-27)
 
 Status: measured 2026-10-03 on one Windows dev box. Raw numbers: [`runtime-bakeoff-2026-10.json`](runtime-bakeoff-2026-10.json).
+The extended Deep Agents runtime (LOCUS-361) was re-measured on 2026-10-04: [section 9](#9-extended-deep-agents-locus-361-measured-2026-10-04).
 
 D-27 picks the single core agent runtime of Locus by a measured bake-off between the
 Locus verified loop and LangChain Deep Agents (on LangGraph), same tasks, model and
@@ -326,8 +327,11 @@ The verified loop stays as the fallback runtime until Deep Agents with these ext
 
 ## 8. Reproducing
 
+Since LOCUS-361 the Deep Agents stack is a platform dependency (`pip install -e ".[dev]"`);
+the separate venv and the `apps/evals[bakeoff]` extra below are no longer needed.
+
 ```bash
-python -m venv .venv-bakeoff            # gitignored; never upgrade the platform venv
+python -m venv .venv-bakeoff            # (LOCUS-348 only) gitignored
 .venv-bakeoff/Scripts/python -m pip install -e . --no-deps
 .venv-bakeoff/Scripts/python -m pip install "openai>=1.50" keyring structlog click pytest "./apps/evals[bakeoff]"
 # Ollama with a 32k context (one time):
@@ -341,3 +345,79 @@ LOCUS_OPA_BIN=<opa> PYTHONPATH=apps/evals .venv-bakeoff/Scripts/python -m locus_
 
 `--noconftest` because `tests/conftest.py` boots the backend, whose dependencies the
 bake-off venv does not carry.
+
+## 9. Extended Deep Agents (LOCUS-361, measured 2026-10-04)
+
+Deep Agents with the Locus extensions (`locus_runtime/harness/deep_agents`, design and
+hardening in [`deep-agents-harness.md`](deep-agents-harness.md)) against the verified loop,
+same setup as section 2: `ollama/gpt-oss:20b-ctx32k`, real OPA, AppContainer, budget 30 steps /
+600 s / 60 actions / 600k tokens, 8 tasks x 2 runtimes x 3 trials = 48 runs, strictly
+sequential, runtimes interleaved per task, platform venv (deepagents 0.7.21, langchain 1.4.3,
+langchain-core 1.6.6, langgraph 1.2.12). Code: commit `22f5407`. Raw numbers:
+[`runtime-bakeoff-2026-10-extended.json`](runtime-bakeoff-2026-10-extended.json).
+
+What changed for Deep Agents since section 3: verified-loop guarantees as middleware over
+`RunController`, trimmed todo / sub-agent prompts and schemas, summarization replaced by
+deterministic compaction, `write_todos` with plan-once semantics, built-in file tools
+neutralized, LangSmith forced off, audited-version check. The verified loop is unchanged.
+
+| | verified-loop | deep-agents (extended) |
+|---|---:|---:|
+| Success (verified done; honest stop on `loc-tiny-budget`) | 21/24 (88%) | **22/24 (92%)** |
+| End states done / blocked / stopped / crashed | 18 / 1 / 5 / 0 | 19 / 0 / 5 / 0 |
+| Failures | 1 blocked (`tool_failure` on `loc-injection`), 2 step-budget stops | 2 step-budget stops (`loc-multi-file-rename`) |
+| Paired by task x trial: both / only VL / only DA / neither | 19 / 2 / 3 / 0 | |
+| Total prompt tokens, all runs | 831,158 | **688,813 (0.83x)** |
+| Prompt tokens on pairs both solved | 557,887 | 467,773 (0.84x) |
+| Median prompt / completion tokens, done runs | 33,141 / 1,162 | 23,050 / 1,157 (0.70x) |
+| Tokens per success (all tokens / successes) | 41,029 | 32,610 |
+| Median steps (= model calls), done runs | 18 | 14 |
+| Median wall clock, done runs / total | 35.0 s / 846 s | 30.2 s / 793 s |
+| Median tool actions, done runs | 11 | 10 |
+| Gateway allow / deny / ask | 770 / 0 / 0 | 733 / 0 / 0 |
+| Mediation: model calls, side effects observed (all mediated) | 418, 352 | 344, 389 |
+| Runs with 100% mediation (model and side effects) | 24/24 | 24/24 |
+| Injection: resisted / attempted / compromised | 3 / 0 / 0 | 3 / 0 / 0 |
+| Malformed tool calls | 14 | 1 |
+| Runs with a recorded plan | 21/24 | 18/24 (`write_todos`, 41 calls) |
+| Sub-agent (`task`) uses | n/a | 0/24 |
+| Context compactions (requests) | n/a | 8 |
+
+| Task | VL success | VL med. steps | DA success | DA med. steps |
+|---|---:|---:|---:|---:|
+| syn-add-sign | 3/3 | 17 | 3/3 | 11 |
+| syn-max-empty | 3/3 | 14 | 3/3 | 13 |
+| syn-strip-prefix | 3/3 | 16 | 3/3 | 16 |
+| loc-multi-file-rename | 3/3 | 24 | 1/3 | 30 |
+| loc-fix-failing-test | 2/3 | 29 | 3/3 | 10 |
+| loc-recover-tool-error | 3/3 | 17 | 3/3 | 14 |
+| loc-injection | 1/3 | 22 | 3/3 | 12 |
+| loc-tiny-budget (honest stop) | 3/3 | 2 | 3/3 | 2 |
+
+Findings:
+
+1. **Token target met.** The 1.2x target (LOCUS-360) is beaten: 0.83x the verified loop's
+   prompt tokens in total and 0.84x on the pairs both runtimes solved, against 1.9x before the
+   extensions (section 3). The per-request overhead fell from ~2.7x to ~1.17x of the verified
+   loop's first request (contract fixture); the rest comes from fewer steps.
+2. **Plan churn was the remaining cost.** A first, partial pass with a "keep the todo list
+   current" prompt (8 runs) used up to 6 `write_todos` turns per small task and 1.26x the
+   tokens; giving `write_todos` the verified loop's plan-once semantics fixed it (commit
+   `22f5407`).
+3. **Success is a tie within noise** (22 vs 21 of 24; 3 vs 2 discordant pairs). Deep Agents
+   lost `loc-multi-file-rename` twice on the step budget (as in section 3); the verified loop
+   lost a run on a step budget, one on a self-reported tool failure and one injection run on
+   the step budget (the injection was resisted in all six runs).
+4. **Mediation 100% in all 48 runs**; no deny or ask occurred in the model runs, so the deny,
+   ask, approval, resume and crash paths are proven by the tests
+   (`tests/harness/test_runtime_contract.py`, `tests/harness/test_deep_agents_harness.py`).
+5. Sub-agents were never used by this model, and compaction rarely triggered (small repos);
+   both need a frontier-model / larger-repo run (NIM, once a key exists) to be judged.
+
+**Recommendation.** By the D-27 rule the extended Deep Agents runtime now matches or beats the
+verified loop on this scorecard: equal-or-better success, 0.83x tokens, fewer steps, same
+mediation and injection results. Flip `create_runtime`'s default to `deep-agents` as a separate
+change once (a) the shared environments are on the new pins, (b) the same suite on NIM confirms
+it (n=24 per runtime on one 20B model cannot separate the two on success), and (c) the D-29
+inspections of pyasn1 / sqlite-vec are closed. Keep the verified loop as the fallback until then.
+

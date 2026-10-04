@@ -8,7 +8,7 @@ Locus is built from **modules**. A module owns one job of an AI harness behind a
 
 | Module | Port(s) | Implementations (default first) | Swap class |
 |---|---|---|---|
-| **Agent runtime** | `AgentRuntime` | Bake-off winner (LOCUS-348: VerifiedLoop or Deep Agents) | Run boundary |
+| **Agent runtime** | `AgentRuntime` | Verified loop (default until the scorecard flips it, D-27); LangChain Deep Agents + Locus extensions (`locus_runtime/harness/deep_agents`, LOCUS-361) | Run boundary |
 | **Model access** | `ModelProvider`, `ModelRouter` | NIM, Ollama, OpenAI-compatible, Anthropic | Live |
 | **Tools and connectors** | `ToolProvider` | Built-in coding tools, MCP client (stdio/HTTP), integrations | Run boundary |
 | **Computer use** | `BrowserDriver`, `DesktopDriver` | Agent browser (Playwright), user-profile bridge (D-25), Windows UIA / macOS AX or Cua drivers | Run boundary |

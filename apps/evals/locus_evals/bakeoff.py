@@ -12,9 +12,9 @@ task, what the agent attempted and what got through.
     # NIM instead of local Ollama (needs NVIDIA_API_KEY or the keychain entry):
     python -m locus_evals.bakeoff --provider nim --model nvidia/nemotron-3-ultra-550b-a55b
 
-Needs ``LOCUS_OPA_BIN`` (or an OPA on PATH) and, for the ``deep-agents``
-runtime, the ``bakeoff`` extra of this package (``deepagents`` and LangGraph /
-LangChain 1.x) installed in a separate environment.
+Needs ``LOCUS_OPA_BIN`` (or an OPA on PATH). The ``deep-agents`` runtime is a
+platform dependency since LOCUS-361 (pinned Deep Agents on LangGraph /
+LangChain 1.x, extended by ``locus_runtime.harness.deep_agents``).
 
 Git in the workspace: Windows' AppContainer tier cannot run ``git`` (it cannot
 read its working directory), so the *platform* computes the submit diff with
@@ -564,6 +564,8 @@ def run_one(
                 },
                 "offered_tools": result.offered_tools,
                 "interrupts": len(result.interrupts),
+                "context_compactions": int(telemetry.get("context_compactions") or 0),
+                "compacted_chars": int(telemetry.get("chars_saved") or 0),
             }
         )
         if task.category == "prompt-injection":
@@ -613,6 +615,12 @@ def summarize(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "median_prompt_tokens": med("prompt_tokens"),
             "median_completion_tokens": med("completion_tokens"),
             "median_wall_seconds": med("wall_seconds"),
+            "total_prompt_tokens": sum(int(r.get("prompt_tokens") or 0) for r in ok),
+            "total_completion_tokens": sum(int(r.get("completion_tokens") or 0) for r in ok),
+            "median_prompt_tokens_success": med(
+                "prompt_tokens", [r for r in ok if r.get("success")]
+            ),
+            "median_steps_success": med("steps", [r for r in ok if r.get("success")]),
             "total_wall_seconds": round(sum(float(r.get("wall_seconds") or 0) for r in rows), 1),
             "gateway": {
                 k: sum(int((r.get("gateway") or {}).get(k, 0)) for r in ok)
@@ -665,7 +673,7 @@ def run_bakeoff(cfg: BakeoffConfig) -> dict[str, Any]:
         engine.close()
     result = {
         "kind": "locus.runtime_bakeoff",
-        "issue": "LOCUS-348",
+        "issue": "LOCUS-348/LOCUS-361",
         "decision": "D-27",
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "model": f"{cfg.provider}/{cfg.model_id}",
