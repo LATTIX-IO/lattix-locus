@@ -94,6 +94,17 @@ hiddenimports += [
     "locus_runtime.computer_use.user_browser.driver",
     "locus_runtime.computer_use.user_browser.native_host",
 ]
+# AI observability (LOCUS-375; OpenTelemetry, Apache-2.0): the API finds its
+# context implementation and the SDK its resource detectors through entry
+# points, so their dist-info metadata must ship; the OTLP/HTTP exporter is
+# imported lazily, only when an external exporter is enabled.
+hiddenimports += [
+    "opentelemetry.context.contextvars_context",
+    "opentelemetry.sdk.resources",
+    "opentelemetry.exporter.otlp.proto.http.trace_exporter",
+]
+for _dist in ("opentelemetry-api", "opentelemetry-sdk"):
+    datas += copy_metadata(_dist)
 # The CI version stamp (written before this build) is imported dynamically.
 hiddenimports += ["locus_tooling._build_stamp"]
 # Platform-specific backend dependencies (absent on other OSes — skip quietly).

@@ -53,10 +53,12 @@ import os
 import shlex
 import subprocess
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from locus_runtime import telemetry
 from locus_runtime.gateway import (
     GatewayBlocked,
     GatewayDecision,
@@ -160,6 +162,17 @@ class _GatedExecutor:
             )
         return authorize_action(self.gateway_session, kind=kind, tool=current_tool(), target=target)
 
+    def _exec_span(self, command: list[str]) -> AbstractContextManager[telemetry.SpanHandle]:
+        """A ``sandbox exec`` telemetry span for an allowed command: jail tier, exit
+        code, duration; never the command text or output (LOCUS-375)."""
+        facts = self.jail_facts()
+        return telemetry.sandbox_exec(
+            backend=self.backend,
+            tier=str(facts.strategy or ""),
+            network=facts.allow_network,
+            command=command,
+        )
+
 
 class Executor(Protocol):
     backend: str
@@ -247,7 +260,10 @@ class LocalDirectExecutor(_GatedExecutor):
         decision = self._gate("process_exec", str(self.root), command=command)
         if not decision.allowed:
             return _blocked_result(decision, self.backend)
-        return self._spawn(command, timeout=timeout)
+        with self._exec_span(command) as span:
+            result = self._spawn(command, timeout=timeout)
+            telemetry.record_exec_result(span, result)
+        return result
 
     def _spawn(self, command: list[str], *, timeout: int) -> ExecResult:
         import time as _time
@@ -469,7 +485,10 @@ class LocalSandboxExecutor(_GatedExecutor):
         decision = self._gate("process_exec", str(self.root), command=command)
         if not decision.allowed:
             return _blocked_result(decision, self.backend, self.unavailable_reason)
-        return self._spawn(command, timeout=timeout)
+        with self._exec_span(command) as span:
+            result = self._spawn(command, timeout=timeout)
+            telemetry.record_exec_result(span, result)
+        return result
 
     def _spawn(self, command: list[str], *, timeout: int) -> ExecResult:
         import time as _time
@@ -681,7 +700,10 @@ class DockerContainerExecutor(_GatedExecutor):
         decision = self._gate("process_exec", self._workdir, command=inner)
         if not decision.allowed:
             return _blocked_result(decision, self.backend)
-        return self._spawn(inner, timeout=timeout)
+        with self._exec_span(inner) as span:
+            result = self._spawn(inner, timeout=timeout)
+            telemetry.record_exec_result(span, result)
+        return result
 
     def read_file(self, path: str) -> str | None:
         decision = self._gate("file_read", self._abs(path))

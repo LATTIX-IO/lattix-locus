@@ -55,3 +55,14 @@ def isolated_skill_store(tmp_path, monkeypatch: pytest.MonkeyPatch):
     skills_dir = tmp_path / "skills"
     monkeypatch.setenv("LOCUS_SKILLS_DIR", str(skills_dir))
     return skills_dir
+
+
+@pytest.fixture(autouse=True)
+def hermetic_telemetry(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory):
+    """Telemetry (LOCUS-375) never writes into the real app home from tests and
+    never leaks a configured provider into the next test."""
+    from locus_runtime import telemetry
+
+    monkeypatch.setenv("LOCUS_TELEMETRY_DB", str(tmp_path_factory.mktemp("telemetry") / "t.db"))
+    yield
+    telemetry.reset()
