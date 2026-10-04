@@ -7,7 +7,9 @@ copy) in a :class:`~locus_runtime.rsi.candidate.CandidateInstance`, compares
 the scorecard with the stored baseline (the latest complete scorecard of the
 base branch in ``LOCUS_LOOP_HOME/variants/``) and records the variant.
 
-Modes (``LOCUS_LOOP_SCORECARD``): ``off``; ``advisory`` (default for ``lattix
+Modes (``LOCUS_LOOP_SCORECARD``): ``off`` (default: the candidate runs
+agent-written code outside the jail, so opting in is a principal decision);
+``advisory`` (formerly the default for ``lattix
 loop``: run, record, attach to the PR; never blocks); ``required`` (the D-22
 auto-merge additionally holds unless the comparison says ``promote``).
 

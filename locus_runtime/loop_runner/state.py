@@ -146,7 +146,7 @@ class LoopConfig:
     file_failure_issues: bool = False
     max_failure_issues_per_day: int = 3
     failure_issue_min_occurrences: int = 2
-    # -- LOCUS-351 RSI scorecard (dataclass default off; ``load`` defaults to advisory).
+    # -- LOCUS-351 RSI scorecard (off by default everywhere; opting in is a principal decision).
     scorecard_mode: str = "off"  # off | advisory | required
     scorecard_trials: int = 1
     scorecard_splits: tuple[str, ...] = ("dev", "heldout")
@@ -232,7 +232,10 @@ def _eval_mode(value: str | None) -> str:
 def _scorecard_mode(value: str | None) -> str:
     from locus_runtime.loop_runner.scorecard_gate import parse_scorecard_mode
 
-    return parse_scorecard_mode(value, "advisory")
+    # Off by default: the candidate instance runs agent-written code as the OS
+    # user outside the jail (no secrets, but user file access). Opting in is a
+    # principal decision (P32) until the candidate runs in a jail or VM.
+    return parse_scorecard_mode(value, "off")
 
 
 # --------------------------------------------------------------------------- #

@@ -225,7 +225,7 @@ precondition, and that more held-out passes never turn a promote into a hold.
 
 ## 7. Loop wiring
 
-`LOCUS_LOOP_SCORECARD` = `off` | `advisory` (default for `lattix loop`) | `required`.
+`LOCUS_LOOP_SCORECARD` = `off` (default) | `advisory` | `required`. It is off by default because the candidate instance runs agent-written code as your OS user outside the jail (no secrets, but your file permissions apply). Turn it on only after accepting that risk, or once the candidate runs in a jail or VM (follow-up).
 
 After the pre-PR verifier suite passes, the runner evaluates the run's tree
 (`ScorecardRequest`: the working copy as candidate, the runner's checkout as the source of

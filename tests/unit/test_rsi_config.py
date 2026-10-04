@@ -26,9 +26,11 @@ def _clean(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def test_loop_defaults_to_an_advisory_scorecard(tmp_path: Path) -> None:
+def test_loop_scorecard_is_off_by_default(tmp_path: Path) -> None:
+    # The candidate runs agent-written code outside the jail, so running the
+    # scorecard is an explicit principal opt-in (P32).
     cfg = LoopConfig.load(tmp_path, home=tmp_path / "home")
-    assert cfg.scorecard_mode == "advisory"
+    assert cfg.scorecard_mode == "off"
     assert (cfg.scorecard_trials, cfg.scorecard_splits) == (1, ("dev", "heldout"))
     assert cfg.scorecard_model == "" and cfg.tag_variants is False
     # The bare dataclass (tests, embedders) stays off.

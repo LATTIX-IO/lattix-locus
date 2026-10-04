@@ -177,7 +177,7 @@ since LOCUS-351, by the RSI scorecard below.
 
 ### RSI scorecard (LOCUS-351)
 
-With `LOCUS_LOOP_SCORECARD=advisory` (the default for `lattix loop`) or
+With `LOCUS_LOOP_SCORECARD=advisory` (opt-in; the default is `off` because the candidate runs agent-written code outside the jail) or
 `required`, the runner evaluates the run's tree after the verifier suite passed
 (then commits it and archives the variant under the commit sha) with the RSI
 suite: 12 dev and 8 held-out tasks from
