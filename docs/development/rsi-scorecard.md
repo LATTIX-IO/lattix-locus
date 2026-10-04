@@ -396,6 +396,14 @@ still uncommitted, exactly as before.
 Other settings: `LOCUS_LOOP_SCORECARD_TRIALS` (1), `_SPLITS` (`dev,heldout`), `_MODEL`
 (`gpt-oss:20b-ctx32k`), `_PYTHON` (the candidate interpreter).
 
+The candidate runs its own default agent runtime unless one is named with `--runtime` (the
+candidate instance sets `LOCUS_AGENT_RUNTIME` in the candidate's environment from it; the
+evaluator's own `LOCUS_AGENT_RUNTIME` is not forwarded). Since 2026-10-04 that default is
+`deep-agents` (D-27 confirmed on this scorecard: [runtime bake-off, section 10](runtime-bakeoff-2026-10.md#10-d-27-confirmation-on-the-rsi-scorecard-2026-10-04)).
+A scorecard recorded with `runtime: "default"` before that date measured `verified-loop`; one
+recorded after it measures `deep-agents`. Re-baseline main after the flip before comparing
+variants against it.
+
 **Dev channel (D-26).** The scorecard is meant to gate Dev publishing as well. Today it gates
 the loop's auto-merge (in `required` mode), which is what feeds `desktop-dev.yml`; making the
 workflow itself check the merged commit's scorecard needs a runner with a model endpoint and
