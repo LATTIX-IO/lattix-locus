@@ -258,6 +258,35 @@ frontier model is where planning and sub-agents could pay off; decide the
   multi-agent workflows and .NET parity. Preferable only if MAF is kept for another reason
   (O-07) or .NET interop matters; it is the heaviest option.
 
+### Decision (principal direction 2026-10-04)
+
+The principal asked for the LangChain harness to be compared against DeepSeek Harness (`dsh`) and for one to be chosen, extending the LangChain baseline with the good parts of other harnesses where needed.
+
+| | LangChain Deep Agents (on LangGraph) | DeepSeek Harness (`dsh`, Cordis) |
+|---|---|---|
+| License, origin | MIT, LangChain Inc. (US) | MIT, DeepSeek (CN): needs a D-29 inspection before it may even be installed |
+| Language | Python, same as the trust kernel and the gateway | TypeScript/Node; a second runtime next to the Python core |
+| Maturity | 0.7.x on LangGraph (used in production widely); LangGraph is already in the stack | Developer preview, with breaking changes expected |
+| Measured here | 34/40, 100 % gateway mediation, 5/5 injection resisted; 1.9x tokens | Not measurable before the D-29 inspection (LOCUS-358) |
+| Extensibility | Middleware, sub-agents, skills, pluggable checkpointers, `interrupt()` HITL | Everything-is-a-plugin with reversible effects, profiles and bundles, ACP app, swappable agent loop |
+| Trust model | Library inside our process: we wrap every tool and model call | In-process plugins with no third-party trust model; own approvals and sandbox policy, which would duplicate or bypass the gateway |
+
+**Choice: LangChain Deep Agents is the base harness**, behind the `AgentRuntime` port (D-28). This overrides the recommendation above, which was made on cost and surface alone, because:
+- the principal prefers a trusted FOSS baseline that is extended rather than owned (P30);
+- it measured equal on success with full mediation;
+- its token cost and surface are addressable.
+
+`dsh` is used as a pattern source only. Its composition, reversible registration, profiles/bundles, versioned session log and ACP surface are already the D-28 module design (LOCUS-356).
+
+The extensions that make the baseline a Locus harness (LOCUS-360):
+1. The verified loop's guarantees as LangGraph middleware: envelope, plan, budgets, the verify gate and the done-criteria judge, and done / blocked / stopped end states (`RunController`).
+2. Token efficiency: trim the default system prompt and tool schemas, and add context compaction. Target: within 1.2x of the verified loop's tokens at equal success.
+3. Hardening: neutralize the built-in file tools; force LangSmith tracing off at process start; pin every dependency and give `pyasn1` a provenance review; never import the unused vendor SDKs outside the runtime module.
+4. A durable SQLite checkpointer, so runs resume after a restart or update (LOCUS-352, LOCUS-354).
+5. From other harnesses: Hermes/OpenClaw-style automatic skill proposals (quarantined, P24), and the `dsh`-style session event log and ACP.
+
+The verified loop stays as the fallback runtime until Deep Agents with these extensions matches or beats it on the LOCUS-351 scorecard (and on NIM once a key exists). Then the loop is deleted.
+
 ## 7. Migration cost if Deep Agents were chosen
 
 1. Platform dependency move: langgraph 0.6.11 -> 1.2.x, langchain-core 0.3.83 -> 1.6.x, plus
