@@ -52,7 +52,10 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       LOCUS_MEMORY_ENABLE_LONG_TERM: ${LOCUS_MEMORY_ENABLE_LONG_TERM:-true}
       LOCUS_MEMORY_LEARNING_ENABLED: ${LOCUS_MEMORY_LEARNING_ENABLED:-true}
-      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      # Long-term memory embeds on the local engine through the gated model client
+      # (LOCUS-378/387); the pgvector column size must match the model's vectors.
+      LOCUS_MEMORY_EMBEDDING_MODEL: ${LOCUS_MEMORY_EMBEDDING_MODEL:-nomic-embed-text}
+      LOCUS_MEMORY_EMBEDDING_DIMENSIONS: ${LOCUS_MEMORY_EMBEDDING_DIMENSIONS:-768}
       # NVIDIA NIM (hosted API by default; NIM_BASE_URL can target self-hosted
       # NIM microservices to keep inference on-prem).
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}

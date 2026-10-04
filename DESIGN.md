@@ -31,7 +31,7 @@ Locus separates a control plane that owns definitions, versioning, and policy fr
 | Isolation strategy | `locus_runtime/sandbox.py` | Implement a strategy class and register it against a `HostPlatform`; declare real `SandboxCapabilities` |
 | Policy | `policies/*.rego` | Ships with a matching test in `policies/tests/` |
 | Integration | `IntegrationDefinition` (`http`/`database`/`queue`/`vector`/`custom`) | Declare `permission_scopes`, `data_access`, `egress_allowlist`, and `execution_mode` |
-| Memory tier | `apps/backend/app/platform_services.py` | Redis (short-term), Postgres+pgvector (long-term), Neo4j (world graph) |
+| Memory tier | `locus_runtime/memory/` (port + SQLite adapter), `apps/backend/app/platform_services.py` | Redis (short-term); long-term behind `LongTermMemoryStore`: SQLite + FTS5 + sqlite-vec (desktop default) or Postgres + pgvector; Neo4j (world graph). New adapters pass `tests/unit/test_memory_store_contract.py` |
 | Agent asset | `examples/agents/` or `LOCUS_AGENT_ASSETS_ROOT` | `agent.config.json` validated against `packages/contracts/templates/agent.config.schema.json` |
 
 ## Known design tensions

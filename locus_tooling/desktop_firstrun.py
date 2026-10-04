@@ -4,7 +4,8 @@ On first launch the lean installer has only the small bundled binaries (Node,
 NATS, the backend). This fetches the heavy sidecars (Postgres+pgvector, Neo4j +
 JRE, Ollama) into the writable app-home bin dir and pulls the model, streaming
 progress lines the Tauri splash drains. Subsequent launches find everything
-present and skip the fetch.
+present and skip the fetch. It also creates the embedded long-term memory store
+and its default Personal collection (:func:`ensure_memory_store`, LOCUS-387).
 
 IO (provision / model pull) is injectable so the flow is unit-tested offline.
 """
@@ -275,11 +276,48 @@ def ensure_heldout_suite(
     return False
 
 
+# --------------------------------------------------------------------------- #
+# Long-term memory: the embedded store and the Personal collection (LOCUS-387)
+# --------------------------------------------------------------------------- #
+def ensure_memory_store(
+    app_home: Path,
+    *,
+    progress: ProgressFn | None = None,
+    path: Path | None = None,
+) -> bool:
+    """First run: create the embedded memory store and its default Personal collection.
+
+    The SQLite file (``<app_home>/data/memory/locus-memory.db`` unless ``path``)
+    is created owner-only with its schema, and the Personal collection is
+    registered in it. Idempotent: later launches find both and change nothing.
+    Runs before the backend starts, so no other process has the file open. Never
+    raises: on failure the backend still creates both lazily when it starts.
+    """
+    from locus_runtime.memory.bootstrap import default_store_path, ensure_personal_collection
+    from locus_runtime.memory.sqlite_store import SQLiteLongTermMemoryStore
+
+    progress = progress or _default_progress
+    db_path = Path(path) if path is not None else default_store_path(Path(app_home))
+    # No embedder and no vector extension: first run never calls a model.
+    store = SQLiteLongTermMemoryStore(str(db_path), load_extension=False)
+    try:
+        store.initialize()
+        created = ensure_personal_collection(store)
+    except Exception as exc:  # noqa: BLE001 - first run must not crash the app
+        progress(f"FAILED memory store: {type(exc).__name__}")
+        return False
+    finally:
+        store.close()
+    progress("memory: created the Personal collection" if created else "memory: ready")
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     from .desktop import desktop_app_home, writable_bin_dir
 
     args = list(argv if argv is not None else sys.argv[1:])
     model = args[0] if args else "gpt-oss:20b"
+    ensure_memory_store(desktop_app_home())
     ensure_sidecars(writable_bin_dir(), model=model)
     ensure_agent_toolchain(desktop_app_home())
     ensure_playwright_chromium(desktop_app_home())
