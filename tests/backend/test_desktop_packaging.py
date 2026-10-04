@@ -225,7 +225,7 @@ def test_shell_confirmation_is_wired_from_rust_and_matches_python():
     assert "browser_tier::confirm_browser_pairing" in main_rs
     # The secret goes over stdin; only the flag is in the environment.
     assert '.env(browser_tier::SHELL_CONFIRMATION_ENV, "stdin")' in main_rs
-    assert "_child.write(line.as_bytes())" in main_rs
+    assert "child.write(line.as_bytes())" in main_rs
     assert "secret_line_for_backend" not in re.sub(
         r"match browser_tier::secret_line_for_backend\(\)", "", main_rs
     )
