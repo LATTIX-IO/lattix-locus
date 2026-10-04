@@ -3660,8 +3660,6 @@ def _apply_telemetry_settings() -> None:
 
 def _apply_provider_settings_side_effects() -> None:
     """Propagate provider settings to cached clients and helper modules."""
-    global _OPENAI_CLIENT  # noqa: PLW0603
-    _OPENAI_CLIENT = None
     _PROVIDER_CLIENTS.clear()
     local_models.set_base_url_override(
         _provider_settings_entry("ollama").get("base_url", "")
@@ -4100,7 +4098,6 @@ def _openai_status() -> RuntimeProviderStatus:
     )
 
 
-_OPENAI_CLIENT: Any | None = None
 _PRESIDIO_ANALYZER: Any | None = None
 _PRESIDIO_UNAVAILABLE = False
 # Lazily resolved presidio_analyzer.AnalyzerEngine class (tests may inject a stub).
@@ -4157,16 +4154,6 @@ def _build_world_graph() -> Any:
 # Name kept for backward compatibility (all call sites use this); the backend is
 # Postgres by default, Neo4j only when NEO4J_URI is explicitly configured.
 _NEO4J_GRAPH = _build_world_graph()
-
-
-def _get_openai_client() -> Any | None:
-    global _OPENAI_CLIENT  # noqa: PLW0603
-    status = _openai_status()
-    if not status.configured:
-        return None
-    if _OPENAI_CLIENT is None:
-        _OPENAI_CLIENT = OpenAI(api_key=_openai_api_key())
-    return _OPENAI_CLIENT
 
 
 _PROVIDER_CLIENTS: dict[str, Any] = {}

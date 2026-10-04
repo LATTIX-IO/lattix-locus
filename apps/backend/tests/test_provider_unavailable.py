@@ -32,7 +32,6 @@ def no_provider_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     """No usable provider: no OpenAI key (env or settings) and no user providers."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(main_module, "_openai_api_key", lambda: "")
-    monkeypatch.setattr(main_module, "_OPENAI_CLIENT", None)
     monkeypatch.setattr(main_module, "_user_provider_configs", lambda _principal: {})
 
 
