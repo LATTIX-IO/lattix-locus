@@ -117,6 +117,16 @@ def repository_locator(url: str) -> str:
     return text.rsplit("@", 1)[-1]
 
 
+def repository_record(url: str) -> str:
+    """What the on-disk records say about the repository: the pinned default by
+    name, otherwise a fingerprint of its credential-free locator (no URL text is
+    stored, so a credential in a configured URL can never reach disk)."""
+    locator = repository_locator(url)
+    if locator == repository_locator(HELDOUT_REPOSITORY):
+        return HELDOUT_REPOSITORY
+    return "sha256:" + hashlib.sha256(locator.encode("utf-8")).hexdigest()[:16]
+
+
 # --------------------------------------------------------------------------- #
 # Manifest (pure)
 # --------------------------------------------------------------------------- #
@@ -588,10 +598,10 @@ def sync_heldout(
         verify_files(manifest, contents)
         stamp = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
         # The on-disk provenance record keeps no credential-bearing or free-text
-        # fields: the repository is reduced to its locator (userinfo, query and
-        # fragment dropped) and the signature to its status flags.
+        # fields: the repository is the pinned default by name or a fingerprint,
+        # and the signature is reduced to its status flags.
         source = {
-            "repository": repository_locator(repo_url),
+            "repository": repository_record(repo_url),
             "ref": pinned,
             "commit": commit,
             "signature": {

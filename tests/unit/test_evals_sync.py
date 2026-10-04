@@ -635,3 +635,13 @@ def test_desktop_first_run_retries_a_denied_fetch_at_most_daily(
 )
 def test_repository_locator_never_keeps_userinfo(url: str, expected: str) -> None:
     assert es.repository_locator(url) == expected
+
+
+def test_repository_record_stores_no_url_text() -> None:
+    from locus_tooling.evals_heldout import HELDOUT_REPOSITORY
+
+    with_token = "https://user:hunter2-secret@github.com/LATTIX-IO/locus-evals-private.git"
+    assert es.repository_record(with_token) == HELDOUT_REPOSITORY
+    other = es.repository_record("https://user:hunter2-secret@example.com/fork.git")
+    assert other.startswith("sha256:") and "hunter2" not in other and "example" not in other
+    assert other == es.repository_record("https://example.com/fork.git")
