@@ -27,7 +27,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from locus_runtime.computer_use.user_browser.sites import normalize_site
 
@@ -234,7 +234,7 @@ class TierStore:
                         current.consent, tier=tier, risk_acknowledged=TIER_RISKS[tier]
                     )
             settings = TierSettings(
-                tier=tier,  # type: ignore[arg-type]
+                tier=cast(Tier, tier),
                 allowlisted_sites=allow,
                 granted_sites=grant,
                 consent=consent,
@@ -292,7 +292,7 @@ class TierStore:
             if tier not in TIERS:
                 tier = DEFAULT_TIER
             self._settings = TierSettings(
-                tier=tier,  # type: ignore[arg-type]
+                tier=cast(Tier, tier),
                 allowlisted_sites=_site_list(raw.get("allowlisted_sites") or ()),
                 granted_sites=_site_list(raw.get("granted_sites") or ()),
                 consent=consent,

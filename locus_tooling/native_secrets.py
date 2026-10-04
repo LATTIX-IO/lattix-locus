@@ -310,10 +310,11 @@ def _plaintext_write(name: str, value: str, app_home: Path | None) -> None:
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
         pass
+    # The secret's name is not logged: it is metadata an attacker reading logs
+    # could use to target the file; Posture lists which entries are degraded.
     logger.warning(
-        "Stored %s as a 0600 PLAINTEXT file because %s=1 and no Secret Service is "
-        "available (accepted security debt LOCUS-317; Posture reports degraded).",
-        name,
+        "Stored a secret as a 0600 PLAINTEXT file because %s=1 and no Secret Service "
+        "is available (accepted security debt LOCUS-317; Posture reports degraded).",
         ALLOW_FILE_ENV,
     )
 
