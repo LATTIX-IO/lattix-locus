@@ -605,4 +605,20 @@ static ACTIONS: &[ShellAction] = &[
         risk: "Removes this ruleset from the active guardrails. Workflows that use it lose its rules.",
         current: None,
     },
+    ShellAction {
+        id: "loop.enable",
+        method: "POST",
+        path: "/loop/enable",
+        title: "Turn on the self-improvement loop",
+        risk: "The loop picks eligible Linear issues, runs agents on them and opens pull requests without asking each time.",
+        current: None,
+    },
+    ShellAction {
+        id: "loop.autostart.enable",
+        method: "POST",
+        path: "/loop/autostart",
+        title: "Start the loop with Locus",
+        risk: "The loop starts on this checkout every time Locus starts, also after updates.",
+        current: None,
+    },
 ];

@@ -61,6 +61,8 @@ export const SHELL_ACTIONS: readonly ShellActionSpec[] = [
   { id: "guardrail.ruleset.rollback", method: "POST", path: "/guardrail-rulesets/{item_id}/rollback", when: "always" },
   { id: "guardrail.ruleset.archive", method: "POST", path: "/guardrail-rulesets/{item_id}/archive", when: "always" },
   { id: "guardrail.ruleset.delete", method: "DELETE", path: "/guardrail-rulesets/{item_id}", when: "always" },
+  { id: "loop.enable", method: "POST", path: "/loop/enable", when: "always" },
+  { id: "loop.autostart.enable", method: "POST", path: "/loop/autostart", when: "always" },
 ];
 
 export const CONFIRMATION_CANCELLED_MESSAGE = "Cancelled in the confirmation dialog";

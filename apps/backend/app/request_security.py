@@ -69,6 +69,22 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         RouteAccessCategory.AUTHENTICATED_MUTATE,
         "system.update.cancel",
     ),
+    # Self-improvement loop controls (Settings, LOCUS-353).
+    RouteAccessRule(
+        ("GET",), "/loop/status", RouteAccessCategory.AUTHENTICATED_READ, "loop.status.read"
+    ),
+    RouteAccessRule(
+        ("POST",), "/loop/enable", RouteAccessCategory.AUTHENTICATED_MUTATE, "loop.enable"
+    ),
+    RouteAccessRule(
+        ("POST",), "/loop/disable", RouteAccessCategory.AUTHENTICATED_MUTATE, "loop.disable"
+    ),
+    RouteAccessRule(
+        ("POST", "DELETE"),
+        "/loop/autostart",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "loop.autostart",
+    ),
     # Export / import (agents, workflows, playbooks, bundle) — JSON/YAML.
     RouteAccessRule(
         ("GET",),
@@ -1234,6 +1250,24 @@ _SHELL_PROOF_RULES: tuple[ShellProofRule, ...] = (
     _neutral("POST", "/system/update/prepare"),  # signed update bundles only
     _neutral("POST", "/system/update/cancel"),
     _narrowing("POST", "/system/shutdown"),
+    # --- self-improvement loop (Settings → Loop & Linear) ------------------------
+    _widening(
+        "POST",
+        "/loop/enable",
+        "loop.enable",
+        "Turn on the self-improvement loop",
+        "The loop picks eligible Linear issues, runs agents on them and opens pull "
+        "requests without asking each time.",
+    ),
+    _narrowing("POST", "/loop/disable"),
+    _widening(
+        "POST",
+        "/loop/autostart",
+        "loop.autostart.enable",
+        "Start the loop with Locus",
+        "The loop starts on this checkout every time Locus starts, also after updates.",
+    ),
+    _narrowing("DELETE", "/loop/autostart"),
     # --- builder content (bounded by settings, gateway policy and grants) ----
     _neutral("POST", "/agent-definitions/import"),
     _neutral("POST", "/workflow-definitions/import"),
