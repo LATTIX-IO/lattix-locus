@@ -687,22 +687,28 @@ class ModelCall:
     stream: bool = False
     tools: int = 0
     run_id: str = ""
+    #: ``chat`` (completions/responses) or ``embeddings`` (LOCUS-378). Either way it
+    #: is the same ``model_call`` gateway action, so the same policy applies.
+    operation: str = "chat"
 
     @property
     def local(self) -> bool:
         return is_loopback_host(self.egress_host)
 
     def gateway_kwargs(self) -> dict[str, Any]:
+        args: dict[str, Any] = {
+            "provider": self.provider,
+            "model": self.model,
+            "stream": self.stream,
+            "tools": self.tools,
+        }
+        if self.operation != "chat":
+            args["operation"] = self.operation
         return {
             "kind": "model_call",
             "tool": f"{MODEL_TOOL_PREFIX}{self.provider}",
             "target": f"{self.provider}/{self.model}",
-            "args": {
-                "provider": self.provider,
-                "model": self.model,
-                "stream": self.stream,
-                "tools": self.tools,
-            },
+            "args": args,
             "egress_host": self.egress_host,
         }
 
@@ -974,7 +980,7 @@ class ModelClient:
         """Model listing (catalog metadata, not a model call; not gated)."""
         return self._sdk().models
 
-    def _call(self, model: str, *, stream: bool, tools: int) -> ModelCall:
+    def _call(self, model: str, *, stream: bool, tools: int, operation: str = "chat") -> ModelCall:
         return ModelCall(
             provider=self.provider,
             model=model,
@@ -982,6 +988,7 @@ class ModelClient:
             stream=stream,
             tools=tools,
             run_id=self.run_id,
+            operation=operation,
         )
 
     def _failed(self, model: str, exc: BaseException, audit_id: str = "") -> ModelProviderError:
@@ -1196,6 +1203,42 @@ class ModelClient:
         telemetry.record_usage(span, usage)
         span.end()
         return response
+
+    def embed(self, texts: Sequence[str], *, model: str | None = None) -> list[list[float]]:
+        """Gated ``/embeddings`` call (LOCUS-378): one vector per input, in order.
+
+        Authorized as the same ``model_call`` gateway action as a chat request
+        (``operation: embeddings``), so engine, egress and data-class policy and the
+        usage audit apply. The audit records counts only, never the input text.
+        """
+        inputs = [str(text) for text in texts]
+        if not inputs:
+            return []
+        name = str(model or self.model)
+        call = self._call(name, stream=False, tools=0, operation="embeddings")
+        audit_id = self._gate.authorize(call)
+        started = time.monotonic()
+        estimate = max(1, sum(len(text) for text in inputs) // 4)
+        try:
+            response = self._sdk().embeddings.create(model=name, input=inputs)
+            items = sorted(response.data, key=lambda item: int(getattr(item, "index", 0)))
+            vectors = [[float(value) for value in item.embedding] for item in items]
+            if len(vectors) != len(inputs) or any(not vector for vector in vectors):
+                raise ValueError("embedding response did not match the inputs")
+        except ModelProviderError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - typed, redacted provider failure
+            self._record(call, audit_id, started, counts=(0, 0), estimate=(estimate, 0), ok=False)
+            raise self._failed(name, exc, audit_id) from exc
+        self._record(
+            call,
+            audit_id,
+            started,
+            counts=_usage_counts(getattr(response, "usage", None)),
+            estimate=(estimate, 0),
+            ok=True,
+        )
+        return vectors
 
     # -- typed entry points ----------------------------------------------------
     def _request(
