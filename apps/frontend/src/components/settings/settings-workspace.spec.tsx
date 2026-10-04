@@ -168,6 +168,15 @@ describe("Policies & autonomy", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/cancelled in the confirmation dialog/i);
   });
 
+  it("no longer hosts personal skills and points to Library → Skills", async () => {
+    render(<PoliciesSection />);
+
+    await screen.findByRole("switch", { name: /approve every run/i });
+    expect(screen.queryByRole("group", { name: /personal skills/i })).not.toBeInTheDocument();
+    expect(api.getUserSkills).not.toHaveBeenCalled();
+    expect(screen.getByRole("link", { name: /library → skills → personal/i })).toHaveAttribute("href", "/library/skills?tab=personal");
+  });
+
   it("shows a retryable error when settings cannot load", async () => {
     api.getPlatformSettings.mockRejectedValueOnce(new Error("Request failed (500)"));
     render(<PoliciesSection />);
