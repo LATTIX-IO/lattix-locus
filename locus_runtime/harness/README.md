@@ -137,3 +137,22 @@ step (`kind: locus.run_checkpoint`, `version: 1`). `VerifiedLoop.resume(path,
 client=..., toolset=..., profile=...)` continues after a restart; resuming a
 finished run returns its result without calling the model. Budget defaults:
 `LOCUS_RUN_MAX_{STEPS,SECONDS,TOKENS,COST_USD,ACTIONS}`; tier: `LOCUS_AUTONOMY_TIER`.
+
+## Agent runtime port (LOCUS-348, D-27/D-28)
+
+The agent loop is a port: `runtime_contract.AgentRuntime` (`PORT_VERSION = "1.0"`) takes a
+Pydantic `RuntimeRequest` (envelope, toolset, gated client, profile, prompts, approver) and
+returns a `RuntimeResult` (end state, verified, usage, offered tools, interrupts). Get an
+implementation only from `runtimes.create_runtime(name)` (`LOCUS_AGENT_RUNTIME`, default
+`verified-loop`):
+
+- `verified-loop` -- `VerifiedLoopRuntime`, the unchanged `VerifiedLoop` plus the port's ask
+  rule (an unapproved gateway ask ends the run blocked).
+- `deep-agents` -- `DeepAgentsRuntime` (optional `deepagents` / LangGraph 1.x, separate venv);
+  every model turn and tool call goes through `RunController`, the verified loop's own
+  guards, accounting and verify gate.
+
+`tests/harness/test_runtime_contract.py` is the contract every implementation passes
+(mediation, ask -> blocked, budget stop, verify gate, deny as observation);
+`mediation.MediationMonitor` measures mediation coverage. The bake-off and the decision are
+in `docs/development/runtime-bakeoff-2026-10.md`.

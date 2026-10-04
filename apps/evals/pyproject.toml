@@ -21,6 +21,15 @@ swebench = [
 dev = [
   "pytest>=8.3.0",
 ]
+# Runtime bake-off (LOCUS-348, D-27): the Deep Agents runtime under test. Install in a
+# SEPARATE environment -- these need LangGraph/LangChain 1.x, the platform still pins 0.x.
+bakeoff = [
+  "deepagents==0.7.21",
+  "langchain==1.4.3",
+  "langchain-core==1.6.6",
+  "langgraph==1.2.12",
+  "langgraph-checkpoint==4.2.0",
+]
 
 [project.scripts]
 locus-evals = "locus_evals.cli:cli"

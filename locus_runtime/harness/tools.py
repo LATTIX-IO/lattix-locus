@@ -264,6 +264,8 @@ class CodingToolset:
                 "risk": decision.risk.label,
                 "reasons": list(decision.reasons),
                 "audit_id": decision.audit_id,
+                # Binds a human approval to this exact action (ApprovalLedger).
+                "fingerprint": decision.fingerprint,
             }
         )
         return gateway_message(decision, tool)
