@@ -1,0 +1,42 @@
+id: ho-csv-quoting
+category: coding-edit
+kind: coding
+source: LOCUS-351 (held-out)
+problem: >-
+  csvrow.to_row(values) joins values with commas but does not quote. Fields that
+  contain a comma, a double quote or a newline must be wrapped in double quotes,
+  with embedded double quotes doubled (RFC 4180). Other fields stay as they are.
+  None becomes an empty field.
+files:
+  csvrow.py: |
+    def to_row(values):
+        return ",".join(str(v) for v in values)
+visible_test: |
+  import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+  from csvrow import to_row
+  assert to_row(['a', 'b']) == 'a,b'
+  assert to_row(['a,b', 'c']) == '"a,b",c'
+  print('OK')
+grader:
+  - id: hidden-tests
+    type: tests
+    script: |
+      import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+      from csvrow import to_row
+      assert to_row(['a', 'b']) == 'a,b'
+      assert to_row(['a,b', 'c']) == '"a,b",c'
+      assert to_row(['say "hi"']) == '"say ""hi"""'
+      assert to_row(['x\ny', 1]) == '"x\ny",1'
+      assert to_row([None, 2.5]) == ',2.5'
+      assert to_row([]) == ''
+reference:
+  csvrow.py: |
+    def _field(value):
+        text = "" if value is None else str(value)
+        if any(ch in text for ch in ',"\n'):
+            return '"' + text.replace('"', '""') + '"'
+        return text
+
+
+    def to_row(values):
+        return ",".join(_field(v) for v in values)

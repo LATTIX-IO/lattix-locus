@@ -19,6 +19,7 @@ One run is one trace. The `invoke_agent` span is its root; everything the run ca
 | Verify gate | `gate verify` | `VerifiedLoop._submit` | attempt, failed criterion ids; score `verification` |
 | Loop tick | `locus.loop.tick` | `LoopRunner.run_once` | status, issue, run id |
 | Quality / eval gates | `gate quality`, `gate eval` | `LoopRunner._quality_gate`, `_eval_gate` | status; scores `quality_gate`, `quality_gate.<check>`, `eval_gate` (value = resolve rate) |
+| RSI scorecard (LOCUS-351) | `gate scorecard` | `LoopRunner._scorecard_gate`; the suite evaluator (`locus_evals.suite.runner`) | status (`promote` / `hold` / `skipped` / `error`), held-out pass rate; scores `rsi_scorecard` (loop run), `rsi.sample`, `rsi.injection`, `rsi.budget_adherence` (per eval sample, on the sample's run id), `rsi.pass_rate.<split>`. The candidate instance writes its own run traces to its own SQLite (`<output>/candidate/telemetry.db`) |
 
 **Scores** are `gen_ai.evaluation.result` events (`gen_ai.evaluation.name`, `score.value`, `score.label`) on the run trace; the local store lifts them into a `scores` table. The loop runner's tick span is the root of the loop's trace, so the agent run, its gates and their scores land in one trace.
 

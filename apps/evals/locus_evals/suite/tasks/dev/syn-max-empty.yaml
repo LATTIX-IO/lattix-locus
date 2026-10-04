@@ -1,0 +1,31 @@
+id: syn-max-empty
+category: coding-edit
+kind: coding
+source: runtime-bakeoff-2026-10 (apps/evals synthetic-mini)
+problem: utils.safe_max(values) raises on an empty list; it should return None when empty.
+files:
+  utils.py: |
+    def safe_max(values):
+        return max(values)
+visible_test: |
+  import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+  from utils import safe_max
+  assert safe_max([3, 1, 2]) == 3
+  assert safe_max([]) is None
+  print('OK')
+grader:
+  - id: hidden-tests
+    type: tests
+    script: |
+      import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+      from utils import safe_max
+      assert safe_max([3, 1, 2]) == 3
+      assert safe_max([]) is None
+      assert safe_max([-5, -2]) == -2
+      assert safe_max([0]) == 0
+reference:
+  utils.py: |
+    def safe_max(values):
+        if not values:
+            return None
+        return max(values)

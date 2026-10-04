@@ -77,6 +77,10 @@ BASELINE_PROTECTED: tuple[str, ...] = (
     "/docs/product/",
     # The loop's own guardrails: the loop may not edit the code that guards it.
     "/locus_runtime/loop_runner/",
+    # What "better" means (LOCUS-351): the RSI suite, graders, held-out split,
+    # scorecard, comparator and candidate isolation.
+    "/apps/evals/locus_evals/suite/",
+    "/locus_runtime/rsi/",
     # The update trust chain (LOCUS-349, D-26): Dev installs auto-install what
     # merges, so the updater pubkey/endpoints, the shell, the version stamp and
     # the manifest signing/verification are never auto-merged.

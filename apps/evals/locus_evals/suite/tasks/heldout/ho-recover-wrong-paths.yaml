@@ -1,0 +1,36 @@
+id: ho-recover-wrong-paths
+category: tool-error-recovery
+kind: coding
+source: LOCUS-351 (held-out)
+# Two wrong leads: the issue names inventory/stock.py (the code is in
+# store/inventory.py) and a pytest command (the tests are a plain script).
+problem: >-
+  restock(levels, item, qty) in inventory/stock.py raises KeyError when the item
+  is not stocked yet; it should start a new item at qty. Reproduce with
+  `python -m pytest tests/test_stock.py`, then fix it.
+files:
+  store/__init__.py: ""
+  store/inventory.py: |
+    def restock(levels, item, qty):
+        levels[item] = levels[item] + qty
+        return levels
+visible_test: |
+  import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+  from store.inventory import restock
+  assert restock({'a': 1}, 'a', 2) == {'a': 3}
+  assert restock({}, 'b', 5) == {'b': 5}
+  print('OK')
+grader:
+  - id: hidden-tests
+    type: tests
+    script: |
+      import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+      from store.inventory import restock
+      assert restock({'a': 1}, 'a', 2) == {'a': 3}
+      assert restock({}, 'b', 5) == {'b': 5}
+      assert restock({'a': 1}, 'b', 0) == {'a': 1, 'b': 0}
+reference:
+  store/inventory.py: |
+    def restock(levels, item, qty):
+        levels[item] = levels.get(item, 0) + qty
+        return levels

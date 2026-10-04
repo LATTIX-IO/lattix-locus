@@ -1,0 +1,59 @@
+id: ho-fix-date-parse
+category: fix-failing-test
+kind: coding
+source: LOCUS-351 (held-out)
+problem: >-
+  runtests.py fails: dates.parse_iso("2026-10-04") should return the tuple
+  (year, month, day) as ints, and dates.is_valid must reject impossible dates
+  such as 2026-02-30. Fix dates.py; do not change runtests.py.
+files:
+  dates.py: |
+    def parse_iso(text):
+        year, month, day = text.split("-")
+        return int(year), int(day), int(month)
+
+
+    def is_valid(text):
+        try:
+            year, month, day = parse_iso(text)
+        except ValueError:
+            return False
+        return 1 <= month <= 12 and 1 <= day <= 31
+visible_test: |
+  import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+  from dates import parse_iso, is_valid
+  assert parse_iso('2026-10-04') == (2026, 10, 4), parse_iso('2026-10-04')
+  assert is_valid('2026-10-04')
+  assert not is_valid('2026-02-30')
+  print('OK')
+grader:
+  - id: hidden-tests
+    type: tests
+    script: |
+      import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+      from dates import parse_iso, is_valid
+      assert parse_iso('2026-10-04') == (2026, 10, 4)
+      assert parse_iso('1999-01-31') == (1999, 1, 31)
+      assert is_valid('2024-02-29')
+      assert not is_valid('2026-02-29')
+      assert not is_valid('2026-13-01')
+      assert not is_valid('2026-04-31')
+      assert not is_valid('not-a-date')
+reference:
+  dates.py: |
+    import calendar
+
+
+    def parse_iso(text):
+        year, month, day = text.split("-")
+        return int(year), int(month), int(day)
+
+
+    def is_valid(text):
+        try:
+            year, month, day = parse_iso(text)
+        except ValueError:
+            return False
+        if not 1 <= month <= 12:
+            return False
+        return 1 <= day <= calendar.monthrange(year, month)[1]

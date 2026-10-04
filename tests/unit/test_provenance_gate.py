@@ -210,3 +210,31 @@ def test_the_repository_dependency_set_passes_the_gate() -> None:
     # Every currently declared dependency and every documented transitive one is seeded.
     assert {r.origin for r in report.results} <= {"not-listed", "unknown", "listed"}
     assert {"pyasn1", "pyasn1-modules", "sqlite-vec"} <= {r.package for r in report.results}
+
+
+def test_gated_optional_extras_are_checked_and_dev_extras_are_not(tmp_path: Path) -> None:
+    # LOCUS-351: the shipped `evals` extra (Inspect AI) is gated like a core dependency.
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'x'\nversion = '0'\ndependencies = []\n"
+        "[project.optional-dependencies]\n"
+        "evals = ['inspect-ai==0.3.224']\n"
+        "dev = ['some-dev-tool>=1']\n",
+        encoding="utf-8",
+    )
+    prov = tmp_path / "provenance"
+    prov.mkdir()
+    (prov / "unknown_origin_allowlist.json").write_text('{"entries": []}', encoding="utf-8")
+    (prov / "origins.json").write_text('{"packages": {}}', encoding="utf-8")
+    report = gate.run(root=tmp_path)
+    assert not report.ok
+    assert {r.package for r in report.results} == {"inspect-ai"}  # dev is not gated
+    (prov / "origins.json").write_text(
+        json.dumps({"packages": {"inspect-ai": _origin("not-listed", ["GB"])}}), encoding="utf-8"
+    )
+    assert gate.run(root=tmp_path).ok
+
+
+def test_the_repository_gates_the_pinned_inspect_ai_extra() -> None:
+    results = {r.package: r for r in gate.run().results}
+    assert results["inspect-ai"].ok and results["inspect-ai"].version == "0.3.224"

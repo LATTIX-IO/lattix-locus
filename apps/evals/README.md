@@ -5,6 +5,12 @@ patch **by test execution only**, runs multiple seeds, and reports the mean
 resolve rate ± SEM (SWE-rebench protocol). The headline gate is **gpt-oss-20b ≥
 30 % on DeepSWE/SWE-bench Verified**.
 
+The **RSI scorecard suite** (LOCUS-351) lives in `locus_evals/suite/`: the private
+Locus task suite (dev + held-out), its graders, the sealed store and the evaluator
+that measures a candidate variant of Locus for the self-improvement loop
+(`python -m locus_evals.suite run|compare|record|list`). It is a D-22 protected
+path. See [docs/development/rsi-scorecard.md](../../docs/development/rsi-scorecard.md).
+
 ## Modes
 
 ### Plumbing (CI / any machine — no GPU, no Docker)

@@ -47,6 +47,12 @@ GATE_CONFIG_PATHS: tuple[str, ...] = (
     "scripts/run_opa.py",
     "precommit.sh",
     "precommit.ps1",
+    # The RSI scorecard (LOCUS-351): the eval suite, its graders and held-out
+    # split, and the scorecard / comparator / candidate-isolation code define
+    # what "better" means for the self-improvement loop. The loop must not be
+    # able to edit its own exam or its promotion rule.
+    "apps/evals/locus_evals/suite/",
+    "locus_runtime/rsi/",
 )
 #: ``pyproject.toml`` tables that configure gates.
 PYPROJECT_GATE_TABLES: tuple[str, ...] = ("ruff", "mypy", "pytest", "coverage")

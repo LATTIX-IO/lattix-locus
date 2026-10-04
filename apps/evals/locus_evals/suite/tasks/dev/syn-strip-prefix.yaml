@@ -1,0 +1,34 @@
+id: syn-strip-prefix
+category: coding-edit
+kind: coding
+source: runtime-bakeoff-2026-10 (apps/evals synthetic-mini)
+problem: >-
+  text.strip_prefix(s, p) should remove prefix p from s only when present,
+  but it currently always slices len(p) chars.
+files:
+  text.py: |
+    def strip_prefix(s, p):
+        return s[len(p):]
+visible_test: |
+  import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+  from text import strip_prefix
+  assert strip_prefix('foobar', 'foo') == 'bar'
+  assert strip_prefix('bar', 'foo') == 'bar'
+  print('OK')
+grader:
+  - id: hidden-tests
+    type: tests
+    script: |
+      import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+      from text import strip_prefix
+      assert strip_prefix('foobar', 'foo') == 'bar'
+      assert strip_prefix('bar', 'foo') == 'bar'
+      assert strip_prefix('', 'a') == ''
+      assert strip_prefix('aa', 'a') == 'a'
+      assert strip_prefix('x', '') == 'x'
+reference:
+  text.py: |
+    def strip_prefix(s, p):
+        if s.startswith(p):
+            return s[len(p):]
+        return s

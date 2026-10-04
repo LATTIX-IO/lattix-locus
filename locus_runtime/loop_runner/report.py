@@ -2,8 +2,9 @@
 
 Read-only. Built from the files the runner already writes under
 ``LOCUS_LOOP_HOME``: ``runs.jsonl`` (one line per finished run),
-``eval-history.jsonl``, ``perf-history.jsonl`` / ``perf-baseline.json`` and the
-ledger (``state.json``). :func:`build_report` is pure over the loaded records;
+``eval-history.jsonl``, ``perf-history.jsonl`` / ``perf-baseline.json``,
+``scorecard-history.jsonl`` (RSI scorecards, LOCUS-351) and the ledger
+(``state.json``). :func:`build_report` is pure over the loaded records;
 :func:`load_report` reads the files.
 """
 
@@ -18,6 +19,7 @@ from typing import Any
 
 from locus_runtime.loop_runner.eval_gate import EvalHistory
 from locus_runtime.loop_runner.perf_budget import METRICS, PerfStore
+from locus_runtime.loop_runner.scorecard_gate import ScorecardHistory
 from locus_runtime.loop_runner.state import Ledger, default_loop_home, read_run_history
 
 _TREND_POINTS = 10
@@ -58,6 +60,7 @@ def build_report(
     open_prs: Sequence[Mapping[str, Any]] = (),
     now: datetime | None = None,
     days: int = 30,
+    scorecards: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """The report over the last ``days`` days (pure)."""
     moment = now or datetime.now(UTC)
@@ -105,6 +108,28 @@ def build_report(
         }
     perf_statuses = Counter(str(p.get("status") or "unknown") for p in perf_window)
 
+    card_window = _within(scorecards, "at", since)
+    card_measured = [c for c in card_window if _number(c.get("heldout_pass_rate")) is not None]
+    heldout = [float(c["heldout_pass_rate"]) for c in card_measured]
+    scorecard = {
+        "runs": len(card_window),
+        "statuses": dict(
+            sorted(Counter(str(c.get("status") or "unknown") for c in card_window).items())
+        ),
+        "latest_heldout_pass_rate": heldout[-1] if heldout else None,
+        "change": round(heldout[-1] - heldout[0], 4) if len(heldout) >= 2 else None,
+        "trend": [
+            {
+                "at": c.get("at"),
+                "status": c.get("status"),
+                "git_sha": str(c.get("git_sha") or "")[:12],
+                "heldout_pass_rate": c.get("heldout_pass_rate"),
+                "dev_pass_rate": c.get("dev_pass_rate"),
+            }
+            for c in card_measured[-_TREND_POINTS:]
+        ],
+    }
+
     return {
         "window_days": max(1, int(days)),
         "generated_at": moment.strftime(_STAMP),
@@ -131,6 +156,7 @@ def build_report(
             "trend": eval_trend,
         },
         "perf": {"statuses": dict(sorted(perf_statuses.items())), "metrics": perf_trend},
+        "scorecard": scorecard,
     }
 
 
@@ -147,6 +173,7 @@ def load_report(
         open_prs=Ledger.load(base).open_prs,
         now=now,
         days=days,
+        scorecards=ScorecardHistory(base).load(),
     )
     report["home"] = str(base)
     return report
@@ -173,6 +200,11 @@ def render_text(report: Mapping[str, Any]) -> str:
         f"  eval: latest {_pct(ev.get('latest_resolve_rate'))}, mean "
         f"{_pct(ev.get('mean_resolve_rate'))}, statuses {ev.get('statuses') or {}}",
     ]
+    card = report.get("scorecard") or {}
+    lines.append(
+        f"  RSI scorecard: latest held-out {_pct(card.get('latest_heldout_pass_rate'))}, "
+        f"change {_pct(card.get('change'))}, statuses {card.get('statuses') or {}}"
+    )
     for metric, data in ((report.get("perf") or {}).get("metrics") or {}).items():
         latest = _number(data.get("latest_ms"))
         base = _number(data.get("baseline_ms"))

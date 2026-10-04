@@ -67,6 +67,14 @@ dev = [
 security = [
   "gliner>=0.2.16"
 ]
+# RSI scorecard harness (LOCUS-351): Inspect AI (MIT, UK AI Security Institute).
+# Pinned below 0.3.225, which added a hard dependency on agent-client-protocol
+# (maintainer in a P28-listed country; would need a D-29 inspection first).
+# Gated by `lattix provenance gate` (GATED_EXTRAS). Without it the suite runs on
+# its built-in engine and produces the same scorecard.
+evals = [
+  "inspect-ai==0.3.224"
+]
 maf = [
   "microsoft-agent-framework @ git+https://github.com/microsoft/agent-framework-python.git"
 ]

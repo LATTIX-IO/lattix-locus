@@ -1,8 +1,9 @@
 """CI dependency gate for D-29 (no network).
 
-Reads the declared dependency set -- ``[project].dependencies`` in
-``pyproject.toml`` and ``apps/backend/requirements.txt`` -- plus the transitive
-packages recorded in ``provenance/origins.json``, and fails when:
+Reads the declared dependency set -- ``[project].dependencies`` and the gated
+optional extras (:data:`GATED_EXTRAS`) in ``pyproject.toml`` and
+``apps/backend/requirements.txt`` -- plus the transitive packages recorded in
+``provenance/origins.json``, and fails when:
 
 * a package has no origin record in ``provenance/origins.json``;
 * a package from a P28-listed origin is not pinned to one exact version, or has no
@@ -41,6 +42,10 @@ _REQUIREMENT = re.compile(
 )
 _EXACT = re.compile(r"^===?\s*(?P<version>[A-Za-z0-9][A-Za-z0-9.+!_-]*)$")
 ORIGIN_STATUSES = frozenset({"listed", "not-listed", "unknown"})
+#: Optional extras that ship Locus features and are gated like core dependencies
+#: (``evals``: Inspect AI for the RSI scorecard, LOCUS-351). ``dev`` tooling and
+#: experimental extras are not shipped and stay out of the gate.
+GATED_EXTRAS: tuple[str, ...] = ("evals",)
 _REVIEWERS = frozenset({REVIEWER_PRINCIPAL, REVIEWER_AGENT_PENDING})
 
 
@@ -80,8 +85,11 @@ def parse_requirement(line: str, source: str) -> Requirement | None:
 
 def read_pyproject(path: Path) -> list[Requirement]:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
-    deps = data.get("project", {}).get("dependencies", [])
-    out = [parse_requirement(str(d), path.name) for d in deps]
+    project = data.get("project", {})
+    out = [parse_requirement(str(d), path.name) for d in project.get("dependencies", [])]
+    extras = project.get("optional-dependencies", {}) or {}
+    for extra in GATED_EXTRAS:
+        out += [parse_requirement(str(d), f"{path.name}[{extra}]") for d in extras.get(extra, [])]
     return [r for r in out if r is not None]
 
 
