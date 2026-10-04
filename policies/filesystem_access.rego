@@ -53,6 +53,8 @@ gate_write_paths := {
 	".github/workflows/", ".circleci/", "policies/", "scripts/run_opa.py",
 	"precommit.sh", "precommit.ps1", ".github/",
 	".claude/", ".cursor/", ".ai-memory/",
+	# RSI scorecard (LOCUS-351): eval suite, graders, held-out split, comparator.
+	"apps/evals/locus_evals/suite/", "locus_runtime/rsi/",
 }
 
 # --- facts -------------------------------------------------------------------

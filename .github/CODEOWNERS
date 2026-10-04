@@ -23,3 +23,8 @@
 /locus_tooling/update_contract.py  @jmsbooth
 /locus_tooling/desktop_update.py   @jmsbooth
 /locus_tooling/build_info.py       @jmsbooth
+# RSI scorecard (LOCUS-351): what "better" means for the self-improvement loop.
+# The eval suite (tasks, graders, held-out split) and the scorecard, comparator
+# and candidate-isolation code; the loop must not grade or redefine itself.
+/apps/evals/locus_evals/suite/     @jmsbooth
+/locus_runtime/rsi/                @jmsbooth

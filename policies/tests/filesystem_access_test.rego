@@ -167,6 +167,17 @@ test_gate_definition_writes_ask if {
   filesystem_access.risk_floor == 3 with input as write_input("/workspace/project/tox.ini")
 }
 
+# LOCUS-351: the RSI suite (tasks, graders, held-out split) and the scorecard /
+# comparator / candidate-isolation code are gate definitions.
+test_rsi_scorecard_writes_ask if {
+  filesystem_access.risk_floor == 3 with input as write_input("/workspace/project/apps/evals/locus_evals/suite/tasks/heldout/ho-csv-quoting.yaml")
+  filesystem_access.risk_floor == 3 with input as write_input("/workspace/project/apps/evals/locus_evals/suite/graders.py")
+  filesystem_access.risk_floor == 3 with input as write_input("/workspace/project/locus_runtime/rsi/scorecard.py")
+  filesystem_access.risk_floor == 3 with input as write_input(`C:\ws\locus_runtime\rsi\candidate.py`)
+  filesystem_access.risk_floor == 0 with input as write_input("/workspace/project/apps/evals/locus_evals/runner.py")
+  filesystem_access.risk_floor == 0 with input as write_input("/workspace/project/locus_runtime/rsi_notes.md")
+}
+
 test_gate_definition_write_windows_path if {
   filesystem_access.risk_floor == 3 with input as write_input(`C:\ws\.github\workflows\ci.yml`)
 }
