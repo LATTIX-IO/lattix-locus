@@ -18,8 +18,8 @@ Commands, run from `apps/frontend/`:
 | Home | `/home` (`/` redirects here) | Start a task; see what is running and what waits on you |
 | Activity | `/activity` (`?session=` opens a run), `/activity/traces`, `/artifacts`, `/workflows/start`, `/workflows/[id]` | Runs, traces and outputs |
 | Memory | `/memory` | Memory layers and a run's memory, as the backend reports them |
-| Library | `/library` and its `skills`, `playbooks`, `workflows`, `agents`, `connections`, `knowledge`, `templates`, `guardrails`, `nodes`, `releases` children | What the agents can use; compose and version definitions |
-| Settings | `/settings?section=engines\|connections\|computer-use\|policies\|loop\|updates\|observability\|appearance` | The one settings page |
+| Library | `/library` and its `skills` (`?tab=personal` for your personal /skills), `playbooks`, `workflows`, `agents`, `connections`, `knowledge`, `templates`, `guardrails`, `nodes`, `releases` children | What the agents can use; compose and version definitions |
+| Settings | `/settings?section=engines\|connections\|computer-use\|policies\|memory\|loop\|updates\|observability\|appearance` | The one settings page. Configuration only: content (knowledge collections, personal skills) lives in Library |
 | Auth | `/auth` | Web/hosted profiles only. The desktop app never shows it: the loopback operator is signed in |
 
 There are no modes and no role gating in the UI; the backend authorizes every call. The navigation is `navigation/nav-config.ts` (`PRIMARY_NAV`). Old routes (`/inbox`, `/runs/:id`, `/tasks/:id`, `/playbooks`, `/guardrails`, `/targets`, every `/builder/*`) redirect in `next.config.ts` and stay working as links.

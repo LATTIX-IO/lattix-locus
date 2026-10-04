@@ -35,6 +35,9 @@ const api = vi.hoisted(() => ({
   getSystemUpdateStatus: vi.fn(),
   getMcpConnections: vi.fn(),
   getIntegrations: vi.fn(),
+  getMemoryLayers: vi.fn(),
+  getKnowledgeVectorStores: vi.fn(),
+  getPlatformHealthDetails: vi.fn(),
 }));
 const searchState = vi.hoisted(() => ({ current: new URLSearchParams() }));
 
@@ -63,6 +66,7 @@ import { ComputerUseSection } from "@/components/settings/computer-use-section";
 import { DesktopConfirmationCancelledError } from "@/lib/desktop-confirmation";
 import { SecurityChangeConfirmationRequired } from "@/lib/api";
 import { LoopSection } from "@/components/settings/loop-section";
+import { MemorySection } from "@/components/settings/memory-section";
 import { ObservabilitySection } from "@/components/settings/observability-section";
 import { PoliciesSection } from "@/components/settings/policies-section";
 import { SETTINGS_SECTIONS, SettingsWorkspace, resolveSettingsSection } from "@/components/settings/settings-workspace";
@@ -120,6 +124,22 @@ beforeEach(() => {
   });
   api.getPlatformVersionStatus.mockResolvedValue({ current_version: "1.0.0", status: "up_to_date" });
   api.getUserBrowserStatus.mockResolvedValue({ paired: false, connected: false });
+  api.getMemoryLayers.mockResolvedValue([
+    { id: "short_term", name: "Short-term memory", backend: "Redis", scope: "Per-session.", enabled: true, healthy: true, stats: {} },
+    {
+      id: "long_term",
+      name: "Long-term memory",
+      backend: "Postgres + pgvector",
+      scope: "Durable.",
+      enabled: false,
+      healthy: false,
+      stats: { vector_search: false, embedding_model: "nomic-embed-text" },
+    },
+  ]);
+  api.getKnowledgeVectorStores.mockResolvedValue([
+    { id: "platform", name: "Platform vector store (pgvector)", kind: "builtin", ready: false, status: "unavailable", embedding_model: "nomic-embed-text", note: "Long-term memory store is not available." },
+  ]);
+  api.getPlatformHealthDetails.mockResolvedValue({ long_term_memory: "disabled", long_term_memory_reason: "POSTGRES_DSN is not set" });
 });
 
 describe("SettingsWorkspace", () => {
@@ -255,6 +275,40 @@ describe("sensitive settings in other sections", () => {
     expect(within(dialog).getByText("some_future_key")).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: /confirm and save/i }));
     await waitFor(() => expect(api.savePlatformSettings.mock.calls[1]?.[1]).toEqual({ confirmSecurityChange: true }));
+  });
+});
+
+describe("Memory & knowledge", () => {
+  it("is a Settings section that shows the configuration and says clearly when long-term memory is unavailable", async () => {
+    expect(SETTINGS_SECTIONS.map((section) => section.id)).toContain("memory");
+    expect(resolveSettingsSection("memory")).toBe("memory");
+    render(<MemorySection />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/long-term memory is unavailable/i);
+    expect(alert).toHaveTextContent(/postgres_dsn is not set/i);
+    expect(alert).toHaveTextContent(/knowledge collections cannot index or search/i);
+    expect(alert).toHaveTextContent(/set up:/i);
+
+    const layers = screen.getByRole("list", { name: /memory layers/i });
+    expect(within(layers).getByText("Short-term memory")).toBeInTheDocument();
+    expect(within(layers).getByText("Long-term memory")).toBeInTheDocument();
+    expect(screen.getByText("nomic-embed-text")).toBeInTheDocument();
+    expect(within(screen.getByRole("list", { name: /vector stores/i })).getByText(/unavailable/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /open knowledge/i })).toHaveAttribute("href", "/library/knowledge");
+
+    fireEvent.click(within(alert).getByRole("button", { name: /check again/i }));
+    await waitFor(() => expect(api.getMemoryLayers).toHaveBeenCalledTimes(2));
+  });
+
+  it("shows no warning when long-term memory is on", async () => {
+    api.getMemoryLayers.mockResolvedValue([
+      { id: "long_term", name: "Long-term memory", backend: "Postgres + pgvector", scope: "Durable.", enabled: true, healthy: true, stats: { vector_search: true } },
+    ]);
+    render(<MemorySection />);
+
+    expect(await screen.findByText("Long-term memory")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
 

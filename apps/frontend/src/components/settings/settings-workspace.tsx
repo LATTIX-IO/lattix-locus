@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  BrainIcon,
   CpuIcon,
   EyeIcon,
   MonitorSmartphoneIcon,
@@ -21,6 +22,7 @@ import { ComputerUseSection } from "@/components/settings/computer-use-section";
 import { ConnectionsSection } from "@/components/settings/connections-section";
 import { EnginesSection } from "@/components/settings/engines-section";
 import { LoopSection } from "@/components/settings/loop-section";
+import { MemorySection } from "@/components/settings/memory-section";
 import { ObservabilitySection } from "@/components/settings/observability-section";
 import { PoliciesSection } from "@/components/settings/policies-section";
 import { SectionHeader, SettingsGroup } from "@/components/settings/settings-kit";
@@ -34,6 +36,7 @@ export const SETTINGS_SECTIONS = [
   { id: "connections", label: "Connections", icon: PlugIcon },
   { id: "computer-use", label: "Computer use", icon: MonitorSmartphoneIcon },
   { id: "policies", label: "Policies & autonomy", icon: ShieldCheckIcon },
+  { id: "memory", label: "Memory & knowledge", icon: BrainIcon },
   { id: "loop", label: "Loop & Linear", icon: RepeatIcon },
   { id: "updates", label: "Updates", icon: RefreshCwIcon },
   { id: "observability", label: "Observability", icon: EyeIcon },
@@ -81,6 +84,8 @@ function SectionBody({ section }: { section: SettingsSectionId }) {
       return <ComputerUseSection />;
     case "policies":
       return <PoliciesSection />;
+    case "memory":
+      return <MemorySection />;
     case "loop":
       return <LoopSection />;
     case "updates":
