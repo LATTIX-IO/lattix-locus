@@ -289,3 +289,118 @@ describe("settings widening on the desktop", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("sensitive platform settings (confirm_security_change)", () => {
+  function sensitiveRefusal(keys: string[]) {
+    const body = JSON.stringify({
+      detail: { message: "Sensitive platform security changes require confirm_security_change=true", changed_sensitive_keys: keys },
+    });
+    return { ok: false, status: 400, json: async () => JSON.parse(body), text: async () => body };
+  }
+
+  it("turns the 400 into SecurityChangeConfirmationRequired carrying the keys", async () => {
+    fetchMock.mockResolvedValueOnce(sensitiveRefusal(["telemetry_capture_content"]));
+
+    const api = await import("@/lib/api");
+    const failure = await api.savePlatformSettings({ telemetry_capture_content: true }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(api.SecurityChangeConfirmationRequired);
+    expect((failure as InstanceType<typeof api.SecurityChangeConfirmationRequired>).keys).toEqual(["telemetry_capture_content"]);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("resends with confirm_security_change and routes the widening through the shell", async () => {
+    enterDesktopShell();
+    fetchMock.mockResolvedValueOnce(refused("Confirm this change in the Locus desktop app (missing_proof)"));
+    invokeMock.mockResolvedValueOnce(JSON.stringify({ ok: true }));
+
+    const { savePlatformSettings } = await import("@/lib/api");
+    await expect(savePlatformSettings({ telemetry_capture_content: true }, { confirmSecurityChange: true })).resolves.toEqual({ ok: true });
+
+    const sent = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect(sent).toEqual({ telemetry_capture_content: true, confirm_security_change: true });
+    expect(invokeMock).toHaveBeenCalledWith("confirm_action", {
+      action: "platform.settings.save",
+      path: "/platform/settings",
+      body: { telemetry_capture_content: true, confirm_security_change: true },
+    });
+  });
+
+  it("does not cache the confirmation flag as a setting", async () => {
+    fetchMock.mockResolvedValueOnce(okJson({ ok: true }));
+    const events: unknown[] = [];
+    const listener = (event: Event) => events.push((event as CustomEvent).detail);
+    window.addEventListener("locus:platform-settings-updated", listener);
+
+    const { savePlatformSettings } = await import("@/lib/api");
+    await savePlatformSettings({ block_new_runs: true }, { confirmSecurityChange: true });
+    window.removeEventListener("locus:platform-settings-updated", listener);
+
+    expect(events.at(-1)).toMatchObject({ block_new_runs: true });
+    expect(events.at(-1)).not.toHaveProperty("confirm_security_change");
+  });
+});
+
+describe("Always allow on <site> (browser tier lists)", () => {
+  const TRUSTED = {
+    tier: "trusted",
+    effective_tier: "trusted",
+    allowlisted_sites: ["docs.example.org"],
+    granted_sites: [],
+    consent: { tier: "trusted" },
+  };
+
+  it("sends the full new list through confirm_browser_tier on the desktop", async () => {
+    enterDesktopShell();
+    fetchMock.mockResolvedValueOnce(okJson(TRUSTED));
+    invokeMock.mockResolvedValueOnce(JSON.stringify({ ...TRUSTED, granted_sites: ["example.com"] }));
+
+    const { allowSiteInBrowserTier } = await import("@/lib/api");
+    const saved = await allowSiteInBrowserTier("example.com", "granted_sites");
+
+    expect(invokeMock).toHaveBeenCalledWith("confirm_browser_tier", {
+      tier: "trusted",
+      allowlistedSites: ["docs.example.org"],
+      grantedSites: ["example.com"],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1); // only the read; the shell sends the PUT
+    expect(saved.granted_sites).toEqual(["example.com"]);
+  });
+
+  it("does nothing when the site is already listed", async () => {
+    fetchMock.mockResolvedValueOnce(okJson({ ...TRUSTED, granted_sites: ["example.com"] }));
+
+    const { allowSiteInBrowserTier } = await import("@/lib/api");
+    await allowSiteInBrowserTier("example.com", "granted_sites");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts from empty lists: the web profile sends the acknowledged full list", async () => {
+    const assisted = { ...TRUSTED, tier: "assisted", effective_tier: "assisted", allowlisted_sites: [], consent: { tier: "assisted" } };
+    fetchMock
+      .mockResolvedValueOnce(okJson(assisted))
+      .mockResolvedValueOnce(okJson({ ...assisted, allowlisted_sites: ["example.com"] }));
+
+    const { allowSiteInBrowserTier } = await import("@/lib/api");
+    await allowSiteInBrowserTier("example.com", "allowlisted_sites", { acknowledgeRisk: true });
+
+    const put = fetchMock.mock.calls[1];
+    expect((put[1] as RequestInit).method).toBe("PUT");
+    expect(JSON.parse(String((put[1] as RequestInit).body))).toEqual({
+      tier: "assisted",
+      allowlisted_sites: ["example.com"],
+      granted_sites: [],
+      acknowledge_risk: true,
+    });
+  });
+
+  it("denying an agent request is a plain request", async () => {
+    enterDesktopShell();
+    fetchMock.mockResolvedValueOnce(okJson({ ok: true }));
+
+    const { denyRunEscalation } = await import("@/lib/api");
+    await denyRunEscalation("run-1", "esc-1");
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/workflow-runs/run-1/escalations/esc-1/deny");
+  });
+});

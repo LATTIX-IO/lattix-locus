@@ -19,18 +19,22 @@ import {
 import {
   BROWSER_TIERS,
   getComputerUseStatus,
+  getUserBrowserStatus,
   getUserBrowserTier,
   isBrowserTierWidening,
+  pairUserBrowser,
   resetComputerUse,
+  unpairUserBrowser,
   setUserBrowserTier,
   triggerComputerUsePanic,
   type BrowserTier,
   type BrowserTierChange,
   type ComputerUseStatus,
+  type UserBrowserStatus,
   type UserBrowserTierSettings,
 } from "@/lib/api";
 import { defaultPanicHotkeyLabel, useIsDesktopShell } from "@/lib/desktop-shell";
-import type { ControlStatusItem } from "@/types/locus";
+import type { ControlStatusItem, SecurityPolicyResponse } from "@/types/locus";
 
 const TIER_LABEL: Record<BrowserTier, string> = {
   strict: "Strict",
@@ -163,18 +167,20 @@ export function BrowserTierControl({ onSaved }: { onSaved?: (settings: UserBrows
           </label>
         ))}
       </fieldset>
-      {tier !== "strict" ? (
+      {tier === "assisted" || tier === "trusted" ? (
         <div className="grid gap-3 lg:grid-cols-2">
           <ListField
             id="browser-allowlisted-sites"
             label="Allowlisted sites (read and navigate)"
+            description="May stay empty: approve sites one by one with “Always allow” when the agent asks."
             value={allowlisted}
             onChange={setAllowlisted}
             placeholder={"docs.example.com"}
           />
           <ListField
             id="browser-granted-sites"
-            label="Granted sites (act)"
+            label="Granted sites (act, Trusted)"
+            description="May stay empty: approve sites one by one with “Always allow” when the agent asks."
             value={granted}
             onChange={setGranted}
             placeholder={"app.example.com"}
@@ -337,24 +343,14 @@ export function ComputerUseSection() {
         ) : null}
       </SettingsGroup>
 
-      <SettingsGroup
-        title="Operating system access"
-        description="Status only, as the backend reports it: the desktop driver, your browser and the policy engine that gates them. These are not switches; Re-check reads them again."
-      >
-        {platform.loading || platform.error ? (
+      <SettingsGroup title="Operating system access" description="As the backend observes it: the desktop driver and OS permissions.">
+        {/* A recheck keeps the rows mounted (and their notes) while it reloads. */}
+        {(platform.loading && !platform.policy) || platform.error ? (
           <LoadState loading={platform.loading} error={platform.error} onRetry={platform.reload} />
         ) : (
           <div className="flex flex-col gap-3">
             <PolicyEngineNotice control={findControl(platform.policy, "policy_engine_rego")} />
-            <div className="grid gap-2 lg:grid-cols-2">
-              <ControlRow control={findControl(platform.policy, "computer_use")} fallbackLabel="Computer use" />
-              <ControlRow control={findControl(platform.policy, "user_browser")} fallbackLabel="Your browser" />
-            </div>
-            <div className="flex justify-end">
-              <Button size="sm" variant="secondary" onClick={platform.reload}>
-                Re-check
-              </Button>
-            </div>
+            <OperatingSystemAccess policy={platform.policy} onChanged={platform.reload} />
           </div>
         )}
       </SettingsGroup>
@@ -362,6 +358,111 @@ export function ComputerUseSection() {
       <SettingsGroup title="Browser control" description="How much the agent may do in your signed-in browser.">
         <BrowserTierControl />
       </SettingsGroup>
+    </div>
+  );
+}
+
+/**
+ * Operating system access: what the backend reports for desktop control and
+ * the principal's own browser, with the actions that change it. Status is
+ * never upgraded by the UI (P9); pairing widens access, so on the desktop it is
+ * confirmed in the shell's native dialog (confirm_browser_pairing, LOCUS-350).
+ */
+export function OperatingSystemAccess({
+  policy,
+  onChanged,
+}: {
+  policy: SecurityPolicyResponse | null;
+  onChanged: () => void;
+}) {
+  const isDesktop = useIsDesktopShell();
+  const computerUse = findControl(policy, "computer_use");
+  const [browser, setBrowser] = useState<UserBrowserStatus | null>(null);
+  const [browserError, setBrowserError] = useState<string | null>(null);
+  const [token, setToken] = useState(0);
+  const [busy, setBusy] = useState<"" | "pair" | "unpair">("");
+  const [note, setNote] = useState<{ tone: "success" | "error"; text: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getUserBrowserStatus()
+      .then((next) => {
+        if (!cancelled) {
+          setBrowser(next);
+          setBrowserError(null);
+        }
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) setBrowserError(reason instanceof Error ? reason.message : "Could not load the browser pairing.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  async function changePairing(kind: "pair" | "unpair") {
+    setBusy(kind);
+    setNote(null);
+    try {
+      const next = kind === "pair" ? await pairUserBrowser() : await unpairUserBrowser();
+      setBrowser((current) => ({ ...(current ?? { paired: false, connected: false }), ...next }));
+      setNote({
+        tone: "success",
+        text:
+          kind === "pair"
+            ? "Browser paired. Open the Locus extension in your browser to connect it."
+            : "Browser unpaired. The agent can no longer use your browser.",
+      });
+      onChanged();
+    } catch (error) {
+      setNote({ tone: "error", text: describeSaveError(error, kind === "pair" ? "Could not pair the browser." : "Could not unpair the browser.") });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <div className="grid gap-2 lg:grid-cols-2">
+      <div className="flex flex-col gap-2">
+        <ControlRow control={computerUse} fallbackLabel="Computer use" />
+        {computerUse?.state !== "enforced" ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
+            <span>Desktop control turns on by itself once the policy engine is running; there is no switch to force it.</span>
+            <Button size="sm" variant="secondary" onClick={onChanged}>
+              Check again
+            </Button>
+          </div>
+        ) : null}
+      </div>
+      <div className="flex flex-col gap-2">
+        <ControlRow control={findControl(policy, "user_browser")} fallbackLabel="Your browser" />
+        {browserError ? (
+          <LoadState loading={false} error={browserError} onRetry={() => setToken((value) => value + 1)} />
+        ) : !browser ? (
+          <p role="status" className="px-1 text-xs text-muted-foreground">Checking the browser pairing…</p>
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+            <span className="text-xs text-muted-foreground">
+              {browser.paired ? (browser.connected ? "Paired and connected." : "Paired, not connected.") : "Not paired."}
+            </span>
+            <div className="flex gap-2">
+              <Button size="sm" disabled={busy !== ""} onClick={() => void changePairing("pair")} aria-busy={busy === "pair"}>
+                {busy === "pair" ? "Pairing…" : browser.paired ? (isDesktop ? "Re-pair…" : "Re-pair") : isDesktop ? "Pair browser…" : "Pair browser"}
+              </Button>
+              {browser.paired ? (
+                <Button size="sm" variant="secondary" disabled={busy !== ""} onClick={() => void changePairing("unpair")} aria-busy={busy === "unpair"}>
+                  {busy === "unpair" ? "Unpairing…" : "Unpair"}
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        )}
+        {note ? (
+          <p role={note.tone === "error" ? "alert" : "status"} className={note.tone === "error" ? "px-1 text-xs text-destructive" : "px-1 text-xs text-muted-foreground"}>
+            {note.text}
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }

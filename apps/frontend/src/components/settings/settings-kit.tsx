@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -11,6 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
   DesktopConfirmationCancelledError,
+  SecurityChangeConfirmationRequired,
   getPlatformSecurityPolicy,
   getPlatformSettings,
   savePlatformSettings,
@@ -35,12 +37,149 @@ export function positiveNumber(value: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
 }
 
+/** The person chose "Cancel" in the in-app security-change confirmation. */
+export class SecurityChangeDeclinedError extends Error {
+  constructor() {
+    super("Not saved: the security change was not confirmed.");
+    this.name = "SecurityChangeDeclinedError";
+  }
+}
+
 /** A save error in words. A cancelled shell dialog is not a failure. */
 export function describeSaveError(error: unknown, fallback = "Could not save the change."): string {
   if (error instanceof DesktopConfirmationCancelledError) {
     return "Not saved: cancelled in the confirmation dialog.";
   }
+  if (error instanceof SecurityChangeDeclinedError) {
+    return error.message;
+  }
   return error instanceof Error && error.message ? error.message : fallback;
+}
+
+/* ------------------------ sensitive settings ------------------------- */
+
+/** Friendly names and risks for the platform settings the backend flags as
+ * sensitive (`changed_sensitive_keys` on POST /platform/settings). An unknown
+ * key is still shown, by its name, so nothing is confirmed unseen. */
+export const SENSITIVE_SETTING_LABELS: Record<string, { label: string; risk: string }> = {
+  require_authenticated_requests: { label: "Require signed-in requests", risk: "Changes who may call the Locus API." },
+  a2a_require_signed_messages: { label: "Require signed agent-to-agent messages", risk: "Changes whether other agents must sign what they send." },
+  a2a_replay_protection: { label: "Agent-to-agent replay protection", risk: "Changes whether replayed agent messages are refused." },
+  require_signed_integrations: { label: "Require signed integrations", risk: "Changes whether unsigned integrations may be installed." },
+  allow_local_unsigned_integrations: { label: "Allow local unsigned integrations", risk: "Unsigned integrations on this machine may run." },
+  enforce_local_network_only: { label: "Local network only", risk: "Changes whether the agents may reach beyond the local network." },
+  enforce_egress_allowlist: { label: "Enforce the egress allowlist", risk: "Changes whether the agents may reach hosts outside the allowlist." },
+  mcp_require_local_server: { label: "Local MCP servers only", risk: "Changes whether the agents may use remote MCP servers." },
+  retrieval_require_local_source_url: { label: "Local retrieval sources only", risk: "Changes where retrieval may read from." },
+  emergency_read_only_mode: { label: "Emergency read-only mode", risk: "Changes whether the platform accepts any change at all." },
+  block_new_runs: { label: "Block new runs", risk: "Changes whether new runs may start." },
+  block_graph_runs: { label: "Block graph runs", risk: "Changes whether workflow graphs may run." },
+  block_tool_calls: { label: "Block tool calls", risk: "Changes whether the agents may call tools." },
+  block_retrieval_calls: { label: "Block retrieval", risk: "Changes whether the agents may retrieve knowledge." },
+  telemetry_capture_content: {
+    label: "Capture prompt and output content",
+    risk: "Traces will record the prompts and outputs of every run on this machine, redacted for PII before they are stored, and keep them for the retention you set.",
+  },
+  telemetry_payload_retention_days: { label: "Content retention", risk: "Captured content is kept longer." },
+  telemetry_otlp_enabled: { label: "OpenTelemetry (OTLP) export", risk: "Copies of traces are sent to the OTLP collector." },
+  telemetry_otlp_endpoint: { label: "OTLP endpoint", risk: "Traces are sent to a new collector address." },
+  telemetry_otlp_auth_secret_ref: { label: "OTLP auth secret", risk: "A stored secret is sent to the collector." },
+  telemetry_langsmith_enabled: { label: "LangSmith export", risk: "Traces leave this machine for a hosted, proprietary service." },
+  telemetry_langsmith_endpoint: { label: "LangSmith endpoint", risk: "Traces are sent to a new hosted address." },
+  telemetry_langsmith_project: { label: "LangSmith project", risk: "Traces go to another LangSmith project." },
+  telemetry_langsmith_api_key_ref: { label: "LangSmith API key secret", risk: "A stored secret is sent to LangSmith." },
+};
+
+export function describeSensitiveSetting(key: string): { label: string; risk: string } {
+  return SENSITIVE_SETTING_LABELS[key] ?? { label: key, risk: "A security-relevant platform setting." };
+}
+
+type PendingSecurityChange = {
+  keys: string[];
+  confirm: () => void;
+  decline: () => void;
+};
+
+/** The in-app confirmation for a sensitive platform-settings change. On the
+ * desktop a widening change is then confirmed again in the shell's native
+ * dialog (lib/api.ts), which is the authority; this dialog explains the risk. */
+export function SecurityChangeDialog({ pending }: { pending: PendingSecurityChange | null }) {
+  return (
+    <Dialog open={pending !== null} onOpenChange={(open) => (!open ? pending?.decline() : undefined)}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Confirm a security change</DialogTitle>
+          <DialogDescription>
+            These settings change what the agents may do or what is recorded. Review them before you save.
+          </DialogDescription>
+        </DialogHeader>
+        <ul className="flex flex-col gap-2 text-[13px]" aria-label="Sensitive settings in this change">
+          {(pending?.keys ?? []).map((key) => {
+            const { label, risk } = describeSensitiveSetting(key);
+            return (
+              <li key={key} className="rounded-[10px] border border-border px-3 py-2">
+                <p className="font-medium">{label}</p>
+                <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{risk}</p>
+              </li>
+            );
+          })}
+        </ul>
+        <DialogFooter>
+          <Button variant="secondary" onClick={() => pending?.decline()}>
+            Cancel
+          </Button>
+          <Button variant="destructive" onClick={() => pending?.confirm()}>
+            Confirm and save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Save platform settings; when the backend answers that the change touches
+ * sensitive settings (`changed_sensitive_keys`), ask in `SecurityChangeDialog`
+ * and resend with `confirm_security_change: true`. Declining rejects with
+ * `SecurityChangeDeclinedError`. Returns the saver and the dialog to render.
+ */
+export function useConfirmedPlatformSave(): {
+  savePatch: (patch: Record<string, unknown>) => Promise<void>;
+  confirmationDialog: ReactNode;
+} {
+  const [pending, setPending] = useState<PendingSecurityChange | null>(null);
+  const pendingRef = useRef<PendingSecurityChange | null>(null);
+
+  const savePatch = useCallback(async (patch: Record<string, unknown>) => {
+    try {
+      await savePlatformSettings(patch);
+      return;
+    } catch (error) {
+      if (!(error instanceof SecurityChangeConfirmationRequired)) {
+        throw error;
+      }
+      const confirmed = await new Promise<boolean>((resolve) => {
+        const next: PendingSecurityChange = {
+          keys: error.keys,
+          confirm: () => resolve(true),
+          decline: () => resolve(false),
+        };
+        pendingRef.current = next;
+        setPending(next);
+      });
+      pendingRef.current = null;
+      setPending(null);
+      if (!confirmed) {
+        throw new SecurityChangeDeclinedError();
+      }
+    }
+    await savePlatformSettings(patch, { confirmSecurityChange: true });
+  }, []);
+
+  // An unmounted section must not leave a save waiting on a dialog nobody sees.
+  useEffect(() => () => pendingRef.current?.decline(), []);
+
+  return { savePatch, confirmationDialog: <SecurityChangeDialog pending={pending} /> };
 }
 
 /* ----------------------------- data hooks ---------------------------- */
@@ -51,9 +190,12 @@ export type PlatformResource = {
   loading: boolean;
   error: string | null;
   reload: () => void;
-  /** Save only the given fields (the backend merges). Widening changes are
-   * confirmed in the desktop shell by lib/api.ts. */
+  /** Save only the given fields (the backend merges). A change to sensitive
+   * settings is confirmed in `confirmationDialog` first; widening changes are
+   * then confirmed in the desktop shell by lib/api.ts. */
   save: (patch: Partial<PlatformSettings>) => Promise<void>;
+  /** Render this in the section: the sensitive-change confirmation. */
+  confirmationDialog: ReactNode;
 };
 
 export function usePlatformResource({ withPolicy = false }: { withPolicy?: boolean } = {}): PlatformResource {
@@ -62,6 +204,7 @@ export function usePlatformResource({ withPolicy = false }: { withPolicy?: boole
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [token, setToken] = useState(0);
+  const { savePatch, confirmationDialog } = useConfirmedPlatformSave();
 
   useEffect(() => {
     let cancelled = false;
@@ -91,16 +234,16 @@ export function usePlatformResource({ withPolicy = false }: { withPolicy?: boole
 
   const save = useCallback(
     async (patch: Partial<PlatformSettings>) => {
-      await savePlatformSettings(patch as Record<string, unknown>);
+      await savePatch(patch as Record<string, unknown>);
       setSettings((current) => (current ? { ...current, ...patch } : current));
       if (withPolicy) {
         setPolicy(await getPlatformSecurityPolicy());
       }
     },
-    [withPolicy],
+    [savePatch, withPolicy],
   );
 
-  return { settings, policy, loading, error, reload, save };
+  return { settings, policy, loading, error, reload, save, confirmationDialog };
 }
 
 /* ------------------------------ layout ------------------------------- */

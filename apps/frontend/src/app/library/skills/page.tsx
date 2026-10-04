@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { PersonalSkillsPanel } from "@/components/personal-skills-panel";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   deleteSkill,
   getSkills,
@@ -37,8 +39,12 @@ function quarantineBadge(status: SkillDefinition["quarantine_status"]): {
   }
 }
 
+type SkillsTab = "library" | "personal";
+
 export default function SkillsInventoryPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const [tab, setTab] = useState<SkillsTab>(searchParams.get("tab") === "personal" ? "personal" : "library");
   const [skills, setSkills] = useState<SkillDefinition[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -170,7 +176,10 @@ export default function SkillsInventoryPage() {
           <button
             type="button"
             className="fx-btn-secondary px-3 py-2 text-sm font-medium"
-            onClick={() => setShowImport((v) => !v)}
+            onClick={() => {
+              setTab("library");
+              setShowImport((v) => !v);
+            }}
           >
             Import Skill
           </button>
@@ -184,6 +193,17 @@ export default function SkillsInventoryPage() {
         </div>
       </header>
 
+      <Tabs value={tab} onValueChange={(value) => setTab(value === "personal" ? "personal" : "library")}>
+        <TabsList aria-label="Skill views">
+          <TabsTrigger value="library">Skill library</TabsTrigger>
+          <TabsTrigger value="personal">Personal</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="personal">
+          <PersonalSkillsPanel />
+        </TabsContent>
+
+        <TabsContent value="library" className="space-y-4">
       {showImport ? (
         <article className="fx-panel space-y-2 p-3 text-xs">
           <div className="flex items-center justify-between">
@@ -370,6 +390,8 @@ export default function SkillsInventoryPage() {
       </div>
 
       {notice ? <p className="fx-muted text-xs">{notice}</p> : null}
+        </TabsContent>
+      </Tabs>
     </section>
   );
 }

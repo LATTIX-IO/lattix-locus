@@ -50,6 +50,8 @@ vi.mock("@/lib/api", () => ({
   validateMcpConnection: validateMcpConnectionMock,
   deleteIntegration: deleteIntegrationMock,
   disconnectIntegrationOAuth: disconnectIntegrationOAuthMock,
+  getIntegrationCatalog: vi.fn(async () => []),
+  installCatalogIntegration: vi.fn(),
 }));
 
 describe("IntegrationsManager", () => {
@@ -295,6 +297,17 @@ describe("IntegrationsManager", () => {
       diagnostics: { warnings: ["TLS certificate is self-signed"] },
     });
     deleteIntegrationMock.mockResolvedValue({ ok: true });
+  });
+
+  it("keeps custom integrations in a collapsed Advanced section that Add custom opens", async () => {
+    getIntegrationsMock.mockResolvedValue([]);
+    render(<IntegrationsManager />);
+
+    const advanced = (await screen.findByText(/advanced: custom integrations and mcp servers/i)).closest("details") as HTMLDetailsElement;
+    expect(advanced.open).toBe(false);
+    expect(advanced).toContainElement(screen.getByLabelText(/^name$/i));
+    fireEvent.click(screen.getByRole("button", { name: /add custom/i }));
+    await waitFor(() => expect(advanced.open).toBe(true));
   });
 
   it("saves integrations and refreshes the list", async () => {

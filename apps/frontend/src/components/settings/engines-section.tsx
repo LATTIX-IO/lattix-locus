@@ -471,6 +471,7 @@ export function EnginesSection() {
       <SettingsGroup title="Defaults" description="What a new chat uses unless you pick something else in the composer.">
         <DefaultsGroup overview={overview} />
       </SettingsGroup>
+      {platform.confirmationDialog}
     </div>
   );
 }

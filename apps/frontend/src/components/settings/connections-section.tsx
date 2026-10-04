@@ -165,6 +165,7 @@ export function ConnectionsSection() {
           />
         </SettingsGroup>
       )}
+      {platform.confirmationDialog}
     </div>
   );
 }

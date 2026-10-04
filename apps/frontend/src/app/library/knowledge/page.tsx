@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { Button } from "@/components/ui/button";
 import {
   addKnowledgeDocument,
   createKnowledgeCollection,
@@ -9,31 +10,24 @@ import {
   getKnowledgeCollections,
   getKnowledgeVectorStores,
   getMemoryLayers,
+  getPlatformHealthDetails,
   searchKnowledgeCollection,
   type KnowledgeCollection,
   type KnowledgeSearchResult,
   type KnowledgeVectorStore,
   type MemoryLayer,
 } from "@/lib/api";
+import { longTermMemoryState } from "@/components/settings/memory-section";
+import type { PlatformHealthDetails } from "@/types/locus";
 
-function StatusChip({ enabled, healthy }: { enabled: boolean; healthy: boolean }) {
-  const tone = !enabled
-    ? "border-[var(--ui-border)] fx-muted"
-    : healthy
-      ? "border-[hsl(var(--state-success)/0.5)] text-[hsl(var(--state-success))]"
-      : "border-[hsl(var(--state-warning)/0.5)] text-[hsl(var(--state-warning))]";
-  const label = !enabled ? "Not configured" : healthy ? "Healthy" : "Degraded";
-  return (
-    <span className={`rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide ${tone}`}>
-      {label}
-    </span>
-  );
-}
+const MEMORY_SETTINGS_HREF = "/settings?section=memory";
 
 export default function KnowledgePage() {
   const [collections, setCollections] = useState<KnowledgeCollection[]>([]);
   const [layers, setLayers] = useState<MemoryLayer[]>([]);
+  const [health, setHealth] = useState<PlatformHealthDetails | null>(null);
   const [vectorStores, setVectorStores] = useState<KnowledgeVectorStore[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -49,18 +43,23 @@ export default function KnowledgePage() {
 
   const refresh = useCallback(async () => {
     try {
-      const [cols, lyrs, stores] = await Promise.all([
+      // No silent fallbacks: a failed read is an error with Retry, never an
+      // empty list that reads as "nothing configured".
+      const [cols, lyrs, stores, details] = await Promise.all([
         getKnowledgeCollections(),
-        getMemoryLayers().catch(() => [] as MemoryLayer[]),
-        getKnowledgeVectorStores().catch(() => [] as KnowledgeVectorStore[]),
+        getMemoryLayers(),
+        getKnowledgeVectorStores(),
+        getPlatformHealthDetails(),
       ]);
       setCollections(cols);
       setLayers(lyrs);
       setVectorStores(stores);
+      setHealth(details);
       setSelected((current) => current ?? cols[0]?.id ?? null);
       setError(null);
-    } catch {
-      setError("Unable to load knowledge collections.");
+      setLoaded(true);
+    } catch (err) {
+      setError(err instanceof Error ? `Unable to load knowledge: ${err.message}` : "Unable to load knowledge.");
     }
   }, []);
 
@@ -70,6 +69,11 @@ export default function KnowledgePage() {
 
   const active = collections.find((c) => c.id === selected) ?? null;
   const storeFor = (id: string) => vectorStores.find((s) => s.id === id) ?? null;
+  const longTerm = longTermMemoryState({ layers, health });
+  // Indexing and search need the collection's store to be ready (the platform
+  // store runs on long-term memory); the backend refuses them otherwise.
+  const activeStore = active ? storeFor(active.vector_store_id) : null;
+  const activeReady = Boolean(activeStore?.ready);
 
   async function addCollection() {
     if (!newName.trim()) {
@@ -137,50 +141,36 @@ export default function KnowledgePage() {
   return (
     <section className="space-y-4">
       <header>
-        <h1 className="text-2xl font-semibold">Knowledge &amp; Memory</h1>
+        <h1 className="text-2xl font-semibold">Knowledge</h1>
         <p className="fx-muted">
-          The platform&apos;s memory layers and document knowledge base. RAG storage is routed through
-          vector-store connections configured under{" "}
-          <Link className="underline" href="/library/connections">
-            integrations
+          Document collections the agents can search and cite. How memory and the vector store are configured lives in{" "}
+          <Link className="underline" href={MEMORY_SETTINGS_HREF}>
+            Settings → Memory &amp; knowledge
           </Link>
           .
         </p>
       </header>
 
-      {error ? <div className="fx-panel border-[hsl(var(--state-critical)/0.4)] p-3 text-sm">{error}</div> : null}
-
-      <article className="fx-panel p-3">
-        <h2 className="mb-2 text-sm font-semibold">Memory layers</h2>
-        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-          {layers.map((layer) => (
-            <div
-              key={layer.id}
-              className="rounded border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2.5"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <span className="text-sm font-medium text-[var(--foreground)]">{layer.name}</span>
-                <StatusChip enabled={layer.enabled} healthy={layer.healthy} />
-              </div>
-              <p className="fx-muted mt-0.5 text-[11px]">{layer.backend}</p>
-              <p className="fx-muted mt-1 text-xs">{layer.scope}</p>
-              {Object.keys(layer.stats ?? {}).length > 0 ? (
-                <dl className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px]">
-                  {Object.entries(layer.stats).map(([key, value]) => (
-                    <div key={key} className="flex gap-1">
-                      <dt className="fx-muted">{key.replace(/_/g, " ")}:</dt>
-                      <dd className="text-[var(--foreground)]">{String(value)}</dd>
-                    </div>
-                  ))}
-                </dl>
-              ) : null}
-            </div>
-          ))}
-          {layers.length === 0 ? (
-            <p className="fx-muted text-xs">Memory layer status unavailable.</p>
-          ) : null}
+      {error ? (
+        <div role="alert" className="fx-panel flex flex-wrap items-center justify-between gap-2 border-[hsl(var(--state-critical)/0.4)] p-3 text-sm">
+          <span>{error}</span>
+          <Button variant="secondary" size="sm" onClick={() => void refresh()}>
+            Retry
+          </Button>
         </div>
-      </article>
+      ) : null}
+
+      {loaded && !longTerm.ready ? (
+        <div role="status" className="fx-panel flex flex-wrap items-center justify-between gap-3 border-[hsl(var(--state-warning)/0.5)] p-3 text-sm">
+          <div className="min-w-0">
+            <p className="font-medium">Long-term memory is not set up, so documents cannot be indexed or searched yet.</p>
+            <p className="fx-muted mt-0.5 text-xs">{longTerm.reason} You can still create collections now.</p>
+          </div>
+          <Button asChild size="sm">
+            <Link href={MEMORY_SETTINGS_HREF}>Set up</Link>
+          </Button>
+        </div>
+      ) : null}
 
       <div className="grid gap-4 xl:grid-cols-[320px_1fr]">
         <aside className="space-y-3">
@@ -206,7 +196,7 @@ export default function KnowledgePage() {
                 </li>
               ))}
               {collections.length === 0 ? (
-                <li className="fx-muted text-xs">No collections yet.</li>
+                <li className="fx-muted text-xs">{loaded ? "No collections yet. Create one below." : "Loading…"}</li>
               ) : null}
             </ul>
           </article>
@@ -241,8 +231,8 @@ export default function KnowledgePage() {
             {storeFor(newVectorStore) && !storeFor(newVectorStore)!.ready ? (
               <p className="text-[11px] text-[hsl(var(--state-warning))]">
                 {storeFor(newVectorStore)!.note}{" "}
-                <Link className="underline" href="/library/connections">
-                  Manage integrations
+                <Link className="underline" href={MEMORY_SETTINGS_HREF}>
+                  Set up
                 </Link>
               </p>
             ) : null}
@@ -291,6 +281,15 @@ export default function KnowledgePage() {
                 </p>
               </article>
 
+              {!activeReady ? (
+                <p role="status" className="fx-panel p-3 text-xs">
+                  {activeStore?.note || "This collection's vector store is not available."}{" "}
+                  <Link className="underline" href={MEMORY_SETTINGS_HREF}>
+                    Set up
+                  </Link>
+                </p>
+              ) : null}
+
               <article className="fx-panel space-y-2 p-3 text-xs">
                 <h2 className="text-sm font-semibold">Add document</h2>
                 <input
@@ -307,7 +306,7 @@ export default function KnowledgePage() {
                 />
                 <button
                   type="button"
-                  disabled={busy}
+                  disabled={busy || !activeReady}
                   onClick={() => void ingestDocument()}
                   className="fx-btn-primary px-3 py-1.5 font-medium disabled:opacity-60"
                 >
@@ -323,13 +322,13 @@ export default function KnowledgePage() {
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") void runSearch();
+                      if (e.key === "Enter" && activeReady) void runSearch();
                     }}
                     placeholder="Search query..."
                   />
                   <button
                     type="button"
-                    disabled={busy}
+                    disabled={busy || !activeReady}
                     onClick={() => void runSearch()}
                     className="fx-btn-secondary px-3 py-1.5 font-medium disabled:opacity-60"
                   >
@@ -359,7 +358,7 @@ export default function KnowledgePage() {
         </div>
       </div>
 
-      {notice ? <p className="fx-muted text-xs">{notice}</p> : null}
+      {notice ? <p role="status" className="fx-muted text-xs">{notice}</p> : null}
     </section>
   );
 }

@@ -481,10 +481,37 @@ async function strictFetch<T>(path: string, init?: RequestInit): Promise<T> {
     if (shellAction && invoke && isShellProofRefusal(res.status, details)) {
       return confirmViaDesktopShell<T>(invoke, shellAction, path, requestBodyObject(init?.body));
     }
-    throw new Error(`Request failed (${res.status})${details ? `: ${details}` : ""}`);
+    throw new ApiRequestError(res.status, details);
   }
 
   return (await res.json()) as T;
+}
+
+/** A backend refusal: the status and the raw response body. The message keeps
+ * the historic "Request failed (<status>): <body>" form callers match on. */
+export class ApiRequestError extends Error {
+  readonly status: number;
+  readonly details: string;
+
+  constructor(status: number, details: string) {
+    super(`Request failed (${status})${details ? `: ${details}` : ""}`);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.details = details;
+  }
+}
+
+/** FastAPI's `{"detail": ...}` body of a refusal, or null when it is not JSON. */
+export function apiErrorDetail(error: unknown): unknown {
+  if (!(error instanceof ApiRequestError) || !error.details) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(error.details);
+    return parsed !== null && typeof parsed === "object" && "detail" in parsed ? (parsed as { detail: unknown }).detail : null;
+  } catch {
+    return null;
+  }
 }
 
 /** A read where "not found" is a normal answer: 404 resolves to null, every
@@ -1351,12 +1378,27 @@ export async function getMcpServers(): Promise<McpServer[]> {
   return res.servers ?? [];
 }
 
+/** The tier list an "Always allow on <site>" approval adds a site to. */
+export type BrowserSiteList = "allowlisted_sites" | "granted_sites";
+
 export type RunEscalation = {
   id: string;
   path: string;
   workspace_root: string;
   policy: string;
   status: string;
+  /** "gateway" for a gateway ask; folder escalations have no kind. */
+  kind?: string;
+  action_kind?: string;
+  tool?: string;
+  risk?: string;
+  reasons?: string[];
+  created_at?: string;
+  /** User-browser asks (LOCUS-350): the registrable site the action targets,
+   * the effective tier, and the list "Always allow" adds it to (null: none). */
+  site?: string;
+  browser_tier?: string;
+  site_list?: BrowserSiteList | null;
 };
 
 export async function getRunEscalations(runId: string): Promise<RunEscalation[]> {
@@ -1370,6 +1412,14 @@ export async function approveRunEscalation(
 ): Promise<{ ok: boolean }> {
   return strictFetch(
     `/workflow-runs/${encodeURIComponent(runId)}/escalations/${encodeURIComponent(escalationId)}/approve`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
+/** Deny an agent request (narrowing: grants nothing; a plain request). */
+export async function denyRunEscalation(runId: string, escalationId: string): Promise<{ ok: boolean; escalation: RunEscalation }> {
+  return strictFetch(
+    `/workflow-runs/${encodeURIComponent(runId)}/escalations/${encodeURIComponent(escalationId)}/deny`,
     { method: "POST", body: JSON.stringify({}) },
   );
 }
@@ -1749,11 +1799,58 @@ export async function getPlatformSecurityPolicy(): Promise<SecurityPolicyRespons
   return strictFetch<SecurityPolicyResponse>("/platform/security-policy");
 }
 
-export async function savePlatformSettings(payload: Json): Promise<{ ok: boolean }> {
-  const result = await strictFetch<{ ok: boolean }>("/platform/settings", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
+/**
+ * The backend refused a platform-settings save because it changes sensitive
+ * security settings (`changed_sensitive_keys`) and the request did not carry
+ * `confirm_security_change: true`. The UI shows the keys, asks, and resends
+ * with `{ confirmSecurityChange: true }` (which on the desktop then goes
+ * through the shell's confirmation when it widens, LOCUS-357).
+ */
+export class SecurityChangeConfirmationRequired extends Error {
+  readonly keys: string[];
+
+  constructor(keys: string[], message = "Sensitive platform security changes need your confirmation.") {
+    super(message);
+    this.name = "SecurityChangeConfirmationRequired";
+    this.keys = keys;
+  }
+}
+
+/** The sensitive keys of a "confirm_security_change" refusal, else null. */
+export function sensitiveKeysFromError(error: unknown): string[] | null {
+  if (!(error instanceof ApiRequestError) || error.status !== 400) {
+    return null;
+  }
+  const detail = apiErrorDetail(error);
+  if (detail === null || typeof detail !== "object") {
+    return null;
+  }
+  const keys = (detail as { changed_sensitive_keys?: unknown }).changed_sensitive_keys;
+  if (!Array.isArray(keys) || keys.length === 0) {
+    return null;
+  }
+  return keys.filter((key): key is string => typeof key === "string");
+}
+
+export async function savePlatformSettings(
+  payload: Json,
+  options: { confirmSecurityChange?: boolean } = {},
+): Promise<{ ok: boolean }> {
+  const body = isJsonRecord(payload) && options.confirmSecurityChange ? { ...payload, confirm_security_change: true } : payload;
+  let result: { ok: boolean };
+  try {
+    result = await strictFetch<{ ok: boolean }>("/platform/settings", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    const keys = sensitiveKeysFromError(error);
+    if (keys) {
+      const detail = apiErrorDetail(error) as { message?: unknown };
+      throw new SecurityChangeConfirmationRequired(keys, typeof detail.message === "string" ? detail.message : undefined);
+    }
+    throw error;
+  }
 
   if (isJsonRecord(payload)) {
     const cached = readCachedValue<PlatformSettings>("platform-settings");
@@ -2135,19 +2232,17 @@ export function isBrowserTierWidening(current: UserBrowserTierSettings, next: Br
 
 const TIER_CONFIRMATION_REFUSAL = "needs confirmation in the Locus desktop app";
 
-async function confirmBrowserTierInShell(next: BrowserTierChange): Promise<UserBrowserTierSettings> {
+/** Run one of the shell's own confirmation commands (confirm_browser_tier,
+ * confirm_browser_pairing): the shell shows its native dialog, signs and sends
+ * the request itself, then relays the backend's JSON response. */
+async function invokeShellConfirmation<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const invoke = getDesktopInvoke();
   if (!invoke) {
     throw new DesktopConfirmationError("the desktop shell is not available");
   }
   let relayed: unknown;
   try {
-    // Tauri passes command arguments in camelCase (confirm_browser_tier, LOCUS-350).
-    relayed = await invoke("confirm_browser_tier", {
-      tier: next.tier,
-      allowlistedSites: next.allowlisted_sites,
-      grantedSites: next.granted_sites,
-    });
+    relayed = await invoke(command, args);
   } catch (error) {
     const reason = typeof error === "string" ? error : error instanceof Error ? error.message : String(error);
     if (reason === "cancelled") {
@@ -2157,7 +2252,16 @@ async function confirmBrowserTierInShell(next: BrowserTierChange): Promise<UserB
   }
   const text = typeof relayed === "string" ? relayed : "";
   setApiConnected(true);
-  return (text.trim() ? JSON.parse(text) : {}) as UserBrowserTierSettings;
+  return (text.trim() ? JSON.parse(text) : {}) as T;
+}
+
+async function confirmBrowserTierInShell(next: BrowserTierChange): Promise<UserBrowserTierSettings> {
+  // Tauri passes command arguments in camelCase (confirm_browser_tier, LOCUS-350).
+  return invokeShellConfirmation<UserBrowserTierSettings>("confirm_browser_tier", {
+    tier: next.tier,
+    allowlistedSites: next.allowlisted_sites,
+    grantedSites: next.granted_sites,
+  });
 }
 
 /**
@@ -2193,6 +2297,62 @@ export async function setUserBrowserTier(
     }
     throw error;
   }
+}
+
+/**
+ * "Always allow on <site>": add one site to the current tier's list (the
+ * Assisted allowlist or the Trusted grant list). The backend takes the full
+ * lists (PUT /user-browser/tier); adding a site widens, so on the desktop it is
+ * confirmed in the shell's dialog with the new list (confirm_browser_tier). On
+ * the web profile the caller must have shown the risk (`acknowledgeRisk`).
+ */
+export async function allowSiteInBrowserTier(
+  site: string,
+  list: BrowserSiteList,
+  options: { acknowledgeRisk?: boolean } = {},
+): Promise<UserBrowserTierSettings> {
+  const current = await getUserBrowserTier();
+  if (current[list].includes(site)) {
+    return current;
+  }
+  const next: BrowserTierChange = {
+    tier: current.tier,
+    allowlisted_sites: [...current.allowlisted_sites],
+    granted_sites: [...current.granted_sites],
+  };
+  next[list] = [...current[list], site];
+  return setUserBrowserTier(current, next, options);
+}
+
+export type UserBrowserStatus = {
+  paired: boolean;
+  connected: boolean;
+  clients?: unknown[];
+  native_host?: string;
+  extension_ids?: { chromium?: string; firefox?: string };
+  tier?: UserBrowserTierSettings;
+  rotated?: boolean;
+};
+
+export async function getUserBrowserStatus(): Promise<UserBrowserStatus> {
+  return strictFetch<UserBrowserStatus>("/user-browser/status");
+}
+
+/**
+ * Pair (or re-pair) the principal's browser (LOCUS-350). Widening: on the
+ * desktop the shell's native dialog confirms it (`confirm_browser_pairing`) and
+ * the shell sends the signed request; the web profile sends it directly.
+ */
+export async function pairUserBrowser(): Promise<UserBrowserStatus> {
+  if (getDesktopInvoke() !== null) {
+    return invokeShellConfirmation<UserBrowserStatus>("confirm_browser_pairing");
+  }
+  return strictFetch<UserBrowserStatus>("/user-browser/pairing", { method: "POST", body: JSON.stringify({}) });
+}
+
+/** Remove the pairing (narrowing: a plain request). */
+export async function unpairUserBrowser(): Promise<UserBrowserStatus> {
+  return strictFetch<UserBrowserStatus>("/user-browser/pairing", { method: "DELETE" });
 }
 
 export type SystemUpdateStatus = {

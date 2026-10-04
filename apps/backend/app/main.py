@@ -13222,6 +13222,11 @@ def _gateway_decision_listener(action: GatewayAction, decision: GatewayDecision)
             for item in escalations
         )
         if not pending:
+            # A user-browser ask names its site so the approval can offer
+            # "Always allow on <site>" (LOCUS-350); other asks carry nothing.
+            site_offer = app_user_browser.escalation_site_offer(
+                action.kind, action.ui.site if action.ui is not None else ""
+            )
             escalations.append(
                 {
                     "id": f"esc-{uuid4()}",
@@ -13239,6 +13244,7 @@ def _gateway_decision_listener(action: GatewayAction, decision: GatewayDecision)
                     "fingerprint": decision.fingerprint,
                     "grant_pattern": pattern,
                     "grant_scopes": list(APPROVAL_SCOPES) if pattern else ["once"],
+                    **site_offer,
                 }
             )
         event_type = "approval_required"
@@ -20371,6 +20377,41 @@ def approve_run_escalation(
     _persist_store_state()
     _append_audit_event(
         "workflow.run.escalations.approve", actor, "allowed", {"run_id": run_id, "path": path}
+    )
+    return {"ok": True, "escalation": target}
+
+
+@app.post("/workflow-runs/{run_id}/escalations/{escalation_id}/deny")
+def deny_run_escalation(run_id: str, escalation_id: str, request: Request) -> dict[str, Any]:
+    """Deny a pending escalation. Narrowing: nothing is granted and the action
+    that asked stays refused; the decision is recorded and audited."""
+    actor = _enforce_request_authn(request, payload={}, action="workflow.run.escalations.deny")
+    _enforce_run_access(request, actor, run_id, action="workflow.run.escalations.deny")
+    details = store.run_details.get(run_id) or {}
+    escalations = details.get("escalations")
+    if not isinstance(escalations, list):
+        raise HTTPException(status_code=404, detail="No escalations for this run")
+    target = next(
+        (e for e in escalations if isinstance(e, dict) and e.get("id") == escalation_id), None
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="Escalation not found")
+    if target.get("status") != "pending":
+        raise HTTPException(status_code=409, detail="Escalation is not pending")
+    target["status"] = "denied"
+    target["denied_by"] = actor
+    target["denied_at"] = _now_iso()
+    _persist_store_state()
+    _append_audit_event(
+        "workflow.run.escalations.deny",
+        actor,
+        "allowed",
+        {
+            "run_id": run_id,
+            "kind": str(target.get("kind") or "folder"),
+            "tool": str(target.get("tool") or ""),
+            "site": str(target.get("site") or ""),
+        },
     )
     return {"ok": True, "escalation": target}
 

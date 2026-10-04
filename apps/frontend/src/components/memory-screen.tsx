@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -95,6 +96,9 @@ export function MemoryScreen({ initialRuns, initialError = null }: { initialRuns
             <CardTitle>Memory layers</CardTitle>
             <CardDescription>Where memory is kept, as the backend reports it.</CardDescription>
           </div>
+          <Button asChild variant="secondary" size="sm">
+            <Link href="/settings?section=memory">Configure</Link>
+          </Button>
         </CardHeader>
         {layersError ? (
           <ErrorLine message={`Could not load memory layers: ${layersError}`} onRetry={() => setLayersToken((value) => value + 1)} />

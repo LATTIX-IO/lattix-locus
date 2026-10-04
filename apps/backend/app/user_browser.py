@@ -29,8 +29,10 @@ from locus_runtime.computer_use.user_browser.pairing import (
     NATIVE_HOST_NAME,
 )
 from locus_runtime.computer_use.user_browser.relay import RelayHub, get_hub
+from locus_runtime.computer_use.user_browser.sites import normalize_site
 from locus_runtime.computer_use.user_browser.tiers import (
     TIER_RISKS,
+    TierSettings,
     TierStore,
     get_tier_store,
     install_tier_store,
@@ -43,6 +45,44 @@ MAX_RELAY_BODY_BYTES = 16 * 1024 * 1024
 _LOOPBACK_NAMES = frozenset({"localhost"})
 # Headers browsers attach to page-initiated requests; the native host sends none.
 _BROWSER_HEADERS = ("origin", "sec-fetch-site", "sec-fetch-mode", "referer")
+
+
+#: The tier list an "Always allow on <site>" approval adds the site to: the
+#: Assisted tier's allowlist (read and navigate) or the Trusted tier's grant
+#: list (act). Strict and Open have no per-site list to add to.
+SITE_LIST_FOR_TIER: Mapping[str, str] = {
+    "assisted": "allowlisted_sites",
+    "trusted": "granted_sites",
+}
+
+
+def _site_covered(site: str, listed: tuple[str, ...]) -> bool:
+    return any(site == item or site.endswith("." + item) for item in listed)
+
+
+def escalation_site_offer(
+    action_kind: str, site: str, settings: TierSettings | None = None
+) -> dict[str, Any]:
+    """The site facts a user-browser ``ask`` carries to the approval UI.
+
+    ``site`` is the registrable site of the tab the action targets (perceived by
+    the browser, never agent text); ``browser_tier`` is the effective tier; and
+    ``site_list`` names the list "Always allow on <site>" would add it to, or is
+    ``None`` when the tier has no such list or the site is already on it. The
+    offer only describes; adding the site is a separate, principal-only,
+    shell-confirmed PUT /user-browser/tier with the full list.
+    """
+    if not str(action_kind or "").startswith("user_browser_"):
+        return {}
+    normalized = normalize_site(site)
+    if not normalized:
+        return {}
+    current = settings if settings is not None else get_tier_store().settings
+    tier = current.effective_tier
+    list_key = SITE_LIST_FOR_TIER.get(tier)
+    if list_key is not None and _site_covered(normalized, getattr(current, list_key)):
+        list_key = None
+    return {"site": normalized, "browser_tier": tier, "site_list": list_key}
 
 
 def tier_store_path(app_home: Path) -> Path:
@@ -167,6 +207,8 @@ def status_payload(hub: RelayHub) -> dict[str, Any]:
 
 __all__ = [
     "MAX_RELAY_BODY_BYTES",
+    "SITE_LIST_FOR_TIER",
+    "escalation_site_offer",
     "cross_site_refusal",
     "ensure_user_browser",
     "is_human_principal",

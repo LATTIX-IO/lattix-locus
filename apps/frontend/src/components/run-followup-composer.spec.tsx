@@ -161,3 +161,22 @@ describe("RunFollowupComposer", () => {
     expect(screen.getByRole("textbox", { name: /message this run/i })).toHaveValue("/risk-review ");
   });
 });
+describe("RunFollowupComposer status reporting", () => {
+  it("reports status on change only, not whenever the parent passes a new callback", async () => {
+    const calls: string[] = [];
+    const { rerender } = render(
+      <RunFollowupComposer runId="run-1" onStatusChange={(status) => calls.push(`a:${status.state}`)} />,
+    );
+    await waitFor(() => expect(getRuntimeProvidersMock).toHaveBeenCalled());
+    await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    const settled = calls.length;
+
+    // A parent that passes an inline callback hands over a new function on
+    // every render. That alone must not re-report (it used to loop forever).
+    for (const label of ["b", "c", "d"]) {
+      rerender(<RunFollowupComposer runId="run-1" onStatusChange={(status) => calls.push(`${label}:${status.state}`)} />);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(calls.length).toBe(settled);
+  });
+});

@@ -18,7 +18,7 @@ import {
   useDraft,
   usePlatformResource,
 } from "@/components/settings/settings-kit";
-import { getGuardrailRulesets, getUserSkills, saveUserSkills } from "@/lib/api";
+import { getGuardrailRulesets } from "@/lib/api";
 import { useIsDesktopShell } from "@/lib/desktop-shell";
 import type { GuardrailRuleSet, PlatformSettings, PlatformSignalEnforcement } from "@/types/locus";
 
@@ -125,60 +125,6 @@ function toPatch(draft: PolicyDraft, settings: PlatformSettings, includeHosted: 
     patch.tenant_scoped_skills = parseList(draft.tenant_scoped_skills);
   }
   return patch;
-}
-
-/** Personal /skills: a widening list (skills.user.write, confirmed in the shell). */
-function PersonalSkillsGroup() {
-  const [loaded, setLoaded] = useState<{ skills: string } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [token, setToken] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    getUserSkills()
-      .then((response) => {
-        if (cancelled) return;
-        setLoaded({ skills: toListText(response.skills) });
-        setError(null);
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : "Could not load your skills.");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
-
-  const { draft, dirty, saving, message, update, commit, reset } = useDraft(loaded);
-
-  return (
-    <SettingsGroup title="Personal skills" description="Slash skills loaded into your agents.">
-      {!draft ? (
-        <LoadState loading={!error} error={error} onRetry={() => setToken((value) => value + 1)} />
-      ) : (
-        <>
-          <ListField
-            id="personal-skills"
-            label="Skills"
-            value={draft.skills}
-            onChange={(value) => update("skills", value)}
-            placeholder={"/incident-triage\n/research-brief"}
-          />
-          <SaveBar
-            dirty={dirty}
-            saving={saving}
-            message={message}
-            onReset={reset}
-            onSave={() =>
-              void commit(async (next) => {
-                await saveUserSkills({ skills: parseList(next.skills) });
-              })
-            }
-          />
-        </>
-      )}
-    </SettingsGroup>
-  );
 }
 
 export function PoliciesSection() {
@@ -378,7 +324,14 @@ export function PoliciesSection() {
 
       <div className="sticky bottom-0 z-10 -mx-1 rounded-[12px] border border-border bg-card/95 px-3 py-2 backdrop-blur">{saveBar}</div>
 
-      <PersonalSkillsGroup />
+      <p className="text-xs text-muted-foreground">
+        Your personal /skills are in{" "}
+        <Link href="/library/skills?tab=personal" className="underline underline-offset-2">
+          Library → Skills → Personal
+        </Link>
+        .
+      </p>
+      {platform.confirmationDialog}
     </div>
   );
 }
