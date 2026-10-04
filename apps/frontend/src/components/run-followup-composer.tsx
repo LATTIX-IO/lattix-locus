@@ -412,16 +412,30 @@ export function RunFollowupComposer({
     }
   }, [composerCollapsed, draft]);
 
+  // Report status only when it changes. The callback is read through a ref and
+  // is NOT an effect dependency: parents pass it inline, and depending on its
+  // identity re-ran this effect on every parent render, whose setState
+  // re-rendered the parent again. That endless update loop starved every
+  // navigation transition, so the nav could not be used inside a session.
+  const onStatusChangeRef = useRef(onStatusChange);
   useEffect(() => {
-    onStatusChange?.({
-      state: submitError ? "error" : isSubmitting ? "submitting" : submitInfo ? "success" : "idle",
-      message: submitError ?? submitInfo,
+    onStatusChangeRef.current = onStatusChange;
+  });
+  const statusState: FollowupComposerStatus["state"] = submitError ? "error" : isSubmitting ? "submitting" : submitInfo ? "success" : "idle";
+  const statusMessage = submitError ?? submitInfo;
+  const statusProvider = activeRuntimeOption?.provider ?? selectedProvider;
+  const statusModel = selectedModel || activeRuntimeOption?.model || "";
+  const statusSource = activeRuntimeOption?.source ?? null;
+  useEffect(() => {
+    onStatusChangeRef.current?.({
+      state: statusState,
+      message: statusMessage,
       createdRunId,
-      provider: activeRuntimeOption?.provider ?? selectedProvider,
-      model: selectedModel || activeRuntimeOption?.model || "",
-      source: activeRuntimeOption?.source ?? null,
+      provider: statusProvider,
+      model: statusModel,
+      source: statusSource,
     });
-  }, [activeRuntimeOption?.model, activeRuntimeOption?.provider, activeRuntimeOption?.source, createdRunId, isSubmitting, onStatusChange, selectedModel, selectedProvider, submitError, submitInfo]);
+  }, [createdRunId, statusMessage, statusModel, statusProvider, statusSource, statusState]);
 
   const commandOptions = useMemo<ComposerCommandOption[]>(() => {
     const agentOptions = publishedAgents.map((agent) => ({
