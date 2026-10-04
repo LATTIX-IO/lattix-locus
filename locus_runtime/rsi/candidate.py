@@ -281,7 +281,7 @@ class CandidateInstance:
         )
 
     def _prepare(self) -> None:
-        """Copy the code, build/locate the interpreter, grant, start OPA (once)."""
+        """Copy the code, build or locate the interpreter and grant the layout (once)."""
         if self._prepared:
             return
         started = time.monotonic()

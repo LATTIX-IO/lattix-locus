@@ -73,7 +73,8 @@ Useful settings (environment):
 | `LOCUS_LOOP_PROPOSE_SKILLS` | `1` | propose a quarantined `SKILL.md` after a done run |
 | `LOCUS_LOOP_FILE_FAILURE_ISSUES` | `1` | file Linear issues for recurring failure patterns |
 | `LOCUS_LOOP_FAILURE_ISSUE_MIN_OCCURRENCES` / `_MAX_FAILURE_ISSUES_PER_DAY` | `2` / `3` | how often a pattern must recur; filings per UTC day |
-| `LOCUS_LOOP_SCORECARD` | `advisory` | RSI scorecard (LOCUS-351): `off`, `advisory` (run, archive, report) or `required` (the D-22 auto-merge also needs `promote`) |
+| `LOCUS_LOOP_SCORECARD` | `advisory` where the candidate can be jailed, else `off` | RSI scorecard (LOCUS-351): `off`, `advisory` (run, archive, report) or `required` (the D-22 auto-merge also needs `promote`). The default follows the host (LOCUS-379): `advisory` when the candidate instance runs in an OS jail here (AppContainer, seatbelt, bubblewrap), `off` otherwise; `lattix loop status` shows which and why |
+| `LOCUS_RSI_CANDIDATE_UNJAILED` | unset | `1` runs the candidate without an OS jail (loud warning; the scorecard records `isolation: none` and never promotes) |
 | `LOCUS_LOOP_SCORECARD_{TRIALS,SPLITS,MODEL,PYTHON}` | `1` / `dev,heldout` / `gpt-oss:20b-ctx32k` / runner's | trials per task, splits, the keyless (Ollama) model, the candidate interpreter |
 | `LOCUS_LOOP_TAG_VARIANTS` | off | `1` tags each evaluated commit `variant/<sha12>` in the runner's repository (local, never pushed) |
 | `LOCUS_EVAL_HELDOUT_DIR` | unset | a private held-out task directory replacing the committed one |
@@ -177,8 +178,8 @@ since LOCUS-351, by the RSI scorecard below.
 
 ### RSI scorecard (LOCUS-351)
 
-With `LOCUS_LOOP_SCORECARD=advisory` (opt-in; the default is `off` because the candidate runs agent-written code outside the jail) or
-`required`, the runner evaluates the run's tree after the verifier suite passed
+With `LOCUS_LOOP_SCORECARD=advisory` (the default where the candidate can be
+jailed, LOCUS-379) or `required`, the runner evaluates the run's tree after the verifier suite passed
 (then commits it and archives the variant under the commit sha) with the RSI
 suite: 12 dev and 8 held-out tasks from
 `apps/evals/locus_evals/suite/`, loaded from the runner's own checkout (never
@@ -186,7 +187,12 @@ from the run's working copy), sealed read-only and hash-verified before and
 after every sample. The candidate commit runs in a separate, secret-free
 candidate instance (own temp app home, scrubbed environment, no keychain, its
 own telemetry DB, the evaluator's metering proxy as its only model endpoint, the
-trusted policy bundle on real OPA). The scorecard (pass rates with Wilson CIs per
+trusted policy bundle on real OPA) inside an OS jail with no network: it can read
+only its interpreter, a read-only copy of the candidate's code and the trusted
+entry script, and write only its temp home and the sample's workspace. Model
+calls, policy decisions, the agent's commands and host git reach the trusted
+parent over a stdio bridge. Before scoring, an isolation probe proves the jail
+from inside; the scorecard records the tier (`isolation`). The scorecard (pass rates with Wilson CIs per
 split, tokens / cost / time, gate regressions, injection attack success rate,
 mediation coverage) is compared with the base branch's latest scorecard in
 `LOCUS_LOOP_HOME/variants/`: `promote` only when nothing regresses beyond noise
@@ -195,9 +201,13 @@ variant is archived, the PR body gets the scorecard and the decision, and with
 `required` anything but `promote` holds the D-22 auto-merge. Without a reachable
 keyless model endpoint or OPA the scorecard is `skipped`, never a promote.
 
-This executes agent-authored code outside the jail, as the principal's OS user
-(without secrets): see the limits in [rsi-scorecard.md §4](rsi-scorecard.md#4-the-candidate-instance)
-before switching to `required` for Dev publishing.
+Where no jail exists (no AppContainer APIs, no `sandbox-exec`, no `bwrap`) the
+default stays `off` and `lattix loop status` / `report` say why. An explicit
+`LOCUS_LOOP_SCORECARD` still applies, but the candidate then refuses to run (the
+scorecard is `skipped`) unless `LOCUS_RSI_CANDIDATE_UNJAILED=1` is set, which runs
+it as your OS user and records `isolation: none` (never promoted). The guarantees
+and residual risks are in [rsi-scorecard.md §4](rsi-scorecard.md#4-the-candidate-instance);
+read them before switching to `required` for Dev publishing.
 
 ### Feedback
 
@@ -229,8 +239,8 @@ before switching to `required` for Dev publishing.
 `state.json`: runs and PRs per day, outcomes, success rate (done over attempted
 runs; kill-switch stops are not attempts), cost (sum of usage `cost_usd`; about 0
 on the NIM free tier and Ollama), gate failures by check, the eval resolve-rate
-trend, the perf trend per metric and the RSI scorecard trend (held-out pass rate
-and decisions).
+trend, the perf trend per metric and the RSI scorecard trend (held-out pass rate,
+decisions and isolation tiers), plus the scorecard mode in effect and why.
 
 ## Delivery to the desktop: update channels (D-26, LOCUS-349)
 
