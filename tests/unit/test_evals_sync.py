@@ -20,6 +20,7 @@ repository (no network): it holds the public **test stub** tasks
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import stat
@@ -169,6 +170,9 @@ def test_sync_installs_the_pinned_tag_read_only_and_records_it(
     assert state["digest"] == result.digest and state["ref"] == "v1"
     assert state["commit"] == result.commit and len(result.commit) == 40
     assert state["signature"]["status"] == "unsigned" and not state["signature"]["ran"]
+    # The on-disk source record holds no free-text signature detail.
+    source = json.loads((result.path / "SOURCE.json").read_text(encoding="utf-8"))
+    assert set(source["signature"]) == {"signed", "ran", "status"}
     # No temp clone left behind.
     assert sorted(p.name for p in root.iterdir()) == sorted(["active.json", result.digest])
 
@@ -615,3 +619,19 @@ def test_desktop_first_run_retries_a_denied_fetch_at_most_daily(
     os.utime(marker, (0, 0))  # a day later
     fr.ensure_heldout_suite(app_home, progress=lines.append)
     assert len(attempts) == 2
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            "https://user:hunter2-secret@github.com/LATTIX-IO/locus-evals-private.git?t=x#f",
+            "https://github.com/LATTIX-IO/locus-evals-private.git",
+        ),
+        ("https://github.com:8443/a/b.git", "https://github.com:8443/a/b.git"),
+        ("git@github.com:a/b.git", "github.com:a/b.git"),
+        ("E:/lattix/locus-evals-private", "E:/lattix/locus-evals-private"),
+    ],
+)
+def test_repository_locator_never_keeps_userinfo(url: str, expected: str) -> None:
+    assert es.repository_locator(url) == expected

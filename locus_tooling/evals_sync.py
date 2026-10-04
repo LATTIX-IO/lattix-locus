@@ -44,6 +44,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from locus_runtime.rsi.readonly import force_rmtree, is_writable, make_read_only, make_writable
 from locus_tooling.evals_heldout import (
@@ -99,6 +100,21 @@ def redact(text: str) -> str:
     from locus_runtime.gateway import redact_text
 
     return redact_text(_URL_CREDENTIALS.sub(r"\1***@", str(text or "")), limit=600)
+
+
+def repository_locator(url: str) -> str:
+    """Return ``scheme://host[:port]/path`` for a URL, never userinfo, query or fragment.
+
+    A local path or scp-style address (``git@host:org/repo``) keeps only what
+    follows the last ``@``.
+    """
+    text = str(url or "")
+    parts = urlsplit(text)
+    if parts.scheme and parts.netloc:
+        host = parts.hostname or ""
+        port = f":{parts.port}" if parts.port else ""
+        return f"{parts.scheme}://{host}{port}{parts.path}"
+    return text.rsplit("@", 1)[-1]
 
 
 # --------------------------------------------------------------------------- #
@@ -571,11 +587,18 @@ def sync_heldout(
         manifest = parse_manifest(manifest_raw)
         verify_files(manifest, contents)
         stamp = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # The on-disk provenance record keeps no credential-bearing or free-text
+        # fields: the repository is reduced to its locator (userinfo, query and
+        # fragment dropped) and the signature to its status flags.
         source = {
-            "repository": redact(repo_url),
+            "repository": repository_locator(repo_url),
             "ref": pinned,
             "commit": commit,
-            "signature": asdict(signature),
+            "signature": {
+                "signed": bool(signature.signed),
+                "ran": bool(signature.ran),
+                "status": str(signature.status),
+            },
             "synced_at": stamp,
         }
         try:
