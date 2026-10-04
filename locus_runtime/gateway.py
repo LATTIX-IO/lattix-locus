@@ -184,6 +184,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from urllib import parse as urlparse
 from uuid import uuid4
 
+from locus_runtime import telemetry
 from locus_runtime.gate_definitions import gate_write_reason
 from locus_runtime.persistence import redact_sensitive_payload
 from locus_runtime.policy_engine import Decision, PolicyEngine, default_policy_dir
@@ -1776,6 +1777,14 @@ class Gateway:
 
     # -- authorize ------------------------------------------------------------
     def authorize(self, action: GatewayAction) -> GatewayDecision:
+        # One telemetry span per decision: outcome, risk, reason codes; never the
+        # target, arguments or command (LOCUS-375).
+        with telemetry.gateway_decision(action.kind, action.tool) as span:
+            decision = self._authorize(action)
+            telemetry.record_decision(span, decision)
+            return decision
+
+    def _authorize(self, action: GatewayAction) -> GatewayDecision:
         audit_id = f"gw-{uuid4()}"
         record = self._authenticate(action.caller)
         if record is None:
@@ -2353,7 +2362,10 @@ def authorize_action(session: GatewaySession | None, **kwargs: Any) -> GatewayDe
     action = GatewayAction.create(caller=UNBOUND_CALLER, **kwargs)
     gateway = installed_gateway()
     if gateway is None:
-        return not_installed_decision(action)
+        with telemetry.gateway_decision(action.kind, action.tool) as span:
+            decision = not_installed_decision(action)
+            telemetry.record_decision(span, decision)
+            return decision
     try:
         return gateway.authorize(action)
     except Exception:  # noqa: BLE001 - a crashing gateway denies

@@ -114,6 +114,7 @@ def test_every_platform_setting_is_classified_exactly_once() -> None:
         cw.ALLOWLISTS,
         cw.BLOCKLISTS,
         cw.LIMITS,
+        cw.DESTINATIONS,
         cw.UNRANKED,
         cw.NEUTRAL,
         cw.SPECIAL,

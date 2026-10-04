@@ -54,6 +54,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from locus_runtime import telemetry
 from locus_runtime.computer_use.wiring import build_run_toolset, release_run_toolset
 from locus_runtime.gateway import (
     Gateway,
@@ -107,6 +108,7 @@ from locus_runtime.loop_runner.feedback import (
 from locus_runtime.loop_runner.perf_budget import PerfSettings, PerfStore, make_perf_evaluator
 from locus_runtime.loop_runner.quality_gates import (
     GateReport,
+    GateSelection,
     GateSettings,
     gate_executables,
     parse_command,
@@ -409,6 +411,22 @@ class LoopRunner:
 
     # ------------------------------------------------------------------ tick
     def run_once(self) -> TickResult:
+        """One tick, in one ``locus.loop.tick`` telemetry span: the run, its gates
+        and their scores land in the same trace (LOCUS-375)."""
+        with telemetry.loop_tick() as span:
+            result = self._run_once()
+            span.set_many(
+                {
+                    "locus.loop.status": result.status,
+                    "locus.loop.issue": result.issue,
+                    "locus.run.id": result.run_id,
+                }
+            )
+            if result.status == "error":
+                span.error("loop_error", result.detail)
+            return result
+
+    def _run_once(self) -> TickResult:
         home = self.config.home
         reason = kill_switch_reason(home)
         if reason:
@@ -1077,6 +1095,50 @@ class LoopRunner:
             settings=self._gate_settings(),
             overrides={cid: parse_command(cmd) for cid, cmd in self.config.check_commands},
         )
+        with telemetry.gate("quality", run_id=run_id) as span:
+            report = self._quality_gate_suite(gateway, envelope, worktree, run_id, selection)
+            span.set_many(
+                {
+                    "locus.gate.status": "pass" if report.passed else "fail",
+                    "locus.gate.failed": report.failing_ids,
+                    "locus.gate.checks": len(report.results),
+                }
+            )
+            label = "pass" if report.passed else ("fail" if report.failed else "blocked")
+            telemetry.record_score(
+                "quality_gate",
+                1.0 if report.passed else 0.0,
+                label=label,
+                source="loop_runner",
+                run_id=run_id,
+            )
+            for result in report.results:
+                telemetry.record_score(
+                    f"quality_gate.{result.id}",
+                    1.0 if result.status == "pass" else 0.0,
+                    label=str(result.status),
+                    source="loop_runner",
+                    run_id=run_id,
+                )
+        try:
+            (Path(record["run_dir"]) / "quality-gate.json").write_text(
+                json.dumps(
+                    {"selection": selection.to_dict(), "report": report.to_dict()}, indent=2
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            logger.exception("loop.gate_report_write_error", extra={"run_id": run_id})
+        return report
+
+    def _quality_gate_suite(
+        self,
+        gateway: Gateway,
+        envelope: RunEnvelope,
+        worktree: Path,
+        run_id: str,
+        selection: GateSelection,
+    ) -> GateReport:
         report = GateReport(results=[], skipped=list(selection.skipped))
         if selection.checks:
             caps = envelope.gateway_capabilities()
@@ -1102,15 +1164,6 @@ class LoopRunner:
                 )
             finally:
                 session.close()
-        try:
-            (Path(record["run_dir"]) / "quality-gate.json").write_text(
-                json.dumps(
-                    {"selection": selection.to_dict(), "report": report.to_dict()}, indent=2
-                ),
-                encoding="utf-8",
-            )
-        except OSError:
-            logger.exception("loop.gate_report_write_error", extra={"run_id": run_id})
         return report
 
     def _eval_gate(
@@ -1137,12 +1190,30 @@ class LoopRunner:
                 max_steps=self.config.eval_max_steps,
                 run_kwargs=dict(self.eval_run_kwargs),
             )
-            try:
-                result = self.eval_runner(request)
-            except Exception as exc:  # noqa: BLE001 - a crashing eval is reported, never a pass
-                logger.exception("loop.eval_gate_error", extra={"run_id": run_id})
-                result = EvalGateResult(
-                    "error", f"the eval gate failed ({type(exc).__name__})", threshold=threshold
+            with telemetry.gate("eval", run_id=run_id) as span:
+                try:
+                    result = self.eval_runner(request)
+                except Exception as exc:  # noqa: BLE001 - a crashing eval is reported, never a pass
+                    logger.exception("loop.eval_gate_error", extra={"run_id": run_id})
+                    result = EvalGateResult(
+                        "error",
+                        f"the eval gate failed ({type(exc).__name__})",
+                        threshold=threshold,
+                    )
+                    span.error(exc)
+                span.set_many(
+                    {
+                        "locus.gate.status": result.status,
+                        "locus.gate.threshold": result.threshold,
+                        "locus.gate.instances": result.n_instances,
+                    }
+                )
+                telemetry.record_score(
+                    "eval_gate",
+                    result.resolve_rate,
+                    label=str(result.status),
+                    source="loop_runner",
+                    run_id=run_id,
                 )
         finally:
             session.close()

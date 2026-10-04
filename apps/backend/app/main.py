@@ -14,6 +14,7 @@ import secrets as secrets_module
 import hmac
 import ipaddress
 import socket
+import sqlite3
 import threading
 import time
 import platform
@@ -93,6 +94,15 @@ from locus_runtime.grants import (
 from locus_runtime.legacy import normalize_legacy_identifiers
 from locus_runtime import skills as skill_format
 from locus_runtime import model_client as model_calls
+from locus_runtime import telemetry as locus_telemetry
+from locus_runtime.telemetry.contract import (
+    LANGSMITH_OTLP_ENDPOINT,
+    ExporterSettings as TelemetryExporterSettings,
+    RunQuery as TelemetryRunQuery,
+    TelemetrySettings,
+)
+from locus_runtime.telemetry.exporters import endpoint_host as telemetry_endpoint_host
+from locus_runtime.telemetry.sqlite_store import SqliteTelemetryStore, TelemetryStoreError
 from locus_runtime.model_client import (
     FallbackEvent,
     ModelCall,
@@ -610,6 +620,22 @@ class PlatformSettings(BaseModel):
     # api_key / base_url / default_model. Takes precedence over the legacy flat
     # fields above and over environment variables.
     ai_providers: dict[str, dict[str, str]] = Field(default_factory=dict)
+    # AI observability (LOCUS-375, docs/OBSERVABILITY.md). The local SQLite trace
+    # store is always on; external exporters are off by default. Turning content
+    # capture on, enabling an exporter, or a new endpoint / credential widens
+    # capability (app/capability_widening.py): it needs confirm_security_change
+    # and, on the desktop, the shell proof. Credentials are native-secret *names*
+    # (``lattix secrets set NAME``), never values.
+    telemetry_capture_content: bool = False
+    telemetry_payload_retention_days: int = Field(default=90, ge=1, le=3650)
+    telemetry_otlp_enabled: bool = False
+    telemetry_otlp_endpoint: str = Field(default="", max_length=2048)
+    telemetry_otlp_auth_secret_ref: str = Field(default="", max_length=64)
+    # LangSmith: hosted, proprietary; data leaves the machine. Off by default.
+    telemetry_langsmith_enabled: bool = False
+    telemetry_langsmith_endpoint: str = Field(default=LANGSMITH_OTLP_ENDPOINT, max_length=2048)
+    telemetry_langsmith_project: str = Field(default="", max_length=128)
+    telemetry_langsmith_api_key_ref: str = Field(default="LANGSMITH_API_KEY", max_length=64)
 
 
 class NodeFieldSpec(BaseModel):
@@ -3991,6 +4017,81 @@ def _default_nim_model() -> str:
 
 def _default_ollama_model() -> str:
     return _provider_default_model("ollama")
+
+
+_TELEMETRY_SECRET_REF = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
+_TELEMETRY_PROJECT = re.compile(r"[A-Za-z0-9 _.\-]{0,128}")
+
+
+def _telemetry_settings_errors(settings: "PlatformSettings") -> list[str]:
+    """Shape checks for the telemetry exporter settings (LOCUS-375)."""
+    errors: list[str] = []
+    for field in ("telemetry_otlp_endpoint", "telemetry_langsmith_endpoint"):
+        value = str(getattr(settings, field) or "").strip()
+        if value:
+            _host, problem = telemetry_endpoint_host(value)
+            if problem:
+                errors.append(f"{field}: {problem}")
+    for field in ("telemetry_otlp_auth_secret_ref", "telemetry_langsmith_api_key_ref"):
+        value = str(getattr(settings, field) or "").strip()
+        if value and not _TELEMETRY_SECRET_REF.fullmatch(value):
+            errors.append(f"{field}: must name a native secret such as LANGSMITH_API_KEY")
+    if not _TELEMETRY_PROJECT.fullmatch(str(settings.telemetry_langsmith_project or "")):
+        errors.append("telemetry_langsmith_project: letters, digits, space, _ . - only")
+    return errors
+
+
+def _telemetry_settings(platform: "PlatformSettings") -> TelemetrySettings:
+    return TelemetrySettings(
+        local_enabled=locus_telemetry.setup.local_enabled_by_env(),
+        db_path=str(locus_telemetry.default_db_path(_native_app_home())),
+        capture_content=bool(platform.telemetry_capture_content),
+        payload_retention_days=int(platform.telemetry_payload_retention_days),
+        otlp=TelemetryExporterSettings(
+            enabled=bool(platform.telemetry_otlp_enabled),
+            endpoint=str(platform.telemetry_otlp_endpoint or "").strip(),
+            auth_secret_ref=str(platform.telemetry_otlp_auth_secret_ref or "").strip(),
+        ),
+        langsmith=TelemetryExporterSettings(
+            enabled=bool(platform.telemetry_langsmith_enabled),
+            endpoint=str(platform.telemetry_langsmith_endpoint or "").strip(),
+            auth_secret_ref=str(platform.telemetry_langsmith_api_key_ref or "").strip(),
+            project=str(platform.telemetry_langsmith_project or "").strip(),
+        ),
+    )
+
+
+def _telemetry_egress_allowed(host: str) -> bool:
+    """Exporter egress needs the host on the platform egress allowlist, whatever
+    ``enforce_egress_allowlist`` says (fail closed; read live on every export)."""
+    return _is_host_allowed(host, list(store.platform_settings.allowed_egress_hosts))
+
+
+def _presidio_telemetry_redactor(text: str) -> str:
+    analyzer = _get_presidio_analyzer()
+    if analyzer is None:
+        return text
+    results = analyzer.analyze(text=text, language="en")
+    for item in sorted(results, key=lambda r: int(r.start), reverse=True):
+        text = f"{text[: int(item.start)]}[{item.entity_type}]{text[int(item.end) :]}"
+    return text
+
+
+def _apply_telemetry_settings() -> None:
+    """Composition root for the observability module (D-28): (re)build the trace
+    pipeline from platform settings. Never fails startup or a settings save."""
+    platform = store.platform_settings
+    try:
+        presidio = _env_flag("LOCUS_ENABLE_PRESIDIO_PII_ANALYZER", False)
+        locus_telemetry.configure(
+            _telemetry_settings(platform),
+            egress_check=_telemetry_egress_allowed,
+            redactor=_presidio_telemetry_redactor
+            if presidio and platform.telemetry_capture_content
+            else None,
+        )
+    except Exception:  # noqa: BLE001 - telemetry is diagnostic; the agent runs without it
+        LOGGER.exception("telemetry.configure_failed")
 
 
 def _apply_provider_settings_side_effects() -> None:
@@ -15539,9 +15640,17 @@ def _validate_platform_settings_update(
         "block_retrieval_calls",
     }
     changed_sensitive_keys = sorted(
-        key
-        for key in sensitive_keys
-        if key in payload and getattr(current, key) != getattr(candidate, key)
+        {
+            key
+            for key in sensitive_keys
+            if key in payload and getattr(current, key) != getattr(candidate, key)
+        }
+        # Telemetry egress / content capture (LOCUS-375): widening only.
+        | set(
+            capability_widening.telemetry_widening_fields(
+                current.model_dump(), candidate.model_dump()
+            )
+        )
     )
     if changed_sensitive_keys and payload.get("confirm_security_change") is not True:
         _append_config_mutation_audit(
@@ -17002,6 +17111,7 @@ def _startup_initialize_state() -> None:
         for integration_id, integration in pre_startup_integrations.items():
             store.integrations.setdefault(integration_id, integration)
     _apply_provider_settings_side_effects()
+    _apply_telemetry_settings()
     try:
         _migrate_provider_keys_to_keychain()
     except Exception:  # noqa: BLE001 - migration must never block startup
@@ -20243,6 +20353,125 @@ def _require_desktop_profile() -> None:
         raise HTTPException(status_code=404, detail="Not found")
 
 
+# --- AI observability (LOCUS-375): reads of the local trace store ------------
+_TELEMETRY_RUN_ID = re.compile(r"[A-Za-z0-9_.:\-]{1,200}")
+_TELEMETRY_MAX_WINDOW_HOURS = 24 * 366
+_TELEMETRY_MAX_NS = 2**63 - 1  # SQLite INTEGER
+
+
+def _telemetry_reader() -> SqliteTelemetryStore | None:
+    configured = locus_telemetry.local_store()
+    if configured is not None:
+        return configured
+    path = locus_telemetry.default_db_path(_native_app_home())
+    return SqliteTelemetryStore(path) if path.exists() else None
+
+
+def _telemetry_time_ns(value: str | None, field: str) -> int | None:
+    """An ISO-8601 timestamp or epoch seconds as epoch nanoseconds (400 otherwise)."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        seconds = float(text)
+    except ValueError:
+        seconds = None
+    if seconds is not None:
+        return _telemetry_bounded_ns(seconds * 1e9, field)
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{field} must be ISO-8601") from exc
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return _telemetry_bounded_ns(moment.timestamp() * 1e9, field)
+
+
+def _telemetry_bounded_ns(value: float, field: str) -> int:
+    if not 0 <= value <= _TELEMETRY_MAX_NS:
+        raise HTTPException(status_code=400, detail=f"{field} is out of range")
+    return int(value)
+
+
+def _telemetry_unavailable(exc: Exception) -> HTTPException:
+    LOGGER.warning("telemetry.store_unavailable", extra={"error": type(exc).__name__})
+    return HTTPException(status_code=503, detail="The local telemetry store is unavailable")
+
+
+@app.get("/telemetry/runs")
+def telemetry_runs(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    since: str | None = None,
+    until: str | None = None,
+    end_state: str = "",
+    runtime: str = "",
+    status: str = "",
+) -> dict[str, Any]:
+    """Agent runs in the local trace store, newest first (filters, paging)."""
+    _enforce_request_authn(request, action="telemetry.runs.read")
+    try:
+        query = TelemetryRunQuery(
+            limit=limit,
+            offset=offset,
+            since_ns=_telemetry_time_ns(since, "since"),
+            until_ns=_telemetry_time_ns(until, "until"),
+            end_state=end_state,
+            runtime=runtime,
+            status=status,
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail="Invalid telemetry query") from exc
+    reader = _telemetry_reader()
+    if reader is None:
+        return {"runs": [], "total": 0, "limit": query.limit, "offset": query.offset}
+    try:
+        return reader.list_runs(query).model_dump(mode="json")
+    except (TelemetryStoreError, sqlite3.Error) as exc:
+        raise _telemetry_unavailable(exc) from exc
+
+
+@app.get("/telemetry/runs/{run_id}/trace")
+def telemetry_run_trace(run_id: str, request: Request) -> dict[str, Any]:
+    """The span tree of one run (every span of its trace, with scores)."""
+    _enforce_request_authn(request, action="telemetry.trace.read")
+    if not _TELEMETRY_RUN_ID.fullmatch(run_id):
+        raise HTTPException(status_code=400, detail="Invalid run id")
+    reader = _telemetry_reader()
+    try:
+        view = reader.trace(run_id) if reader is not None else None
+    except (TelemetryStoreError, sqlite3.Error) as exc:
+        raise _telemetry_unavailable(exc) from exc
+    if view is None:
+        raise HTTPException(status_code=404, detail="No trace for this run")
+    return view.model_dump(mode="json")
+
+
+@app.get("/telemetry/summary")
+def telemetry_summary(
+    request: Request,
+    window_hours: float = 24.0,
+    since: str | None = None,
+    until: str | None = None,
+) -> dict[str, Any]:
+    """Cost, tokens, latency percentiles, errors and gate outcomes over a window."""
+    _enforce_request_authn(request, action="telemetry.summary.read")
+    if not 0 < window_hours <= _TELEMETRY_MAX_WINDOW_HOURS:
+        raise HTTPException(status_code=400, detail="window_hours out of range")
+    until_ns = _telemetry_time_ns(until, "until") or time.time_ns()
+    since_ns = _telemetry_time_ns(since, "since") or int(until_ns - window_hours * 3600e9)
+    if since_ns >= until_ns:
+        raise HTTPException(status_code=400, detail="since must be before until")
+    reader = _telemetry_reader()
+    if reader is None:
+        return {"since_ns": since_ns, "until_ns": until_ns, "runs": 0, "empty": True}
+    try:
+        return reader.summary(since_ns, until_ns).model_dump(mode="json")
+    except (TelemetryStoreError, sqlite3.Error) as exc:
+        raise _telemetry_unavailable(exc) from exc
+
+
 @app.get("/system/update/status")
 def system_update_status() -> dict[str, Any]:
     """Read-only update readiness, the build version and the version handshake."""
@@ -21939,6 +22168,12 @@ def save_platform_settings(
             status_code=400,
             detail={"message": "Invalid platform settings payload", "errors": errors},
         ) from exc
+    telemetry_errors = _telemetry_settings_errors(candidate_settings)
+    if telemetry_errors:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Invalid telemetry settings", "errors": telemetry_errors},
+        )
     _validate_platform_settings_update(
         current_settings, candidate_settings, payload=payload, actor=actor
     )
@@ -21953,6 +22188,11 @@ def save_platform_settings(
         _store_provider_key(provider_id, key_value, actor=actor)
     store.platform_settings = candidate_settings
     _apply_provider_settings_side_effects()
+    if any(
+        current.get(key) != getattr(candidate_settings, key)
+        for key in capability_widening.TELEMETRY_FIELDS
+    ):
+        _apply_telemetry_settings()
     _append_config_mutation_audit(
         "platform.settings.save",
         actor,

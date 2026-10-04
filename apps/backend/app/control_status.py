@@ -107,6 +107,9 @@ class PostureFacts:
     # browser tier with its consent record, from
     # locus_runtime.computer_use.user_browser (None if undeterminable).
     user_browser: Mapping[str, Any] | None = None
+    # locus_runtime.telemetry.posture() (LOCUS-375): the local trace store and each
+    # external exporter with its destination class (None if undeterminable).
+    telemetry: Mapping[str, Any] | None = None
 
 
 def _policy_engine(facts: PostureFacts) -> ControlStatus:
@@ -277,6 +280,68 @@ def _user_browser(facts: PostureFacts) -> ControlStatus:
         f"Paired ({connected}); tier {tier} accepted by {who} at {when} (informed consent, "
         f"P32): fewer actions ask than at strict. {floor}",
     )
+
+
+_DESTINATION_TEXT = {
+    "loopback": "a collector on this machine",
+    "remote": "another host; data leaves the machine",
+    "hosted_proprietary": "hosted, proprietary; data leaves the machine",
+    "local": "this machine",
+}
+
+
+def _telemetry(facts: PostureFacts) -> ControlStatus:
+    """Where traces go (P14). Not a security control in itself: it is reported so
+    that any egress of run data is visible and labelled."""
+    label = "Telemetry stays local"
+    info = facts.telemetry or {}
+    if not info.get("configured"):
+        return ControlStatus(
+            "telemetry_local",
+            label,
+            "off",
+            "Telemetry is not configured in this process; no spans are recorded.",
+        )
+    local = info.get("local") if isinstance(info.get("local"), Mapping) else {}
+    external = [e for e in info.get("external") or [] if isinstance(e, Mapping)]
+    parts: list[str] = []
+    if local.get("state") == "active":
+        parts.append("Local SQLite trace store on (app home)")
+    else:
+        parts.append(
+            f"Local trace store {local.get('state') or 'off'} ({local.get('reason') or 'n/a'})"
+        )
+    active: list[Mapping[str, Any]] = []
+    for exporter in external:
+        state = str(exporter.get("state") or "off")
+        if state == "off":
+            continue
+        where = _DESTINATION_TEXT.get(str(exporter.get("destination") or ""), "unknown")
+        text = f"{exporter.get('kind')} exporter {state} to {exporter.get('host') or '?'} ({where})"
+        if state == "blocked":
+            text += f", reason {exporter.get('reason') or 'unknown'}"
+        else:
+            active.append(exporter)
+        parts.append(text)
+    if not any(e.get("state") != "off" for e in external):
+        parts.append("no external exporter enabled")
+    capture = bool(info.get("capture_content"))
+    parts.append(
+        "message and tool content captured (redacted, truncated; payloads pruned after "
+        f"{info.get('payload_retention_days')} days)"
+        if capture
+        else "content capture off"
+    )
+    evidence = (
+        "; ".join(parts)
+        + ". Every exported string is redacted on the export path; secrets never reach an "
+        "exporter (tests/unit/test_telemetry.py)."
+    )
+    if local.get("state") != "active" and not active:
+        return ControlStatus("telemetry_local", label, "off", evidence)
+    if active or capture:
+        return ControlStatus("telemetry_local", label, "degraded", evidence)
+    return ControlStatus("telemetry_local", label, "enforced", evidence)
 
 
 def _vault(facts: PostureFacts) -> ControlStatus:
@@ -638,6 +703,7 @@ _CONTROL_BUILDERS = (
     _model_calls,
     _computer_use,
     _user_browser,
+    _telemetry,
     _vault,
     _envoy,
     _nats,
@@ -787,6 +853,15 @@ def _user_browser_posture() -> Mapping[str, Any] | None:
         return None
 
 
+def _telemetry_posture() -> Mapping[str, Any] | None:
+    try:
+        from locus_runtime.telemetry import posture
+
+        return posture().model_dump(mode="json")
+    except Exception:  # noqa: BLE001 - reported as "off"
+        return None
+
+
 def _detect_secret_storage_mode() -> str | None:
     try:
         from locus_tooling.native_secrets import secret_storage_mode
@@ -836,4 +911,5 @@ def collect_posture_facts(
         self_improvement_loop=_self_improvement_loop_status(),
         computer_use_installed=_computer_use_installed(),
         user_browser=_user_browser_posture(),
+        telemetry=_telemetry_posture(),
     )

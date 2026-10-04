@@ -48,6 +48,10 @@ _SELF_CHECK_MODULES = (
     "locus_runtime.computer_use.user_browser.driver",
     "locus_runtime.computer_use.user_browser.native_host",
     "tldextract",
+    # Observability (LOCUS-375): OTel SDK + OTLP/HTTP exporter must be bundled.
+    "locus_runtime.telemetry.setup",
+    "opentelemetry.sdk.trace",
+    "opentelemetry.exporter.otlp.proto.http.trace_exporter",
 )
 
 

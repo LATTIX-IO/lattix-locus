@@ -51,6 +51,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
+from locus_runtime import telemetry
 from locus_runtime.gateway import BudgetFigures, GatewaySession, mask_secret_diff
 from locus_runtime.harness.enforcement import (
     INVALID_ARGUMENTS_NOTE,
@@ -513,6 +514,21 @@ class VerifiedLoop:
 
     # -- main ---------------------------------------------------------------------
     def run(self) -> RunResult:
+        """Run to an end state inside one ``invoke_agent`` telemetry span (LOCUS-375)."""
+        if self._st.final is not None:
+            return self._run_loop()  # already finished: no new run span
+        with telemetry.agent_run(
+            run_id=self.run_id,
+            agent=self.agent_id,
+            runtime="verified-loop",
+            provider=str(getattr(self.client, "provider", "") or ""),
+            model=str(getattr(self.client, "model", "") or ""),
+        ) as span:
+            result = self._run_loop()
+            telemetry.record_run_result(span, result)
+            return result
+
+    def _run_loop(self) -> RunResult:
         st = self._st
         rec = self.recorder or TrajectoryRecorder(run_id=self.run_id)
         self.recorder = rec
@@ -830,10 +846,14 @@ class VerifiedLoop:
         self._st.usage.actions += 1
         blocks_before = len(self.toolset.gateway_blocks)
         t0 = time.time()
-        try:
-            result = self.toolset.dispatch(name, args)
-        except Exception as exc:  # noqa: BLE001 - tool errors are observations
-            result = f"[tool error] {exc}"
+        with telemetry.tool_call(name, call_id=call_id, arguments=args) as span:
+            failed = False
+            try:
+                result = self.toolset.dispatch(name, args)
+            except Exception as exc:  # noqa: BLE001 - tool errors are observations
+                result = f"[tool error] {exc}"
+                failed = True
+            telemetry.record_tool_result(span, result, failed=failed)
         self._tool_reply(
             result, step, name, call_id=call_id, wall_ms=int((time.time() - t0) * 1000)
         )
@@ -892,7 +912,10 @@ class VerifiedLoop:
                 self._guard_before_action()
                 self._st.usage.actions += 1
                 blocks_before = len(self.toolset.gateway_blocks)
-                result = self.toolset.dispatch("execute_bash", {"command": match.group(1).strip()})
+                command = {"command": match.group(1).strip()}
+                with telemetry.tool_call("execute_bash", arguments=command) as span:
+                    result = self.toolset.dispatch("execute_bash", command)
+                    telemetry.record_tool_result(span, result)
                 self._observe(f"Observation:\n{result}", step, tool="execute_bash")
                 self._check_budget_policy(self.toolset.gateway_blocks[blocks_before:])
                 return
@@ -951,7 +974,9 @@ class VerifiedLoop:
     ) -> None:
         st = self._st
         self._guard_before_action()
-        out = self.toolset.dispatch(SUBMIT_TOOL, args)
+        with telemetry.tool_call(SUBMIT_TOOL, call_id=call_id) as span:
+            out = self.toolset.dispatch(SUBMIT_TOOL, args)
+            telemetry.record_tool_result(span, out)
         if not self.toolset.submitted:
             # The toolset itself refused (e.g. empty diff despite applied edits).
             self._reply_or_observe(out, step, call_id, as_observation)
@@ -961,16 +986,26 @@ class VerifiedLoop:
         blocks_before = len(self.toolset.gateway_blocks)
         self._report_budget()
         st.usage.verifier_runs += 1
-        report = verify(
-            self.envelope,
-            executor=self.toolset.workspace.executor,
-            judge=self._judge(),
-            # The judge is a model and the evidence is logged: secret-bearing
-            # hunks are masked (P10). The recorded patch stays exact for delivery.
-            diff=mask_secret_diff(str(submission.get("patch") or "")),
-            answer=str(submission.get("answer") or ""),
-            attempt=attempt,
-        )
+        with telemetry.gate("verify", run_id=self.run_id) as gate_span:
+            report = verify(
+                self.envelope,
+                executor=self.toolset.workspace.executor,
+                judge=self._judge(),
+                # The judge is a model and the evidence is logged: secret-bearing
+                # hunks are masked (P10). The recorded patch stays exact for delivery.
+                diff=mask_secret_diff(str(submission.get("patch") or "")),
+                answer=str(submission.get("answer") or ""),
+                attempt=attempt,
+            )
+            gate_span.set("locus.gate.attempt", attempt)
+            gate_span.set("locus.gate.failed", [r.id for r in report.results if not r.passed])
+            telemetry.record_score(
+                "verification",
+                1.0 if report.passed else 0.0,
+                label="blocked" if report.blocked else ("pass" if report.passed else "fail"),
+                source="verify_gate",
+                run_id=self.run_id,
+            )
         st.verification.append(report.to_dict())
         self._rec.annotation(
             "verification",

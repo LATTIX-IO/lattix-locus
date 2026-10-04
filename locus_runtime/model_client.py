@@ -40,6 +40,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from locus_runtime import telemetry
 from locus_runtime.gateway import (
     BudgetFigures,
     GatewaySession,
@@ -48,6 +49,8 @@ from locus_runtime.gateway import (
     is_loopback_host,
     redact_text,
 )
+
+from locus_runtime.telemetry import semconv as telemetry_semconv
 
 logger = logging.getLogger(__name__)
 
@@ -980,7 +983,10 @@ class ModelClient:
 
     # -- SDK-shaped, gated -----------------------------------------------------
     def create_chat_completion(self, **kwargs: Any) -> Any:
-        """Gated ``chat.completions.create``. Streams return a metered iterator."""
+        """Gated ``chat.completions.create``. Streams return a metered iterator.
+
+        Each request is one ``chat`` telemetry span (provider, model, tokens,
+        cost, latency, error type; content only when capture is on, redacted)."""
         model = str(kwargs.get("model") or self.model)
         kwargs["model"] = model
         stream = bool(kwargs.get("stream"))
@@ -988,26 +994,45 @@ class ModelClient:
         if stream and spec is not None and spec.stream_usage and "stream_options" not in kwargs:
             kwargs["stream_options"] = {"include_usage": True}
         call = self._call(model, stream=stream, tools=len(kwargs.get("tools") or []))
-        audit_id = self._gate.authorize(call)
-        started = time.monotonic()
-        prompt_estimate = _approx_tokens(kwargs.get("messages"))
+        span = telemetry.start_chat(
+            provider=self.provider,
+            model=model,
+            server_address=call.egress_host,
+            stream=stream,
+            request=kwargs,
+        )
         try:
-            response = self._sdk().chat.completions.create(**kwargs)
-        except ModelProviderError:
+            with span.activate():
+                audit_id = self._gate.authorize(call)
+                started = time.monotonic()
+                prompt_estimate = _approx_tokens(kwargs.get("messages"))
+                try:
+                    response = self._sdk().chat.completions.create(**kwargs)
+                except ModelProviderError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - typed, redacted provider failure
+                    usage = self._record(
+                        call,
+                        audit_id,
+                        started,
+                        counts=(0, 0),
+                        estimate=(prompt_estimate, 0),
+                        ok=False,
+                    )
+                    telemetry.record_usage(span, usage)
+                    raise self._failed(model, exc, audit_id) from exc
+        except BaseException as exc:
+            span.error(exc)
+            span.end()
             raise
-        except Exception as exc:  # noqa: BLE001 - typed, redacted provider failure
-            self._record(
-                call, audit_id, started, counts=(0, 0), estimate=(prompt_estimate, 0), ok=False
-            )
-            raise self._failed(model, exc, audit_id) from exc
         if stream:
-            return self._metered_stream(response, call, audit_id, started, prompt_estimate)
+            return self._metered_stream(response, call, audit_id, started, prompt_estimate, span)
         text = ""
         try:
             text = response.choices[0].message.content or ""
         except Exception:  # noqa: BLE001 - shape varies; usage is what matters here
             pass
-        self._record(
+        usage = self._record(
             call,
             audit_id,
             started,
@@ -1015,14 +1040,25 @@ class ModelClient:
             estimate=(prompt_estimate, max(1, len(text) // 4) if text else 0),
             ok=True,
         )
+        _record_response(span, response, usage)
+        span.end()
         return response
 
     def _metered_stream(
-        self, response: Any, call: ModelCall, audit_id: str, started: float, prompt_estimate: int
+        self,
+        response: Any,
+        call: ModelCall,
+        audit_id: str,
+        started: float,
+        prompt_estimate: int,
+        span: telemetry.SpanHandle | None = None,
     ) -> Iterator[Any]:
         counts: tuple[int, int] | None = None
         out_chars = 0
         ok = False
+        capture = span is not None and telemetry.content_capture_enabled()
+        parts: list[str] = []
+        finish = ""
         try:
             for chunk in response:
                 found = _usage_counts(getattr(chunk, "usage", None))
@@ -1030,15 +1066,24 @@ class ModelClient:
                     counts = found
                 for choice in getattr(chunk, "choices", None) or []:
                     delta = getattr(choice, "delta", None)
-                    out_chars += len(str(getattr(delta, "content", "") or ""))
+                    piece = str(getattr(delta, "content", "") or "")
+                    out_chars += len(piece)
+                    finish = str(getattr(choice, "finish_reason", "") or finish)
+                    if capture and piece:
+                        parts.append(piece)
                 yield chunk
             ok = True
-        except ModelProviderError:
+        except ModelProviderError as exc:
+            if span is not None:
+                span.error(exc)
             raise
         except Exception as exc:  # noqa: BLE001 - typed, redacted provider failure
-            raise self._failed(call.model, exc, audit_id) from exc
+            failure = self._failed(call.model, exc, audit_id)
+            if span is not None:
+                span.error(failure)
+            raise failure from exc
         finally:
-            self._record(
+            usage = self._record(
                 call,
                 audit_id,
                 started,
@@ -1046,23 +1091,50 @@ class ModelClient:
                 estimate=(prompt_estimate, out_chars // 4),
                 ok=ok,
             )
+            if span is not None:
+                telemetry.record_usage(span, usage)
+                if finish:
+                    span.set(telemetry_semconv.GEN_AI_RESPONSE_FINISH_REASONS, [finish])
+                if parts:
+                    span.content(
+                        telemetry_semconv.GEN_AI_OUTPUT_MESSAGES,
+                        [{"role": "assistant", "content": "".join(parts)}],
+                    )
+                span.end()
 
     def create_response(self, **kwargs: Any) -> Any:
         """Gated OpenAI Responses API call (OpenAI only)."""
         model = str(kwargs.get("model") or self.model)
         kwargs["model"] = model
         call = self._call(model, stream=False, tools=len(kwargs.get("tools") or []))
-        audit_id = self._gate.authorize(call)
-        started = time.monotonic()
-        prompt_estimate = _approx_tokens(kwargs.get("input"))
+        span = telemetry.start_chat(
+            provider=self.provider, model=model, server_address=call.egress_host
+        )
         try:
-            response = self._sdk().responses.create(**kwargs)
-        except Exception as exc:  # noqa: BLE001
-            self._record(
-                call, audit_id, started, counts=(0, 0), estimate=(prompt_estimate, 0), ok=False
-            )
-            raise self._failed(model, exc, audit_id) from exc
-        self._record(
+            with span.activate():
+                audit_id = self._gate.authorize(call)
+                started = time.monotonic()
+                prompt_estimate = _approx_tokens(kwargs.get("input"))
+                try:
+                    response = self._sdk().responses.create(**kwargs)
+                except Exception as exc:  # noqa: BLE001
+                    telemetry.record_usage(
+                        span,
+                        self._record(
+                            call,
+                            audit_id,
+                            started,
+                            counts=(0, 0),
+                            estimate=(prompt_estimate, 0),
+                            ok=False,
+                        ),
+                    )
+                    raise self._failed(model, exc, audit_id) from exc
+        except BaseException as exc:
+            span.error(exc)
+            span.end()
+            raise
+        usage = self._record(
             call,
             audit_id,
             started,
@@ -1070,6 +1142,8 @@ class ModelClient:
             estimate=(prompt_estimate, 0),
             ok=True,
         )
+        telemetry.record_usage(span, usage)
+        span.end()
         return response
 
     # -- typed entry points ----------------------------------------------------
@@ -1229,6 +1303,41 @@ class ModelClient:
         )
 
 
+def _record_response(span: telemetry.SpanHandle, response: Any, usage: ModelUsage) -> None:
+    """Response facts on the ``chat`` span; output content only with capture on."""
+    telemetry.record_usage(span, usage)
+    if not span.recording:
+        return
+    span.set(telemetry_semconv.GEN_AI_RESPONSE_MODEL, getattr(response, "model", None))
+    span.set(telemetry_semconv.GEN_AI_RESPONSE_ID, getattr(response, "id", None))
+    try:
+        choices = list(getattr(response, "choices", None) or [])
+    except TypeError:
+        choices = []
+    reasons = [str(getattr(c, "finish_reason", "") or "") for c in choices]
+    if any(reasons):
+        span.set(telemetry_semconv.GEN_AI_RESPONSE_FINISH_REASONS, [r for r in reasons if r])
+    if telemetry.content_capture_enabled() and choices:
+        message = getattr(choices[0], "message", None)
+        calls = [
+            {
+                "name": str(getattr(getattr(c, "function", None), "name", "") or ""),
+                "arguments": str(getattr(getattr(c, "function", None), "arguments", "") or ""),
+            }
+            for c in (getattr(message, "tool_calls", None) or [])
+        ]
+        span.content(
+            telemetry_semconv.GEN_AI_OUTPUT_MESSAGES,
+            [
+                {
+                    "role": "assistant",
+                    "content": str(getattr(message, "content", "") or ""),
+                    "tool_calls": calls,
+                }
+            ],
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Tiers and fallback (D-21)
 # --------------------------------------------------------------------------- #
@@ -1351,6 +1460,11 @@ class ModelRouter:
 
     def _emit(self, event: FallbackEvent) -> None:
         self.fallbacks.append(event)
+        telemetry.record_fallback(
+            from_tier=f"{event.from_provider}/{event.from_model}",
+            to_tier=f"{event.to_provider}/{event.to_model}",
+            reason_code=event.reason_code,
+        )
         logger.warning(
             "model_call.fallback",
             extra={k: v for k, v in event.as_metadata().items() if k != "reason"},
@@ -1367,9 +1481,11 @@ class ModelRouter:
         candidates = [i for i in range(len(self.tiers)) if i not in self._disabled]
         for position, index in enumerate(candidates):
             tier = self.tiers[index]
+            previous = self.tiers[candidates[position - 1]].qualified if position else ""
             try:
-                client = self._client(index)
-                result = operation(client)
+                with telemetry.fallback_hop(position, previous):
+                    client = self._client(index)
+                    result = operation(client)
             except ModelProviderError as exc:
                 errors.append(exc)
                 if exc.code in _STICKY_CODES:

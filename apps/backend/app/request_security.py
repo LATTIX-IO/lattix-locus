@@ -197,6 +197,26 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         RouteAccessCategory.AUTHENTICATED_MUTATE,
         "platform.settings.save",
     ),
+    # AI observability (LOCUS-375): reads of the local trace store only. The
+    # exporter settings are platform settings (POST /platform/settings).
+    RouteAccessRule(
+        ("GET",),
+        "/telemetry/runs",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "telemetry.runs.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/telemetry/runs/{run_id}/trace",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "telemetry.trace.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/telemetry/summary",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "telemetry.summary.read",
+    ),
     # Computer use (LOCUS-341): the handlers always require authentication.
     RouteAccessRule(
         ("POST",),

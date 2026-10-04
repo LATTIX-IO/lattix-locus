@@ -27,6 +27,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from locus_runtime import telemetry
 from locus_runtime.harness.llm import ChatResponse, ToolCall
 from locus_runtime.harness.runtime_contract import ApprovalRequest, Approver
 from locus_runtime.harness.tools import CodingToolset
@@ -145,6 +146,7 @@ class RunController(VerifiedLoop):
         self._lock = threading.RLock()
         self._asks = AskCursor.of(self.toolset)
         self._pending_asks: list[ApprovalRequest] = []
+        self._trace_context: telemetry.RunContext | None = None
 
     # -- lifecycle ---------------------------------------------------------------
     def drive(self, body: Callable[[RunController], None]) -> RunResult:
@@ -155,6 +157,20 @@ class RunController(VerifiedLoop):
         st = self._st
         if st.final is not None:
             return self._result_from_final(st.final)
+        with telemetry.agent_run(
+            run_id=self.run_id,
+            agent=self.agent_id,
+            runtime=self.runtime_name,
+            provider=str(getattr(self.client, "provider", "") or ""),
+            model=str(getattr(self.client, "model", "") or ""),
+        ) as span:
+            # Framework threads re-enter the run's trace (model_turn / tool_call).
+            self._trace_context = telemetry.capture_context()
+            result = self._drive_run(body)
+            telemetry.record_run_result(span, result)
+            return result
+
+    def _drive_run(self, body: Callable[[RunController], None]) -> RunResult:
         try:
             self._begin()
             body(self)
@@ -233,7 +249,7 @@ class RunController(VerifiedLoop):
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
     ) -> ChatResponse:
         """One gated model call: guards, retries, accounting, transcript."""
-        with self._lock:
+        with self._lock, telemetry.resume_context(self._trace_context):
             st = self._st
             st.messages = [dict(m) for m in messages]
             for tool in tools:
@@ -265,7 +281,7 @@ class RunController(VerifiedLoop):
     # -- tool calls ----------------------------------------------------------------
     def tool_call(self, call_id: str, name: str, arguments: Any) -> str:
         """Validate and run one Locus tool exactly as the verified loop does."""
-        with self._lock:
+        with self._lock, telemetry.resume_context(self._trace_context):
             schemas = schema_by_name(self._tool_schemas())
             before = len(self._st.messages)
             self._dispatch(
@@ -301,7 +317,8 @@ class RunController(VerifiedLoop):
 
     def refuse_tool(self, name: str) -> str:
         """A tool outside the mediated set was requested: never executed."""
-        with self._lock:
+        with self._lock, telemetry.resume_context(self._trace_context):
+            telemetry.tool_refused(name)
             self.refused_tools.append(name)
             self._rec.annotation("refused_tool", step=self._st.usage.steps, tool=name)
         return f"[not executed] '{name}' is not an available tool in this run."

@@ -37,7 +37,11 @@ def build_runner(repo_path: str = ".", **overrides: Any) -> Any:
     from locus_runtime.loop_runner.linear import LinearClient
     from locus_runtime.loop_runner.runner import LoopRunner
 
+    from locus_runtime import telemetry
+
     config = LoopConfig.load(Path(repo_path))
+    # Composition root: local SQLite telemetry with the privacy defaults (LOCUS-375).
+    telemetry.ensure_configured()
     return LoopRunner(
         config=config,
         tracker=LinearClient(),
