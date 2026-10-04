@@ -13,6 +13,7 @@ Locus is built from **modules**. A module owns one job of an AI harness behind a
 | **Tools and connectors** | `ToolProvider` | Built-in coding tools, MCP client (stdio/HTTP), integrations | Run boundary |
 | **Computer use** | `BrowserDriver`, `DesktopDriver` | Agent browser (Playwright), user-profile bridge (D-25), Windows UIA / macOS AX or Cua drivers | Run boundary |
 | **Memory** | `ColumnStore`, `ColumnKind` | **Cortical columns (native, D-10)** on SQLite | Release |
+| **Long-term memory** (LOCUS-387) | `LongTermMemoryStore` v1.0, `Embedder` (`locus_runtime/memory/contract.py`) | Embedded SQLite (FTS5 + sqlite-vec; desktop / local default); Postgres + pgvector (full stack). Embeddings: local engine through the gated model client | Release |
 | **Knowledge and ingestion** | `Source`, `Parser`, `Embedder`, `Index`, `Retriever` | Upload and folder watch; Docling, MarkItDown; Ollama/NIM embeddings; sqlite-vec + FTS5 | Live (Parser, Embedder); run boundary (others) |
 | **Skills** | `SkillStore` | Agent Skills format with capability manifest (D-18) | Live, through quarantine → trust |
 | **Work intake and triggers** | `Tracker`, `Trigger` | Native tracker, Linear; cron, folder, MCP/A2A inbound | Run boundary |

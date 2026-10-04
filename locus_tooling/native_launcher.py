@@ -22,6 +22,7 @@ Design notes:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import socket
 import sys
@@ -36,6 +37,10 @@ from .native_secrets import STORAGE_MODE_ENV, ensure_secret, secret_storage_mode
 # Name of the grant authority secret (locus_runtime.grants.GRANT_KEY_SECRET); kept as a
 # literal so the launcher does not import the runtime (and biscuit) to start.
 GRANT_KEY_SECRET = "LOCUS_GRANT_AUTHORITY_KEY"
+
+
+#: An Ollama model reference (``name[:tag]``, optional namespace); never an option.
+_OLLAMA_TAG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}(:[A-Za-z0-9._-]{1,64})?")
 
 
 class NativeLauncherError(RuntimeError):
@@ -99,6 +104,14 @@ class NativeConfig:
     neo4j_user: str = "neo4j"
 
     ollama_model: str = "gpt-oss:20b"
+    # Local embedding model for long-term memory (LOCUS-387): Nomic Embed Text
+    # (Nomic AI, US; Apache-2.0; ~274 MB). Same default as
+    # locus_runtime.memory.embedder.DEFAULT_EMBEDDING_MODEL (a literal here so the
+    # launcher does not import the runtime). LOCUS_MEMORY_EMBEDDING_MODEL
+    # overrides it; an empty value skips the pull (memory keeps keyword search).
+    ollama_embedding_model: str = field(
+        default_factory=lambda: os.getenv("LOCUS_MEMORY_EMBEDDING_MODEL", "nomic-embed-text")
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -225,13 +238,14 @@ def build_native_plan(config: NativeConfig, *, which: WhichFn = _which) -> Nativ
     if not pg_bin:
         if config.degrade_when_missing:
             # First-run / pre-fetch: fall back to SQLite state so the app boots.
-            # Long-term vector memory (pgvector) is disabled until Postgres lands.
+            # Long-term memory stays on, in the embedded SQLite store (LOCUS-387).
             sqlite_path = str(data / "state" / "locus-state.db")
             env["LOCUS_SQLITE_STATE_PATH"] = sqlite_path
-            env["LOCUS_MEMORY_ENABLE_LONG_TERM"] = "false"
+            env["LOCUS_MEMORY_STORE"] = "sqlite"
+            env["LOCUS_MEMORY_SQLITE_PATH"] = str(data / "memory" / "locus-memory.db")
             warnings.append(
-                "postgres not present yet; using SQLite state (long-term vector memory "
-                "disabled until Postgres is provisioned on first run)."
+                "postgres not present yet; using SQLite state and the embedded SQLite "
+                "long-term memory store."
             )
         else:
             raise NativeLauncherError(
@@ -310,6 +324,10 @@ def build_native_plan(config: NativeConfig, *, which: WhichFn = _which) -> Nativ
 
     # --- Ollama (REQUIRED for local models) -----------------------------------
     ollama_bin = which(["ollama"], bin_dir)
+    embedding_model = str(config.ollama_embedding_model or "").strip()
+    if embedding_model and not _OLLAMA_TAG.fullmatch(embedding_model):
+        warnings.append("ignoring an invalid memory embedding model tag; memory uses keyword search.")
+        embedding_model = ""
     if ollama_bin:
         services.append(
             ServiceSpec(
@@ -319,13 +337,24 @@ def build_native_plan(config: NativeConfig, *, which: WhichFn = _which) -> Nativ
                 health=HealthCheck(
                     "http", host, config.ollama_port, path="/api/tags", timeout_s=60
                 ),
-                post_start=[Step(argv=[ollama_bin, "pull", config.ollama_model])],
+                # The small embedding model first, so semantic memory search is
+                # ready long before the multi-GB chat model finishes downloading.
+                post_start=[
+                    *(
+                        [Step(argv=[ollama_bin, "pull", embedding_model])]
+                        if embedding_model
+                        else []
+                    ),
+                    Step(argv=[ollama_bin, "pull", config.ollama_model]),
+                ],
                 required=False,
             )
         )
     else:
         warnings.append("ollama not found; local model serving will be unavailable.")
     env["OLLAMA_BASE_URL"] = f"http://{host}:{config.ollama_port}"
+    # Long-term memory embeds on this local engine (LOCUS-387); empty = keyword only.
+    env["LOCUS_MEMORY_EMBEDDING_MODEL"] = embedding_model
 
     # --- Redis (OPTIONAL): short-term memory cache, WAL fallback otherwise ----
     if config.enable_redis:

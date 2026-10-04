@@ -109,7 +109,7 @@ This section is the Lattix-standard architecture record for this repo. `DESIGN.m
 - **Control-plane definitions** — in-memory store snapshotted to Postgres. See `RELIABILITY.md` for the silent-failure caveat.
 - **Runtime state** — `.locus/runtime-state.json` (approvals, events, replay tokens) via `locus_runtime/persistence.py`
 - **Short-term memory** — Redis
-- **Long-term memory** — Postgres + pgvector
+- **Long-term memory** — memory port with two adapters: embedded SQLite (FTS5 + sqlite-vec) by default on the desktop / local profile, Postgres + pgvector on the full stack (LOCUS-387)
 - **World graph** — Neo4j, feature-flagged
 - **Checkpoints** — LangGraph Postgres checkpointer
 

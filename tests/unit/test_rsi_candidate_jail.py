@@ -534,3 +534,141 @@ def test_full_runtime_probe_loads_the_candidates_code_in_the_jail(
     assert Path(str(facts["locus_runtime"])).is_relative_to(tmp_path / "cand-code" / "src")
     assert str(facts["keyring_backend"]).startswith("keyring.backends.null")
     assert facts["provider_keys"] == [] and facts["secret_like_env"] == []
+
+
+# --------------------------------------------------------------------------- #
+# LOCUS-382: the synced private held-out split is unreadable from every jail
+# --------------------------------------------------------------------------- #
+STUB_HELDOUT = REPO / "tests" / "evals" / "fixtures" / "heldout_stub"
+
+
+@pytest.fixture
+def synced_heldout(tmp_path: Path) -> Iterator[tuple[Path, Path]]:
+    """A real read-only install at ``<app_home>/evals/heldout/<digest>/`` (the public
+    test stub stands in for the private tasks), next to the app home's jail-granted
+    candidate-runtime cache, exactly as on a runner."""
+    from locus_tooling import evals_sync as es
+
+    app_home = tmp_path / "app-home"
+    files = {f"heldout/{p.name}": p.read_bytes() for p in sorted(STUB_HELDOUT.glob("*.yaml"))}
+    hashes = {name: es.content_sha(data) for name, data in files.items()}
+    manifest = es.HeldoutManifest(
+        digest=es.suite_digest(hashes),
+        tasks=tuple(sorted(n.split("/")[1][: -len(".yaml")] for n in files)),
+        files=hashes,
+    )
+    dest, installed = es.install_heldout(es.heldout_root(app_home), manifest, files)
+    assert installed
+    yield app_home, dest
+    es.make_writable(dest)
+
+
+def _heldout_targets(dest: Path) -> tuple[list[str], list[str]]:
+    task = next(iter(sorted((dest / "heldout").iterdir())))
+    return [str(task), str(dest / "MANIFEST.json")], [str(dest.parent), str(dest), str(task.parent)]
+
+
+@WINDOWS_JAIL
+def test_appcontainer_candidate_cannot_read_the_synced_heldout(
+    tmp_path: Path, synced_heldout: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app_home, dest = synced_heldout
+    monkeypatch.delenv(jail.UNJAILED_ENV, raising=False)
+    reads, listings = _heldout_targets(dest)
+    instance = CandidateInstance(
+        REPO,
+        model_base_url="http://127.0.0.1:1/v1",
+        model="m",
+        home=tmp_path / "cand",
+        # The interpreter copy lives in the same app home and IS granted to the jail.
+        runtime_cache=app_home / "rsi" / "candidate-runtime",
+        runtime_site_packages=False,
+    )
+    try:
+        assert instance.isolation == "appcontainer"
+        report = instance.escape_probe(read=reads, listing=listings)
+        # The run-time proof lists the held-out folder too and must pass.
+        proof = instance.verify_isolation(external=None, protected=[dest])
+    finally:
+        instance.close()
+    assert set(report["read"]) == set(reads) and set(report["list"]) == set(listings)
+    assert all(v.startswith("blocked:") for v in report["read"].values()), report["read"]
+    assert all(v.startswith("blocked:") for v in report["list"].values()), report["list"]
+    assert escapes(report) == [] and escapes(proof) == []
+    assert str(dest) in proof["list"] and len(proof["read"]) == 2
+
+
+@WINDOWS_JAIL
+def test_tool_jail_cannot_read_the_synced_heldout(
+    tmp_path: Path, synced_heldout: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from locus_runtime.win_toolchain import discover_toolchain
+
+    if discover_toolchain() is None:
+        pytest.skip("the Windows agent toolchain (BusyBox) is not installed here")
+    _app_home, dest = synced_heldout
+    monkeypatch.delenv(jail.UNJAILED_ENV, raising=False)
+    (task, _manifest), (root, _dest, _split) = _heldout_targets(dest)
+    secret_line = Path(task).read_text(encoding="utf-8").splitlines()[0]
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    instance = CandidateInstance(
+        REPO,
+        model_base_url="http://127.0.0.1:1/v1",
+        model="m",
+        home=tmp_path / "cand",
+        isolation="appcontainer",
+    )
+    try:
+        instance._grant_workspace(workspace)  # noqa: SLF001
+        instance._workspace = workspace  # noqa: SLF001
+        ok = instance._exec({"command": ["sh", "-c", "echo hi"]})  # noqa: SLF001
+        read = instance._exec({"command": ["sh", "-c", f"cat '{Path(task).as_posix()}'"]})  # noqa: SLF001
+        listing = instance._exec({"command": ["sh", "-c", f"ls '{Path(root).as_posix()}'"]})  # noqa: SLF001
+    finally:
+        instance.close()
+    assert ok["exit_code"] == 0 and "hi" in ok["stdout"], ok  # the jail itself works
+    assert read["exit_code"] != 0 and secret_line not in read["stdout"], read
+    assert listing["exit_code"] != 0 and dest.name not in listing["stdout"], listing
+
+
+@WINDOWS_JAIL
+def test_positive_control_unjailed_reads_the_synced_heldout(
+    tmp_path: Path, synced_heldout: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same probes without a jail succeed, so the blocked results above are meaningful."""
+    from locus_runtime.sandbox import minimal_agent_env
+    from locus_runtime.win_toolchain import discover_toolchain
+
+    _app_home, dest = synced_heldout
+    reads, listings = _heldout_targets(dest)
+    monkeypatch.setenv(jail.UNJAILED_ENV, "1")
+    instance = CandidateInstance(
+        REPO,
+        model_base_url="http://127.0.0.1:1/v1",
+        model="m",
+        home=tmp_path / "cand",
+        isolation="none",
+        python=sys.executable,
+    )
+    try:
+        report = instance.escape_probe(read=reads, listing=listings)
+    finally:
+        instance.close()
+    assert report["read"] == {path: "ok" for path in reads}
+    assert all(v == "ok" for v in report["list"].values()), report["list"]
+    toolchain = discover_toolchain()
+    if toolchain is None:
+        return
+    task = reads[0]
+    command = toolchain.resolve(["sh", "-c", f"cat '{Path(task).as_posix()}'"])
+    result = jail.run_tool(
+        "none",
+        command,
+        layout=jail.JailLayout(write=(str(tmp_path),)),
+        env=minimal_agent_env(None, path_prepend=toolchain.path_dirs()),
+        cwd=str(tmp_path),
+        timeout=60.0,
+    )
+    assert result.exit_code == 0, result
+    assert Path(task).read_text(encoding="utf-8").splitlines()[0] in result.stdout

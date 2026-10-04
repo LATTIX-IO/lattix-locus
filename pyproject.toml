@@ -49,6 +49,10 @@ dependencies = [
   "python-dotenv>=1.0.1",
   "PyYAML>=6.0",
   "redis>=5.2.1",
+  # Embedded long-term memory (LOCUS-387): vector search in SQLite. MIT OR
+  # Apache-2.0; pinned to the D-29-attested version (already a dependency of
+  # langgraph-checkpoint-sqlite), declared because locus_runtime.memory loads it.
+  "sqlite-vec==0.1.9",
   # User-browser sites (LOCUS-350): Public Suffix List, BSD-3-Clause; already a
   # presidio-analyzer dependency, declared because we import it directly.
   "tldextract>=5.1.0",

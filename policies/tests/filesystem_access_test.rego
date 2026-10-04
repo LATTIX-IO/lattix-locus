@@ -170,7 +170,7 @@ test_gate_definition_writes_ask if {
 # LOCUS-351: the RSI suite (tasks, graders, held-out split) and the scorecard /
 # comparator / candidate-isolation code are gate definitions.
 test_rsi_scorecard_writes_ask if {
-  filesystem_access.risk_floor == 3 with input as write_input("/workspace/project/apps/evals/locus_evals/suite/tasks/heldout/ho-csv-quoting.yaml")
+  filesystem_access.risk_floor == 3 with input as write_input("/workspace/project/apps/evals/locus_evals/suite/tasks/dev/syn-add-sign.yaml")
   filesystem_access.risk_floor == 3 with input as write_input("/workspace/project/apps/evals/locus_evals/suite/graders.py")
   filesystem_access.risk_floor == 3 with input as write_input("/workspace/project/locus_runtime/rsi/scorecard.py")
   filesystem_access.risk_floor == 3 with input as write_input(`C:\ws\locus_runtime\rsi\candidate.py`)
@@ -186,6 +186,15 @@ test_release_version_gate_asks_but_version_file_does_not if {
   filesystem_access.risk_floor == 0 with input as write_input("/workspace/project/VERSION")
   filesystem_access.allow with input as write_input("/workspace/project/VERSION")
   filesystem_access.risk_floor == 0 with input as write_input("/workspace/project/docs/release-notes/x.md")
+}
+
+# LOCUS-382: the private held-out split's pinned source and its sync are gate definitions.
+test_heldout_sync_writes_ask if {
+  filesystem_access.risk_floor == 3 with input as write_input("/workspace/project/locus_tooling/evals_sync.py")
+  filesystem_access.risk_floor == 3 with input as write_input("/workspace/project/locus_tooling/evals_heldout.py")
+  filesystem_access.risk_floor == 3 with input as write_input(`C:\ws\locus_tooling\evals_heldout.py`)
+  filesystem_access.risk_floor == 0 with input as write_input("/workspace/project/locus_tooling/evals_sync_notes.md")
+  filesystem_access.risk_floor == 0 with input as write_input("/workspace/project/locus_tooling/cli.py")
 }
 
 test_gate_definition_write_windows_path if {

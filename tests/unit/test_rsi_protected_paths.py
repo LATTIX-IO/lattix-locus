@@ -1,5 +1,8 @@
 """LOCUS-351: the RSI suite and scorecard code are D-22 protected gate definitions.
 
+LOCUS-382 adds the private held-out split's sync and pinned source
+(``locus_tooling/evals_sync.py``, ``locus_tooling/evals_heldout.py``).
+
 One list (``locus_runtime/gate_definitions.py``) feeds the merge guard and the
 gateway; the Rego mirror is asserted equal in ``tests/policy/test_policy_parity.py``
 (needs OPA) and ``policies/tests/filesystem_access_test.rego``. CODEOWNERS and the
@@ -29,10 +32,15 @@ from locus_runtime.loop_runner.merge_guard import (
 
 REPO = Path(__file__).resolve().parents[2]
 CODEOWNERS = (REPO / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
-RSI_PATHS = ("apps/evals/locus_evals/suite/", "locus_runtime/rsi/")
+RSI_PATHS = (
+    "apps/evals/locus_evals/suite/",
+    "locus_runtime/rsi/",
+    "locus_tooling/evals_sync.py",
+    "locus_tooling/evals_heldout.py",
+)
 ROOT = "/workspace/project"
 PROTECTED_FILES = (
-    "apps/evals/locus_evals/suite/tasks/heldout/ho-csv-quoting.yaml",
+    "apps/evals/locus_evals/suite/tasks/heldout/any-task.yaml",
     "apps/evals/locus_evals/suite/tasks/dev/loc-injection.yaml",
     "apps/evals/locus_evals/suite/graders.py",
     "apps/evals/locus_evals/suite/store.py",
@@ -40,6 +48,9 @@ PROTECTED_FILES = (
     "locus_runtime/rsi/scorecard.py",
     "locus_runtime/rsi/candidate.py",
     "locus_runtime/rsi/metering.py",
+    "locus_runtime/rsi/readonly.py",
+    "locus_tooling/evals_sync.py",
+    "locus_tooling/evals_heldout.py",
     "locus_runtime/loop_runner/scorecard_gate.py",
 )
 
@@ -55,6 +66,8 @@ def test_rsi_paths_are_gate_definitions_for_the_guard_and_the_gateway() -> None:
     # Neighbours are not swept in.
     assert not gate_write_reason("apps/evals/locus_evals/runner.py")
     assert not gate_write_reason("locus_runtime/rsi_notes.md")
+    assert not gate_write_reason("locus_tooling/cli.py")
+    assert not gate_write_reason("locus_tooling/evals_sync_notes.md")
 
 
 def test_codeowners_names_the_rsi_paths() -> None:

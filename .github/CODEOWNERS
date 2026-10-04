@@ -35,3 +35,7 @@
 /VERSION                           @jmsbooth
 /docs/VERSIONING.md                @jmsbooth
 /locus_tooling/versioning.py       @jmsbooth
+# The private held-out split (LOCUS-382): its pinned source and the sync that
+# verifies and installs it.
+/locus_tooling/evals_sync.py       @jmsbooth
+/locus_tooling/evals_heldout.py    @jmsbooth

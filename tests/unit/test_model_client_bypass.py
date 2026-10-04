@@ -40,14 +40,8 @@ ALLOWED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "ungated client for the evaluation harness (apps/evals), which drives a model "
         "under test outside a platform run; production uses GatedChatClient"
     ),
-    (
-        "apps/backend/app/platform_services.py",
-        "PostgresLongTermMemoryStore._get_openai_client",
-    ): (
-        "long-term memory embeddings call OpenAI with OPENAI_API_KEY outside the "
-        "gateway; known gap, to be routed through model_client with the Postgres "
-        "memory rework (later LOCUS-352 phase)"
-    ),
+    # LOCUS-378 closed (LOCUS-387): memory embeddings go through
+    # locus_runtime.memory.embedder.GatedEmbedder -> ModelClient.embed (gated).
 }
 
 #: Fully qualified provider client constructors / factories.

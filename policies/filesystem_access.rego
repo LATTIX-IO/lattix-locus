@@ -57,6 +57,8 @@ gate_write_paths := {
 	"apps/evals/locus_evals/suite/", "locus_runtime/rsi/",
 	# Release-version gate (D-31): the VERSION / Release-Impact check.
 	"locus_tooling/versioning.py",
+	# Private held-out split source and sync (LOCUS-382).
+	"locus_tooling/evals_sync.py", "locus_tooling/evals_heldout.py",
 }
 
 # The release VERSION file (D-31) is deliberately NOT listed: the loop may bump

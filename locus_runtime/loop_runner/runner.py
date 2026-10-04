@@ -43,9 +43,11 @@ Trust boundaries:
   baseline and history files, the eval history, skill proposals and failure
   filing are runner-side steps the agent cannot reach.
 * The RSI scorecard runs the candidate commit in a separate, secret-free
-  candidate instance (:mod:`locus_runtime.rsi.candidate`); its suite, graders
-  and held-out split come from the runner's own checkout, sealed and
-  hash-verified, never from the run's working copy.
+  candidate instance (:mod:`locus_runtime.rsi.candidate`); its suite and
+  graders come from the runner's own checkout and its held-out split from the
+  private, synced folder ``<app_home>/evals/heldout/<digest>/`` (LOCUS-382;
+  verified, or synced, before scoring), sealed and hash-verified, never from
+  the run's working copy, which holds no held-out task.
 """
 
 from __future__ import annotations

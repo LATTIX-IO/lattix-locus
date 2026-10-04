@@ -32,7 +32,8 @@ confinement of agent tool execution.
   - Casdoor/OIDC → native local-password auth + bootstrap operator
   - Caddy/Envoy/Squid → backend serves direct + CORS (no proxy)
   - NATS / Ollama → native binaries; Redis / OPA optional
-  - state store → SQLite fast-boot; Postgres/long-term memory attaches later
+  - state store → SQLite fast-boot; long-term memory → embedded SQLite
+    (FTS5 + sqlite-vec) on from the first launch, with a Personal collection (LOCUS-387)
 - **`local-native` profile** — the dual-path switch
   (`LOCUS_RUNTIME_PROFILE=local-native`); `hosted`/Docker path untouched.
 - **Agent tool-execution isolation on all three OSes** — `locus_runtime/sandbox.py`:
@@ -70,7 +71,7 @@ bundle. Both topologies are real; the strongest is the `native-up` path.
 | 3 | `_run_with_job_object` fail-open — continues unconfined if `AssignProcessToJobObject` fails | open | Windows validation (tightening may break legit nested-job: CI/containers) |
 | 4 | Signing / notarization — `HAS_WIN_CERT` conditional; macOS notarization absent | open | external certs in CI secrets |
 | 5 | First-run download weight — Postgres/NATS/Ollama binaries + ~13 GB model on first launch | open | UX/infra decision (bundle vs fetch) |
-| 6 | Long-term memory deferred on desktop — first session pins SQLite, `LOCUS_MEMORY_ENABLE_LONG_TERM=false`; pgvector/world-graph light up on a later launch | by design | confirm acceptable, or warm-provision |
+| 6 | Long-term memory deferred on desktop — first session pinned SQLite and forced `LOCUS_MEMORY_ENABLE_LONG_TERM=false`, so memory reported off | **resolved** (LOCUS-387): embedded SQLite memory store on by default; the embedding model (`nomic-embed-text`) is pulled before the chat model; the world graph stays off on the desktop | — |
 
 ## Security controls (Windows confinement)
 

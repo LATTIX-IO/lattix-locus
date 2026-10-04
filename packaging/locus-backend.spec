@@ -54,6 +54,9 @@ _DYNAMIC_PKGS = [
     # User browser (LOCUS-350): registrable sites from tldextract's bundled
     # Public Suffix List snapshot (data file), no network fetch.
     "tldextract",
+    # Embedded long-term memory (LOCUS-387): sqlite-vec's native vec0 library
+    # ships as package data and is loaded into SQLite at runtime.
+    "sqlite_vec",
 ]
 
 datas, binaries, hiddenimports = [], [], []
