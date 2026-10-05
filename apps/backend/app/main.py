@@ -8929,6 +8929,13 @@ def read_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _generate_integration_oauth_pkce_pair() -> tuple[str, str]:
+    verifier = secrets_module.token_urlsafe(64)
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return verifier, challenge
+
+
 def _integration_oauth_callback_url(request: Request, integration_id: str) -> str:
     base = str(request.base_url).rstrip("/")
     return f"{base}/integrations/{urllib_parse.quote(integration_id, safe='')}/oauth/callback"
@@ -9021,6 +9028,7 @@ def _exchange_integration_oauth_token(
     grant_type: Literal["authorization_code", "client_credentials", "refresh_token"],
     code: str = "",
     redirect_uri: str = "",
+    code_verifier: str = "",
 ) -> dict[str, Any]:
     auth = _integration_oauth_auth(integration)
     client_secret_ref = str(auth.get("client_secret_ref") or integration.secret_ref or "").strip()
@@ -9043,6 +9051,7 @@ def _exchange_integration_oauth_token(
     if grant_type == "authorization_code":
         payload["code"] = code
         payload["redirect_uri"] = redirect_uri
+        payload["code_verifier"] = code_verifier
     elif grant_type == "refresh_token":
         session = _integration_oauth_session(integration)
         refresh_token = ""
@@ -26253,6 +26262,8 @@ def connect_integration_oauth(
     auth = _integration_oauth_auth(integration)
     if not auth:
         raise HTTPException(status_code=400, detail="oauth2 auth metadata is missing")
+    if not str(auth.get("client_id") or "").strip():
+        raise HTTPException(status_code=400, detail="oauth2 client_id is required")
 
     if str(auth.get("grant_type") or "") == "client_credentials":
         token_payload = _exchange_integration_oauth_token(
@@ -26278,6 +26289,7 @@ def connect_integration_oauth(
         }
 
     state = str(uuid4())
+    code_verifier, code_challenge = _generate_integration_oauth_pkce_pair()
     redirect_uri = _integration_oauth_callback_url(request, integration_id)
     return_to = _safe_post_auth_redirect_path(
         payload.return_to or str(auth.get("redirect_path") or "/builder/integrations")
@@ -26286,6 +26298,7 @@ def connect_integration_oauth(
         integration,
         session_update={
             "pending_state": state,
+            "pending_code_verifier_encrypted": _encrypt_provider_secret(code_verifier),
             "pending_return_to": return_to,
             "pending_started_at": _now_iso(),
             "last_error": "",
@@ -26296,10 +26309,13 @@ def connect_integration_oauth(
         "client_id": str(auth.get("client_id") or ""),
         "redirect_uri": redirect_uri,
         "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
     }
     scopes = [str(item).strip() for item in auth.get("scopes") or [] if str(item).strip()]
     if scopes:
-        connect_query["scope"] = " ".join(scopes)
+        scope_separator = "," if str(auth.get("provider") or "") == "linear" else " "
+        connect_query["scope"] = scope_separator.join(scopes)
     if auth.get("audience"):
         connect_query["audience"] = str(auth.get("audience") or "").strip()
     if auth.get("resource"):
@@ -26352,6 +26368,7 @@ def integration_oauth_callback(integration_id: str, request: Request) -> Redirec
             integration,
             session_update={
                 "pending_state": "",
+                "pending_code_verifier_encrypted": "",
                 "pending_return_to": "",
                 "last_error": error,
             },
@@ -26372,11 +26389,31 @@ def integration_oauth_callback(integration_id: str, request: Request) -> Redirec
     if not code:
         raise HTTPException(status_code=400, detail="OAuth callback missing authorization code")
 
+    verifier_ciphertext = str(session.get("pending_code_verifier_encrypted") or "").strip()
+    if not verifier_ciphertext:
+        raise HTTPException(
+            status_code=400, detail="OAuth callback is missing its PKCE verifier"
+        )
+    code_verifier = _decrypt_provider_secret(verifier_ciphertext).strip()
+    if not code_verifier:
+        raise HTTPException(
+            status_code=400, detail="OAuth callback is missing its PKCE verifier"
+        )
+    _store_integration_oauth_session(
+        integration,
+        session_update={
+            "pending_state": "",
+            "pending_code_verifier_encrypted": "",
+            "pending_return_to": "",
+        },
+    )
+    _persist_store_state()
     token_payload = _exchange_integration_oauth_token(
         integration,
         grant_type="authorization_code",
         code=code,
         redirect_uri=_integration_oauth_callback_url(request, integration_id),
+        code_verifier=code_verifier,
     )
     _persist_integration_oauth_tokens(integration, token_payload)
     _persist_store_state()
@@ -26442,6 +26479,7 @@ def disconnect_integration_oauth(integration_id: str, request: Request) -> dict[
             "connected_at": "",
             "expires_at": "",
             "pending_state": "",
+            "pending_code_verifier_encrypted": "",
             "pending_return_to": "",
             "last_error": "",
             "account_label": "",

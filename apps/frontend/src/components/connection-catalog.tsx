@@ -75,7 +75,7 @@ export function catalogConnectionState(entry: IntegrationCatalogEntry, installed
 }
 
 function isMissingOauthApp(error: unknown): boolean {
-  return error instanceof Error && /oauth2 auth metadata is missing/i.test(error.message);
+  return error instanceof Error && /oauth2 auth metadata is missing|oauth2 client_id is required/i.test(error.message);
 }
 
 /**

@@ -113,6 +113,23 @@ describe("ConnectionCatalog", () => {
     expect(assignMock).not.toHaveBeenCalled();
   });
 
+  it("explains that a catalog OAuth integration needs a client ID", async () => {
+    api.installCatalogIntegration.mockResolvedValue({
+      ok: true,
+      id: "int-2",
+      already_installed: false,
+    });
+    api.connectIntegrationOAuth.mockRejectedValue(
+      new Error('Request failed (400): {"detail":"oauth2 client_id is required"}'),
+    );
+    const dialog = await openReview("Linear MCP");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /add and sign in/i }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/needs an oauth app/i);
+    expect(assignMock).not.toHaveBeenCalled();
+  });
+
   it("shows a cancelled or failed desktop confirmation instead of doing nothing", async () => {
     api.installCatalogIntegration.mockRejectedValueOnce(new DesktopConfirmationCancelledError());
     const dialog = await openReview("GitHub MCP");
