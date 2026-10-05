@@ -30,12 +30,12 @@ export const LIBRARY_LINKS: NavLink[] = [
   { href: "/library/playbooks", label: "Playbooks" },
   { href: "/library/workflows", label: "Workflows", matches: ["/workflows"] },
   { href: "/library/agents", label: "Agents" },
-  { href: "/library/connections", label: "Connections" },
+  { href: "/library/connections", label: "Connectors" },
   { href: "/library/knowledge", label: "Knowledge" },
   { href: "/library/templates", label: "Templates" },
   { href: "/library/guardrails", label: "Guardrails" },
   { href: "/library/nodes", label: "Node library" },
-  { href: "/library/releases", label: "Releases" },
+  { href: "/library/releases", label: "Published revisions" },
 ];
 
 export const ACTIVITY_LINKS: NavLink[] = [

@@ -683,10 +683,12 @@ class NativeSupervisor:
                 pass
         # POSIX / fallback: terminate the process (kill the group if possible).
         try:
-            if os.name != "nt" and pid:
+            kill_group = getattr(os, "killpg", None)
+            get_process_group = getattr(os, "getpgid", None)
+            if os.name != "nt" and pid and callable(kill_group) and callable(get_process_group):
                 import signal as _signal
 
-                os.killpg(os.getpgid(pid), _signal.SIGTERM)
+                kill_group(get_process_group(pid), _signal.SIGTERM)
                 return
         except Exception:  # noqa: BLE001
             pass

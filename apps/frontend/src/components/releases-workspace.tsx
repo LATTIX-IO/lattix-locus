@@ -378,8 +378,8 @@ export function ReleasesWorkspace({ workflows, agents, guardrails }: Props) {
       <header className="flex flex-wrap items-start justify-between gap-4 rounded-[1.7rem] border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_97%,hsl(var(--background))_3%)] px-5 py-4 shadow-[0_22px_56px_rgba(15,23,42,0.06)]">
         <div className="max-w-2xl">
           <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Library</p>
-          <h1 className="mt-2 text-[1.5rem] font-semibold tracking-[-0.03em] text-[var(--foreground)]">Versions & Releases</h1>
-          <p className="mt-2 text-sm leading-6 text-[var(--fx-muted)]">Promote published revisions to runtime, inspect revision history, and restore prior versions when needed without leaving the release surface.</p>
+          <h1 className="mt-2 text-[1.5rem] font-semibold tracking-[-0.03em] text-[var(--foreground)]">Published revisions</h1>
+          <p className="mt-2 text-sm leading-6 text-[var(--fx-muted)]">Review, activate, or restore published workflow, agent, and guardrail revisions. App updates are managed separately in Settings → Updates.</p>
         </div>
         <div className="grid min-w-[220px] gap-2 sm:grid-cols-3">
           <div className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.8)] px-3 py-2.5">

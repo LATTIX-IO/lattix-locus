@@ -120,13 +120,17 @@ def test_empty_queue_research_resolves_team_and_creates_daily_bounded_issues(
     second = runner._research_backlog(gateway=None)  # type: ignore[arg-type]
 
     assert first.status == "research_created"
-    assert "2 prioritized hypothesis issue(s)" in first.detail
+    assert "2 prioritized hypothesis issue(s) in Linear Triage" in first.detail
+    assert "promote them before the loop can run them" in first.detail
     assert second.status == "research_idle"
     assert [item["priority"] for item in tracker.created] == [2, 3]
     assert all(item["team_id"] == "team-1" for item in tracker.created)
-    assert all(item["state_name"] == "Todo" for item in tracker.created)
-    assert all(item["label_name"] == "agent:eligible" for item in tracker.created)
+    assert all(item["state_name"] == "Triage" for item in tracker.created)
+    assert all(item["label_name"] == "" for item in tracker.created)
     assert all("Falsification criterion" in item["description"] for item in tracker.created)
+    assert all(
+        "not eligible for automated code changes" in item["description"] for item in tracker.created
+    )
 
 
 def test_research_configuration_is_enabled_by_default_and_bounded(

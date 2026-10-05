@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { TypedDeleteButton } from "@/components/typed-delete-button";
@@ -959,20 +960,25 @@ export function IntegrationsManager() {
     <section className="flex flex-col gap-4">
       <header className="order-1 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Connections</h1>
-          <p className="fx-muted">Connect services Locus can use, then check sign-in and service health here.</p>
+          <h1 className="text-2xl font-semibold">Connectors</h1>
+          <p className="fx-muted">Connect an account, review what Locus can access, and check that the service works.</p>
         </div>
-        <button
-          type="button"
-          className="fx-btn-secondary px-3 py-2 text-sm font-medium"
-          onClick={() => {
-            resetForm();
-            setStatusMessage("");
-            openAdvanced();
-          }}
-        >
-          Advanced setup
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/settings?section=connections" className="fx-btn-secondary px-3 py-2 text-sm font-medium">
+            Connector rules
+          </Link>
+          <button
+            type="button"
+            className="fx-btn-secondary px-3 py-2 text-sm font-medium"
+            onClick={() => {
+              resetForm();
+              setStatusMessage("");
+              openAdvanced();
+            }}
+          >
+            Advanced setup
+          </button>
+        </div>
       </header>
 
       {statusMessage ? (
@@ -981,13 +987,13 @@ export function IntegrationsManager() {
         </p>
       ) : null}
 
-      <div className="order-5 fx-panel p-4">
-        <details open={!loading && items.length === 0}>
-          <summary className="cursor-pointer text-sm font-semibold">Connect a service</summary>
-          <p className="mb-3 mt-1 text-sm text-[var(--fx-muted)]">Choose a service and review what Locus can access before you sign in.</p>
-          <ConnectionCatalog integrations={items} onChanged={() => void refresh()} />
-        </details>
-      </div>
+      <section aria-labelledby="connect-service-heading" className="order-3 fx-panel space-y-3 p-4">
+        <div>
+          <h2 id="connect-service-heading" className="text-lg font-semibold text-[var(--foreground)]">Connect a service</h2>
+          <p className="mt-1 text-sm text-[var(--fx-muted)]">Choose a service, review the requested access, then sign in. Custom setups are under Advanced setup.</p>
+        </div>
+        <ConnectionCatalog integrations={items} onChanged={() => void refresh()} />
+      </section>
 
       {oauthPanelItem && oauthPanelStatus ? (
         <div className="order-4 fx-panel rounded-[1.6rem] p-5 shadow-[0_20px_48px_rgba(15,23,42,0.05)]">
@@ -1603,9 +1609,9 @@ export function IntegrationsManager() {
         </div>
       </details>
 
-      <section aria-labelledby="saved-connections-heading" className="order-3 space-y-3">
+      <section aria-labelledby="saved-connections-heading" className="order-4 space-y-3">
         <div>
-          <h2 id="saved-connections-heading" className="text-lg font-semibold text-[var(--foreground)]">Your connections</h2>
+          <h2 id="saved-connections-heading" className="text-lg font-semibold text-[var(--foreground)]">Connected services</h2>
           <p className="mt-1 text-sm text-[var(--fx-muted)]">See whether each service is signed in and whether Locus can reach it.</p>
         </div>
         {loading ? (

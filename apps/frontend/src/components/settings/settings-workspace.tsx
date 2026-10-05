@@ -33,7 +33,7 @@ import type { PlatformVersionStatus } from "@/types/locus";
 
 export const SETTINGS_SECTIONS = [
   { id: "engines", label: "Engines", icon: CpuIcon },
-  { id: "connections", label: "Connections", icon: PlugIcon },
+  { id: "connections", label: "Connector rules", icon: PlugIcon },
   { id: "computer-use", label: "Computer use", icon: MonitorSmartphoneIcon },
   { id: "policies", label: "Policies & autonomy", icon: ShieldCheckIcon },
   { id: "memory", label: "Memory & knowledge", icon: BrainIcon },

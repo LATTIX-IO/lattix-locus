@@ -4175,7 +4175,9 @@ def _build_world_graph() -> Any:
             os.getenv("NEO4J_USERNAME", ""),
             os.getenv("NEO4J_PASSWORD", ""),
         )
-    return PostgresWorldGraph(os.getenv("POSTGRES_DSN", ""))
+    return PostgresWorldGraph(
+        os.getenv("LOCUS_WORLD_GRAPH_DSN") or os.getenv("POSTGRES_DSN", "")
+    )
 
 
 # Name kept for backward compatibility (all call sites use this); the backend is
@@ -19702,11 +19704,17 @@ def system_shutdown(request: Request) -> JSONResponse:
     ):
         raise HTTPException(status_code=404, detail="Not found")
     try:
-        from locus_tooling.desktop import shutdown_supervisors
+        from locus_tooling.desktop import shutdown_runtime
 
-        shutdown_supervisors()
-    except Exception:  # noqa: BLE001
-        pass
+        # ``os._exit`` below deliberately bypasses atexit, so close the gateway
+        # first; its managed OPA sidecar is not a NativeSupervisor service.
+        shutdown_runtime()
+    except Exception as exc:  # noqa: BLE001 - do not exit with owned children alive
+        LOGGER.exception("system.shutdown_cleanup_failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Locus could not stop every owned runtime service. The runtime is still running.",
+        ) from exc
     # Exit just after responding so the caller gets a clean 200 first.
     threading.Timer(0.4, lambda: os._exit(0)).start()
     return JSONResponse({"ok": True, "shutting_down": True})
@@ -24735,14 +24743,18 @@ def _knowledge_memory_layers() -> list[dict[str, Any]]:
     long_term_ready = _long_term_memory_ready()
     long_term_facts = _long_term_memory_facts()
     label = _long_term_memory_label()
+    redis_ready = bool(_REDIS_MEMORY.enabled and _REDIS_MEMORY.healthcheck())
+    graph_backend = "Neo4j (legacy)" if isinstance(_NEO4J_GRAPH, Neo4jRunGraph) else "PostgreSQL"
     return [
         {
             "id": "short_term",
             "name": "Short-term memory",
-            "backend": "Redis",
+            "backend": "Redis with process-local fallback" if redis_ready else "Process-local session cache",
             "scope": "Per-session working memory and recent conversation turns.",
-            "enabled": bool(_REDIS_MEMORY.enabled),
-            "healthy": bool(_REDIS_MEMORY.enabled and _REDIS_MEMORY.healthcheck()),
+            # Session memory works without Redis; Redis is an optional shared
+            # cache for deployments that run multiple backend workers.
+            "enabled": True,
+            "healthy": True,
             "stats": {},
         },
         {
@@ -24761,7 +24773,7 @@ def _knowledge_memory_layers() -> list[dict[str, Any]]:
         {
             "id": "world_graph",
             "name": "World / knowledge graph",
-            "backend": "Neo4j",
+            "backend": graph_backend,
             "scope": "Entity and relationship graph projected from runs and consolidated memory.",
             "enabled": bool(_NEO4J_GRAPH.enabled),
             "healthy": bool(_NEO4J_GRAPH.enabled and _NEO4J_GRAPH.healthcheck()),

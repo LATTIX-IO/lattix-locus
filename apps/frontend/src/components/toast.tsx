@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 type ToastType = "error" | "warning" | "success" | "info";
@@ -132,11 +132,10 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const mountedRef = useRef(false);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    setMounted(true);
   }, []);
 
   const addToast = useCallback((type: ToastType, message: string, opts?: { persistent?: boolean }) => {
@@ -152,7 +151,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={{ addToast, removeToast }}>
       {children}
-      {typeof window !== "undefined" &&
+      {mounted &&
         createPortal(
           <div
             className="fixed right-4 top-4 z-[9999] flex flex-col gap-2"
