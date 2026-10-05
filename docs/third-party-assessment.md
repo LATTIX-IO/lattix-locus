@@ -93,7 +93,7 @@ There are no forks because extension points and out-of-process services cover ev
 - Decision: integrate as-is, pinned, plus a separate Locus extension package (middleware, tools, runtime adapter). Fork only when an extension point can't do the job (LOCUS-363).
 - Basis: D-27, confirmed 2026-10-04. Deep Agents won the bake-off on the RSI scorecard: 35 of 40 passes vs 32 of 40, with 0.72× the tokens.
 - It is the base for everything in this section.
-- **Recorded exception to [ARCHITECTURE-MODULES §5](ARCHITECTURE-MODULES.md#5-third-party-code).** §5 runs third-party implementations out of process. D-27 instead runs Deep Agents **in the Locus process** as the default `AgentRuntime`. It is a pinned, provenance-checked library, not a plugin. The controls that replace the process boundary:
+- **Recorded exception to [ARCHITECTURE-MODULES §5](ARCHITECTURE-MODULES.md#5-third-party-code).** §5 runs third-party implementations out of process. D-27 instead runs Deep Agents **in the Locus process** as the default `AgentRuntime`. It is a pinned, provenance-checked library, not a plugin. Compensating controls (they reduce the risk but are **not** an equivalent process boundary):
   - every model and tool call it makes goes through the Locus extension package to the gateway (rule 5 of §2);
   - the gateway-bypass scan fails CI on any direct provider client;
   - the RSI candidate runs jailed in its own AppContainer.
