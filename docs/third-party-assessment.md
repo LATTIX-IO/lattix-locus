@@ -1,6 +1,6 @@
 # Third-party repository assessment
 
-Status: **Active reference**. Assessed 2026-10-03 to 2026-10-05 from public sources, read-only: no code was cloned or run.
+Status: **Active reference**. Principal decisions of 2026-10-05 are applied (§5). Assessed 2026-10-03 to 2026-10-05 from public sources, read-only: no code was cloned or run.
 Owner: principal. Program epic: **LOCUS-406**. Related: P28 / D-29 (provenance), P29 (licenses), P30 (extend FOSS before building), D-28 (modules and ports), P18 / D-08 (forms first; diagrams are views).
 
 The principal shared these repositories and models as candidates to integrate, fork or learn from. This document records one P30 decision per item, so the issues, PRs and future reviews can refer to it. Each entry gives the facts that drove its decision. Facts marked *unverified* could not be confirmed from public pages.
@@ -38,10 +38,10 @@ Effort is S (days), M (1–3 weeks) or L (more than 3 weeks).
 |---|---|---|---|---|---|---|---|
 | 1 | [langchain-ai/deepagents](https://github.com/langchain-ai/deepagents) | **Integrate as-is** + Locus extension package (fork only if forced) | P1 | M | Agent runtime (`AgentRuntime`) | LOCUS-363 | Decided D-27; default since 2026-10-04 |
 | 2 | [openai/symphony](https://github.com/openai/symphony) | **Custom clone** (continue) | P1 | S–M | Intake / loop runner (`Tracker`, `Trigger`) | LOCUS-407 | Linear intake; worktree isolation |
-| 3 | [CopilotKit/CopilotKit](https://github.com/CopilotKit/CopilotKit) (AG-UI) | **Integrate as-is**: `@ag-ui/core`, `@ag-ui/client` and `ag-ui-langgraph` only | P1 | M | Surfaces (`SurfaceAdapter`) | LOCUS-369 | Gateway emits AG-UI events; HITL → native confirmation |
-| 4 | Laya (convaiinnovations/laya) | **Integrate as-is** (local `/v1/systemone` sidecar) | P1 | S | Judge (`DecisionModel`) | LOCUS-367 | Pin and hash; egress check; validate on Locus cases |
-| 5 | [TypeSafe Jev](https://typesafe.ai) | **Integrate as-is**, opt-in hosted tier | P2 | S | Judge (`DecisionModel`) | LOCUS-367 | Area-policy opt-in; no sensitive state sent |
-| 6 | [Cloudflare/clef](https://huggingface.co/Cloudflare/clef) (Clef-flash 9B) | Reference only, **blocked by the D-29 format rule** | P3 | — | Judge (`DecisionModel`) | LOCUS-367 | Needs a weights-only (safetensors/GGUF) artifact with no `trust_remote_code` loader; Qwen lineage |
+| 3 | [CopilotKit/CopilotKit](https://github.com/CopilotKit/CopilotKit) (AG-UI) | **Integrate as-is**: `@ag-ui/core`, `@ag-ui/client` and `ag-ui-langgraph` only. Chat UI library (assistant-ui vs CopilotKit React) **decided by bake-off** | P1 | M | Surfaces (`SurfaceAdapter`) | LOCUS-369 | Gateway emits AG-UI events; HITL → native confirmation; bake-off result |
+| 4 | Laya (convaiinnovations/laya) | **Integrate as-is**: local `/v1/systemone` sidecar, the **offline fallback** (D-32) | P1 | S | Judge (`DecisionModel`) | LOCUS-367 | Pin and hash; egress check; validate on Locus cases |
+| 5 | [TypeSafe Jev](https://typesafe.ai) | **Integrate as-is**, optional hosted tier for reasoning-heavy judgments | P3 | S | Judge (`DecisionModel`) | LOCUS-367 | Area-policy opt-in; no sensitive state sent |
+| 6 | [Cloudflare/clef](https://huggingface.co/Cloudflare/clef) on Cloudflare Workers AI | **Integrate as-is, hosted**: the **primary** judge (D-32, principal exception to D-29's hosted rule). Running it locally stays blocked (format rule) | P1 | S | Judge (`DecisionModel`) | LOCUS-367 | Cloudflare token in the keychain; redaction; judges advisory only; Laya offline fallback |
 | 7 | [CopilotKit/OpenBot](https://github.com/CopilotKit/OpenBot) | **Custom clone** | P2 | L | Always-on, computer use | LOCUS-370 | LOCUS-354; OS sandbox; browser tiers |
 | 8 | [CopilotKit/OpenDots](https://github.com/CopilotKit/OpenDots) | **Custom clone** | P2 | M | Always-on agent | LOCUS-370 | LOCUS-354; durable runs |
 | 9 | [CopilotKit/openmuse](https://github.com/CopilotKit/openmuse) | **Custom clone** | P2 | M | Always-on, computer use | LOCUS-370 | Durable runs; browser control |
@@ -51,8 +51,8 @@ Effort is S (days), M (1–3 weeks) or L (more than 3 weeks).
 | 13 | [CopilotKit/channels-sdk](https://github.com/CopilotKit/channels-sdk) | **Integrate as-is** (self-managed Slack sidecar) | P3 | M | Intake / surfaces (`ChannelAdapter`) | LOCUS-408 | AG-UI endpoint; keychain; taint labels |
 | 14 | [CopilotKit/OpenTag](https://github.com/CopilotKit/OpenTag) | Reference only | P3 | S | Intake / surfaces | LOCUS-408 | — |
 | 15 | [openclaw/openclaw](https://github.com/openclaw/openclaw) | **Custom clone** (channel adapter, sender pairing, release channels) | P3 | M | Intake / surfaces, skills | LOCUS-408 | **Never consume ClawHub skills** |
-| 16 | [simstudioai/sim](https://github.com/simstudioai/sim) | **Custom clone** (not a merge) | P2 | L | Pipelines / Playbooks, triggers | LOCUS-364 | D-08 canvas decision; LOCUS-356 ports; observability store |
-| 17 | [oomol-lab/open-flow](https://github.com/oomol-lab/open-flow) | **Custom clone** (UX patterns only) | P2 | M | Pipelines / Playbooks canvas | LOCUS-397 | **D-08 decision** (diagram-js vs xyflow); D-29 if any code is used |
+| 16 | [simstudioai/sim](https://github.com/simstudioai/sim) | **Custom clone** (not a merge) | P2 | L | Pipelines / Playbooks, triggers | LOCUS-364 | Renders with diagram-js (D-08, confirmed 2026-10-05); LOCUS-356 ports; observability store |
+| 17 | [oomol-lab/open-flow](https://github.com/oomol-lab/open-flow) | **Custom clone** (UX patterns only, on diagram-js) | P2 | M | Pipelines / Playbooks canvas | LOCUS-397 | D-08 confirmed 2026-10-05: diagram-js; D-29 if any code is used |
 | 18 | [philbotar/OpenFlow](https://github.com/philbotar/OpenFlow) | Reference only (borrow post-run advisor and per-node approval) | P3 | S | Pipelines, evals | LOCUS-397 | — |
 | 19 | [evermind-ai/raven](https://github.com/evermind-ai/raven) | **Custom clone** (Curator gate) | P2 | M | RSI loop, evals | LOCUS-365 | Scorecard + held-out split (LOCUS-351/382); D-29 for any code |
 | 20 | [truefoundry/trueforge](https://github.com/truefoundry/trueforge) | **Custom clone** (context engineering, approvals) | P2 | M | Agent runtime extensions, tools | LOCUS-373 | LOCUS-363 extension package |
@@ -75,10 +75,10 @@ Effort is S (days), M (1–3 weeks) or L (more than 3 weeks).
 | 37 | [JustVugg/colibri](https://github.com/JustVugg/colibri) | Reference only (revisit for overnight batch jobs) | P3 | L | Model access (`ModelProvider`) | LOCUS-366 | D-29 on every model; below 1 tok/s here |
 | 38 | [dream-num/univer-workspace](https://github.com/dream-num/univer-workspace) | **Skip** (only the `@univerjs/*` core, later) | P3 | M | Documents surface | LOCUS-368 | Pro license; DeepSeek Harness inside; D-29 |
 | 39 | MiroFish (666ghj/MiroFish) | **Skip** | — | — | — | — (noted in LOCUS-401) | China origin, Shanda-backed; cloud defaults |
-| 40 | LATTIX-IO/savant (first party) | **Integrate as-is** (skills source connector) | P2 | M | Skills (`SkillStore`) | LOCUS-388 | Principal provides API access or docs |
+| 40 | LATTIX-IO/savant (first party) | **Integrate as-is** (skills source connector) | P2 | M | Skills (`SkillStore`) | LOCUS-388 | Connector design from the local Savant codebase; a headless token on the Savant side if none exists |
 
 **Net result:**
-- 7 items are integrated as-is: Deep Agents, AG-UI, Laya, Jev, channels-sdk, Inspect AI, Cedar. Savant is a first-party connector on top of these.
+- 8 items are integrated as-is: Deep Agents, AG-UI, Clef (hosted), Laya, Jev, channels-sdk, Inspect AI, Cedar. Savant is a first-party connector on top of these.
 - **Zero forks.**
 - 21 items are custom clones.
 - The rest are reference only or skipped.
@@ -183,16 +183,30 @@ There are no forks because extension points and out-of-process services cover ev
 
 ### 3.3 Judge and decision tier
 
-These items decide the D-11 defaults. **Standardise the `DecisionModel` port on the Jev-compatible `/v1/systemone` schema**, so the providers can be swapped (LOCUS-367).
+These items decide the D-11 defaults, now recorded as **D-32** (2026-10-05). **Standardise the `DecisionModel` port on the Jev-compatible `/v1/systemone` schema**, so the providers can be swapped (LOCUS-367).
+
+**D-32 routing:**
+1. **Primary: Clef on Cloudflare Workers AI** (hosted). The principal accepts it as an exception to D-29's hosted rule: Cloudflare (US) hosts it, the weights are Qwen-derived, and the tokens leave the machine.
+2. **Offline fallback: Laya, local.** Used when there is no network, Cloudflare is unreachable or over budget, or the area policy says local only.
+3. **If Laya isn't available, or fails calibration on Locus cases:** steps that need a judgment escalate to the principal. Offline judging is then delayed rather than guessed.
+
+**Conditions:**
+- Judges stay **advisory**: they can deny or escalate, never allow, and no gateway decision depends on a judge being reachable.
+- Inputs are minimised and redacted (Presidio) before they leave.
+- The Cloudflare token lives in the keychain, and the Workers AI host is on the egress allowlist.
+- Every call is metered and audited.
+
+Laya and Clef share the `/v1/systemone` schema, so falling back is an endpoint switch.
 
 | Option | Facts | Decision |
 |---|---|---|
-| **Laya** (Convai Innovations) | Apache-2.0. 421M ModernBERT-large (non-China lineage). `laya-serve` exposes `/v1/systemone`. Self-reported 0.766 vs Jev 0.727 on typed decisions; ~33 ms per question on a T4; up to ~20 options | **Integrate as-is**: local default for risk/intent classification and done-criteria checks with few options (P1) |
-| **Clef-flash** (9B) / Clef (27B) | Apache-2.0; post-trained from **Qwen** (Alibaba lineage), with a joint schema head that needs `trust_remote_code`. Strong on intent classification (BANKING77 94.2), weak on reasoning (GPQA 48 vs Jev 78.3). 27B BF16 ≈ 55 GB | **Reference only (P3), blocked.** The D-29 model check refuses configs that request custom code (`trust_remote_code`, `auto_map`) and any loader code ([PROVENANCE §4](PROVENANCE.md)), so the published artifact cannot pass inspection. Revisit only if a weights-only safetensors or GGUF artifact appears whose joint head loads without custom code; inspect that exact artifact. Skip the 27B locally either way |
-| **Jev** (TypeSafe) | Hosted only (waitlist); $0.042 per million input tokens; leads on reasoning-heavy judgments | Opt-in hosted tier for reasoning-heavy acceptance judging (P2). Never sends sensitive state |
+| **Clef / Clef-flash on Workers AI** | Hosted by Cloudflare at $0.24 (Clef) / $0.09 (Clef-flash) per million input tokens. Strong on intent classification (BANKING77 94.2), weak on reasoning (GPQA 48 vs Jev 78.3). Jev SystemOne API-compatible | **Integrate as-is, hosted: primary judge (D-32, P1)** |
+| **Laya** (Convai Innovations) | Apache-2.0. 421M ModernBERT-large (non-China lineage), small enough for CPU. `laya-serve` exposes `/v1/systemone`. Self-reported 0.766 vs Jev 0.727 on typed decisions; ~33 ms per question on a T4; up to ~20 options | **Integrate as-is, local: offline fallback (D-32, P1)** |
+| **Clef weights run locally** (9B / 27B) | Apache-2.0; post-trained from **Qwen** (Alibaba lineage), with a joint schema head that needs `trust_remote_code`. 27B BF16 ≈ 55 GB | **Local use: reference only (P3), blocked.** The D-29 model check refuses configs that request custom code (`trust_remote_code`, `auto_map`) and any loader code ([PROVENANCE §4](PROVENANCE.md)), so the published artifact cannot pass inspection. Revisit only if a weights-only safetensors or GGUF artifact appears whose joint head loads without custom code; inspect that exact artifact. Skip the 27B locally either way |
+| **Jev** (TypeSafe) | Hosted only (waitlist); $0.042 per million input tokens; leads on reasoning-heavy judgments | Optional hosted tier for reasoning-heavy acceptance judging (P3). Never sends sensitive state |
 | Ollama structured output | No new dependency; no calibrated per-option probabilities | Fallback for open-ended questions or more than 20 options |
 
-**Open question for the principal:** Clef is also served on Cloudflare Workers AI. Does hosted inference of a Qwen-derived model count as "hosted inference from those origins" under D-29? The conservative reading is yes, so local only.
+**Resolved 2026-10-05:** the principal allows Clef on Cloudflare Workers AI (D-32) and requires offline operation through the local Laya fallback.
 
 ### 3.4 Desktop UI, surfaces and generative UI
 
@@ -235,7 +249,7 @@ These items decide the D-11 defaults. **Standardise the `DecisionModel` port on 
 
 ### 3.5 Pipelines, Playbooks and the visual canvas
 
-> **Conflict to resolve first:** D-08 retires React Flow (diagram-js renders models; Excalidraw is the whiteboard), and P18 says diagrams are views over forms and declarative files. Sim, open-flow and the earlier LOCUS-397 draft all lean on React Flow / xyflow. **Recommendation:** keep D-08 and render Playbook / Pipeline definitions with diagram-js ("playbook structure" is a listed Model use in [17](product/17-canvas-and-whiteboard.md)), borrowing the UX patterns below. Revisit D-08 only if the principal prefers xyflow's editing experience. Either way the definition stays in forms and files (P18). `reactflow ^11` is still in `apps/frontend/package.json` as legacy.
+> **Decided 2026-10-05: diagram-js (D-08 confirmed).** Playbook and Pipeline definitions live in forms and declarative files (P18). diagram-js renders them as model views ("playbook structure" is a listed Model use in [17](product/17-canvas-and-whiteboard.md)), using the UX patterns below. Sim, open-flow and the first LOCUS-397 draft assumed React Flow / xyflow; that's superseded. `reactflow ^11` is still in `apps/frontend/package.json` as legacy, to be removed under D-08.
 
 **simstudioai/sim.** Apache-2.0 at the root, **but `apps/sim/ee/` is an enterprise license** and must not be copied. Sim Studio, Inc. (US).
 - About 29.8k stars; TypeScript/Bun, Postgres.
@@ -350,13 +364,17 @@ P2  LOCUS-371 octop-browser / octop-memory clean-room patterns (needs LOCUS-387 
 P3  LOCUS-401 diagram skill · LOCUS-366 colibri · LOCUS-368 univer core · LOCUS-372 ax · LOCUS-388 Savant (blocked on access)
 ```
 
-## 5. Decisions needed from the principal
+## 5. Principal decisions
 
-1. **D-08 canvas engine.** Keep diagram-js (recommended), or revisit D-08 to allow xyflow for Pipelines and Playbooks? This blocks LOCUS-397 and LOCUS-364.
-2. **Clef on Workers AI.** Does hosted inference of a Qwen-derived model fall under the D-29 hosted exclusion? Recommended: yes. Locally, Clef is blocked anyway until a weights-only artifact exists (§3.3).
-3. **assistant-ui vs `@copilotkit/react-core`** for the chat and run surfaces. Recommended: assistant-ui. The protocol is AG-UI either way.
-4. **Savant access.** API docs or a token so LOCUS-388 can start.
-5. **Deep Agents process boundary.** Keep the in-process D-27 runtime with the controls in §3.1 (the current state), or run it behind an A2A/ACP sidecar so it meets ARCHITECTURE-MODULES §5? The sidecar adds latency and work, so the recommendation is to keep it in process until the Cedar cutover (LOCUS-393), then re-assess.
+Answered 2026-10-05:
+
+1. **Canvas engine: diagram-js** (D-08 confirmed). This unblocks LOCUS-397 and LOCUS-364.
+2. **Judge tier:** Clef on Cloudflare Workers AI is the primary judge, and Laya runs locally as the offline fallback. If no fallback is possible, offline judging is delayed and steps escalate. Recorded as D-32, see §3.3.
+3. **Chat UI library: decided by a measured bake-off** of assistant-ui vs CopilotKit React against the Locus requirements (`docs/development/chat-ui-bakeoff-2026-10.md`, LOCUS-369). The protocol is AG-UI either way.
+4. **Savant:** designed from the local Savant codebase. The connector design and any token the Savant side needs are in LOCUS-388.
+5. **Deep Agents process boundary: keep it in process for now** (principal, 2026-10-05, provisional). Re-assess after the Cedar cutover (LOCUS-393).
+   - *In process (today):* fastest, simplest, and how the bake-off measured it. The risk is that a flaw or a malicious update in the library runs with the backend's own access. The gateway middleware, the bypass scan and version pins reduce that risk but do not remove it.
+   - *Sidecar process:* the library could only reach the outside world through the gateway, because the OS would enforce the boundary. That costs an extra hop per step (latency), a second process to package and supervise, serialising agent state across the boundary, and roughly 2–3 weeks of work.
 
 ## 6. Keeping this current
 
