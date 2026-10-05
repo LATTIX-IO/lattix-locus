@@ -74,6 +74,15 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         ("GET",), "/loop/status", RouteAccessCategory.AUTHENTICATED_READ, "loop.status.read"
     ),
     RouteAccessRule(
+        ("GET",),
+        "/loop/linear/board",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "loop.linear.board.read",
+    ),
+    RouteAccessRule(
+        ("POST",), "/loop/tracker", RouteAccessCategory.AUTHENTICATED_MUTATE, "loop.tracker"
+    ),
+    RouteAccessRule(
         ("POST",), "/loop/enable", RouteAccessCategory.AUTHENTICATED_MUTATE, "loop.enable"
     ),
     RouteAccessRule(
@@ -1250,7 +1259,7 @@ _SHELL_PROOF_RULES: tuple[ShellProofRule, ...] = (
     _neutral("POST", "/system/update/prepare"),  # signed update bundles only
     _neutral("POST", "/system/update/cancel"),
     _narrowing("POST", "/system/shutdown"),
-    # --- self-improvement loop (Settings → Loop & Linear) ------------------------
+    # --- self-improvement loop (Settings → Self-improvement) ---------------------
     _widening(
         "POST",
         "/loop/enable",
@@ -1268,6 +1277,9 @@ _SHELL_PROOF_RULES: tuple[ShellProofRule, ...] = (
         "The loop starts on this checkout every time Locus starts, also after updates.",
     ),
     _narrowing("DELETE", "/loop/autostart"),
+    # Narrow, authenticated issue operations; each MCP side effect still needs a
+    # signed gateway allow decision for the exact Linear tool and arguments.
+    _neutral("POST", "/loop/tracker"),
     # --- builder content (bounded by settings, gateway policy and grants) ----
     _neutral("POST", "/agent-definitions/import"),
     _neutral("POST", "/workflow-definitions/import"),

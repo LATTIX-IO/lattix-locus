@@ -37,13 +37,19 @@ const LINEAR = {
   capabilities: ["issues", "projects"],
   egress_allowlist: ["mcp.linear.app"],
 };
+const ATLASSIAN = {
+  ...LINEAR,
+  catalog_id: "mcp-atlassian",
+  name: "Atlassian MCP (Jira/Confluence)",
+  egress_allowlist: ["mcp.atlassian.com"],
+};
 
 const assignMock = vi.fn();
 const originalLocation = window.location;
 
 beforeEach(() => {
   Object.values(api).forEach((mock) => mock.mockReset());
-  api.getIntegrationCatalog.mockResolvedValue([GITHUB, LINEAR]);
+  api.getIntegrationCatalog.mockResolvedValue([GITHUB, LINEAR, ATLASSIAN]);
   api.getIntegrations.mockResolvedValue([]);
   assignMock.mockReset();
   Object.defineProperty(window, "location", { configurable: true, value: { ...originalLocation, assign: assignMock } });
@@ -105,7 +111,7 @@ describe("ConnectionCatalog", () => {
   it("says an OAuth server needs an OAuth app when the backend has none configured", async () => {
     api.installCatalogIntegration.mockResolvedValue({ ok: true, id: "int-2", already_installed: false });
     api.connectIntegrationOAuth.mockRejectedValue(new Error('Request failed (400): {"detail":"oauth2 auth metadata is missing"}'));
-    const dialog = await openReview("Linear MCP");
+    const dialog = await openReview("Atlassian MCP (Jira/Confluence)");
 
     fireEvent.click(within(dialog).getByRole("button", { name: /add and sign in/i }));
 
@@ -122,7 +128,7 @@ describe("ConnectionCatalog", () => {
     api.connectIntegrationOAuth.mockRejectedValue(
       new Error('Request failed (400): {"detail":"oauth2 client_id is required"}'),
     );
-    const dialog = await openReview("Linear MCP");
+    const dialog = await openReview("Atlassian MCP (Jira/Confluence)");
 
     fireEvent.click(within(dialog).getByRole("button", { name: /add and sign in/i }));
 

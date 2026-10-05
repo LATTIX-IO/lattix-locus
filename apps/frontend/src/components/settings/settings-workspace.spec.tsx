@@ -19,6 +19,9 @@ const api = vi.hoisted(() => ({
   clearProviderKey: vi.fn(),
   getTelemetrySummary: vi.fn(),
   getLoopStatus: vi.fn(),
+  getLoopBoard: vi.fn(),
+  updateLoopIssueStatus: vi.fn(),
+  updateLoopIssuePriority: vi.fn(),
   enableLoop: vi.fn(),
   disableLoop: vi.fn(),
   enableLoopAutostart: vi.fn(),
@@ -92,7 +95,20 @@ const loopStatus = {
   last_run: null,
   open_prs: [],
   autostart: { enabled: false, repo_path: "" },
-  linear: { api_key_configured: true },
+  linear: { connected: true, integration_name: "Linear MCP" },
+  project_slug: "locus",
+  research: { enabled: true, issues_per_day: 3, model: "Ollama (local only)" },
+};
+
+const loopBoard = {
+  project_slug: "locus",
+  states: [
+    { id: "todo", name: "Todo", type: "unstarted" },
+    { id: "progress", name: "In Progress", type: "started" },
+  ],
+  issues: [
+    { id: "issue-1", identifier: "LOCUS-26", title: "Engine routing", description: "", priority: 3, url: "https://linear.app/lattix/issue/LOCUS-26", state: "Todo", state_id: "todo", labels: ["agent:eligible"], team_id: "team-1", created_at: "" },
+  ],
 };
 
 beforeEach(() => {
@@ -113,6 +129,8 @@ beforeEach(() => {
   api.getWorkspaceFolders.mockResolvedValue({ folders: [] });
   api.getTelemetrySummary.mockResolvedValue({ since_ns: 0, until_ns: 1, runs: 0, empty: true });
   api.getLoopStatus.mockResolvedValue(loopStatus);
+  api.getLoopBoard.mockResolvedValue(loopBoard);
+  api.updateLoopIssueStatus.mockResolvedValue(undefined);
   api.getComputerUseStatus.mockResolvedValue({ mode: "observe", panicked: false, panic_source: "", inflight_actions: 0 });
   api.getUserBrowserTier.mockResolvedValue({
     tier: "strict",
@@ -155,6 +173,8 @@ describe("SettingsWorkspace", () => {
 
   it("opens the section named in the URL and falls back for unknown ones", () => {
     expect(resolveSettingsSection("policies")).toBe("policies");
+    expect(resolveSettingsSection("self-improvement")).toBe("self-improvement");
+    expect(resolveSettingsSection("loop")).toBe("self-improvement");
     expect(resolveSettingsSection("governance")).toBe("engines");
     expect(resolveSettingsSection(null)).toBe("engines");
   });
@@ -312,17 +332,39 @@ describe("Memory & knowledge", () => {
   });
 });
 
-describe("Loop & Linear", () => {
-  it("shows Linear key presence (never a value) and turns the loop on", async () => {
+describe("Self-improvement", () => {
+  it("shows the connected Linear MCP board and turns the loop on", async () => {
     api.enableLoop.mockResolvedValue({ ...loopStatus, enabled: true, disabled_reason: "" });
     render(<LoopSection />);
 
-    expect(await screen.findByText(/api key stored/i)).toBeInTheDocument();
+    expect(await screen.findByText(/connected/i)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /^Todo/ })).toBeInTheDocument();
+    expect(screen.getByText(/prioritized Todo issues per day/i)).toBeInTheDocument();
+    expect(screen.getByText("LOCUS-26")).toHaveAttribute("href", "https://linear.app/lattix/issue/LOCUS-26");
     expect(screen.queryByRole("textbox", { name: /linear/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /turn on/i }));
 
     await waitFor(() => expect(api.enableLoop).toHaveBeenCalledTimes(1));
     expect(await screen.findByRole("button", { name: /turn off/i })).toBeInTheDocument();
+  });
+
+  it("moves an issue through the Linear MCP status update", async () => {
+    render(<LoopSection />);
+    const state = await screen.findByRole("combobox", { name: /move locus-26 to status/i });
+    fireEvent.change(state, { target: { value: "In Progress" } });
+
+    await waitFor(() => expect(api.updateLoopIssueStatus).toHaveBeenCalledWith("issue-1", "In Progress"));
+    expect(await screen.findByText(/LOCUS-26 moved to In Progress/i)).toBeInTheDocument();
+    expect(api.getLoopBoard).toHaveBeenCalledTimes(2);
+  });
+
+  it("updates issue priority through the Linear MCP bridge", async () => {
+    render(<LoopSection />);
+    const priority = await screen.findByRole("combobox", { name: /change locus-26 priority/i });
+    fireEvent.change(priority, { target: { value: "1" } });
+
+    await waitFor(() => expect(api.updateLoopIssuePriority).toHaveBeenCalledWith("issue-1", 1));
+    expect(await screen.findByText(/LOCUS-26 priority updated/i)).toBeInTheDocument();
   });
 });
 

@@ -37,7 +37,7 @@ export const SETTINGS_SECTIONS = [
   { id: "computer-use", label: "Computer use", icon: MonitorSmartphoneIcon },
   { id: "policies", label: "Policies & autonomy", icon: ShieldCheckIcon },
   { id: "memory", label: "Memory & knowledge", icon: BrainIcon },
-  { id: "loop", label: "Loop & Linear", icon: RepeatIcon },
+  { id: "self-improvement", label: "Self-improvement", icon: RepeatIcon },
   { id: "updates", label: "Updates", icon: RefreshCwIcon },
   { id: "observability", label: "Observability", icon: EyeIcon },
   { id: "appearance", label: "Appearance", icon: PaletteIcon },
@@ -46,6 +46,7 @@ export const SETTINGS_SECTIONS = [
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];
 
 export function resolveSettingsSection(value: string | null | undefined): SettingsSectionId {
+  if (value === "loop") return "self-improvement";
   return SETTINGS_SECTIONS.some((section) => section.id === value) ? (value as SettingsSectionId) : "engines";
 }
 
@@ -86,7 +87,7 @@ function SectionBody({ section }: { section: SettingsSectionId }) {
       return <PoliciesSection />;
     case "memory":
       return <MemorySection />;
-    case "loop":
+    case "self-improvement":
       return <LoopSection />;
     case "updates":
       return <UpdatesSection />;

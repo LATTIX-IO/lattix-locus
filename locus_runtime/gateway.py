@@ -241,6 +241,7 @@ ACTION_KINDS: frozenset[str] = frozenset(
     }
     | COMPUTER_USE_KINDS
 )
+RUN_ACTION_KINDS: frozenset[str] = frozenset(ACTION_KINDS - {"model_call"})
 Outcome = Literal["allow", "ask", "deny"]
 AutonomyTier = Literal["tiered", "supervised", "envelope-autonomous"]
 
@@ -1331,6 +1332,7 @@ class Capabilities:
     allowed_egress_hosts: tuple[str, ...] = ()
     autonomy_tier: AutonomyTier = "tiered"
     max_tool_calls: int = 0
+    max_actions: int | None = None
     budget: BudgetFigures | None = None
     # Run profile registered with the session. ``"evals"`` is accepted only by a
     # gateway built with ``allow_eval_sessions=True`` (apps/evals); see open_session.
@@ -1613,6 +1615,7 @@ class _SessionRecord:
     capabilities: Capabilities
     listener: DecisionListener | None
     tool_calls_used: int = 0
+    actions_used: int = 0
     # Set by the gateway once it allowed an action that releases secret-bearing
     # content into the run (LOCUS-362); never cleared for the session.
     tainted: bool = False
@@ -1810,6 +1813,10 @@ class Gateway:
         tool_calls_used = record.tool_calls_used + (
             1 if action.kind in {"tool_call", "mcp_tool_call"} else 0
         )
+        with self._lock:
+            if action.kind in RUN_ACTION_KINDS:
+                record.actions_used += 1
+            actions_used = record.actions_used
 
         # Step 4: policy.
         reasons: list[str] = []
@@ -1823,7 +1830,9 @@ class Gateway:
         # malformed output means "ask" for the tier and "no consent" for Open.
         tier_ask = action.kind in USER_BROWSER_KINDS
         open_tier_consent = False
-        for policy, payload in policy_inputs(action, caps, tool_calls_used=tool_calls_used):
+        for policy, payload in policy_inputs(
+            action, caps, tool_calls_used=tool_calls_used, actions_used=actions_used
+        ):
             try:
                 result: Decision = self._engine.decide(policy, payload)
             except Exception:  # noqa: BLE001 - any engine failure denies
@@ -2070,11 +2079,20 @@ def _token_key(token: str) -> str:
 # Policy inputs (one builder per family)
 # --------------------------------------------------------------------------- #
 def policy_inputs(
-    action: GatewayAction, caps: Capabilities, *, tool_calls_used: int = 0
+    action: GatewayAction,
+    caps: Capabilities,
+    *,
+    tool_calls_used: int = 0,
+    actions_used: int = 0,
 ) -> list[tuple[str, dict[str, Any]]]:
     """The (policy, input) pairs evaluated for ``action``. All must allow."""
     plan: list[tuple[str, dict[str, Any]]] = [
-        ("agent_policy", agent_policy_input(action, caps, tool_calls_used))
+        (
+            "agent_policy",
+            agent_policy_input(
+                action, caps, tool_calls_used=tool_calls_used, actions_used=actions_used
+            ),
+        )
     ]
     if action.kind == "process_exec":
         plan.append(("tool_jail", tool_jail_input(action, caps)))
@@ -2179,7 +2197,11 @@ def user_browser_input(action: GatewayAction, caps: Capabilities) -> dict[str, A
 
 
 def agent_policy_input(
-    action: GatewayAction, caps: Capabilities, tool_calls_used: int = 0
+    action: GatewayAction,
+    caps: Capabilities,
+    *,
+    tool_calls_used: int = 0,
+    actions_used: int = 0,
 ) -> dict[str, Any]:
     operation = CANONICAL_OPERATION.get(action.kind, action.tool)
     payload: dict[str, Any] = {
@@ -2202,6 +2224,9 @@ def agent_policy_input(
     if caps.max_tool_calls > 0:
         payload["max_tool_calls"] = caps.max_tool_calls
         payload["tool_calls_used"] = tool_calls_used
+    if caps.max_actions is not None:
+        payload["max_actions"] = max(0, int(caps.max_actions))
+        payload["actions_used"] = actions_used
     if caps.budget is not None:
         payload["budget"] = {
             "tokens_used": caps.budget.tokens_used,

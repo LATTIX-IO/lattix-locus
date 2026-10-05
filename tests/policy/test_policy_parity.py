@@ -205,6 +205,24 @@ ALLOW_CASES: list[tuple[str, str, dict[str, Any], bool]] = [
         True,
     ),
     (
+        "agent.deny_run_action_budget",
+        "agent_policy",
+        _agent(max_actions=1, actions_used=2),
+        False,
+    ),
+    (
+        "agent.allow_run_action_budget_at_limit",
+        "agent_policy",
+        _agent(max_actions=1, actions_used=1),
+        True,
+    ),
+    (
+        "agent.deny_zero_run_action_budget",
+        "agent_policy",
+        _agent(max_actions=0, actions_used=1),
+        False,
+    ),
+    (
         "agent.deny_restricted_external_llm_even_if_allowlisted",
         "agent_policy",
         _agent(

@@ -3077,6 +3077,147 @@ def test_oauth_authorization_code_connect_and_callback_persists_session(monkeypa
         store.integrations.pop(integration_id, None)
 
 
+def test_linear_mcp_catalog_connect_registers_public_client_and_uses_pkce(monkeypatch) -> None:
+    from app.linear_mcp_oauth import EXPECTED_ISSUER, EXPECTED_RESOURCE
+
+    integration_id = str(uuid4())
+    integration = main_module.IntegrationDefinition(
+        id=integration_id,
+        name="Linear MCP",
+        type="custom",
+        status="draft",
+        base_url="https://mcp.linear.app/mcp",
+        auth_type="oauth2",
+        metadata_json={
+            "catalog_id": "mcp-linear",
+            "auth": {
+                "method": "oauth2",
+                "provider": "linear",
+                "grant_type": "authorization_code",
+                "scopes": ["read", "write", "issues:create", "comments:create"],
+            },
+        },
+    )
+    store.integrations[integration_id] = integration
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    class _FakeResponse:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return self.payload
+
+    def _fake_httpx_get(url: str, **kwargs: object) -> _FakeResponse:
+        calls.append(("get", url, kwargs))
+        return _FakeResponse(
+            {
+                "issuer": EXPECTED_ISSUER,
+                "authorization_endpoint": "https://mcp.linear.app/authorize",
+                "token_endpoint": "https://mcp.linear.app/token",
+                "registration_endpoint": "https://mcp.linear.app/register",
+                "resource": EXPECTED_RESOURCE,
+                "code_challenge_methods_supported": ["S256"],
+                "token_endpoint_auth_methods_supported": ["none"],
+            }
+        )
+
+    def _fake_httpx_post(url: str, **kwargs: object) -> _FakeResponse:
+        calls.append(("post", url, kwargs))
+        if url.endswith("/register"):
+            registration = kwargs["json"]
+            assert isinstance(registration, dict)
+            return _FakeResponse(
+                {
+                    "client_id": "linear-client-id",
+                    "redirect_uris": registration["redirect_uris"],
+                    "token_endpoint_auth_method": "none",
+                }
+            )
+        token_request = kwargs["data"]
+        assert isinstance(token_request, dict)
+        calls.append(("token-request", url, token_request))
+        return _FakeResponse(
+            {
+                "access_token": "linear-access-token",
+                "refresh_token": "linear-refresh-token",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            }
+        )
+
+    monkeypatch.setattr(main_module.httpx, "get", _fake_httpx_get)
+    monkeypatch.setattr(main_module.httpx, "post", _fake_httpx_post)
+
+    try:
+        with TestClient(app, base_url="https://console.example.com") as local_client:
+            connect = local_client.post(
+                f"/integrations/{integration_id}/oauth/connect",
+                json={"return_to": "/settings/self-improvement"},
+                headers=ADMIN_HEADERS,
+            )
+
+            assert connect.status_code == 200, connect.text
+            body = connect.json()
+            assert body["status"]["provider"] == "linear"
+            assert body["status"]["scopes"] == [
+                "read",
+                "write",
+                "issues:create",
+                "comments:create",
+            ]
+            query = dict(main_module.parse_qsl(main_module.urlsplit(body["connect_url"]).query))
+            assert query["client_id"] == "linear-client-id"
+            assert query["scope"] == "read,write,issues:create,comments:create"
+            assert query["resource"] == EXPECTED_RESOURCE
+            assert query["code_challenge_method"] == "S256"
+            assert query["code_challenge"]
+            session = store.integrations[integration_id].metadata_json["oauth_session"]
+            code_verifier = main_module._decrypt_provider_secret(
+                session["pending_code_verifier_encrypted"]
+            )
+            expected_challenge = main_module.base64.urlsafe_b64encode(
+                main_module.hashlib.sha256(code_verifier.encode("ascii")).digest()
+            ).rstrip(b"=").decode("ascii")
+            assert query["code_challenge"] == expected_challenge
+            registration_calls = [
+                call for call in calls if call[0] == "post" and call[1].endswith("/register")
+            ]
+            assert len(registration_calls) == 1
+
+            callback = local_client.get(
+                f"/integrations/{integration_id}/oauth/callback"
+                f"?code=auth-code&state={query['state']}",
+                follow_redirects=False,
+            )
+            assert callback.status_code == 302
+            assert "settings/self-improvement?oauth=connected" in callback.headers["location"]
+
+            token_request = next(call[2] for call in calls if call[0] == "token-request")
+            assert token_request["grant_type"] == "authorization_code"
+            assert token_request["client_id"] == "linear-client-id"
+            assert token_request["redirect_uri"] == body["redirect_uri"]
+            assert token_request["code_verifier"] == code_verifier
+            assert token_request["scope"] == "read,write,issues:create,comments:create"
+            assert "client_secret" not in token_request
+
+            session = store.integrations[integration_id].metadata_json["oauth_session"]
+            assert session["access_token_encrypted"]
+            assert session["refresh_token_encrypted"]
+            assert session["pending_code_verifier_encrypted"] == ""
+            assert (
+                main_module._integration_auth_headers(
+                    store.integrations[integration_id]
+                )["Authorization"]
+                == "Bearer linear-access-token"
+            )
+    finally:
+        store.integrations.pop(integration_id, None)
+
+
 def test_linear_oauth_connect_uses_comma_separated_scopes() -> None:
     integration_id = str(uuid4())
     store.integrations[integration_id] = main_module.IntegrationDefinition(

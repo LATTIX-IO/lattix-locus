@@ -2,8 +2,6 @@
 tracker:
   kind: linear
   provider:
-    endpoint: https://api.linear.app/graphql
-    api_key: $LINEAR_API_KEY
     project_slug: "3b160e533200"
   active_states:
     - Todo

@@ -111,6 +111,8 @@ class LoopConfig:
     repo_path: Path
     home: Path
     project_slug: str
+    coding_harness: str = "native"
+    codex_model: str = "gpt-oss:20b"
     active_states: tuple[str, ...] = DEFAULT_ACTIVE_STATES
     exclude_labels: tuple[str, ...] = DEFAULT_EXCLUDE_LABELS
     required_label: str = "agent:eligible"
@@ -125,6 +127,10 @@ class LoopConfig:
     max_failures: int = 2
     lock_ttl_seconds: float = 7200.0
     auto_merge: bool = False
+    # When no agent:eligible issue is available, use the local Ollama model to
+    # propose up to a small, bounded set of testable research issues.
+    research_mode: bool = False
+    research_issues_per_day: int = 3
     required_checks: tuple[str, ...] = ()
     merge_method: str = "squash"
     #: Replacement commands for detected repo checks, by check id (tests | lint | typecheck),
@@ -182,6 +188,8 @@ class LoopConfig:
             repo_path=repo,
             home=(home or default_loop_home()).resolve(),
             project_slug=slug.strip(),
+            coding_harness=_coding_harness(os.getenv("LOCUS_LOOP_CODING_HARNESS")),
+            codex_model=str(os.getenv("LOCUS_LOOP_CODEX_MODEL") or "gpt-oss:20b").strip(),
             active_states=tuple(
                 str(x) for x in (tracker.get("active_states") or DEFAULT_ACTIVE_STATES)
             ),
@@ -192,6 +200,10 @@ class LoopConfig:
             max_failures=_env_int("LOCUS_LOOP_MAX_FAILURES", 2),
             lock_ttl_seconds=_env_float("LOCUS_LOOP_LOCK_TTL_SECONDS", 7200.0),
             auto_merge=str(os.getenv("LOCUS_LOOP_AUTO_MERGE") or "").strip().lower() in _TRUE,
+            research_mode=_env_bool("LOCUS_LOOP_RESEARCH_MODE", True),
+            research_issues_per_day=min(
+                5, max(1, _env_int("LOCUS_LOOP_RESEARCH_ISSUES_PER_DAY", 3))
+            ),
             required_checks=_env_list("LOCUS_LOOP_REQUIRED_CHECKS"),
             check_commands=tuple(
                 (check_id, str(os.getenv(env) or "").strip())
@@ -223,6 +235,13 @@ class LoopConfig:
             scorecard_python=str(os.getenv("LOCUS_LOOP_SCORECARD_PYTHON") or "").strip(),
             tag_variants=_env_bool("LOCUS_LOOP_TAG_VARIANTS", False),
         )
+
+
+def _coding_harness(value: str | None) -> str:
+    selected = str(value or "native").strip().lower()
+    if selected not in {"native", "codex"}:
+        raise ValueError("LOCUS_LOOP_CODING_HARNESS must be 'native' or 'codex'")
+    return selected
 
 
 def _eval_mode(value: str | None) -> str:

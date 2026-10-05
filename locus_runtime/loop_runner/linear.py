@@ -520,7 +520,14 @@ class LinearClient:
         return str(nodes[0].get("identifier") or "") or None if nodes else None
 
     def create_issue(
-        self, *, team_id: str, title: str, description: str, project_slug: str = ""
+        self,
+        *,
+        team_id: str,
+        title: str,
+        description: str,
+        project_slug: str = "",
+        state_name: str = "",
+        label_name: str = "",
     ) -> str:
         """Create an issue (no labels: it is triaged by a human). Returns its identifier."""
         if not str(team_id or "").strip():

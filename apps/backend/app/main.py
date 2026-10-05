@@ -8808,7 +8808,7 @@ def _normalize_integration_auth_metadata(
         return {"method": "none"}
 
     provider = str(auth.get("provider") or "custom").strip().lower() or "custom"
-    if provider not in {"microsoft", "google", "salesforce", "custom"}:
+    if provider not in {"microsoft", "google", "linear", "salesforce", "custom"}:
         provider = "custom"
 
     grant_type = str(auth.get("grant_type") or "authorization_code").strip().lower()
@@ -8886,6 +8886,81 @@ def _integration_oauth_session(integration: IntegrationDefinition) -> dict[str, 
         metadata.get("oauth_session") if isinstance(metadata.get("oauth_session"), dict) else {}
     )
     return dict(session) if isinstance(session, dict) else {}
+
+
+def _oauth_scope_delimiter(auth: dict[str, Any]) -> str:
+    return "," if str(auth.get("provider") or "").strip().lower() == "linear" else " "
+
+
+_LINEAR_MCP_OAUTH_REGISTRATION_LOCK = Lock()
+
+
+def _ensure_linear_mcp_oauth_auth(
+    integration: IntegrationDefinition, redirect_uri: str
+) -> dict[str, Any]:
+    """Use Linear's remote-MCP OAuth discovery and public-client registration."""
+    auth = _integration_oauth_auth(integration)
+    if auth.get("client_id") and auth.get("authorize_url") and auth.get("token_url"):
+        if not auth.get("dynamic_client") or auth.get("registered_redirect_uri") == redirect_uri:
+            return auth
+
+    metadata_json = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+    catalog_id = str(metadata_json.get("catalog_id") or "").strip().lower()
+    if (
+        catalog_id != "mcp-linear"
+        or integration.base_url.rstrip("/") != "https://mcp.linear.app/mcp"
+    ):
+        raise HTTPException(status_code=400, detail="Linear MCP OAuth catalog metadata is invalid")
+
+    with _LINEAR_MCP_OAUTH_REGISTRATION_LOCK:
+        auth = _integration_oauth_auth(integration)
+        if (
+            auth.get("client_id")
+            and auth.get("authorize_url")
+            and auth.get("token_url")
+            and (
+                not auth.get("dynamic_client")
+                or auth.get("registered_redirect_uri") == redirect_uri
+            )
+        ):
+            return auth
+        try:
+            from app.linear_mcp_oauth import register_public_client
+
+            registered = register_public_client(redirect_uri)
+        except Exception as exc:  # noqa: BLE001 - provider failures return a stable setup error
+            LOGGER.warning("linear_mcp.oauth_registration_failed: %s", type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail="Linear MCP OAuth client registration failed. Check the local service network and retry.",
+            ) from exc
+
+        catalog_auth = metadata_json.get("auth")
+        configured_scopes = (
+            _normalize_string_list(catalog_auth.get("scopes"))
+            if isinstance(catalog_auth, dict)
+            else []
+        )
+        auth = {
+            "method": "oauth2",
+            "provider": "linear",
+            "grant_type": "authorization_code",
+            "authorize_url": registered["authorize_url"],
+            "token_url": registered["token_url"],
+            "client_id": registered["client_id"],
+            "client_auth_method": "none",
+            "dynamic_client": True,
+            "registered_redirect_uri": redirect_uri,
+            "scopes": configured_scopes or ["read", "write"],
+            "resource": registered["resource"],
+            "redirect_path": "/builder/integrations",
+        }
+        metadata = dict(integration.metadata_json or {})
+        metadata["auth"] = auth
+        integration.metadata_json = metadata
+        store.integrations[integration.id] = integration
+        _persist_store_state()
+        return auth
 
 
 def _masked_integration_auth_metadata(integration: IntegrationDefinition) -> dict[str, Any]:
@@ -9040,7 +9115,7 @@ def _exchange_integration_oauth_token(
     if client_secret:
         payload["client_secret"] = client_secret
     if auth.get("scopes"):
-        payload["scope"] = " ".join(
+        payload["scope"] = _oauth_scope_delimiter(auth).join(
             str(item).strip() for item in auth.get("scopes") or [] if str(item).strip()
         )
     if auth.get("audience"):
@@ -9121,6 +9196,7 @@ def _persist_integration_oauth_tokens(
             "last_error": "",
             "pending_state": "" if not pending else str(session.get("pending_state") or ""),
             "pending_return_to": "" if not pending else str(session.get("pending_return_to") or ""),
+            "pending_code_verifier_encrypted": "",
         }
     )
     if refresh_token:
@@ -19148,34 +19224,192 @@ def system_update_cancel() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Self-improvement loop controls for Settings → Loop & Linear (LOCUS-353). The
+# Self-improvement loop controls for Settings → Self-improvement (LOCUS-353). The
 # same switches as `lattix loop status|enable|disable|autostart`. Turning the
 # loop on and autostarting it widen what runs unattended: on the desktop they
 # need the shell's confirmation (request_security "loop.enable" and
 # "loop.autostart.enable"). Turning it off, or autostart off, only narrows.
-# The Linear key is reported as present or absent, never returned.
+# Linear OAuth connection status is reported, but access tokens never leave this API.
 # ---------------------------------------------------------------------------
+def _linear_mcp_integration(*, required: bool = True) -> IntegrationDefinition | None:
+    candidates = [
+        item
+        for item in store.integrations.values()
+        if isinstance(item.metadata_json, dict)
+        and str(item.metadata_json.get("catalog_id") or "").strip().lower() == "mcp-linear"
+        and item.status != "archived"
+    ]
+    if not candidates:
+        if required:
+            raise HTTPException(
+                status_code=409,
+                detail="Connect Linear MCP from Connections before using the issue board or loop.",
+            )
+        return None
+    if len(candidates) != 1:
+        raise HTTPException(
+            status_code=409,
+            detail="More than one Linear MCP connection is ambiguous; keep one active.",
+        )
+    integration = candidates[0]
+    parsed = urlsplit(str(integration.base_url or ""))
+    if (
+        integration.auth_type != "oauth2"
+        or parsed.scheme != "https"
+        or parsed.hostname != "mcp.linear.app"
+        or parsed.path.rstrip("/") != "/mcp"
+        or parsed.username
+        or parsed.password
+    ):
+        raise HTTPException(status_code=409, detail="The Linear MCP connection endpoint is invalid.")
+    return integration
+
+
+def _linear_mcp_access_token(integration: IntegrationDefinition) -> str:
+    session = _integration_oauth_session(integration)
+    encrypted = str(session.get("access_token_encrypted") or "").strip()
+    if not encrypted:
+        raise HTTPException(
+            status_code=409,
+            detail="Authorize the Linear MCP connection from Connections before continuing.",
+        )
+    expires_at = str(session.get("expires_at") or "").strip()
+    if expires_at:
+        try:
+            expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=409, detail="Linear MCP authorization needs reconnecting.")
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        if expiry <= datetime.now(timezone.utc) + timedelta(seconds=60):
+            try:
+                token_payload = _exchange_integration_oauth_token(
+                    integration, grant_type="refresh_token"
+                )
+                _persist_integration_oauth_tokens(integration, token_payload)
+                _persist_store_state()
+                session = _integration_oauth_session(integration)
+                encrypted = str(session.get("access_token_encrypted") or "").strip()
+            except Exception as exc:  # noqa: BLE001 - don't return provider/token details
+                raise HTTPException(
+                    status_code=409,
+                    detail="Linear MCP authorization expired; reconnect it from Connections.",
+                ) from exc
+    try:
+        token = _decrypt_provider_secret(encrypted)
+    except Exception as exc:  # noqa: BLE001 - encrypted credential corruption fails closed
+        raise HTTPException(status_code=409, detail="Linear MCP authorization needs reconnecting.") from exc
+    if not token:
+        raise HTTPException(status_code=409, detail="Linear MCP authorization needs reconnecting.")
+    return token
+
+
+def _linear_mcp_adapter(actor: str) -> Any:
+    from app.linear_mcp import LinearMcpAdapter
+
+    integration = _linear_mcp_integration()
+    assert integration is not None
+    token = _linear_mcp_access_token(integration)
+    server = mcp_client.McpHttpClient(integration.base_url, bearer_token=token, timeout_seconds=20.0)
+
+    def authorize(tool_name: str, arguments: dict[str, Any]) -> tuple[Any, Callable[[], None]]:
+        gateway = _ensure_gateway()
+        if not getattr(gateway, "healthy", False):
+            raise HTTPException(status_code=503, detail="The policy gateway is unavailable.")
+        qualified_name = f"linear_mcp__{tool_name}"[:128]
+        session = policy_gateway.open_run_session(
+            run_id=f"linear-mcp-{uuid4()}",
+            principal=str(actor or "locus-self-improvement-loop"),
+            engine="backend.linear_mcp",
+            capabilities=policy_gateway.run_capabilities(
+                allowed_tools=[qualified_name],
+                egress=["mcp.linear.app"],
+                max_tool_calls=1,
+            ),
+        )
+        if session is None:
+            raise HTTPException(status_code=503, detail="The policy gateway is unavailable.")
+        decision = authorize_action(
+            session,
+            kind="mcp_tool_call",
+            tool=qualified_name,
+            target="mcp.linear.app",
+            args=arguments,
+            egress_host="mcp.linear.app",
+        )
+        if not decision.allowed:
+            session.close()
+            raise HTTPException(status_code=403, detail="The policy gateway blocked this Linear MCP action.")
+        return decision, session.close
+
+    return LinearMcpAdapter(server, authorize)
+
+
+def _loop_repo_path() -> str:
+    from locus_runtime.loop_runner.state import default_loop_home
+    from locus_tooling.desktop_update import read_loop_autostart
+
+    autostart = read_loop_autostart(default_loop_home())
+    repo_path = str(autostart.repo_path or os.getenv("LOCUS_LOOP_REPO_PATH") or "").strip()
+    if not repo_path:
+        repo_path = str(Path(__file__).resolve().parents[3])
+    return repo_path
+
+
+def _loop_project_slug() -> str:
+    from locus_runtime.loop_runner.state import LoopConfig
+
+    try:
+        return LoopConfig.load(_loop_repo_path()).project_slug
+    except Exception:  # noqa: BLE001 - an unavailable workflow means the board is unconfigured
+        return ""
+
+
+def _loop_research_status() -> dict[str, Any]:
+    from locus_runtime.loop_runner.state import LoopConfig
+
+    try:
+        config = LoopConfig.load(_loop_repo_path())
+        return {
+            "enabled": config.research_mode,
+            "issues_per_day": config.research_issues_per_day,
+            "model": "Ollama (local only)",
+        }
+    except Exception:  # noqa: BLE001 - no workflow means research cannot run
+        return {"enabled": False, "issues_per_day": 0, "model": "Ollama (local only)"}
+
+
+def _linear_mcp_status() -> dict[str, Any]:
+    try:
+        integration = _linear_mcp_integration(required=False)
+    except HTTPException:
+        return {"connected": False, "integration_name": ""}
+    if integration is None:
+        return {"connected": False, "integration_name": ""}
+    session = _integration_oauth_session(integration)
+    return {
+        "connected": bool(str(session.get("access_token_encrypted") or "").strip()),
+        "integration_name": integration.name,
+    }
+
+
 def _loop_status_payload() -> dict[str, Any]:
     from locus_runtime.loop_runner import loop_status
-    from locus_runtime.loop_runner.linear import LinearNotConfigured, resolve_linear_key
     from locus_runtime.loop_runner.state import DISABLED_ENV, default_loop_home
     from locus_tooling.desktop_update import read_loop_autostart
 
     home = default_loop_home()
     status = loop_status(home)
     status.pop("home", None)  # a local path the UI does not need
-    try:
-        resolve_linear_key()
-        linear_configured = True
-    except LinearNotConfigured:
-        linear_configured = False
     autostart = read_loop_autostart(home)
     return {
         **status,
         "disabled_by_environment": str(os.getenv(DISABLED_ENV) or "").strip().lower()
         in {"1", "true", "yes", "on"},
         "autostart": {"enabled": autostart.enabled, "repo_path": autostart.repo_path},
-        "linear": {"api_key_configured": linear_configured},
+        "linear": _linear_mcp_status(),
+        "project_slug": _loop_project_slug(),
+        "research": _loop_research_status(),
     }
 
 
@@ -19183,6 +19417,128 @@ def _loop_status_payload() -> dict[str, Any]:
 def loop_status_read(request: Request) -> dict[str, Any]:
     _enforce_request_authn(request, action="loop.status.read", required=True)
     return _loop_status_payload()
+
+
+@app.get("/loop/linear/board")
+def loop_linear_board(request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="loop.linear.board.read", required=True)
+    project_slug = _loop_project_slug()
+    if not project_slug:
+        raise HTTPException(status_code=409, detail="Set tracker.provider.project_slug in WORKFLOW.md.")
+    try:
+        adapter = _linear_mcp_adapter(actor)
+        issues = adapter.issues(project_slug, limit=5000)
+        team_id = next((str(item.get("team_id") or "") for item in issues if item.get("team_id")), "")
+        if not team_id:
+            team_id = adapter.project_team_id(project_slug)
+        try:
+            states = adapter.statuses(team_id) if team_id else []
+        except Exception:  # noqa: BLE001 - keep the board useful when the server omits a workflow tool
+            states = []
+        if not states:
+            names = sorted({str(item.get("state") or "").strip() for item in issues if str(item.get("state") or "").strip()})
+            states = [{"id": "", "name": name, "type": ""} for name in names]
+        return {"project_slug": project_slug, "states": states, "issues": issues}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - MCP provider errors stay bounded and actionable
+        LOGGER.warning("loop.linear_board_failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Linear MCP could not load the issue board.") from exc
+
+
+@app.post("/loop/tracker")
+def loop_tracker_bridge(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="loop.tracker", payload=payload, required=True)
+    operation = str(payload.get("operation") or "").strip().lower()
+    project_slug = str(payload.get("project_slug") or _loop_project_slug()).strip()
+    if operation not in {
+        "list_candidate_issues", "list_project_issues", "get_issue", "has_state",
+        "find_issue_with_text", "project_team_id", "transition", "set_priority", "add_label",
+        "add_comment", "attach_link", "create_issue",
+    }:
+        raise HTTPException(status_code=422, detail="Unsupported Linear MCP tracker operation.")
+    if operation not in {"list_candidate_issues", "list_project_issues", "get_issue", "has_state", "find_issue_with_text"}:
+        _enforce_emergency_write_policy("loop.tracker", actor)
+    create_priority: int | None = None
+    if operation == "create_issue":
+        raw_priority = payload.get("priority")
+        if raw_priority is None:
+            create_priority = 3
+        elif isinstance(raw_priority, int) and not isinstance(raw_priority, bool):
+            create_priority = raw_priority
+        elif isinstance(raw_priority, str) and raw_priority.strip() in {"0", "1", "2", "3", "4"}:
+            create_priority = int(raw_priority.strip())
+        else:
+            raise HTTPException(
+                status_code=422, detail="Issue priority must be an integer from 0 to 4."
+            )
+        if not 0 <= create_priority <= 4:
+            raise HTTPException(
+                status_code=422, detail="Issue priority must be an integer from 0 to 4."
+            )
+    try:
+        adapter = _linear_mcp_adapter(actor)
+        if operation == "list_candidate_issues":
+            states = {str(item).strip().lower() for item in payload.get("active_states") or []}
+            label = str(payload.get("label") or "agent:eligible").strip().lower()
+            issues = adapter.issues(project_slug, limit=5000)
+            result = [
+                item for item in issues
+                if str(item.get("state") or "").strip().lower() in states
+                and label in {str(value).strip().lower() for value in item.get("labels") or []}
+            ]
+        elif operation == "list_project_issues":
+            result = adapter.issues(project_slug, limit=5000)
+        elif operation == "project_team_id":
+            result = adapter.project_team_id(project_slug)
+        elif operation == "get_issue":
+            result = adapter.issue(str(payload.get("issue_id") or "")[:120], include_comments=True)
+        elif operation == "has_state":
+            issue = adapter.issue(str(payload.get("issue_id") or "")[:120])
+            statuses = adapter.statuses(str(issue.get("team_id") or "")) if issue.get("team_id") else []
+            requested = str(payload.get("state_name") or "").strip().lower()
+            result = any(str(item.get("name") or "").strip().lower() == requested for item in statuses)
+        elif operation == "transition":
+            adapter.transition(str(payload.get("issue_id") or "")[:120], str(payload.get("state_name") or "")[:100])
+            result = {"ok": True}
+        elif operation == "set_priority":
+            raw_priority = payload.get("priority")
+            adapter.set_priority(
+                str(payload.get("issue_id") or "")[:120],
+                int(raw_priority if raw_priority is not None else 3),
+            )
+            result = {"ok": True}
+        elif operation == "add_label":
+            adapter.add_label(str(payload.get("issue_id") or "")[:120], str(payload.get("label_name") or "")[:120])
+            result = {"ok": True}
+        elif operation == "add_comment":
+            adapter.add_comment(str(payload.get("issue_id") or "")[:120], str(payload.get("body") or "")[:8000])
+            result = {"ok": True}
+        elif operation == "attach_link":
+            adapter.attach_link(str(payload.get("issue_id") or "")[:120], str(payload.get("url") or "")[:2000], str(payload.get("title") or "")[:200])
+            result = {"ok": True}
+        elif operation == "find_issue_with_text":
+            text = str(payload.get("text") or "")[:200]
+            result = next((str(item.get("identifier") or "") for item in adapter.issues(project_slug, limit=5000) if text and text in str(item.get("description") or "")), None)
+        elif operation == "create_issue":
+            result = adapter.create_issue(
+                team_id=str(payload.get("team_id") or "")[:120],
+                title=str(payload.get("title") or "")[:200],
+                description=str(payload.get("description") or "")[:8000],
+                project_slug=str(payload.get("project_slug") or project_slug)[:120],
+                priority=3 if create_priority is None else create_priority,
+                state_name=str(payload.get("state_name", "Todo") or "")[:100],
+                label_name=str(payload.get("label_name", "agent:eligible") or "")[:120],
+            )
+        _append_audit_event(
+            f"loop.tracker.{operation}", actor, "allowed", {"issue_id": str(payload.get("issue_id") or "")[:120]}
+        )
+        return {"result": result}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - MCP provider errors stay bounded and actionable
+        LOGGER.warning("loop.linear_tracker_failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Linear MCP tracker operation failed.") from exc
 
 
 @app.post("/loop/enable")
@@ -26260,6 +26616,12 @@ def connect_integration_oauth(
         raise HTTPException(status_code=409, detail="integration is not configured for oauth2")
 
     auth = _integration_oauth_auth(integration)
+    metadata_json = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+    catalog_id = str(metadata_json.get("catalog_id") or "").strip().lower()
+    if catalog_id == "mcp-linear":
+        auth = _ensure_linear_mcp_oauth_auth(
+            integration, _integration_oauth_callback_url(request, integration_id)
+        )
     if not auth:
         raise HTTPException(status_code=400, detail="oauth2 auth metadata is missing")
     if not str(auth.get("client_id") or "").strip():
@@ -26289,8 +26651,16 @@ def connect_integration_oauth(
         }
 
     state = str(uuid4())
-    code_verifier, code_challenge = _generate_integration_oauth_pkce_pair()
     redirect_uri = _integration_oauth_callback_url(request, integration_id)
+    connect_query = {
+        "response_type": "code",
+        "client_id": str(auth.get("client_id") or ""),
+        "redirect_uri": redirect_uri,
+        "state": state,
+    }
+    code_verifier, code_challenge = _generate_integration_oauth_pkce_pair()
+    connect_query["code_challenge"] = code_challenge
+    connect_query["code_challenge_method"] = "S256"
     return_to = _safe_post_auth_redirect_path(
         payload.return_to or str(auth.get("redirect_path") or "/builder/integrations")
     )
@@ -26304,18 +26674,9 @@ def connect_integration_oauth(
             "last_error": "",
         },
     )
-    connect_query = {
-        "response_type": "code",
-        "client_id": str(auth.get("client_id") or ""),
-        "redirect_uri": redirect_uri,
-        "state": state,
-        "code_challenge": code_challenge,
-        "code_challenge_method": "S256",
-    }
     scopes = [str(item).strip() for item in auth.get("scopes") or [] if str(item).strip()]
     if scopes:
-        scope_separator = "," if str(auth.get("provider") or "") == "linear" else " "
-        connect_query["scope"] = scope_separator.join(scopes)
+        connect_query["scope"] = _oauth_scope_delimiter(auth).join(scopes)
     if auth.get("audience"):
         connect_query["audience"] = str(auth.get("audience") or "").strip()
     if auth.get("resource"):
