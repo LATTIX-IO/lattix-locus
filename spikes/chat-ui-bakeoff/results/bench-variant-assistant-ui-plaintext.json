@@ -1,0 +1,345 @@
+{
+  "summary": {
+    "variant": "variant-assistant-ui",
+    "chromium": "153.0.8010.12",
+    "reps": 3,
+    "streamRenderMsMedian": 2330,
+    "streamTBTmsMedian": 0,
+    "streamLongTasksMedian": 0,
+    "longRenderMsMedian": 69,
+    "longTBTmsMedian": 0,
+    "longTasksMedian": 0,
+    "streamTaskMsMedian": 1197,
+    "streamScriptMsMedian": 794,
+    "longTaskMsMedianCdp": 75,
+    "scrollTaskMsMedian": 17,
+    "externalRequests": [],
+    "cspViolations": [
+      {
+        "directive": "script-src",
+        "blockedURI": "eval",
+        "sample": ""
+      },
+      {
+        "directive": "script-src",
+        "blockedURI": "eval",
+        "sample": ""
+      },
+      {
+        "directive": "script-src",
+        "blockedURI": "eval",
+        "sample": ""
+      }
+    ]
+  },
+  "stream": [
+    {
+      "rep": 0,
+      "tabsToComposer": 4,
+      "streamMainThreadMs": {
+        "task": 1054,
+        "script": 705,
+        "layout": 121,
+        "style": 39
+      },
+      "streamRenderMs": 2233,
+      "streamLongTasks": 0,
+      "streamLongTaskMs": 0,
+      "streamTBTms": 0,
+      "plan": "Plan (agent state)\nSearch the workspace\ndone\nSummarise the run\ndone\nTriage the inbox\ndone\nSend the report\npending",
+      "tier1Rendered": true,
+      "tier2Rendered": true,
+      "tier2Blocked": 1,
+      "tier2ScriptTags": 0,
+      "focusAfterInterrupt": "TEXTAREA",
+      "tabsToApprove": 6,
+      "confirmCalls": 1,
+      "runInputs": [
+        {
+          "runId": "P8vr1sB",
+          "tools": [],
+          "contextEntries": 0,
+          "forwardedPropsKeys": [],
+          "messages": 1,
+          "hasResume": false
+        },
+        {
+          "runId": "Ljz2dWQ",
+          "tools": [],
+          "contextEntries": 0,
+          "forwardedPropsKeys": [],
+          "messages": 5,
+          "hasResume": true,
+          "resume": [
+            {
+              "interruptId": "int-approve-send-email",
+              "status": "resolved",
+              "payload": {
+                "approved": true,
+                "proof": "stub-proof:int-approve-send-email"
+              }
+            }
+          ]
+        }
+      ],
+      "resumeSent": true,
+      "resumePayload": [
+        {
+          "interruptId": "int-approve-send-email",
+          "status": "resolved",
+          "payload": {
+            "approved": true,
+            "proof": "stub-proof:int-approve-send-email"
+          }
+        }
+      ],
+      "errorRendered": true,
+      "cspViolations": [
+        {
+          "directive": "script-src",
+          "blockedURI": "eval",
+          "sample": ""
+        }
+      ],
+      "jsResourcesLoaded": 1,
+      "fontResourcesLoaded": 0,
+      "codeBlock": "missing",
+      "pageErrors": [],
+      "externalRequests": [],
+      "sameOriginNonAssetRequests": [],
+      "console": []
+    },
+    {
+      "rep": 1,
+      "tabsToComposer": 4,
+      "streamMainThreadMs": {
+        "task": 1459,
+        "script": 1007,
+        "layout": 146,
+        "style": 51
+      },
+      "streamRenderMs": 2573,
+      "streamLongTasks": 0,
+      "streamLongTaskMs": 0,
+      "streamTBTms": 0,
+      "plan": "Plan (agent state)\nSearch the workspace\ndone\nSummarise the run\ndone\nTriage the inbox\ndone\nSend the report\npending",
+      "tier1Rendered": true,
+      "tier2Rendered": true,
+      "tier2Blocked": 1,
+      "tier2ScriptTags": 0,
+      "focusAfterInterrupt": "TEXTAREA",
+      "tabsToApprove": 6,
+      "confirmCalls": 1,
+      "runInputs": [
+        {
+          "runId": "P31DAeq",
+          "tools": [],
+          "contextEntries": 0,
+          "forwardedPropsKeys": [],
+          "messages": 1,
+          "hasResume": false
+        },
+        {
+          "runId": "r0v5CMb",
+          "tools": [],
+          "contextEntries": 0,
+          "forwardedPropsKeys": [],
+          "messages": 5,
+          "hasResume": true,
+          "resume": [
+            {
+              "interruptId": "int-approve-send-email",
+              "status": "resolved",
+              "payload": {
+                "approved": true,
+                "proof": "stub-proof:int-approve-send-email"
+              }
+            }
+          ]
+        }
+      ],
+      "resumeSent": true,
+      "resumePayload": [
+        {
+          "interruptId": "int-approve-send-email",
+          "status": "resolved",
+          "payload": {
+            "approved": true,
+            "proof": "stub-proof:int-approve-send-email"
+          }
+        }
+      ],
+      "errorRendered": true,
+      "cspViolations": [
+        {
+          "directive": "script-src",
+          "blockedURI": "eval",
+          "sample": ""
+        }
+      ],
+      "jsResourcesLoaded": 1,
+      "fontResourcesLoaded": 0,
+      "codeBlock": "missing",
+      "pageErrors": [],
+      "externalRequests": [],
+      "sameOriginNonAssetRequests": [],
+      "console": []
+    },
+    {
+      "rep": 2,
+      "tabsToComposer": 4,
+      "streamMainThreadMs": {
+        "task": 1197,
+        "script": 794,
+        "layout": 133,
+        "style": 42
+      },
+      "streamRenderMs": 2330,
+      "streamLongTasks": 0,
+      "streamLongTaskMs": 0,
+      "streamTBTms": 0,
+      "plan": "Plan (agent state)\nSearch the workspace\ndone\nSummarise the run\ndone\nTriage the inbox\ndone\nSend the report\npending",
+      "tier1Rendered": true,
+      "tier2Rendered": true,
+      "tier2Blocked": 1,
+      "tier2ScriptTags": 0,
+      "focusAfterInterrupt": "TEXTAREA",
+      "tabsToApprove": 6,
+      "confirmCalls": 1,
+      "runInputs": [
+        {
+          "runId": "NOi79Zd",
+          "tools": [],
+          "contextEntries": 0,
+          "forwardedPropsKeys": [],
+          "messages": 1,
+          "hasResume": false
+        },
+        {
+          "runId": "nFngJ3q",
+          "tools": [],
+          "contextEntries": 0,
+          "forwardedPropsKeys": [],
+          "messages": 5,
+          "hasResume": true,
+          "resume": [
+            {
+              "interruptId": "int-approve-send-email",
+              "status": "resolved",
+              "payload": {
+                "approved": true,
+                "proof": "stub-proof:int-approve-send-email"
+              }
+            }
+          ]
+        }
+      ],
+      "resumeSent": true,
+      "resumePayload": [
+        {
+          "interruptId": "int-approve-send-email",
+          "status": "resolved",
+          "payload": {
+            "approved": true,
+            "proof": "stub-proof:int-approve-send-email"
+          }
+        }
+      ],
+      "errorRendered": true,
+      "cspViolations": [
+        {
+          "directive": "script-src",
+          "blockedURI": "eval",
+          "sample": ""
+        }
+      ],
+      "jsResourcesLoaded": 1,
+      "fontResourcesLoaded": 0,
+      "codeBlock": "missing",
+      "pageErrors": [],
+      "externalRequests": [],
+      "sameOriginNonAssetRequests": [],
+      "console": []
+    }
+  ],
+  "long": [
+    {
+      "rep": 0,
+      "longMainThreadMs": {
+        "task": 80,
+        "script": 45,
+        "layout": 5,
+        "style": 2
+      },
+      "scrollMainThreadMs": {
+        "task": 20,
+        "script": 1,
+        "layout": 0,
+        "style": 0
+      },
+      "toolCardsAfterScroll": 50,
+      "longRenderMs": 72,
+      "longTasks": 0,
+      "longTaskMs": 0,
+      "longTBTms": 0,
+      "toolCards": 50,
+      "domNodes": 829,
+      "heapMB": 18.2,
+      "externalRequests": [],
+      "sameOriginNonAssetRequests": [],
+      "console": []
+    },
+    {
+      "rep": 1,
+      "longMainThreadMs": {
+        "task": 69,
+        "script": 39,
+        "layout": 5,
+        "style": 1
+      },
+      "scrollMainThreadMs": {
+        "task": 14,
+        "script": 1,
+        "layout": 0,
+        "style": 0
+      },
+      "toolCardsAfterScroll": 50,
+      "longRenderMs": 61,
+      "longTasks": 0,
+      "longTaskMs": 0,
+      "longTBTms": 0,
+      "toolCards": 50,
+      "domNodes": 829,
+      "heapMB": 18.2,
+      "externalRequests": [],
+      "sameOriginNonAssetRequests": [],
+      "console": []
+    },
+    {
+      "rep": 2,
+      "longMainThreadMs": {
+        "task": 75,
+        "script": 44,
+        "layout": 6,
+        "style": 2
+      },
+      "scrollMainThreadMs": {
+        "task": 17,
+        "script": 1,
+        "layout": 0,
+        "style": 0
+      },
+      "toolCardsAfterScroll": 50,
+      "longRenderMs": 69,
+      "longTasks": 0,
+      "longTaskMs": 0,
+      "longTBTms": 0,
+      "toolCards": 50,
+      "domNodes": 829,
+      "heapMB": 18.2,
+      "externalRequests": [],
+      "sameOriginNonAssetRequests": [],
+      "console": []
+    }
+  ]
+}

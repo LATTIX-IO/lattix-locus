@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en" class="theme-light">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- The strict CSP the Locus webview should run under: nothing remote, no inline, no eval. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Locus chat bake-off</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

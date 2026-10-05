@@ -1,0 +1,931 @@
+{
+  "variant": "variant-copilotkit",
+  "firstLoadChunks": [
+    "index-2t-UQlE8.js",
+    "v4-DIgz8zy6.js",
+    "rolldown-runtime-Dd_uD5pT.js"
+  ],
+  "attributedBytes": 2259741,
+  "packages": [
+    {
+      "pkg": "zod",
+      "kB": 335.4,
+      "pct": 15.2
+    },
+    {
+      "pkg": "katex",
+      "kB": 235.7,
+      "pct": 10.7
+    },
+    {
+      "pkg": "react-dom",
+      "kB": 174.6,
+      "pct": 7.9
+    },
+    {
+      "pkg": "@copilotkit/react-core",
+      "kB": 170.8,
+      "pct": 7.7
+    },
+    {
+      "pkg": "@copilotkit/core",
+      "kB": 142.3,
+      "pct": 6.4
+    },
+    {
+      "pkg": "@ag-ui/client",
+      "kB": 134.5,
+      "pct": 6.1
+    },
+    {
+      "pkg": "parse5",
+      "kB": 121.5,
+      "pct": 5.5
+    },
+    {
+      "pkg": "@ag-ui/proto",
+      "kB": 87.5,
+      "pct": 4
+    },
+    {
+      "pkg": "@ag-ui/core",
+      "kB": 55.5,
+      "pct": 2.5
+    },
+    {
+      "pkg": "@a2ui/web_core",
+      "kB": 41.9,
+      "pct": 1.9
+    },
+    {
+      "pkg": "marked",
+      "kB": 40,
+      "pct": 1.8
+    },
+    {
+      "pkg": "streamdown",
+      "kB": 35.3,
+      "pct": 1.6
+    },
+    {
+      "pkg": "rxjs",
+      "kB": 28.5,
+      "pct": 1.3
+    },
+    {
+      "pkg": "tailwind-merge",
+      "kB": 28.1,
+      "pct": 1.3
+    },
+    {
+      "pkg": "micromark-core-commonmark",
+      "kB": 26.6,
+      "pct": 1.2
+    },
+    {
+      "pkg": "@tanstack/virtual-core",
+      "kB": 22.8,
+      "pct": 1
+    },
+    {
+      "pkg": "phoenix",
+      "kB": 22.2,
+      "pct": 1
+    },
+    {
+      "pkg": "@copilotkit/a2ui-renderer",
+      "kB": 20.7,
+      "pct": 0.9
+    },
+    {
+      "pkg": "entities",
+      "kB": 20,
+      "pct": 0.9
+    },
+    {
+      "pkg": "zod-to-json-schema",
+      "kB": 19.8,
+      "pct": 0.9
+    },
+    {
+      "pkg": "date-fns",
+      "kB": 19.1,
+      "pct": 0.9
+    },
+    {
+      "pkg": "property-information",
+      "kB": 18.1,
+      "pct": 0.8
+    },
+    {
+      "pkg": "@copilotkit/learning",
+      "kB": 17.8,
+      "pct": 0.8
+    },
+    {
+      "pkg": "(bake-off shared code)",
+      "kB": 15.9,
+      "pct": 0.7
+    },
+    {
+      "pkg": "@copilotkit/web-components",
+      "kB": 12.3,
+      "pct": 0.6
+    },
+    {
+      "pkg": "@radix-ui/react-menu",
+      "kB": 11.8,
+      "pct": 0.5
+    },
+    {
+      "pkg": "mdast-util-to-markdown",
+      "kB": 10.7,
+      "pct": 0.5
+    },
+    {
+      "pkg": "mdast-util-from-markdown",
+      "kB": 10.6,
+      "pct": 0.5
+    },
+    {
+      "pkg": "mdast-util-to-hast",
+      "kB": 10.5,
+      "pct": 0.5
+    },
+    {
+      "pkg": "@copilotkit/shared",
+      "kB": 10.2,
+      "pct": 0.5
+    },
+    {
+      "pkg": "@bufbuild/protobuf",
+      "kB": 10.2,
+      "pct": 0.5
+    },
+    {
+      "pkg": "fast-json-patch",
+      "kB": 10.1,
+      "pct": 0.5
+    },
+    {
+      "pkg": "lit-html",
+      "kB": 9.7,
+      "pct": 0.4
+    },
+    {
+      "pkg": "micromark",
+      "kB": 9.2,
+      "pct": 0.4
+    },
+    {
+      "pkg": "@radix-ui/react-tooltip",
+      "kB": 7.7,
+      "pct": 0.3
+    },
+    {
+      "pkg": "react",
+      "kB": 7.7,
+      "pct": 0.3
+    },
+    {
+      "pkg": "@floating-ui/core",
+      "kB": 7.6,
+      "pct": 0.3
+    },
+    {
+      "pkg": "@lit/reactive-element",
+      "kB": 7.1,
+      "pct": 0.3
+    },
+    {
+      "pkg": "@floating-ui/dom",
+      "kB": 7,
+      "pct": 0.3
+    },
+    {
+      "pkg": "@radix-ui/react-collection",
+      "kB": 6.9,
+      "pct": 0.3
+    },
+    {
+      "pkg": "lucide-react",
+      "kB": 6.8,
+      "pct": 0.3
+    },
+    {
+      "pkg": "use-stick-to-bottom",
+      "kB": 6.4,
+      "pct": 0.3
+    },
+    {
+      "pkg": "micromark-util-symbol",
+      "kB": 5.9,
+      "pct": 0.3
+    },
+    {
+      "pkg": "hast-util-to-jsx-runtime",
+      "kB": 5.7,
+      "pct": 0.3
+    },
+    {
+      "pkg": "react-remove-scroll",
+      "kB": 5.6,
+      "pct": 0.3
+    },
+    {
+      "pkg": "micromark-extension-gfm-table",
+      "kB": 5.5,
+      "pct": 0.3
+    },
+    {
+      "pkg": "hast-util-raw",
+      "kB": 5.4,
+      "pct": 0.2
+    },
+    {
+      "pkg": "@radix-ui/react-dismissable-layer",
+      "kB": 5.2,
+      "pct": 0.2
+    },
+    {
+      "pkg": "vfile",
+      "kB": 5,
+      "pct": 0.2
+    },
+    {
+      "pkg": "remend",
+      "kB": 4.9,
+      "pct": 0.2
+    },
+    {
+      "pkg": "hast-util-sanitize",
+      "kB": 4.7,
+      "pct": 0.2
+    },
+    {
+      "pkg": "@preact/signals-core",
+      "kB": 4.6,
+      "pct": 0.2
+    },
+    {
+      "pkg": "@radix-ui/react-popper",
+      "kB": 4.4,
+      "pct": 0.2
+    },
+    {
+      "pkg": "tslib",
+      "kB": 4.4,
+      "pct": 0.2
+    },
+    {
+      "pkg": "@tanstack/store",
+      "kB": 4.2,
+      "pct": 0.2
+    },
+    {
+      "pkg": "get-east-asian-width",
+      "kB": 4.2,
+      "pct": 0.2
+    },
+    {
+      "pkg": "unified",
+      "kB": 4,
+      "pct": 0.2
+    },
+    {
+      "pkg": "micromark-extension-gfm-footnote",
+      "kB": 4,
+      "pct": 0.2
+    },
+    {
+      "pkg": "@tanstack/devtools-event-client",
+      "kB": 3.9,
+      "pct": 0.2
+    },
+    {
+      "pkg": "@radix-ui/react-dropdown-menu",
+      "kB": 3.7,
+      "pct": 0.2
+    },
+    {
+      "pkg": "@floating-ui/utils",
+      "kB": 3.7,
+      "pct": 0.2
+    },
+    {
+      "pkg": "micromark-extension-gfm-autolink-literal",
+      "kB": 3.7,
+      "pct": 0.2
+    },
+    {
+      "pkg": "partial-json",
+      "kB": 3.6,
+      "pct": 0.2
+    },
+    {
+      "pkg": "rehype-harden",
+      "kB": 3.6,
+      "pct": 0.2
+    },
+    {
+      "pkg": "@radix-ui/react-roving-focus",
+      "kB": 3.6,
+      "pct": 0.2
+    },
+    {
+      "pkg": "@radix-ui/react-focus-scope",
+      "kB": 3.5,
+      "pct": 0.2
+    },
+    {
+      "pkg": "scheduler",
+      "kB": 3.4,
+      "pct": 0.2
+    },
+    {
+      "pkg": "micromark-util-subtokenize",
+      "kB": 3.3,
+      "pct": 0.1
+    },
+    {
+      "pkg": "@floating-ui/react-dom",
+      "kB": 3.1,
+      "pct": 0.1
+    },
+    {
+      "pkg": "micromark-extension-math",
+      "kB": 3.1,
+      "pct": 0.1
+    },
+    {
+      "pkg": "@ungap/structured-clone",
+      "kB": 3,
+      "pct": 0.1
+    },
+    {
+      "pkg": "hast-util-to-text",
+      "kB": 2.9,
+      "pct": 0.1
+    },
+    {
+      "pkg": "@radix-ui/react-presence",
+      "kB": 2.6,
+      "pct": 0.1
+    },
+    {
+      "pkg": "micromark-extension-cjk-friendly-util",
+      "kB": 2.5,
+      "pct": 0.1
+    },
+    {
+      "pkg": "hastscript",
+      "kB": 2.4,
+      "pct": 0.1
+    },
+    {
+      "pkg": "(variant code)",
+      "kB": 2.4,
+      "pct": 0.1
+    },
+    {
+      "pkg": "@radix-ui/react-slot",
+      "kB": 2.3,
+      "pct": 0.1
+    },
+    {
+      "pkg": "@tanstack/pacer",
+      "kB": 2.3,
+      "pct": 0.1
+    },
+    {
+      "pkg": "micromark-extension-cjk-friendly",
+      "kB": 2.3,
+      "pct": 0.1
+    },
+    {
+      "pkg": "mdast-util-math",
+      "kB": 2.3,
+      "pct": 0.1
+    },
+    {
+      "pkg": "untruncate-json",
+      "kB": 2.2,
+      "pct": 0.1
+    },
+    {
+      "pkg": "hast-util-from-parse5",
+      "kB": 2.1,
+      "pct": 0.1
+    },
+    {
+      "pkg": "mdast-util-gfm-autolink-literal",
+      "kB": 2.1,
+      "pct": 0.1
+    },
+    {
+      "pkg": "hast-util-to-parse5",
+      "kB": 1.9,
+      "pct": 0.1
+    },
+    {
+      "pkg": "@tanstack/react-virtual",
+      "kB": 1.8,
+      "pct": 0.1
+    },
+    {
+      "pkg": "micromark-extension-cjk-friendly-gfm-strikethrough",
+      "kB": 1.8,
+      "pct": 0.1
+    },
+    {
+      "pkg": "mdast-util-gfm-table",
+      "kB": 1.7,
+      "pct": 0.1
+    },
+    {
+      "pkg": "@radix-ui/react-context",
+      "kB": 1.7,
+      "pct": 0.1
+    },
+    {
+      "pkg": "mdast-util-gfm-footnote",
+      "kB": 1.6,
+      "pct": 0.1
+    },
+    {
+      "pkg": "markdown-table",
+      "kB": 1.5,
+      "pct": 0.1
+    },
+    {
+      "pkg": "react-remove-scroll-bar",
+      "kB": 1.5,
+      "pct": 0.1
+    },
+    {
+      "pkg": "micromark-extension-gfm-strikethrough",
+      "kB": 1.5,
+      "pct": 0.1
+    },
+    {
+      "pkg": "inline-style-parser",
+      "kB": 1.5,
+      "pct": 0.1
+    },
+    {
+      "pkg": "aria-hidden",
+      "kB": 1.4,
+      "pct": 0.1
+    },
+    {
+      "pkg": "vfile-message",
+      "kB": 1.3,
+      "pct": 0.1
+    },
+    {
+      "pkg": "mdast-util-find-and-replace",
+      "kB": 1.2,
+      "pct": 0.1
+    },
+    {
+      "pkg": "@copilotkit/mcp-apps-renderer",
+      "kB": 1.2,
+      "pct": 0.1
+    },
+    {
+      "pkg": "@radix-ui/react-use-controllable-state",
+      "kB": 1.2,
+      "pct": 0.1
+    },
+    {
+      "pkg": "mdast-util-gfm-task-list-item",
+      "kB": 1.1,
+      "pct": 0.1
+    },
+    {
+      "pkg": "use-sidecar",
+      "kB": 1.1,
+      "pct": 0.1
+    },
+    {
+      "pkg": "extend",
+      "kB": 1.1,
+      "pct": 0.1
+    },
+    {
+      "pkg": "(bundler runtime, no map)",
+      "kB": 1.1,
+      "pct": 0
+    },
+    {
+      "pkg": "rehype-katex",
+      "kB": 1,
+      "pct": 0
+    },
+    {
+      "pkg": "uuid",
+      "kB": 1,
+      "pct": 0
+    },
+    {
+      "pkg": "@radix-ui/primitive",
+      "kB": 0.9,
+      "pct": 0
+    },
+    {
+      "pkg": "hast-util-from-dom",
+      "kB": 0.9,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-factory-destination",
+      "kB": 0.9,
+      "pct": 0
+    },
+    {
+      "pkg": "compare-versions",
+      "kB": 0.8,
+      "pct": 0
+    },
+    {
+      "pkg": "unist-util-visit-parents",
+      "kB": 0.8,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-extension-gfm-task-list-item",
+      "kB": 0.8,
+      "pct": 0
+    },
+    {
+      "pkg": "@radix-ui/react-focus-guards",
+      "kB": 0.7,
+      "pct": 0
+    },
+    {
+      "pkg": "unist-util-is",
+      "kB": 0.7,
+      "pct": 0
+    },
+    {
+      "pkg": "mdast-util-gfm-strikethrough",
+      "kB": 0.7,
+      "pct": 0
+    },
+    {
+      "pkg": "trough",
+      "kB": 0.7,
+      "pct": 0
+    },
+    {
+      "pkg": "hast-util-is-element",
+      "kB": 0.7,
+      "pct": 0
+    },
+    {
+      "pkg": "lit-element",
+      "kB": 0.7,
+      "pct": 0
+    },
+    {
+      "pkg": "react-style-singleton",
+      "kB": 0.7,
+      "pct": 0
+    },
+    {
+      "pkg": "style-to-js",
+      "kB": 0.7,
+      "pct": 0
+    },
+    {
+      "pkg": "vfile-location",
+      "kB": 0.7,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-util-edit-map",
+      "kB": 0.6,
+      "pct": 0
+    },
+    {
+      "pkg": "use-callback-ref",
+      "kB": 0.6,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-factory-label",
+      "kB": 0.6,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-factory-title",
+      "kB": 0.6,
+      "pct": 0
+    },
+    {
+      "pkg": "class-variance-authority",
+      "kB": 0.6,
+      "pct": 0
+    },
+    {
+      "pkg": "@radix-ui/react-use-size",
+      "kB": 0.5,
+      "pct": 0
+    },
+    {
+      "pkg": "@radix-ui/react-primitive",
+      "kB": 0.5,
+      "pct": 0
+    },
+    {
+      "pkg": "mdast-util-to-string",
+      "kB": 0.5,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-util-sanitize-uri",
+      "kB": 0.5,
+      "pct": 0
+    },
+    {
+      "pkg": "@radix-ui/react-compose-refs",
+      "kB": 0.5,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-util-character",
+      "kB": 0.4,
+      "pct": 0
+    },
+    {
+      "pkg": "trim-lines",
+      "kB": 0.4,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-util-html-tag-name",
+      "kB": 0.4,
+      "pct": 0
+    },
+    {
+      "pkg": "@radix-ui/react-use-effect-event",
+      "kB": 0.4,
+      "pct": 0
+    },
+    {
+      "pkg": "style-to-object",
+      "kB": 0.4,
+      "pct": 0
+    },
+    {
+      "pkg": "@radix-ui/react-use-is-hydrated",
+      "kB": 0.4,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-util-combine-extensions",
+      "kB": 0.4,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-factory-space",
+      "kB": 0.4,
+      "pct": 0
+    },
+    {
+      "pkg": "clsx",
+      "kB": 0.4,
+      "pct": 0
+    },
+    {
+      "pkg": "@radix-ui/react-visually-hidden",
+      "kB": 0.4,
+      "pct": 0
+    },
+    {
+      "pkg": "unist-util-find-after",
+      "kB": 0.3,
+      "pct": 0
+    },
+    {
+      "pkg": "unist-util-position",
+      "kB": 0.3,
+      "pct": 0
+    },
+    {
+      "pkg": "@radix-ui/react-arrow",
+      "kB": 0.3,
+      "pct": 0
+    },
+    {
+      "pkg": "hast-util-parse-selector",
+      "kB": 0.3,
+      "pct": 0
+    },
+    {
+      "pkg": "comma-separated-tokens",
+      "kB": 0.3,
+      "pct": 0
+    },
+    {
+      "pkg": "unist-util-stringify-position",
+      "kB": 0.3,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-util-chunked",
+      "kB": 0.3,
+      "pct": 0
+    },
+    {
+      "pkg": "@radix-ui/react-portal",
+      "kB": 0.3,
+      "pct": 0
+    },
+    {
+      "pkg": "zwitch",
+      "kB": 0.3,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-util-decode-string",
+      "kB": 0.3,
+      "pct": 0
+    },
+    {
+      "pkg": "@radix-ui/react-id",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "web-namespaces",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "@radix-ui/react-use-callback-ref",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "mdast-util-phrasing",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "is-plain-obj",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "unist-util-visit",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-util-decode-numeric-character-reference",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "longest-streak",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "hast-util-from-html-isomorphic",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "remark-parse",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "remark-gfm",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "remark-math",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "estree-util-is-identifier-name",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "@radix-ui/react-direction",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-factory-whitespace",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "ccount",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "hast-util-whitespace",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "html-void-elements",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "decode-named-character-reference",
+      "kB": 0.2,
+      "pct": 0
+    },
+    {
+      "pkg": "remark-rehype",
+      "kB": 0.1,
+      "pct": 0
+    },
+    {
+      "pkg": "escape-string-regexp",
+      "kB": 0.1,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-util-resolve-all",
+      "kB": 0.1,
+      "pct": 0
+    },
+    {
+      "pkg": "mdast-util-gfm",
+      "kB": 0.1,
+      "pct": 0
+    },
+    {
+      "pkg": "space-separated-tokens",
+      "kB": 0.1,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-util-normalize-identifier",
+      "kB": 0.1,
+      "pct": 0
+    },
+    {
+      "pkg": "get-nonce",
+      "kB": 0.1,
+      "pct": 0
+    },
+    {
+      "pkg": "remark-cjk-friendly-gfm-strikethrough",
+      "kB": 0.1,
+      "pct": 0
+    },
+    {
+      "pkg": "remark-cjk-friendly",
+      "kB": 0.1,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-util-classify-character",
+      "kB": 0.1,
+      "pct": 0
+    },
+    {
+      "pkg": "rehype-raw",
+      "kB": 0.1,
+      "pct": 0
+    },
+    {
+      "pkg": "micromark-extension-gfm",
+      "kB": 0.1,
+      "pct": 0
+    },
+    {
+      "pkg": "@radix-ui/react-use-layout-effect",
+      "kB": 0.1,
+      "pct": 0
+    },
+    {
+      "pkg": "rehype-sanitize",
+      "kB": 0,
+      "pct": 0
+    },
+    {
+      "pkg": "bail",
+      "kB": 0,
+      "pct": 0
+    },
+    {
+      "pkg": "graphql",
+      "kB": 0,
+      "pct": 0
+    }
+  ]
+}

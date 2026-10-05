@@ -1,0 +1,81 @@
+/*
+ * Subset of apps/frontend/src/app/globals.css: the Locus tokens in their real format (bare HSL
+ * triplets, theme classes on <html>), so the bake-off sees the same token collisions the app
+ * would. Import after `@import "tailwindcss";`.
+ */
+:root,
+.theme-light {
+  --background: 220 23% 97%;
+  --foreground: 224 24% 14%;
+  --card: 0 0% 100%;
+  --muted: 220 20% 95%;
+  --muted-foreground: 220 10% 38%;
+  --primary: 224 78% 50%;
+  --accent: 224 78% 50%;
+  --border: 220 19% 88%;
+  --radius: 14px;
+  --state-critical: 3 80% 44%;
+  --state-warning: 30 92% 34%;
+  --state-success: 150 70% 26%;
+  --state-info: 201 92% 32%;
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --primary-foreground: 225 100% 98%;
+  --secondary: var(--muted);
+  --secondary-foreground: var(--foreground);
+  --destructive: var(--state-critical);
+  --destructive-foreground: 0 0% 100%;
+  --input: var(--border);
+  --ring: var(--accent);
+}
+
+.theme-dark {
+  --background: 228 20% 10%;
+  --foreground: 220 18% 92%;
+  --card: 228 20% 13%;
+  --muted: 228 15% 18%;
+  --muted-foreground: 220 10% 68%;
+  --primary: 224 88% 66%;
+  --accent: 224 88% 66%;
+  --border: 228 15% 24%;
+  --state-critical: 3 86% 68%;
+  --state-warning: 38 92% 58%;
+  --state-success: 150 58% 52%;
+  --state-info: 201 92% 62%;
+  --primary-foreground: 228 20% 10%;
+}
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-border: hsl(var(--border));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-success: hsl(var(--state-success));
+  --color-warning: hsl(var(--state-warning));
+  --color-info: hsl(var(--state-info));
+  --font-sans: system-ui, "Segoe UI", sans-serif;
+}
+
+html {
+  background: hsl(var(--background));
+}
+
+body {
+  margin: 0;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: system-ui, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}

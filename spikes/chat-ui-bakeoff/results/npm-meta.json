@@ -1,0 +1,159 @@
+{
+  "asOf": "2026-10-05",
+  "packages": [
+    {
+      "pkg": "@assistant-ui/react",
+      "latest": "0.15.23",
+      "latestDate": "2026-10-02",
+      "firstPublished": "2024-05-07",
+      "stableReleases": 452,
+      "allVersions": 452,
+      "releases30d": 5,
+      "releases90d": 27,
+      "releases365d": 103,
+      "breakingLinesOpened365d": 3,
+      "breakingLines": [
+        "0.12",
+        "0.14",
+        "0.15"
+      ],
+      "npmMaintainers": 2,
+      "deprecated": null
+    },
+    {
+      "pkg": "@assistant-ui/core",
+      "latest": "0.3.22",
+      "latestDate": "2026-10-02",
+      "firstPublished": "2026-02-20",
+      "stableReleases": 61,
+      "allVersions": 61,
+      "releases30d": 5,
+      "releases90d": 26,
+      "releases365d": 61,
+      "breakingLinesOpened365d": 3,
+      "breakingLines": [
+        "0.1",
+        "0.2",
+        "0.3"
+      ],
+      "npmMaintainers": 2,
+      "deprecated": null
+    },
+    {
+      "pkg": "@assistant-ui/react-ag-ui",
+      "latest": "0.0.63",
+      "latestDate": "2026-10-02",
+      "firstPublished": "2025-11-19",
+      "stableReleases": 58,
+      "allVersions": 58,
+      "releases30d": 5,
+      "releases90d": 18,
+      "releases365d": 58,
+      "breakingLinesOpened365d": 1,
+      "breakingLines": [
+        "0.0"
+      ],
+      "npmMaintainers": 2,
+      "deprecated": null
+    },
+    {
+      "pkg": "@assistant-ui/react-markdown",
+      "latest": "0.14.18",
+      "latestDate": "2026-10-02",
+      "firstPublished": "2024-06-26",
+      "stableReleases": 113,
+      "allVersions": 113,
+      "releases30d": 4,
+      "releases90d": 13,
+      "releases365d": 39,
+      "breakingLinesOpened365d": 2,
+      "breakingLines": [
+        "0.12",
+        "0.14"
+      ],
+      "npmMaintainers": 2,
+      "deprecated": null
+    },
+    {
+      "pkg": "@copilotkit/react-core",
+      "latest": "1.77.0",
+      "latestDate": "2026-10-02",
+      "firstPublished": "2023-07-13",
+      "stableReleases": 201,
+      "allVersions": 1144,
+      "releases30d": 16,
+      "releases90d": 41,
+      "releases365d": 85,
+      "breakingLinesOpened365d": 0,
+      "breakingLines": [],
+      "npmMaintainers": 1,
+      "deprecated": null
+    },
+    {
+      "pkg": "@copilotkit/react-ui",
+      "latest": "1.77.0",
+      "latestDate": "2026-10-02",
+      "firstPublished": "2023-07-12",
+      "stableReleases": 203,
+      "allVersions": 1147,
+      "releases30d": 16,
+      "releases90d": 41,
+      "releases365d": 85,
+      "breakingLinesOpened365d": 0,
+      "breakingLines": [],
+      "npmMaintainers": 1,
+      "deprecated": null
+    },
+    {
+      "pkg": "@copilotkit/core",
+      "latest": "1.77.0",
+      "latestDate": "2026-10-02",
+      "firstPublished": "2026-03-29",
+      "stableReleases": 72,
+      "allVersions": 157,
+      "releases30d": 16,
+      "releases90d": 41,
+      "releases365d": 72,
+      "breakingLinesOpened365d": 1,
+      "breakingLines": [
+        "1"
+      ],
+      "npmMaintainers": 1,
+      "deprecated": null
+    },
+    {
+      "pkg": "@ag-ui/client",
+      "latest": "1.0.2",
+      "latestDate": "2026-10-05",
+      "firstPublished": "2025-04-30",
+      "stableReleases": 36,
+      "allVersions": 78,
+      "releases30d": 2,
+      "releases90d": 4,
+      "releases365d": 21,
+      "breakingLinesOpened365d": 1,
+      "breakingLines": [
+        "1"
+      ],
+      "npmMaintainers": 2,
+      "deprecated": null
+    },
+    {
+      "pkg": "@ag-ui/core",
+      "latest": "1.0.2",
+      "latestDate": "2026-10-05",
+      "firstPublished": "2025-04-30",
+      "stableReleases": 36,
+      "allVersions": 78,
+      "releases30d": 2,
+      "releases90d": 4,
+      "releases365d": 22,
+      "breakingLinesOpened365d": 1,
+      "breakingLines": [
+        "1"
+      ],
+      "npmMaintainers": 2,
+      "deprecated": null
+    }
+  ]
+}

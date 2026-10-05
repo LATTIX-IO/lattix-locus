@@ -1,0 +1,427 @@
+{
+  "summary": {
+    "variant": "variant-copilotkit",
+    "chromium": "153.0.8010.12",
+    "reps": 3,
+    "streamRenderMsMedian": 567,
+    "streamTBTmsMedian": 0,
+    "streamLongTasksMedian": 0,
+    "longRenderMsMedian": 52,
+    "longTBTmsMedian": 0,
+    "longTasksMedian": 0,
+    "streamTaskMsMedian": 576,
+    "streamScriptMsMedian": 491,
+    "longTaskMsMedianCdp": 60,
+    "scrollTaskMsMedian": 123,
+    "externalRequests": [],
+    "cspViolations": [
+      {
+        "directive": "script-src",
+        "blockedURI": "eval",
+        "sample": ""
+      },
+      {
+        "directive": "script-src",
+        "blockedURI": "eval",
+        "sample": ""
+      },
+      {
+        "directive": "script-src",
+        "blockedURI": "eval",
+        "sample": ""
+      },
+      {
+        "directive": "script-src",
+        "blockedURI": "eval",
+        "sample": ""
+      },
+      {
+        "directive": "script-src",
+        "blockedURI": "eval",
+        "sample": ""
+      },
+      {
+        "directive": "script-src",
+        "blockedURI": "eval",
+        "sample": ""
+      }
+    ]
+  },
+  "stream": [
+    {
+      "rep": 0,
+      "tabsToComposer": 4,
+      "streamMainThreadMs": {
+        "task": 578,
+        "script": 494,
+        "layout": 8,
+        "style": 6
+      },
+      "streamRenderMs": 569,
+      "streamLongTasks": 0,
+      "streamLongTaskMs": 0,
+      "streamTBTms": 0,
+      "plan": "Plan (agent state)\nSearch the workspace\ndone\nSummarise the run\ndone\nTriage the inbox\ndone\nSend the report\npending",
+      "tier1Rendered": true,
+      "tier2Rendered": true,
+      "tier2Blocked": 1,
+      "tier2ScriptTags": 0,
+      "focusAfterInterrupt": "BODY",
+      "tabsToApprove": 4,
+      "confirmCalls": 1,
+      "runInputs": [
+        {
+          "runId": "6c04d906-6f16-4736-9f8c-245e7b4f5b8a",
+          "tools": [],
+          "contextEntries": 0,
+          "forwardedPropsKeys": [],
+          "messages": 1,
+          "hasResume": false
+        },
+        {
+          "runId": "18438290-e1fb-44fa-911f-2609954ad0d0",
+          "tools": [],
+          "contextEntries": 0,
+          "forwardedPropsKeys": [],
+          "messages": 6,
+          "hasResume": true,
+          "resume": [
+            {
+              "interruptId": "int-approve-send-email",
+              "status": "resolved",
+              "payload": {
+                "approved": true,
+                "proof": "stub-proof:int-approve-send-email"
+              }
+            }
+          ]
+        }
+      ],
+      "resumeSent": true,
+      "resumePayload": [
+        {
+          "interruptId": "int-approve-send-email",
+          "status": "resolved",
+          "payload": {
+            "approved": true,
+            "proof": "stub-proof:int-approve-send-email"
+          }
+        }
+      ],
+      "errorRendered": true,
+      "cspViolations": [
+        {
+          "directive": "script-src",
+          "blockedURI": "eval",
+          "sample": ""
+        },
+        {
+          "directive": "script-src",
+          "blockedURI": "eval",
+          "sample": ""
+        }
+      ],
+      "jsResourcesLoaded": 7,
+      "fontResourcesLoaded": 0,
+      "codeBlock": "highlighted",
+      "pageErrors": [],
+      "axeDark": [
+        {
+          "id": "button-name",
+          "impact": "critical",
+          "nodes": 2,
+          "sample": [
+            "#radix-_r_5_",
+            ".cpk\\:bg-black"
+          ]
+        },
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "nodes": 5,
+          "sample": [
+            ".dark\\:text-\\(--shiki-dark\\)\\!.dark\\:bg-\\(--shiki-dark-bg\\)\\!:nth-child(1)",
+            ".dark\\:text-\\(--shiki-dark\\)\\!.dark\\:bg-\\(--shiki-dark-bg\\)\\!:nth-child(3)"
+          ]
+        }
+      ],
+      "axeLight": [
+        {
+          "id": "button-name",
+          "impact": "critical",
+          "nodes": 2,
+          "sample": [
+            "#radix-_r_5_",
+            ".cpk\\:bg-black"
+          ]
+        },
+        {
+          "id": "color-contrast",
+          "impact": "serious",
+          "nodes": 3,
+          "sample": [
+            ".dark\\:text-\\(--shiki-dark\\)\\!.dark\\:bg-\\(--shiki-dark-bg\\)\\!:nth-child(1)",
+            ".dark\\:text-\\(--shiki-dark\\)\\!.dark\\:bg-\\(--shiki-dark-bg\\)\\!:nth-child(7)"
+          ]
+        }
+      ],
+      "externalRequests": [],
+      "sameOriginNonAssetRequests": [],
+      "console": [
+        "warning: [CopilotKit] `selfManagedAgents` is part of CopilotKit's Enterprise Intelligence tier. Provide a `publicLicenseKey` for production use — contact the CopilotKit team about licensing."
+      ]
+    },
+    {
+      "rep": 1,
+      "tabsToComposer": 4,
+      "streamMainThreadMs": {
+        "task": 576,
+        "script": 491,
+        "layout": 8,
+        "style": 6
+      },
+      "streamRenderMs": 567,
+      "streamLongTasks": 0,
+      "streamLongTaskMs": 0,
+      "streamTBTms": 0,
+      "plan": "Plan (agent state)\nSearch the workspace\ndone\nSummarise the run\ndone\nTriage the inbox\ndone\nSend the report\npending",
+      "tier1Rendered": true,
+      "tier2Rendered": true,
+      "tier2Blocked": 1,
+      "tier2ScriptTags": 0,
+      "focusAfterInterrupt": "BODY",
+      "tabsToApprove": 4,
+      "confirmCalls": 1,
+      "runInputs": [
+        {
+          "runId": "ab523595-4918-477c-8c4c-ae86224d1af9",
+          "tools": [],
+          "contextEntries": 0,
+          "forwardedPropsKeys": [],
+          "messages": 1,
+          "hasResume": false
+        },
+        {
+          "runId": "0e6fe576-6595-4186-b332-3f5a0c71e541",
+          "tools": [],
+          "contextEntries": 0,
+          "forwardedPropsKeys": [],
+          "messages": 6,
+          "hasResume": true,
+          "resume": [
+            {
+              "interruptId": "int-approve-send-email",
+              "status": "resolved",
+              "payload": {
+                "approved": true,
+                "proof": "stub-proof:int-approve-send-email"
+              }
+            }
+          ]
+        }
+      ],
+      "resumeSent": true,
+      "resumePayload": [
+        {
+          "interruptId": "int-approve-send-email",
+          "status": "resolved",
+          "payload": {
+            "approved": true,
+            "proof": "stub-proof:int-approve-send-email"
+          }
+        }
+      ],
+      "errorRendered": true,
+      "cspViolations": [
+        {
+          "directive": "script-src",
+          "blockedURI": "eval",
+          "sample": ""
+        },
+        {
+          "directive": "script-src",
+          "blockedURI": "eval",
+          "sample": ""
+        }
+      ],
+      "jsResourcesLoaded": 7,
+      "fontResourcesLoaded": 0,
+      "codeBlock": "highlighted",
+      "pageErrors": [],
+      "externalRequests": [],
+      "sameOriginNonAssetRequests": [],
+      "console": [
+        "warning: [CopilotKit] `selfManagedAgents` is part of CopilotKit's Enterprise Intelligence tier. Provide a `publicLicenseKey` for production use — contact the CopilotKit team about licensing."
+      ]
+    },
+    {
+      "rep": 2,
+      "tabsToComposer": 4,
+      "streamMainThreadMs": {
+        "task": 562,
+        "script": 480,
+        "layout": 7,
+        "style": 6
+      },
+      "streamRenderMs": 554,
+      "streamLongTasks": 0,
+      "streamLongTaskMs": 0,
+      "streamTBTms": 0,
+      "plan": "Plan (agent state)\nSearch the workspace\ndone\nSummarise the run\ndone\nTriage the inbox\ndone\nSend the report\npending",
+      "tier1Rendered": true,
+      "tier2Rendered": true,
+      "tier2Blocked": 1,
+      "tier2ScriptTags": 0,
+      "focusAfterInterrupt": "BODY",
+      "tabsToApprove": 4,
+      "confirmCalls": 1,
+      "runInputs": [
+        {
+          "runId": "3ae6caeb-521b-4fed-a71f-1779d4d18c51",
+          "tools": [],
+          "contextEntries": 0,
+          "forwardedPropsKeys": [],
+          "messages": 1,
+          "hasResume": false
+        },
+        {
+          "runId": "bb53fe5d-7045-4483-8a9b-cff9584ae279",
+          "tools": [],
+          "contextEntries": 0,
+          "forwardedPropsKeys": [],
+          "messages": 6,
+          "hasResume": true,
+          "resume": [
+            {
+              "interruptId": "int-approve-send-email",
+              "status": "resolved",
+              "payload": {
+                "approved": true,
+                "proof": "stub-proof:int-approve-send-email"
+              }
+            }
+          ]
+        }
+      ],
+      "resumeSent": true,
+      "resumePayload": [
+        {
+          "interruptId": "int-approve-send-email",
+          "status": "resolved",
+          "payload": {
+            "approved": true,
+            "proof": "stub-proof:int-approve-send-email"
+          }
+        }
+      ],
+      "errorRendered": true,
+      "cspViolations": [
+        {
+          "directive": "script-src",
+          "blockedURI": "eval",
+          "sample": ""
+        },
+        {
+          "directive": "script-src",
+          "blockedURI": "eval",
+          "sample": ""
+        }
+      ],
+      "jsResourcesLoaded": 7,
+      "fontResourcesLoaded": 0,
+      "codeBlock": "highlighted",
+      "pageErrors": [],
+      "externalRequests": [],
+      "sameOriginNonAssetRequests": [],
+      "console": [
+        "warning: [CopilotKit] `selfManagedAgents` is part of CopilotKit's Enterprise Intelligence tier. Provide a `publicLicenseKey` for production use — contact the CopilotKit team about licensing."
+      ]
+    }
+  ],
+  "long": [
+    {
+      "rep": 0,
+      "longMainThreadMs": {
+        "task": 58,
+        "script": 34,
+        "layout": 6,
+        "style": 5
+      },
+      "scrollMainThreadMs": {
+        "task": 123,
+        "script": 69,
+        "layout": 11,
+        "style": 17
+      },
+      "toolCardsAfterScroll": 4,
+      "longRenderMs": 52,
+      "longTasks": 0,
+      "longTaskMs": 0,
+      "longTBTms": 0,
+      "toolCards": 4,
+      "domNodes": 189,
+      "heapMB": 23.1,
+      "externalRequests": [],
+      "sameOriginNonAssetRequests": [],
+      "console": [
+        "warning: [CopilotKit] `selfManagedAgents` is part of CopilotKit's Enterprise Intelligence tier. Provide a `publicLicenseKey` for production use — contact the CopilotKit team about licensing."
+      ]
+    },
+    {
+      "rep": 1,
+      "longMainThreadMs": {
+        "task": 60,
+        "script": 36,
+        "layout": 6,
+        "style": 5
+      },
+      "scrollMainThreadMs": {
+        "task": 123,
+        "script": 68,
+        "layout": 11,
+        "style": 17
+      },
+      "toolCardsAfterScroll": 4,
+      "longRenderMs": 52,
+      "longTasks": 0,
+      "longTaskMs": 0,
+      "longTBTms": 0,
+      "toolCards": 4,
+      "domNodes": 189,
+      "heapMB": 23.1,
+      "externalRequests": [],
+      "sameOriginNonAssetRequests": [],
+      "console": [
+        "warning: [CopilotKit] `selfManagedAgents` is part of CopilotKit's Enterprise Intelligence tier. Provide a `publicLicenseKey` for production use — contact the CopilotKit team about licensing."
+      ]
+    },
+    {
+      "rep": 2,
+      "longMainThreadMs": {
+        "task": 62,
+        "script": 38,
+        "layout": 6,
+        "style": 5
+      },
+      "scrollMainThreadMs": {
+        "task": 173,
+        "script": 96,
+        "layout": 15,
+        "style": 24
+      },
+      "toolCardsAfterScroll": 4,
+      "longRenderMs": 50,
+      "longTasks": 0,
+      "longTaskMs": 0,
+      "longTBTms": 0,
+      "toolCards": 4,
+      "domNodes": 189,
+      "heapMB": 23.1,
+      "externalRequests": [],
+      "sameOriginNonAssetRequests": [],
+      "console": [
+        "warning: [CopilotKit] `selfManagedAgents` is part of CopilotKit's Enterprise Intelligence tier. Provide a `publicLicenseKey` for production use — contact the CopilotKit team about licensing."
+      ]
+    }
+  ]
+}

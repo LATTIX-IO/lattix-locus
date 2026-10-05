@@ -1,0 +1,125 @@
+{
+  "variant": "variant-assistant-ui",
+  "entry": "index-CoVTWAYO.js",
+  "jsChunks": 1,
+  "cssFiles": 1,
+  "jsRawBytes": 1127081,
+  "jsGzipBytes": 316902,
+  "firstLoadChunks": 1,
+  "firstLoadJsRawBytes": 1127081,
+  "firstLoadJsGzipBytes": 316902,
+  "lazyChunks": 0,
+  "cssRawBytes": 13475,
+  "cssGzipBytes": 3616,
+  "cssEntry": [
+    "index-CfETtSeb.css"
+  ],
+  "fontFiles": 0,
+  "flaggedHosts": [],
+  "hosts": [
+    {
+      "host": "www.w3.org",
+      "count": 18,
+      "firstLoad": true,
+      "flagged": false,
+      "chunks": 1
+    },
+    {
+      "host": "json-schema.org",
+      "count": 5,
+      "firstLoad": true,
+      "flagged": false,
+      "chunks": 1
+    },
+    {
+      "host": "react.dev",
+      "count": 2,
+      "firstLoad": true,
+      "flagged": false,
+      "chunks": 1
+    },
+    {
+      "host": "github.com",
+      "count": 2,
+      "firstLoad": true,
+      "flagged": false,
+      "chunks": 1
+    },
+    {
+      "host": "evil.example",
+      "count": 1,
+      "firstLoad": true,
+      "flagged": false,
+      "chunks": 1
+    },
+    {
+      "host": "tailwindcss.com",
+      "count": 1,
+      "firstLoad": false,
+      "flagged": false,
+      "chunks": 1
+    }
+  ],
+  "patterns": {
+    "Function(": {
+      "all": 2,
+      "firstLoad": 2
+    },
+    "eval(": {
+      "all": 0,
+      "firstLoad": 0
+    },
+    "innerHTML": {
+      "all": 4,
+      "firstLoad": 4
+    },
+    "dangerouslySetInnerHTML": {
+      "all": 12,
+      "firstLoad": 12
+    },
+    "createElement(style)": {
+      "all": 1,
+      "firstLoad": 1
+    },
+    "insertRule": {
+      "all": 0,
+      "firstLoad": 0
+    },
+    "adoptedStyleSheets": {
+      "all": 0,
+      "firstLoad": 0
+    },
+    "createElement(script)": {
+      "all": 3,
+      "firstLoad": 3
+    },
+    "iframe": {
+      "all": 0,
+      "firstLoad": 0
+    },
+    "srcdoc": {
+      "all": 0,
+      "firstLoad": 0
+    },
+    "sendBeacon": {
+      "all": 0,
+      "firstLoad": 0
+    },
+    "new WebSocket": {
+      "all": 0,
+      "firstLoad": 0
+    },
+    "fetch(": {
+      "all": 0,
+      "firstLoad": 0
+    },
+    "new Worker": {
+      "all": 0,
+      "firstLoad": 0
+    },
+    "WebAssembly": {
+      "all": 0,
+      "firstLoad": 0
+    }
+  }
+}

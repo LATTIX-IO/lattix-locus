@@ -1,0 +1,20 @@
+{
+  "name": "variant-copilotkit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@ag-ui/client": "1.0.2",
+    "@bakeoff/shared": "*",
+    "@copilotkit/react-core": "1.77.0",
+    "@copilotkit/react-ui": "1.77.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "rxjs": "7.8.1",
+    "zod": "4.6.5"
+  }
+}

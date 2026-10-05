@@ -1,0 +1,39 @@
+{
+  "name": "chat-ui-bakeoff",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Spike: assistant-ui vs CopilotKit React UI as the Locus chat/run surface over AG-UI (no @copilotkit/runtime).",
+  "license": "AGPL-3.0-or-later",
+  "workspaces": [
+    "shared",
+    "variant-baseline",
+    "variant-assistant-ui",
+    "variant-copilotkit"
+  ],
+  "scripts": {
+    "build": "npm run build -w variant-baseline && npm run build -w variant-assistant-ui && npm run build -w variant-copilotkit",
+    "typecheck": "tsc -p variant-baseline && tsc -p variant-assistant-ui && tsc -p variant-copilotkit",
+    "licenses": "node bench/licenses.mjs variant-assistant-ui && node bench/licenses.mjs variant-copilotkit",
+    "scan": "node bench/scan-bundle.mjs variant-baseline && node bench/scan-bundle.mjs variant-assistant-ui && node bench/scan-bundle.mjs variant-copilotkit",
+    "bench": "node bench/run.mjs",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "axe-core": "4.14.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "playwright-core": "1.63.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "typescript-eslint": "^8.71.1",
+    "vite": "8.3.2"
+  },
+  "scarfSettings": {
+    "enabled": false
+  }
+}

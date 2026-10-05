@@ -1,0 +1,61 @@
+/*
+ * THEME-GLUE (counted). CopilotKit v2 ships a prebuilt Tailwind 4.1 stylesheet whose tokens use the
+ * same shadcn names as Locus (--background, --primary, ...) but as full oklch colours, scoped to
+ * [data-copilotkit], with dark mode keyed on a `.dark` class. Locus uses bare HSL triplets and
+ * `.theme-dark`. Same names, incompatible formats, so:
+ *   1. capture the Locus triplets under private names at the root (they follow the theme class);
+ *   2. feed CopilotKit full colours built from them (covers light and dark, no `.dark` needed);
+ *   3. restore the triplets for Locus components rendered inside the chat (.locus-scope).
+ */
+:root {
+  --lx-background: var(--background);
+  --lx-foreground: var(--foreground);
+  --lx-card: var(--card);
+  --lx-muted: var(--muted);
+  --lx-muted-foreground: var(--muted-foreground);
+  --lx-primary: var(--primary);
+  --lx-primary-foreground: var(--primary-foreground);
+  --lx-accent: var(--accent);
+  --lx-border: var(--border);
+  --lx-destructive: var(--destructive);
+}
+
+:root [data-copilotkit] {
+  --background: hsl(var(--lx-background));
+  --foreground: hsl(var(--lx-foreground));
+  --card: hsl(var(--lx-card));
+  --card-foreground: hsl(var(--lx-foreground));
+  --popover: hsl(var(--lx-card));
+  --popover-foreground: hsl(var(--lx-foreground));
+  --primary: hsl(var(--lx-primary));
+  --primary-foreground: hsl(var(--lx-primary-foreground));
+  --secondary: hsl(var(--lx-muted));
+  --secondary-foreground: hsl(var(--lx-foreground));
+  --muted: hsl(var(--lx-muted));
+  --muted-foreground: hsl(var(--lx-muted-foreground));
+  --accent: hsl(var(--lx-muted));
+  --accent-foreground: hsl(var(--lx-foreground));
+  --destructive: hsl(var(--lx-destructive));
+  --border: hsl(var(--lx-border));
+  --input: hsl(var(--lx-border));
+  --ring: hsl(var(--lx-accent));
+  --radius: 14px;
+  background: hsl(var(--lx-background));
+  color: hsl(var(--lx-foreground));
+}
+
+:root [data-copilotkit] .locus-scope {
+  --background: var(--lx-background);
+  --foreground: var(--lx-foreground);
+  --card: var(--lx-card);
+  --card-foreground: var(--lx-foreground);
+  --muted: var(--lx-muted);
+  --muted-foreground: var(--lx-muted-foreground);
+  --primary: var(--lx-primary);
+  --primary-foreground: var(--lx-primary-foreground);
+  --accent: var(--lx-accent);
+  --border: var(--lx-border);
+  --input: var(--lx-border);
+  --ring: var(--lx-accent);
+  --destructive: var(--lx-destructive);
+}

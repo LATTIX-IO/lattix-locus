@@ -1,0 +1,17 @@
+{
+  "variant-assistant-ui": {
+    "AGENT (mock AG-UI source, identical)": 16,
+    "ADAPTER-GLUE": 9,
+    "GENUI-GLUE": 9,
+    "HITL-GLUE": 16,
+    "UI-COMPOSITION": 47
+  },
+  "variant-copilotkit": {
+    "AGENT (mock AG-UI source, identical)": 16,
+    "THEME-GLUE": 52,
+    "ADAPTER-GLUE": 16,
+    "GENUI-GLUE": 11,
+    "HITL-GLUE": 19,
+    "UI-COMPOSITION": 1
+  }
+}
