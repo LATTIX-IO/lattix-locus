@@ -431,6 +431,33 @@ def test_integration_catalog_lists_and_installs_entries() -> None:
             store.integrations.pop(installed_id, None)
 
 
+def test_linear_catalog_auth_fails_closed_without_a_real_oauth_client_id() -> None:
+    catalog = client.get("/integrations/catalog", headers=ADMIN_HEADERS)
+    assert catalog.status_code == 200
+    linear = next(entry for entry in catalog.json() if entry["catalog_id"] == "mcp-linear")
+    auth = linear["metadata_json"]["auth"]
+    assert auth["provider"] == "linear"
+    assert auth["grant_type"] == "authorization_code"
+    assert auth["authorize_url"] == "https://linear.app/oauth/authorize"
+    assert auth["token_url"] == "https://api.linear.app/oauth/token"
+    assert "client_id" not in auth
+    assert "client_secret" not in auth
+
+    install = client.post("/integrations/catalog/mcp-linear/install", headers=ADMIN_HEADERS)
+    assert install.status_code == 200
+    integration_id = install.json()["id"]
+    try:
+        connect = client.post(
+            f"/integrations/{integration_id}/oauth/connect",
+            json={},
+            headers=ADMIN_HEADERS,
+        )
+        assert connect.status_code == 400
+        assert connect.json()["detail"] == "oauth2 client_id is required"
+    finally:
+        store.integrations.pop(integration_id, None)
+
+
 def test_install_unknown_catalog_entry_is_404() -> None:
     response = client.post("/integrations/catalog/not-a-real-entry/install", headers=ADMIN_HEADERS)
     assert response.status_code == 404
