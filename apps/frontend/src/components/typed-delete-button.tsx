@@ -5,11 +5,12 @@ import { useRouter } from "next/navigation";
 import {
   deleteAgentDefinition,
   deleteGuardrailRuleset,
+  deleteIntegration,
   deleteNodeDefinition,
   deleteWorkflowDefinition,
 } from "@/lib/api";
 
-type DeleteType = "workflow" | "agent" | "guardrail" | "node";
+type DeleteType = "workflow" | "agent" | "guardrail" | "node" | "integration";
 
 type Props = {
   itemType: DeleteType;
@@ -17,9 +18,10 @@ type Props = {
   itemName: string;
   onDeleted?: (id: string) => void;
   buttonClassName?: string;
+  buttonLabel?: string;
 };
 
-export function TypedDeleteButton({ itemType, itemId, itemName, onDeleted, buttonClassName }: Props) {
+export function TypedDeleteButton({ itemType, itemId, itemName, onDeleted, buttonClassName, buttonLabel = "Delete" }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [typedName, setTypedName] = useState("");
@@ -40,6 +42,8 @@ export function TypedDeleteButton({ itemType, itemId, itemName, onDeleted, butto
         await deleteAgentDefinition(itemId);
       } else if (itemType === "guardrail") {
         await deleteGuardrailRuleset(itemId);
+      } else if (itemType === "integration") {
+        await deleteIntegration(itemId);
       } else {
         await deleteNodeDefinition(itemId);
       }
@@ -62,22 +66,24 @@ export function TypedDeleteButton({ itemType, itemId, itemName, onDeleted, butto
   return (
     <>
       <button
+        type="button"
         onClick={() => setOpen(true)}
         className={buttonClassName ?? "fx-btn-warning px-2.5 py-1 text-xs font-medium"}
       >
-        Delete
+        {buttonLabel}
       </button>
 
       {open ? (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 p-4">
+        <div role="dialog" aria-modal="true" aria-labelledby="typed-delete-title" className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 p-4">
           <div className="fx-panel w-full max-w-md p-4">
-            <h3 className="text-base font-semibold">Confirm deletion</h3>
+            <h3 id="typed-delete-title" className="text-base font-semibold">Confirm deletion</h3>
             <p className="fx-muted mt-1 text-sm">
-              To delete this {itemType}, type its name exactly:
+              To remove this {itemType === "integration" ? "connection" : itemType}, type its name exactly:
             </p>
             <p className="mt-1 text-sm font-semibold text-[var(--foreground)]">{itemName}</p>
 
             <input
+              aria-label="Name confirmation"
               value={typedName}
               onChange={(event) => setTypedName(event.target.value)}
               className="fx-field mt-3 w-full px-3 py-2 text-sm"
@@ -87,6 +93,7 @@ export function TypedDeleteButton({ itemType, itemId, itemName, onDeleted, butto
 
             <div className="mt-3 flex justify-end gap-2">
               <button
+                type="button"
                 onClick={() => {
                   setOpen(false);
                   setTypedName("");
@@ -97,6 +104,7 @@ export function TypedDeleteButton({ itemType, itemId, itemName, onDeleted, butto
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={runDelete}
                 disabled={!canDelete || deleting}
                 className="fx-btn-warning px-3 py-2 text-sm disabled:opacity-50"

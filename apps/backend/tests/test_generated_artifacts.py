@@ -3002,7 +3002,9 @@ def test_oauth_authorization_code_connect_and_callback_persists_session(monkeypa
     monkeypatch.setattr(main_module.httpx, "post", _fake_httpx_post)
 
     try:
-        with TestClient(app, base_url="https://console.example.com") as local_client:
+        monkeypatch.delenv("LOCUS_FRONTEND_URL", raising=False)
+        monkeypatch.delenv("FRONTIER_FRONTEND_URL", raising=False)
+        with TestClient(app, base_url="http://127.0.0.1:8000") as local_client:
             connect = local_client.post(
                 f"/integrations/{integration_id}/oauth/connect",
                 json={"return_to": "/builder/integrations"},
@@ -3037,7 +3039,10 @@ def test_oauth_authorization_code_connect_and_callback_persists_session(monkeypa
             )
 
             assert callback.status_code == 302
-            assert callback.headers["location"].startswith("/builder/integrations?oauth=connected")
+            assert callback.headers["location"] == (
+                "http://127.0.0.1:3000/builder/integrations"
+                f"?oauth=connected&integration_id={integration_id}"
+            )
             replay = local_client.get(
                 f"/integrations/{integration_id}/oauth/callback?code=auth-code&state={state}",
                 follow_redirects=False,
@@ -3073,6 +3078,65 @@ def test_oauth_authorization_code_connect_and_callback_persists_session(monkeypa
                 "pending_code_verifier_encrypted"
             ] == ""
             assert captured["url"] == "https://oauth2.googleapis.com/token"
+    finally:
+        store.integrations.pop(integration_id, None)
+
+
+def test_oauth_provider_error_requires_matching_state_before_clearing_session(monkeypatch) -> None:
+    integration_id = str(uuid4())
+    store.integrations[integration_id] = main_module.IntegrationDefinition(
+        id=integration_id,
+        name="Google Drive",
+        type="http",
+        status="draft",
+        base_url="https://www.googleapis.com/drive/v3",
+        auth_type="oauth2",
+        secret_ref="secret/integrations/google/client-secret",
+        metadata_json={
+            "auth": {
+                "method": "oauth2",
+                "provider": "google",
+                "grant_type": "authorization_code",
+                "client_id": "google-client-id",
+                "redirect_path": "/library/connections?oauth_panel=1",
+            },
+            "oauth_session": {
+                "pending_state": "expected-state",
+                "pending_code_verifier_encrypted": "encrypted-verifier",
+                "pending_return_to": "/library/connections?oauth_panel=1",
+                "last_error": "",
+            },
+        },
+    )
+    monkeypatch.delenv("LOCUS_FRONTEND_URL", raising=False)
+    monkeypatch.delenv("FRONTIER_FRONTEND_URL", raising=False)
+
+    try:
+        with TestClient(app, base_url="http://127.0.0.1:8000") as client:
+            invalid = client.get(
+                f"/integrations/{integration_id}/oauth/callback?error=access_denied",
+                follow_redirects=False,
+            )
+            assert invalid.status_code == 400
+            assert (
+                store.integrations[integration_id].metadata_json["oauth_session"]["pending_state"]
+                == "expected-state"
+            )
+
+            valid = client.get(
+                f"/integrations/{integration_id}/oauth/callback"
+                "?error=access_denied&state=expected-state",
+                follow_redirects=False,
+            )
+            assert valid.status_code == 302
+            assert valid.headers["location"] == (
+                "http://127.0.0.1:3000/library/connections"
+                "?oauth_panel=1&oauth=error"
+                f"&integration_id={integration_id}"
+            )
+            session = store.integrations[integration_id].metadata_json["oauth_session"]
+            assert session["pending_state"] == ""
+            assert session["last_error"] == "access_denied"
     finally:
         store.integrations.pop(integration_id, None)
 
@@ -3156,7 +3220,7 @@ def test_linear_mcp_catalog_connect_registers_public_client_and_uses_pkce(monkey
         with TestClient(app, base_url="https://console.example.com") as local_client:
             connect = local_client.post(
                 f"/integrations/{integration_id}/oauth/connect",
-                json={"return_to": "/settings/self-improvement"},
+                json={"return_to": "/library/connections?oauth_panel=1"},
                 headers=ADMIN_HEADERS,
             )
 
@@ -3194,7 +3258,10 @@ def test_linear_mcp_catalog_connect_registers_public_client_and_uses_pkce(monkey
                 follow_redirects=False,
             )
             assert callback.status_code == 302
-            assert "settings/self-improvement?oauth=connected" in callback.headers["location"]
+            assert callback.headers["location"] == (
+                "/library/connections?oauth_panel=1&oauth=connected"
+                f"&integration_id={integration_id}"
+            )
 
             token_request = next(call[2] for call in calls if call[0] == "token-request")
             assert token_request["grant_type"] == "authorization_code"

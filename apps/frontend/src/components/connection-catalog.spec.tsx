@@ -67,6 +67,26 @@ async function openReview(name: string) {
 }
 
 describe("ConnectionCatalog", () => {
+  it("labels a signed-in catalog connection as needing attention when its health check failed", async () => {
+    api.getIntegrations.mockResolvedValue([
+      {
+        id: "linear-connection",
+        name: "Linear MCP",
+        type: "custom",
+        status: "error",
+        base_url: "https://mcp.linear.app/mcp",
+        auth_type: "oauth2",
+        secret_ref: "",
+        metadata_json: { catalog_id: "mcp-linear" },
+        oauth_status: { connected: true, pending: false },
+      },
+    ]);
+
+    render(<ConnectionCatalog />);
+
+    expect(await screen.findByLabelText("Linear MCP: Needs attention")).toBeInTheDocument();
+  });
+
   it("shows what an entry will access and how it signs in before adding", async () => {
     const dialog = await openReview("GitHub MCP");
 

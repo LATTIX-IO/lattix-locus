@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { TypedDeleteButton } from "@/components/typed-delete-button";
 import {
   connectIntegrationOAuth,
-  deleteIntegration,
   disconnectIntegrationOAuth,
   getIntegrationOAuthStatus,
   getIntegrationStarterTemplates,
@@ -334,15 +336,15 @@ function clearWindowOauthPanelState(): void {
 
 function oauthOutcomeLabel(outcome: string): string {
   if (outcome === "connected") {
-    return "OAuth connection completed.";
+    return "Your account is connected.";
   }
   if (outcome === "error") {
-    return "OAuth connection returned an error.";
+    return "Sign-in did not finish. Review the message below and try again.";
   }
   if (outcome === "connecting") {
-    return "OAuth authorization flow started.";
+    return "Complete sign-in in the provider window, then return here.";
   }
-  return "Review OAuth connection status and next actions below.";
+  return "Review account access and next steps below.";
 }
 
 function oauthConnectionLabel(status: IntegrationOAuthStatus | null): string {
@@ -363,6 +365,104 @@ function oauthConnectionTone(status: IntegrationOAuthStatus | null): string {
     return integrationStatusTone("draft");
   }
   return integrationStatusTone("error");
+}
+
+type IntegrationHealth = {
+  label: string;
+  description: string;
+  variant: "success" | "warning" | "destructive" | "outline";
+  signIn: string;
+  check: string;
+};
+
+export function integrationHealth(
+  item: IntegrationDefinition,
+  oauthStatus: IntegrationOAuthStatus | null,
+  lastTest: LastTestMetadata | null,
+): IntegrationHealth {
+  const signIn =
+    item.auth_type === "oauth2"
+      ? oauthStatus?.connected
+        ? "Signed in"
+        : oauthStatus?.pending
+          ? "Sign-in in progress"
+          : "Sign-in needed"
+      : item.auth_type === "none"
+        ? "Not needed"
+        : item.secret_configured
+          ? "Credential saved"
+          : "Credential needed";
+  const check = lastTest ? (lastTest.ok ? "Passed" : "Failed") : item.status === "error" ? "Needs review" : "Not checked yet";
+
+  if (item.status === "error" || lastTest?.ok === false) {
+    const description =
+      lastTest?.ok === false
+        ? oauthStatus?.connected
+          ? "Your account is signed in, but the last service check failed. Review the connection details or run the check again."
+          : "The last service check failed. Review the setup, then run the check again."
+        : lastTest?.ok === true
+          ? "The last check passed, but Locus still reports a setup issue. Review the connection details."
+          : "Locus reports a setup issue. Review the connection details, then run a check.";
+    return {
+      label: "Needs attention",
+      description,
+      variant: "destructive",
+      signIn,
+      check,
+    };
+  }
+  if (item.auth_type === "oauth2" && oauthStatus?.pending) {
+    return {
+      label: "Sign-in in progress",
+      description: "Finish the provider sign-in in your browser, then return here to check the connection.",
+      variant: "warning",
+      signIn,
+      check,
+    };
+  }
+  if (item.auth_type === "oauth2" && !oauthStatus?.connected) {
+    return {
+      label: "Sign-in needed",
+      description: "Connect your account to finish setting up this service.",
+      variant: "warning",
+      signIn,
+      check,
+    };
+  }
+  if (item.auth_type !== "none" && item.auth_type !== "oauth2" && !item.secret_configured) {
+    return {
+      label: "Finish setup",
+      description: "Add the saved credential for this service in Advanced setup.",
+      variant: "warning",
+      signIn,
+      check,
+    };
+  }
+  if (lastTest?.ok === true) {
+    return {
+      label: "Ready",
+      description: "The sign-in and connection check passed.",
+      variant: "success",
+      signIn,
+      check,
+    };
+  }
+  if (item.status === "configured" || oauthStatus?.connected) {
+    return {
+      label: "Ready to check",
+      description: "Setup is saved. Run a connection check before using this service.",
+      variant: "outline",
+      signIn,
+      check,
+    };
+  }
+  return {
+    label: "Finish setup",
+    description: "Complete the connection details in Advanced setup, then check the service.",
+    variant: "warning",
+    signIn,
+    check,
+  };
 }
 
 function buildOauthPresetMetadata(provider: OAuthProvider, grantType: OAuthGrantType): OAuthPresetMetadata | null {
@@ -772,21 +872,6 @@ export function IntegrationsManager() {
     }
   }
 
-  async function handleDelete(id: string) {
-    try {
-      await deleteIntegration(id);
-      if (oauthPanelIntegrationId === id) {
-        setOauthPanelIntegrationId(null);
-        setOauthPanelOutcome("");
-        clearWindowOauthPanelState();
-      }
-      await refresh();
-      setStatusMessage("Integration removed.");
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Unable to remove integration.");
-    }
-  }
-
   async function openOauthPanel(item: IntegrationDefinition, outcome = ""): Promise<void> {
     setOauthPanelIntegrationId(item.id);
     setOauthPanelOutcome(outcome);
@@ -811,9 +896,9 @@ export function IntegrationsManager() {
         return;
       }
       await refresh();
-      setStatusMessage(`${item.name} OAuth connection established.`);
+      setStatusMessage(`${item.name} account connected.`);
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Unable to start OAuth connection.");
+      setStatusMessage(error instanceof Error ? error.message : "Unable to start sign-in.");
     } finally {
       setOauthBusyKey(null);
     }
@@ -827,9 +912,9 @@ export function IntegrationsManager() {
       setOauthPanelIntegrationId(item.id);
       setOauthPanelOutcome("connected");
       await refresh();
-      setStatusMessage(`${item.name} OAuth tokens refreshed.`);
+      setStatusMessage(`${item.name} sign-in refreshed.`);
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Unable to refresh OAuth connection.");
+      setStatusMessage(error instanceof Error ? error.message : "Unable to refresh sign-in.");
     } finally {
       setOauthBusyKey(null);
     }
@@ -843,9 +928,9 @@ export function IntegrationsManager() {
       setOauthPanelIntegrationId(item.id);
       setOauthPanelOutcome("");
       await refresh();
-      setStatusMessage(`${item.name} OAuth connection cleared.`);
+      setStatusMessage(`${item.name} account disconnected.`);
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "Unable to disconnect OAuth connection.");
+      setStatusMessage(error instanceof Error ? error.message : "Unable to disconnect the account.");
     } finally {
       setOauthBusyKey(null);
     }
@@ -861,8 +946,8 @@ export function IntegrationsManager() {
     <section className="space-y-4">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold">Integrations</h1>
-          <p className="fx-muted">Connect MCP servers and APIs for tools, data stores, and queues.</p>
+          <h1 className="text-2xl font-semibold">Connections</h1>
+          <p className="fx-muted">Connect services Locus can use, then check sign-in and service health here.</p>
         </div>
         <button
           type="button"
@@ -873,7 +958,7 @@ export function IntegrationsManager() {
             openAdvanced();
           }}
         >
-          Add custom
+          Advanced setup
         </button>
       </header>
 
@@ -885,8 +970,8 @@ export function IntegrationsManager() {
 
       <div className="fx-panel p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold uppercase tracking-wide">Catalog — MCP servers &amp; APIs</h2>
-          <span className="fx-muted text-xs">Vetted entries. Pick one, review what it may do, and add it.</span>
+          <h2 className="text-sm font-semibold uppercase tracking-wide">Find a connection</h2>
+          <span className="fx-muted text-xs">Choose a recommended service, review access, then add it.</span>
         </div>
         <ConnectionCatalog integrations={items} onChanged={() => void refresh()} />
       </div>
@@ -895,54 +980,27 @@ export function IntegrationsManager() {
         <div className="fx-panel rounded-[1.6rem] p-5 shadow-[0_20px_48px_rgba(15,23,42,0.05)]">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">OAuth status panel</p>
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Sign-in and access</p>
               <h2 className="mt-2 text-[1.1rem] font-semibold tracking-[-0.02em] text-[var(--foreground)]">{oauthPanelItem.name}</h2>
               <p className="mt-1 text-sm leading-6 text-[var(--fx-muted)]">{oauthOutcomeLabel(oauthPanelOutcome)}</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <span className={`inline-flex rounded-full border px-2.5 py-1 text-[0.72rem] font-medium ${oauthPanelStatus.connected ? integrationStatusTone("connected") : oauthPanelStatus.pending ? integrationStatusTone("draft") : integrationStatusTone("error")}`}>
-                {oauthPanelStatus.connected ? "Connected" : oauthPanelStatus.pending ? "Pending" : "Not connected"}
+                {oauthPanelStatus.connected ? "Signed in" : oauthPanelStatus.pending ? "Sign-in in progress" : "Sign-in needed"}
               </span>
               <button type="button" onClick={dismissOauthPanel} className="fx-btn-secondary px-3 py-1.5 text-xs">
-                Dismiss panel
+                Close
               </button>
             </div>
           </div>
 
-          <div className="mt-4 grid gap-3 lg:grid-cols-[1.2fr_1fr_1fr]">
-            <div className="space-y-3 rounded-[1rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-4">
-              <div className="grid gap-2 text-xs text-[var(--foreground)] sm:grid-cols-2">
-                <div>
-                  <p className="font-medium text-[var(--fx-muted)]">Provider</p>
-                  <p className="mt-1">{oauthPanelStatus.provider || "custom"}</p>
-                </div>
-                <div>
-                  <p className="font-medium text-[var(--fx-muted)]">Grant type</p>
-                  <p className="mt-1">{oauthPanelStatus.grant_type || "unknown"}</p>
-                </div>
-                <div>
-                  <p className="font-medium text-[var(--fx-muted)]">Client ID</p>
-                  <p className="mt-1 break-all">{oauthPanelStatus.client_id || "(unset)"}</p>
-                </div>
-                <div>
-                  <p className="font-medium text-[var(--fx-muted)]">Account label</p>
-                  <p className="mt-1">{oauthPanelStatus.account_label || "(unassigned)"}</p>
-                </div>
-              </div>
+          <div className="mt-4 grid gap-3 lg:grid-cols-[1.4fr_1fr]">
+            <div className="space-y-4 rounded-[1rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-4">
               <div>
-                <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Redirect URI</p>
-                <p className="mt-1 break-all text-xs text-[var(--foreground)]">{oauthPanelStatus.redirect_uri || "(unavailable)"}</p>
-              </div>
-              {oauthPanelStatus.last_error ? (
-                <div className="rounded-[0.9rem] border border-[color-mix(in_srgb,var(--fx-danger)_30%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-danger)_8%,transparent)] px-3 py-2 text-xs text-[var(--foreground)]">
-                  {oauthPanelStatus.last_error}
-                </div>
-              ) : null}
-            </div>
-
-            <div className="space-y-3 rounded-[1rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-4">
-              <div>
-                <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Scope bundle</p>
+                <p className="text-sm font-semibold text-[var(--foreground)]">Account and permissions</p>
+                <p className="mt-1 text-xs text-[var(--fx-muted)]">
+                  {oauthPanelStatus.account_label ? `Account: ${oauthPanelStatus.account_label}` : "Review what Locus may access before continuing."}
+                </p>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {oauthPanelStatus.scopes.length > 0 ? (
                     oauthPanelStatus.scopes.map((scope) => (
@@ -953,27 +1011,16 @@ export function IntegrationsManager() {
                   )}
                 </div>
               </div>
-              <div className="grid gap-2 text-xs text-[var(--foreground)]">
-                <div>
-                  <p className="font-medium text-[var(--fx-muted)]">Token URL</p>
-                  <p className="mt-1 break-all">{oauthPanelStatus.token_url || "(unset)"}</p>
+              {oauthPanelStatus.last_error ? (
+                <div role="alert" className="rounded-[0.9rem] border border-[color-mix(in_srgb,var(--fx-danger)_30%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-danger)_8%,transparent)] px-3 py-2 text-sm text-[var(--foreground)]">
+                  <p className="font-medium">Locus could not finish sign-in</p>
+                  <p className="mt-1">{oauthPanelStatus.last_error}</p>
                 </div>
-                <div>
-                  <p className="font-medium text-[var(--fx-muted)]">Authorize URL</p>
-                  <p className="mt-1 break-all">{oauthPanelStatus.authorize_url || "Client credentials only"}</p>
-                </div>
-                <div>
-                  <p className="font-medium text-[var(--fx-muted)]">Token health</p>
-                  <p className="mt-1">
-                    {oauthPanelStatus.has_access_token ? "Access token present" : "No access token"}
-                    {oauthPanelStatus.has_refresh_token ? " • Refresh token present" : " • No refresh token"}
-                  </p>
-                </div>
-              </div>
+              ) : null}
             </div>
 
             <div className="space-y-3 rounded-[1rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-4">
-              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Connection actions</p>
+              <p className="text-sm font-semibold text-[var(--foreground)]">Manage this account</p>
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -981,30 +1028,46 @@ export function IntegrationsManager() {
                   className="fx-btn-primary px-3 py-2 text-sm"
                   disabled={oauthBusyKey === `connect:${oauthPanelItem.id}`}
                 >
-                  {oauthBusyKey === `connect:${oauthPanelItem.id}` ? "Connecting..." : oauthPanelStatus.connected ? "Reconnect OAuth" : "Connect OAuth"}
+                  {oauthBusyKey === `connect:${oauthPanelItem.id}` ? "Opening sign-in…" : oauthPanelStatus.connected ? "Sign in again" : "Connect account"}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void handleRefreshOAuth(oauthPanelItem)}
-                  className="fx-btn-secondary px-3 py-2 text-sm"
-                  disabled={oauthBusyKey === `refresh:${oauthPanelItem.id}`}
-                >
-                  {oauthBusyKey === `refresh:${oauthPanelItem.id}` ? "Refreshing..." : "Refresh tokens"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleDisconnectOAuth(oauthPanelItem)}
-                  className="fx-btn-warning px-3 py-2 text-sm"
-                  disabled={oauthBusyKey === `disconnect:${oauthPanelItem.id}`}
-                >
-                  {oauthBusyKey === `disconnect:${oauthPanelItem.id}` ? "Disconnecting..." : "Disconnect OAuth"}
-                </button>
+                {oauthPanelStatus.connected ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void handleRefreshOAuth(oauthPanelItem)}
+                      className="fx-btn-secondary px-3 py-2 text-sm"
+                      disabled={oauthBusyKey === `refresh:${oauthPanelItem.id}`}
+                    >
+                      {oauthBusyKey === `refresh:${oauthPanelItem.id}` ? "Refreshing sign-in…" : "Refresh sign-in"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDisconnectOAuth(oauthPanelItem)}
+                      className="fx-btn-warning px-3 py-2 text-sm"
+                      disabled={oauthBusyKey === `disconnect:${oauthPanelItem.id}`}
+                    >
+                      {oauthBusyKey === `disconnect:${oauthPanelItem.id}` ? "Disconnecting…" : "Disconnect account"}
+                    </button>
+                  </>
+                ) : null}
               </div>
               <p className="text-xs leading-6 text-[var(--fx-muted)]">
-                Callback completion now lands in this dedicated status panel. The query string only carries enough context to reopen the panel after the provider redirects back.
+                After signing in with the provider, return here and run a connection check to confirm the service is ready.
               </p>
             </div>
           </div>
+
+          <details className="mt-3 border-t border-[var(--fx-border)] pt-3">
+            <summary className="cursor-pointer text-xs font-medium text-[var(--fx-muted)]">Advanced sign-in diagnostics</summary>
+            <dl className="mt-3 grid gap-3 text-xs text-[var(--foreground)] sm:grid-cols-2">
+              <div><dt className="font-medium text-[var(--fx-muted)]">Provider and sign-in method</dt><dd className="mt-1">{oauthPanelStatus.provider || "custom"} · {oauthPanelStatus.grant_type || "unknown"}</dd></div>
+              <div><dt className="font-medium text-[var(--fx-muted)]">Client ID</dt><dd className="mt-1 break-all">{oauthPanelStatus.client_id || "(unset)"}</dd></div>
+              <div><dt className="font-medium text-[var(--fx-muted)]">Redirect address</dt><dd className="mt-1 break-all">{oauthPanelStatus.redirect_uri || "(unavailable)"}</dd></div>
+              <div><dt className="font-medium text-[var(--fx-muted)]">Token address</dt><dd className="mt-1 break-all">{oauthPanelStatus.token_url || "(unset)"}</dd></div>
+              <div><dt className="font-medium text-[var(--fx-muted)]">Authorization address</dt><dd className="mt-1 break-all">{oauthPanelStatus.authorize_url || "Not used for this sign-in method"}</dd></div>
+              <div><dt className="font-medium text-[var(--fx-muted)]">Sign-in health</dt><dd className="mt-1">{oauthPanelStatus.has_access_token ? "Access ready" : "No access token"}{oauthPanelStatus.has_refresh_token ? " · Can renew" : " · Cannot renew automatically"}</dd></div>
+            </dl>
+          </details>
         </div>
       ) : null}
 
@@ -1527,11 +1590,138 @@ export function IntegrationsManager() {
         </div>
       </details>
 
-      <div className="fx-panel overflow-hidden rounded-[1.6rem] shadow-[0_20px_48px_rgba(15,23,42,0.05)]">
+      <section aria-labelledby="saved-connections-heading" className="space-y-3">
+        <div>
+          <h2 id="saved-connections-heading" className="text-lg font-semibold text-[var(--foreground)]">Your connections</h2>
+          <p className="mt-1 text-sm text-[var(--fx-muted)]">See whether each service is signed in and whether Locus can reach it.</p>
+        </div>
+        {loading ? (
+          <p role="status" className="fx-panel rounded-[1rem] p-4 text-sm text-[var(--fx-muted)]">Loading your connections…</p>
+        ) : listError ? (
+          <div role="alert" className="fx-panel flex flex-wrap items-center justify-between gap-3 rounded-[1rem] p-4 text-sm">
+            <p className="text-[var(--fx-danger)]">Could not load your connections: {listError}</p>
+            <Button variant="secondary" size="sm" onClick={() => void refresh()}>Try again</Button>
+          </div>
+        ) : items.length === 0 ? (
+          <div className="fx-panel rounded-[1rem] p-5">
+            <p className="font-medium text-[var(--foreground)]">No connections yet</p>
+            <p className="mt-1 text-sm text-[var(--fx-muted)]">Choose a service from the catalog above. Custom services are available in Advanced setup.</p>
+          </div>
+        ) : (
+          <ul className="space-y-3">
+            {items.map((item) => {
+              const oauthStatus = oauthStatuses[item.id] ?? item.oauth_status ?? null;
+              const lastTest = readLastTest(item.metadata_json);
+              const health = integrationHealth(item, oauthStatus, lastTest);
+              const protocol = String(readAuthConfig(item.metadata_json).protocol ?? item.metadata_json?.protocol ?? "") === "mcp";
+              const connectionKind = protocol
+                ? "MCP server"
+                : item.type === "database"
+                  ? "Database"
+                  : item.type === "queue"
+                    ? "Queue"
+                    : item.type === "vector"
+                      ? "Vector store"
+                      : item.type === "custom"
+                        ? "Custom service"
+                        : "API";
+
+              return (
+                <li key={item.id} className="fx-panel rounded-[1rem] p-4 sm:p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-base font-semibold text-[var(--foreground)]">{item.name}</h3>
+                        <Badge variant="outline">{connectionKind}</Badge>
+                      </div>
+                      <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--fx-muted)]">{health.description}</p>
+                    </div>
+                    <Badge variant={health.variant}>
+                      <span aria-hidden="true">{health.variant === "success" ? "✓" : health.variant === "destructive" ? "!" : "○"}</span>
+                      {health.label}
+                    </Badge>
+                  </div>
+
+                  <dl className="mt-4 grid gap-3 rounded-[0.9rem] bg-[hsl(var(--muted)/0.24)] p-3 text-sm sm:grid-cols-2">
+                    <div>
+                      <dt className="text-xs font-medium text-[var(--fx-muted)]">Sign-in</dt>
+                      <dd className="mt-1 font-medium text-[var(--foreground)]">{health.signIn}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs font-medium text-[var(--fx-muted)]">Connection check</dt>
+                      <dd className="mt-1 font-medium text-[var(--foreground)]">{health.check}</dd>
+                    </div>
+                  </dl>
+
+                  <div className="mt-4">
+                    <p className="text-xs font-medium text-[var(--fx-muted)]">What Locus can use</p>
+                    {item.capabilities && item.capabilities.length > 0 ? (
+                      <ul className="mt-2 flex flex-wrap gap-1.5" aria-label={`${item.name} available actions`}>
+                        {item.capabilities.map((capability) => (
+                          <li key={`${item.id}-${capability}`} className="fx-pill px-2.5 py-1 text-xs text-[var(--foreground)]">
+                            {capability.replace(/^\/+/, "").replace(/[-_/]+/g, " ")}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-1 text-sm text-[var(--fx-muted)]">No actions are mapped yet.</p>
+                    )}
+                    {lastTest?.warnings?.length ? (
+                      <p className="mt-2 text-xs text-[var(--fx-muted)]">The last check reported {lastTest.warnings.length} warning{lastTest.warnings.length === 1 ? "" : "s"}.</p>
+                    ) : null}
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--fx-border)] pt-4">
+                    {item.auth_type === "oauth2" ? (
+                      <Button
+                        variant={oauthStatus?.connected ? "secondary" : "default"}
+                        size="sm"
+                        onClick={() => oauthStatus?.connected ? void openOauthPanel(item) : void handleConnectOAuth(item)}
+                        disabled={oauthBusyKey === `connect:${item.id}`}
+                      >
+                        {oauthBusyKey === `connect:${item.id}` ? "Opening sign-in…" : oauthStatus?.connected ? "Sign-in & access" : "Connect account"}
+                      </Button>
+                    ) : null}
+                    <Button variant="secondary" size="sm" onClick={() => void handleTest(item.id)} disabled={testingId === item.id}>
+                      {testingId === item.id ? "Checking…" : lastTest?.ok === false || item.status === "error" ? "Check again" : "Check connection"}
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => handleEdit(item)}>Edit setup</Button>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--fx-border)] pt-4">
+                    <p className="max-w-xl text-xs leading-5 text-[var(--fx-muted)]">Removing a connection requires name confirmation.</p>
+                    <TypedDeleteButton
+                      itemType="integration"
+                      itemId={item.id}
+                      itemName={item.name}
+                      buttonLabel="Remove connection"
+                      buttonClassName="fx-btn-warning px-3 py-1.5 text-xs"
+                      onDeleted={(id) => {
+                        if (oauthPanelIntegrationId === id) {
+                          setOauthPanelIntegrationId(null);
+                          setOauthPanelOutcome("");
+                          clearWindowOauthPanelState();
+                        }
+                        setStatusMessage("Connection removed.");
+                        void refresh();
+                      }}
+                    />
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      <details className="fx-panel rounded-[1.6rem] p-4">
+        <summary className="cursor-pointer text-sm font-semibold text-[var(--foreground)]">Advanced connection diagnostics</summary>
+        <div className="mt-4 overflow-x-auto">
+      <div className="overflow-hidden rounded-[1rem]">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--ui-border)] px-4 py-4">
           <div>
             <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Inventory</p>
-            <h2 className="mt-2 text-[1.05rem] font-semibold tracking-[-0.02em] text-[var(--foreground)]">Saved integrations</h2>
+            <h2 className="mt-2 text-[1.05rem] font-semibold tracking-[-0.02em] text-[var(--foreground)]">Saved connection records</h2>
           </div>
           <div className="fx-pill px-3 py-1.5 text-[0.72rem] font-medium text-[var(--fx-muted)]">Test before promoting to live traffic</div>
         </div>
@@ -1584,9 +1774,6 @@ export function IntegrationsManager() {
                               <p>{oauthPresetDriftLabel(item.metadata_json)}</p>
                             ) : null}
                           </div>
-                        <button type="button" onClick={() => void openOauthPanel(item)} className="fx-btn-secondary px-3 py-1.5 text-xs">
-                          Manage OAuth
-                        </button>
                       </div>
                     </div>
                   );
@@ -1692,18 +1879,12 @@ export function IntegrationsManager() {
                     <td className="px-3 py-2 font-mono text-xs">{item.base_url || "(unset)"}</td>
                     <td className="px-3 py-2">
                       <div className="flex justify-end gap-2">
-                        {item.auth_type === "oauth2" ? (
-                          <button onClick={() => void openOauthPanel(item)} className="fx-btn-secondary px-2.5 py-1.5 text-xs">
-                            Manage OAuth
-                          </button>
-                        ) : null}
                         <button onClick={() => handleEdit(item)} className="fx-btn-secondary px-2.5 py-1.5 text-xs">
                           Edit
                         </button>
                         <button onClick={() => handleTest(item.id)} className="fx-btn-secondary px-2.5 py-1.5 text-xs" disabled={testingId === item.id}>
                           {testingId === item.id ? "Testing..." : "Test"}
                         </button>
-                        <button onClick={() => handleDelete(item.id)} className="fx-btn-warning px-2.5 py-1.5 text-xs">Delete</button>
                       </div>
                     </td>
                   </tr>
@@ -1713,6 +1894,8 @@ export function IntegrationsManager() {
           </tbody>
         </table>
       </div>
+        </div>
+      </details>
 
     </section>
   );

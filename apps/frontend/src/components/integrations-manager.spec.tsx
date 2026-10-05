@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { IntegrationsManager } from "@/components/integrations-manager";
@@ -52,6 +52,10 @@ vi.mock("@/lib/api", () => ({
   disconnectIntegrationOAuth: disconnectIntegrationOAuthMock,
   getIntegrationCatalog: vi.fn(async () => []),
   installCatalogIntegration: vi.fn(),
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: vi.fn() }),
 }));
 
 describe("IntegrationsManager", () => {
@@ -306,7 +310,7 @@ describe("IntegrationsManager", () => {
     const advanced = (await screen.findByText(/advanced: custom integrations and mcp servers/i)).closest("details") as HTMLDetailsElement;
     expect(advanced.open).toBe(false);
     expect(advanced).toContainElement(screen.getByLabelText(/^name$/i));
-    fireEvent.click(screen.getByRole("button", { name: /add custom/i }));
+    fireEvent.click(screen.getByRole("button", { name: /advanced setup/i }));
     await waitFor(() => expect(advanced.open).toBe(true));
   });
 
@@ -357,7 +361,7 @@ describe("IntegrationsManager", () => {
       },
     }));
     expect(await screen.findByText("Integration saved.")).toBeInTheDocument();
-    expect(await screen.findByText("CRM API")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "CRM API" })).toBeInTheDocument();
     expect((await screen.findAllByText("/incident-triage")).length).toBeGreaterThan(0);
   });
 
@@ -527,7 +531,7 @@ describe("IntegrationsManager", () => {
 
     render(<IntegrationsManager />);
 
-    await screen.findByText("CRM API");
+    await screen.findByRole("heading", { name: "CRM API" });
     fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
 
     expect(screen.getByRole("button", { name: /update integration/i })).toBeInTheDocument();
@@ -563,8 +567,8 @@ describe("IntegrationsManager", () => {
 
     render(<IntegrationsManager />);
 
-    await screen.findByText("CRM API");
-    fireEvent.click(screen.getByRole("button", { name: /^test$/i }));
+    await screen.findByRole("heading", { name: "CRM API" });
+    fireEvent.click(screen.getByRole("button", { name: /check connection/i }));
 
     expect(await screen.findByText("503 integration backend unavailable")).toBeInTheDocument();
   });
@@ -586,8 +590,11 @@ describe("IntegrationsManager", () => {
 
     render(<IntegrationsManager />);
 
-    await screen.findByText("CRM API");
-    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+    await screen.findByRole("heading", { name: "CRM API" });
+    fireEvent.click(screen.getByRole("button", { name: "Remove connection" }));
+    const dialog = await screen.findByRole("dialog", { name: "Confirm deletion" });
+    fireEvent.change(within(dialog).getByLabelText("Name confirmation"), { target: { value: "CRM API" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
 
     expect(await screen.findByText("409 integration is still referenced")).toBeInTheDocument();
   });
@@ -754,7 +761,7 @@ describe("IntegrationsManager", () => {
     );
   });
 
-  it("opens the OAuth status panel and starts the connect flow", async () => {
+  it("opens sign-in details and starts the account connection flow", async () => {
     getIntegrationsMock.mockResolvedValue([
       {
         id: "integration-1",
@@ -813,21 +820,20 @@ describe("IntegrationsManager", () => {
 
     render(<IntegrationsManager />);
 
-    await screen.findAllByRole("button", { name: /manage oauth/i });
-    fireEvent.click(screen.getAllByRole("button", { name: /manage oauth/i })[0]);
+    const card = (await screen.findByRole("heading", { name: "Microsoft Graph" })).closest("li");
+    fireEvent.click(within(card as HTMLElement).getByRole("button", { name: /connect account/i }));
 
-    expect(await screen.findByText(/oauth status panel/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /^connect oauth$/i }));
+    expect(await screen.findByText(/sign-in and access/i)).toBeInTheDocument();
 
     await waitFor(() => {
       expect(connectIntegrationOAuthMock).toHaveBeenCalledWith("integration-1", {
         return_to: "/library/connections?oauth_panel=1",
       });
     });
-    expect(await screen.findByText("Microsoft Graph OAuth connection established.")).toBeInTheDocument();
+    expect(await screen.findByText("Microsoft Graph account connected.")).toBeInTheDocument();
   });
 
-  it("surfaces OAuth connection overview cards outside the status panel", async () => {
+  it("shows account sign-in separately from the service check", async () => {
     getIntegrationsMock.mockResolvedValue([
       {
         id: "integration-1",
@@ -886,10 +892,64 @@ describe("IntegrationsManager", () => {
 
     render(<IntegrationsManager />);
 
-    expect(await screen.findByText(/oauth connection overview/i)).toBeInTheDocument();
-    expect(screen.getByText("Access token present")).toBeInTheDocument();
+    expect(await screen.findByText("Signed in")).toBeInTheDocument();
+    expect(screen.getByText("Not checked yet")).toBeInTheDocument();
+    expect(screen.queryByText("Access ready")).not.toBeInTheDocument();
     expect(screen.getAllByText(/matches microsoft recommended preset/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByRole("button", { name: /manage oauth/i })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /sign-in & access/i })).toHaveLength(1);
+  });
+
+  it("keeps a failed service check visible when the provider account is signed in", async () => {
+    getIntegrationsMock.mockResolvedValue([
+      {
+        id: "linear-connection",
+        name: "Linear MCP",
+        type: "custom",
+        status: "error",
+        base_url: "https://mcp.linear.app/mcp",
+        auth_type: "oauth2",
+        secret_ref: "",
+        capabilities: ["issues", "projects", "comments"],
+        metadata_json: { last_test: { ok: false, warnings: ["Service check failed"] } },
+        oauth_status: {
+          id: "linear-connection",
+          provider: "linear",
+          grant_type: "authorization_code",
+          connected: true,
+          pending: false,
+          scopes: ["read"],
+          authorize_url: "",
+          token_url: "",
+          client_id: "linear-public-client",
+          redirect_uri: "http://127.0.0.1:8000/integrations/linear-connection/oauth/callback",
+          account_label: "James",
+          expires_at: null,
+          has_client_secret: false,
+          has_refresh_token: true,
+          has_access_token: true,
+          last_error: "",
+        },
+      },
+    ]);
+
+    render(<IntegrationsManager />);
+
+    const card = (await screen.findByRole("heading", { name: "Linear MCP" })).closest("li");
+    expect(card).not.toBeNull();
+    expect(card).toHaveTextContent("Needs attention");
+    expect(card).toHaveTextContent("Signed in");
+    expect(card).toHaveTextContent("Failed");
+    expect(screen.getByText("https://mcp.linear.app/mcp")).not.toBeVisible();
+
+    fireEvent.click(within(card as HTMLElement).getByRole("button", { name: "Remove connection" }));
+    const dialog = await screen.findByRole("dialog", { name: "Confirm deletion" });
+    expect(dialog).toBeInTheDocument();
+    const confirmDelete = within(dialog).getByRole("button", { name: "Delete" });
+    expect(confirmDelete).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Name confirmation"), { target: { value: "Linear MCP" } });
+    expect(confirmDelete).toBeEnabled();
+    fireEvent.click(confirmDelete);
+    await waitFor(() => expect(deleteIntegrationMock).toHaveBeenCalledWith("linear-connection"));
   });
 
   it("shows drift labels when a saved OAuth connector diverges from the persisted preset", async () => {
@@ -1003,7 +1063,7 @@ describe("IntegrationsManager", () => {
 
     render(<IntegrationsManager />);
 
-    expect(await screen.findByText(/oauth connection completed/i)).toBeInTheDocument();
+    expect(await screen.findByText(/your account is connected/i)).toBeInTheDocument();
     expect(getIntegrationOAuthStatusMock).toHaveBeenCalledWith("integration-1");
   });
 });

@@ -9016,6 +9016,58 @@ def _integration_oauth_callback_url(request: Request, integration_id: str) -> st
     return f"{base}/integrations/{urllib_parse.quote(integration_id, safe='')}/oauth/callback"
 
 
+def _integration_oauth_frontend_return_url(request: Request, return_to: str) -> str:
+    """Build a same-origin UI URL for the OAuth result page.
+
+    OAuth callbacks arrive at the backend (port 8000 in the local desktop app),
+    while the UI is served separately (port 3000). Returning a root-relative
+    path would keep the browser on the backend and produce a JSON 404.
+    """
+    configured = (
+        os.getenv("LOCUS_FRONTEND_URL") or os.getenv("FRONTIER_FRONTEND_URL") or ""
+    ).strip()
+    if configured:
+        frontend = urlsplit(configured)
+        host = (frontend.hostname or "").lower()
+        try:
+            is_loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            is_loopback = False
+        if (
+            frontend.scheme not in {"http", "https"}
+            or not frontend.netloc
+            or frontend.username
+            or frontend.password
+            or frontend.query
+            or frontend.fragment
+            or (frontend.scheme != "https" and not is_loopback)
+        ):
+            raise HTTPException(
+                status_code=500,
+                detail="OAuth return address is not configured for this server.",
+            )
+    else:
+        callback_origin = urlsplit(str(request.base_url))
+        host = (callback_origin.hostname or "").lower()
+        try:
+            is_loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            is_loopback = False
+        if is_loopback:
+            host_literal = f"[{host}]" if ":" in host else host
+            frontend = urlsplit(f"{callback_origin.scheme}://{host_literal}:3000")
+        else:
+            # Same-origin deployments can use a relative path. A separate UI
+            # origin must be configured explicitly above.
+            frontend = urlsplit("")
+
+    landing = urlsplit(_safe_post_auth_redirect_path(return_to))
+    frontend_path = f"{frontend.path.rstrip('/')}{landing.path}"
+    return urlunsplit(
+        (frontend.scheme, frontend.netloc, frontend_path or "/", landing.query, landing.fragment)
+    )
+
+
 def _append_query_values(url: str, values: dict[str, str]) -> str:
     parsed = urlsplit(url)
     existing = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)]
@@ -26720,9 +26772,16 @@ def integration_oauth_callback(integration_id: str, request: Request) -> Redirec
             session.get("pending_return_to") or auth.get("redirect_path") or "/builder/integrations"
         )
     )
+    frontend_return_url = _integration_oauth_frontend_return_url(request, return_to)
     error = str(request.query_params.get("error") or "").strip()
     state = str(request.query_params.get("state") or "").strip()
     code = str(request.query_params.get("code") or "").strip()
+
+    if not state or state != str(session.get("pending_state") or ""):
+        raise HTTPException(
+            status_code=400,
+            detail="OAuth callback state did not match the pending integration session",
+        )
 
     if error:
         _store_integration_oauth_session(
@@ -26737,16 +26796,11 @@ def integration_oauth_callback(integration_id: str, request: Request) -> Redirec
         _persist_store_state()
         return RedirectResponse(
             url=_append_query_values(
-                return_to, {"oauth": "error", "integration_id": integration_id}
+                frontend_return_url, {"oauth": "error", "integration_id": integration_id}
             ),
             status_code=302,
         )
 
-    if not state or state != str(session.get("pending_state") or ""):
-        raise HTTPException(
-            status_code=400,
-            detail="OAuth callback state did not match the pending integration session",
-        )
     if not code:
         raise HTTPException(status_code=400, detail="OAuth callback missing authorization code")
 
@@ -26786,7 +26840,7 @@ def integration_oauth_callback(integration_id: str, request: Request) -> Redirec
     )
     return RedirectResponse(
         url=_append_query_values(
-            return_to, {"oauth": "connected", "integration_id": integration_id}
+            frontend_return_url, {"oauth": "connected", "integration_id": integration_id}
         ),
         status_code=302,
     )

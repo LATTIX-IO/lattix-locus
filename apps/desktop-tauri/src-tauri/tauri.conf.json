@@ -43,7 +43,8 @@
       "timestampUrl": "http://timestamp.digicert.com",
       "certificateThumbprint": null,
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerHooks": "./windows/installer-hooks.nsh"
       }
     },
     "macOS": {

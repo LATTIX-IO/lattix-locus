@@ -63,6 +63,10 @@ For installer-managed secure-local deployments, the first authenticated operator
 
 If a prerequisite is missing and automatic installation is not available, is declined, or fails, the installer exits cleanly with a list of missing tools and the next steps to finish setup.
 
+### Windows desktop installer
+
+Before updating the Windows desktop app, save your work and quit Lattix Locus from the system tray. If setup says Locus is still running or cannot confirm it is closed, quit every Locus window and choose **Quit** from the tray, then run the installer again. Do not choose **Ignore** on a file-write error: setup now stops before changing files when it detects a running desktop, backend, or policy-engine process.
+
 ## Removing a local install
 
 For repeated install-testing, the canonical removal path is:

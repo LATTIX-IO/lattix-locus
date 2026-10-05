@@ -60,13 +60,13 @@ export function catalogConnectionState(entry: IntegrationCatalogEntry, installed
     return { label: "Added", variant: "secondary", glyph: "●" };
   }
   if (installed.status === "error") {
-    return { label: "Error", variant: "destructive", glyph: "■" };
+    return { label: "Needs attention", variant: "destructive", glyph: "!" };
   }
   if (installed.auth_type === "oauth2") {
     const oauth = installed.oauth_status;
-    if (oauth?.connected) return { label: "Connected", variant: "success", glyph: "●" };
-    if (oauth?.pending) return { label: "Sign-in pending", variant: "warning", glyph: "◐" };
-    return { label: "Not signed in", variant: "warning", glyph: "◐" };
+    if (oauth?.connected) return { label: "Signed in", variant: "success", glyph: "●" };
+    if (oauth?.pending) return { label: "Sign-in in progress", variant: "warning", glyph: "◐" };
+    return { label: "Sign-in needed", variant: "warning", glyph: "◐" };
   }
   if (installed.auth_type !== "none" && !installed.secret_configured && installed.status !== "configured") {
     return { label: "Needs a credential", variant: "warning", glyph: "◐" };
