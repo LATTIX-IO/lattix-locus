@@ -243,6 +243,14 @@ ALLOWED_SINKS: dict[tuple[str, str], str] = {
         "DockerContainerExecutor._docker_network_mode",
     ): "platform inspection (docker inspect) deriving the jail's network fact",
     ("codex_backend.py", "run_codex"): "gated in-function: authorize_action precedes Popen",
+    (
+        "codex_backend.py",
+        "run_codex_with_locus_tools",
+    ): "gated in-function: authorize model call before creating Codex process/config",
+    (
+        "codex_mcp_server.py",
+        "_JsonlAudit.__call__",
+    ): "gateway audit sink: writes policy decision metadata only",
     ("workspace_binding.py", "_git"): "platform provisioning (git worktree) before the agent runs",
     ("workspace_binding.py", "WorkspaceManager._remove_worktree"): "platform cleanup after the run",
     (
@@ -340,6 +348,11 @@ def test_gated_sinks_are_only_called_after_gate() -> None:
 def test_codex_launch_gates_before_popen() -> None:
     source = inspect.getsource(codex_backend.run_codex)
     assert source.index("authorize_action(") < source.index("subprocess.Popen(")
+
+
+def test_codex_locus_mcp_launch_gates_model_before_popen() -> None:
+    source = inspect.getsource(codex_backend.run_codex_with_locus_tools)
+    assert source.index("gate.authorize(call)") < source.index("subprocess.Popen(")
 
 
 def test_allowed_sinks_exist() -> None:

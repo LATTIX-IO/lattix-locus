@@ -30,11 +30,11 @@ __all__ = [
 
 
 def build_runner(repo_path: str = ".", **overrides: Any) -> Any:
-    """The production runner: Linear over httpx, ``gh`` CLI, OPA gateway, NIM → Ollama."""
+    """The production runner: Linear MCP, ``gh`` CLI, OPA gateway, NIM → Ollama."""
     from pathlib import Path
 
     from locus_runtime.loop_runner.delivery import GhCliLoopGitHub, default_gh_runner
-    from locus_runtime.loop_runner.linear import LinearClient
+    from locus_runtime.loop_runner.linear_mcp import LinearMcpTracker
     from locus_runtime.loop_runner.runner import LoopRunner
 
     from locus_runtime import telemetry
@@ -44,7 +44,7 @@ def build_runner(repo_path: str = ".", **overrides: Any) -> Any:
     telemetry.ensure_configured()
     return LoopRunner(
         config=config,
-        tracker=LinearClient(),
+        tracker=LinearMcpTracker(),
         github=GhCliLoopGitHub(default_gh_runner(config.repo_path)),
         **overrides,
     )
