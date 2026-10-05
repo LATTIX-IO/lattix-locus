@@ -38,10 +38,10 @@ Effort is S (days), M (1–3 weeks) or L (more than 3 weeks).
 |---|---|---|---|---|---|---|---|
 | 1 | [langchain-ai/deepagents](https://github.com/langchain-ai/deepagents) | **Integrate as-is** + Locus extension package (fork only if forced) | P1 | M | Agent runtime (`AgentRuntime`) | LOCUS-363 | Decided D-27; default since 2026-10-04 |
 | 2 | [openai/symphony](https://github.com/openai/symphony) | **Custom clone** (continue) | P1 | S–M | Intake / loop runner (`Tracker`, `Trigger`) | LOCUS-407 | Linear intake; worktree isolation |
-| 3 | [CopilotKit/CopilotKit](https://github.com/CopilotKit/CopilotKit) (AG-UI) | **Integrate as-is**: `@ag-ui/*` and `ag-ui-langgraph` only | P1 | M | Surfaces (`SurfaceAdapter`) | LOCUS-369 | Gateway emits AG-UI events; HITL → native confirmation |
+| 3 | [CopilotKit/CopilotKit](https://github.com/CopilotKit/CopilotKit) (AG-UI) | **Integrate as-is**: `@ag-ui/core`, `@ag-ui/client` and `ag-ui-langgraph` only | P1 | M | Surfaces (`SurfaceAdapter`) | LOCUS-369 | Gateway emits AG-UI events; HITL → native confirmation |
 | 4 | Laya (convaiinnovations/laya) | **Integrate as-is** (local `/v1/systemone` sidecar) | P1 | S | Judge (`DecisionModel`) | LOCUS-367 | Pin and hash; egress check; validate on Locus cases |
 | 5 | [TypeSafe Jev](https://typesafe.ai) | **Integrate as-is**, opt-in hosted tier | P2 | S | Judge (`DecisionModel`) | LOCUS-367 | Area-policy opt-in; no sensitive state sent |
-| 6 | [Cloudflare/clef](https://huggingface.co/Cloudflare/clef) (Clef-flash 9B) | **Integrate as-is**, local only | P2 | M | Judge (`DecisionModel`) | LOCUS-367 | **D-29 inspection** (Qwen lineage, `trust_remote_code`) |
+| 6 | [Cloudflare/clef](https://huggingface.co/Cloudflare/clef) (Clef-flash 9B) | Reference only, **blocked by the D-29 format rule** | P3 | — | Judge (`DecisionModel`) | LOCUS-367 | Needs a weights-only (safetensors/GGUF) artifact with no `trust_remote_code` loader; Qwen lineage |
 | 7 | [CopilotKit/OpenBot](https://github.com/CopilotKit/OpenBot) | **Custom clone** | P2 | L | Always-on, computer use | LOCUS-370 | LOCUS-354; OS sandbox; browser tiers |
 | 8 | [CopilotKit/OpenDots](https://github.com/CopilotKit/OpenDots) | **Custom clone** | P2 | M | Always-on agent | LOCUS-370 | LOCUS-354; durable runs |
 | 9 | [CopilotKit/openmuse](https://github.com/CopilotKit/openmuse) | **Custom clone** | P2 | M | Always-on, computer use | LOCUS-370 | Durable runs; browser control |
@@ -78,7 +78,7 @@ Effort is S (days), M (1–3 weeks) or L (more than 3 weeks).
 | 40 | LATTIX-IO/savant (first party) | **Integrate as-is** (skills source connector) | P2 | M | Skills (`SkillStore`) | LOCUS-388 | Principal provides API access or docs |
 
 **Net result:**
-- 8 items are integrated as-is: Deep Agents, AG-UI, Laya, Jev, Clef-flash, channels-sdk, Inspect AI, Cedar. Savant is a first-party connector on top of these.
+- 7 items are integrated as-is: Deep Agents, AG-UI, Laya, Jev, channels-sdk, Inspect AI, Cedar. Savant is a first-party connector on top of these.
 - **Zero forks.**
 - 21 items are custom clones.
 - The rest are reference only or skipped.
@@ -93,6 +93,12 @@ There are no forks because extension points and out-of-process services cover ev
 - Decision: integrate as-is, pinned, plus a separate Locus extension package (middleware, tools, runtime adapter). Fork only when an extension point can't do the job (LOCUS-363).
 - Basis: D-27, confirmed 2026-10-04. Deep Agents won the bake-off on the RSI scorecard: 35 of 40 passes vs 32 of 40, with 0.72× the tokens.
 - It is the base for everything in this section.
+- **Recorded exception to [ARCHITECTURE-MODULES §5](ARCHITECTURE-MODULES.md#5-third-party-code).** §5 runs third-party implementations out of process. D-27 instead runs Deep Agents **in the Locus process** as the default `AgentRuntime`. It is a pinned, provenance-checked library, not a plugin. The controls that replace the process boundary:
+  - every model and tool call it makes goes through the Locus extension package to the gateway (rule 5 of §2);
+  - the gateway-bypass scan fails CI on any direct provider client;
+  - the RSI candidate runs jailed in its own AppContainer.
+
+  **Residual risk:** an upstream release could add a call path that skips the middleware. Mitigations: the pin, a re-audit on every upgrade, and the bypass scan. Moving the runtime behind an A2A/ACP sidecar is the stronger option, and it's listed for the principal in §5.
 
 **truefoundry/trueforge.** MIT, TrueFoundry (US). About 6.1k stars; TypeScript on Node 22+.
 - An open harness runtime: model calls, MCP, `SKILL.md` skills, sandboxes, approvals, compaction and sessions.
@@ -182,7 +188,7 @@ These items decide the D-11 defaults. **Standardise the `DecisionModel` port on 
 | Option | Facts | Decision |
 |---|---|---|
 | **Laya** (Convai Innovations) | Apache-2.0. 421M ModernBERT-large (non-China lineage). `laya-serve` exposes `/v1/systemone`. Self-reported 0.766 vs Jev 0.727 on typed decisions; ~33 ms per question on a T4; up to ~20 options | **Integrate as-is**: local default for risk/intent classification and done-criteria checks with few options (P1) |
-| **Clef-flash** (9B) / Clef (27B) | Apache-2.0; post-trained from **Qwen** (Alibaba lineage), with a joint schema head that needs `trust_remote_code`. Strong on intent classification (BANKING77 94.2), weak on reasoning (GPQA 48 vs Jev 78.3). 27B BF16 ≈ 55 GB | **Integrate as-is, local only, after the D-29 inspection**: escalation tier and vision inputs (P2). Skip the 27B locally. Whether it survives quantization is *unverified* |
+| **Clef-flash** (9B) / Clef (27B) | Apache-2.0; post-trained from **Qwen** (Alibaba lineage), with a joint schema head that needs `trust_remote_code`. Strong on intent classification (BANKING77 94.2), weak on reasoning (GPQA 48 vs Jev 78.3). 27B BF16 ≈ 55 GB | **Reference only (P3), blocked.** The D-29 model check refuses configs that request custom code (`trust_remote_code`, `auto_map`) and any loader code ([PROVENANCE §4](PROVENANCE.md)), so the published artifact cannot pass inspection. Revisit only if a weights-only safetensors or GGUF artifact appears whose joint head loads without custom code; inspect that exact artifact. Skip the 27B locally either way |
 | **Jev** (TypeSafe) | Hosted only (waitlist); $0.042 per million input tokens; leads on reasoning-heavy judgments | Opt-in hosted tier for reasoning-heavy acceptance judging (P2). Never sends sensitive state |
 | Ollama structured output | No new dependency; no calibrated per-option probabilities | Fallback for open-ended questions or more than 20 options |
 
@@ -334,7 +340,7 @@ P1  LOCUS-363 Deep Agents extension package ──► LOCUS-373 TrueForge contex
 P1  LOCUS-407 Symphony SPEC alignment ───────► LOCUS-398 Multica/Orca orchestration UX (P2)
 P1  LOCUS-369 AG-UI protocol + assistant-ui ─► LOCUS-409 generative-UI surface (P2)
                                            └──► LOCUS-408 channels (P3)
-P1  LOCUS-367 Laya judge sidecar ────────────► Clef-flash after D-29 (P2) · Jev opt-in (P2)
+P1  LOCUS-367 Laya judge sidecar ────────────► Jev opt-in (P2) · Clef only if a weights-only artifact appears (P3)
 P1  LOCUS-375 observability (OTel/SQLite) ───► LOCUS-399 RSI provenance (P2) · LOCUS-400 LangWatch patterns (P3)
 P1  LOCUS-390 Cedar epic (D-30)
 P2  LOCUS-354 always-on agent ◄── LOCUS-370 OpenBot / OpenDots / openmuse patterns
@@ -347,9 +353,10 @@ P3  LOCUS-401 diagram skill · LOCUS-366 colibri · LOCUS-368 univer core · LOC
 ## 5. Decisions needed from the principal
 
 1. **D-08 canvas engine.** Keep diagram-js (recommended), or revisit D-08 to allow xyflow for Pipelines and Playbooks? This blocks LOCUS-397 and LOCUS-364.
-2. **Clef on Workers AI.** Does hosted inference of a Qwen-derived model fall under the D-29 hosted exclusion? Recommended: yes, so local only.
+2. **Clef on Workers AI.** Does hosted inference of a Qwen-derived model fall under the D-29 hosted exclusion? Recommended: yes. Locally, Clef is blocked anyway until a weights-only artifact exists (§3.3).
 3. **assistant-ui vs `@copilotkit/react-core`** for the chat and run surfaces. Recommended: assistant-ui. The protocol is AG-UI either way.
 4. **Savant access.** API docs or a token so LOCUS-388 can start.
+5. **Deep Agents process boundary.** Keep the in-process D-27 runtime with the controls in §3.1 (the current state), or run it behind an A2A/ACP sidecar so it meets ARCHITECTURE-MODULES §5? The sidecar adds latency and work, so the recommendation is to keep it in process until the Cedar cutover (LOCUS-393), then re-assess.
 
 ## 6. Keeping this current
 
