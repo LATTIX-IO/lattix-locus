@@ -120,6 +120,42 @@ test_deny_tool_call_budget_exceeded if {
   }
 }
 
+test_deny_run_action_budget_exceeded if {
+  agent_policy.deny with input as {
+    "agent_id": "codex-mcp-tools",
+    "tool": "read_file",
+    "allowed_tools": ["read_file"],
+    "resource": "src/app.py",
+    "action": "read_file",
+    "max_actions": 1,
+    "actions_used": 2
+  }
+}
+
+test_allow_run_action_budget_at_limit if {
+  agent_policy.allow with input as {
+    "agent_id": "codex-mcp-tools",
+    "tool": "read_file",
+    "allowed_tools": ["read_file"],
+    "resource": "src/app.py",
+    "action": "read_file",
+    "max_actions": 1,
+    "actions_used": 1
+  }
+}
+
+test_deny_zero_run_action_budget if {
+  agent_policy.deny with input as {
+    "agent_id": "codex-mcp-tools",
+    "tool": "read_file",
+    "allowed_tools": ["read_file"],
+    "resource": "src/app.py",
+    "action": "read_file",
+    "max_actions": 0,
+    "actions_used": 1
+  }
+}
+
 # LOCUS-362: the read_file deny rules match Windows paths too.
 test_deny_dotenv_windows_path if {
   agent_policy.deny with input as {

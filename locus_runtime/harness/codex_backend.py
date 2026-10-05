@@ -278,7 +278,10 @@ def _policy_engine_config() -> dict[str, str]:
 
 
 def _capabilities_payload(
-    session: GatewaySession, *, max_tool_calls: int | None = None
+    session: GatewaySession,
+    *,
+    max_tool_calls: int | None = None,
+    max_actions: int | None = None,
 ) -> dict[str, Any]:
     caps = session.capabilities
     budget = caps.budget
@@ -292,6 +295,7 @@ def _capabilities_payload(
         "max_tool_calls": (
             max(0, int(max_tool_calls)) if max_tool_calls is not None else caps.max_tool_calls
         ),
+        "max_actions": (max(0, int(max_actions)) if max_actions is not None else caps.max_actions),
         "budget": (
             {
                 "tokens_used": budget.tokens_used,
@@ -332,6 +336,7 @@ def run_codex_with_locus_tools(
     max_tokens: int | None = None,
     codex_bin: str | None = None,
     max_tool_calls: int | None = None,
+    max_actions: int | None = None,
 ) -> CodexResult:
     """Run Codex as a local-Ollama agent whose only tools are Locus MCP tools.
 
@@ -363,6 +368,21 @@ def run_codex_with_locus_tools(
         result.outcome = "unavailable"
         result.gateway_reasons = [redact_text(str(exc), limit=300)]
         return result
+    try:
+        root = Path(cwd).resolve(strict=True)
+        isolated_root = Path(runtime_dir).resolve()
+        if isolated_root == root or root in isolated_root.parents:
+            raise ValueError("Codex runtime data must be outside the agent workspace")
+        binary = _codex_command(codex_bin or os.getenv("CODEX_BIN"))
+        isolated_root.mkdir(parents=True, exist_ok=True)
+    except FileNotFoundError:
+        result.outcome = "unavailable"
+        result.gateway_reasons = ["Codex workspace, runtime, or executable is unavailable"]
+        return result
+    except (OSError, RuntimeError, ValueError) as exc:
+        result.outcome = "failed"
+        result.gateway_reasons = [redact_text(str(exc), limit=300)]
+        return result
     call = ModelCall(
         provider="ollama",
         model=model,
@@ -381,13 +401,6 @@ def run_codex_with_locus_tools(
         return result
     result.gateway_audit_id = audit_id
 
-    root = Path(cwd).resolve(strict=True)
-    isolated_root = Path(runtime_dir).resolve()
-    if not isolated_root.is_dir():
-        isolated_root.mkdir(parents=True, exist_ok=True)
-    if isolated_root == root or root in isolated_root.parents:
-        raise ValueError("Codex runtime data must be outside the agent workspace")
-    binary = _codex_command(codex_bin or os.getenv("CODEX_BIN"))
     strategy = str(isolation_strategy or "").strip()
     elapsed = 0.0
 
@@ -410,7 +423,9 @@ def run_codex_with_locus_tools(
                     "kill_switch_path": str(Path(kill_switch_path).resolve()),
                     "policy_engine": _policy_engine_config(),
                     "capabilities": _capabilities_payload(
-                        gateway_session, max_tool_calls=max_tool_calls
+                        gateway_session,
+                        max_tool_calls=max_tool_calls,
+                        max_actions=max_actions,
                     ),
                 },
                 ensure_ascii=True,

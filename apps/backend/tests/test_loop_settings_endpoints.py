@@ -256,6 +256,60 @@ def test_runner_tracker_can_clear_linear_priority(
     assert calls == [("issue-1", 0)]
 
 
+def test_runner_tracker_create_issue_preserves_empty_state_and_priority_zero(
+    desktop: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakeAdapter:
+        def create_issue(self, **values: Any) -> str:
+            calls.append(values)
+            return "LOCUS-999"
+
+    monkeypatch.setattr(main_module, "_linear_mcp_adapter", lambda _actor: FakeAdapter())
+    response = _call(
+        "POST",
+        "/loop/tracker",
+        {
+            "operation": "create_issue",
+            "team_id": "team-1",
+            "title": "Research hypothesis",
+            "description": "Test",
+            "priority": 0,
+            "state_name": "",
+            "label_name": "",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert calls[0]["priority"] == 0
+    assert calls[0]["state_name"] == ""
+    assert calls[0]["label_name"] == ""
+
+
+@pytest.mark.parametrize("priority", ["not-a-number", -1, 5, True])
+def test_runner_tracker_rejects_invalid_create_issue_priority(
+    desktop: None, monkeypatch: pytest.MonkeyPatch, priority: Any
+) -> None:
+    class FakeAdapter:
+        def create_issue(self, **_values: Any) -> str:
+            pytest.fail("invalid priority must be rejected before issue creation")
+
+    monkeypatch.setattr(main_module, "_linear_mcp_adapter", lambda _actor: FakeAdapter())
+    response = _call(
+        "POST",
+        "/loop/tracker",
+        {
+            "operation": "create_issue",
+            "team_id": "team-1",
+            "title": "Research hypothesis",
+            "description": "Test",
+            "priority": priority,
+        },
+    )
+    assert response.status_code == 422, response.text
+
+
 def test_disable_needs_no_proof_and_enable_needs_one(desktop: None, loop_home: Path) -> None:
     disabled = _call("POST", "/loop/disable", {})
     assert disabled.status_code == 200, disabled.text

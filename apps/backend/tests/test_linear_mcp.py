@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from app.linear_mcp import LinearMcpAdapter, LinearMcpError
+from app.linear_mcp import LinearMcpAdapter, LinearMcpError, normalize_issue
 
 
 class FakeLinearMcp:
@@ -112,6 +112,20 @@ def test_project_issue_board_and_team_are_normalized() -> None:
     assert all(call[2] == "gateway-allow" for call in server.calls)
 
 
+def test_normalize_issue_accepts_string_labels_and_team_shape() -> None:
+    issue = normalize_issue(
+        {
+            "id": "issue-1",
+            "identifier": "LOCUS-1",
+            "labels": ["Bug", {"name": "agent:eligible"}],
+            "team": "Engineering",
+            "teamId": "team-1",
+        }
+    )
+    assert issue["labels"] == ["Bug", "agent:eligible"]
+    assert issue["team_id"] == "team-1"
+
+
 def test_transition_accepts_text_ack_and_reads_back_requested_state() -> None:
     server = FakeLinearMcp(list_issues=[_issue()])
     cleaned: list[bool] = []
@@ -149,6 +163,22 @@ def test_create_issue_stays_in_project_and_sets_priority_state_and_label() -> No
 
     adapter.set_priority("issue-new", 0)
     assert server.issues["issue-new"]["priority"] == 0
+
+
+def test_create_issue_can_skip_status_and_eligibility_label() -> None:
+    server = FakeLinearMcp()
+    adapter = LinearMcpAdapter(server, lambda _name, _args: "gateway-allow")
+
+    adapter.create_issue(
+        team_id="team-1",
+        title="Feedback pattern for human triage",
+        description="Review before adding to the agent queue",
+        project_slug="locus",
+        state_name="",
+        label_name="",
+    )
+
+    assert not any(call[0] in {"list_issue_statuses", "add_issue_label"} for call in server.calls)
 
 
 def test_create_issue_uses_linear_save_issue_alias_when_create_issue_is_removed() -> None:

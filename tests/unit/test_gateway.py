@@ -324,6 +324,26 @@ def test_approval_never_overrides_policy_deny() -> None:
     assert session.authorize(kind="tool_call", tool="send_email", target="mail").outcome == "deny"
 
 
+def test_run_action_budget_counts_file_and_process_actions() -> None:
+    engine = FakeEngine()
+    gateway, _ = _gateway(engine)
+    session = _session(gateway, max_actions=2)
+
+    assert (
+        session.authorize(kind="file_read", tool="view", target=f"{ROOT}/a.py").outcome == "allow"
+    )
+    assert (
+        session.authorize(
+            kind="process_exec", tool="execute_bash", target=ROOT, command="git status"
+        ).outcome
+        == "allow"
+    )
+
+    inputs = [payload for policy, payload in engine.calls if policy == "agent_policy"]
+    assert [payload["actions_used"] for payload in inputs] == [1, 2]
+    assert all(payload["max_actions"] == 2 for payload in inputs)
+
+
 def test_grant_seam_turns_ask_into_allow() -> None:
     class AllGrants:
         def covers(self, action: GatewayAction, capabilities: Capabilities) -> bool:

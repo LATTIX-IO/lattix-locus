@@ -1312,6 +1312,7 @@ class LoopRunner:
                 max_steps=max(0, envelope.budget.max_steps - usage.steps),
                 max_tokens=max(0, envelope.budget.max_tokens - usage.tokens),
                 max_tool_calls=remaining_actions,
+                max_actions=remaining_actions,
             )
             # The adapter also counts MCP tool events, but the gateway audit is the
             # authoritative count of reads, writes and process actions.
@@ -1339,6 +1340,14 @@ class LoopRunner:
 
         if kill_switch_reason(self.config.home):
             stop = StopReason(kind="user", detail="the Locus loop kill switch is set")
+            return finish(EndState.STOPPED)
+
+        if usage.actions >= envelope.budget.max_actions:
+            stop = StopReason(
+                kind="budget",
+                dimension="actions",
+                detail="no action budget remains for Codex",
+            )
             return finish(EndState.STOPPED)
 
         codex_result = call_codex(prompt)
@@ -2213,6 +2222,8 @@ class LoopRunner:
                     title=title,
                     description=body,
                     project_slug=self.config.project_slug,
+                    state_name="",
+                    label_name="",
                 )
                 # Persist each filing at once: a later error must not lead to a re-file.
                 registry.remember(cluster.fingerprint, issue=identifier, day=today, filed=True)

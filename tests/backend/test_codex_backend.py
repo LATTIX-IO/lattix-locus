@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from locus_runtime.harness import codex_backend as cb  # noqa: E402
+from locus_runtime.gateway import Capabilities  # noqa: E402
 
 
 # --- ThreadEvent → normalized step mapping ----------------------------------
@@ -165,6 +167,11 @@ def test_codex_local_endpoint_returns_resolved_loopback_model():
     assert endpoint.egress_host == "127.0.0.1"
 
 
+def test_codex_capabilities_forward_zero_action_budget() -> None:
+    payload = cb._capabilities_payload(SimpleNamespace(capabilities=Capabilities()), max_actions=0)
+    assert payload["max_actions"] == 0
+
+
 @pytest.mark.parametrize(
     "base_url",
     ["https://example.com/v1", "http://user:pass@127.0.0.1:11434/v1"],
@@ -172,6 +179,50 @@ def test_codex_local_endpoint_returns_resolved_loopback_model():
 def test_codex_local_endpoint_rejects_non_loopback_and_url_credentials(base_url):
     with pytest.raises(ValueError, match="credential-free loopback"):
         cb._validate_local_endpoint(base_url, "gpt-oss:20b")
+
+
+@pytest.mark.parametrize("setup_failure", ["missing_workspace", "nested_runtime", "missing_codex"])
+def test_codex_setup_failure_returns_result_before_gateway_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setup_failure: str
+) -> None:
+    authorized = False
+
+    class UnexpectedGate:
+        def __init__(self, **_kwargs):
+            nonlocal authorized
+            authorized = True
+            raise AssertionError("setup must complete before gateway authorization")
+
+    monkeypatch.setattr(cb, "GatewayModelGate", UnexpectedGate)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    cwd = workspace / "missing" if setup_failure == "missing_workspace" else workspace
+    runtime_dir = (
+        workspace / "runtime" if setup_failure == "nested_runtime" else tmp_path / "runtime"
+    )
+    if setup_failure == "missing_codex":
+
+        def missing_codex(_value: str | None) -> list[str]:
+            raise FileNotFoundError("Codex runtime is unavailable")
+
+        monkeypatch.setattr(cb, "_codex_command", missing_codex)
+
+    result = cb.run_codex_with_locus_tools(
+        prompt="run",
+        cwd=str(cwd),
+        runtime_dir=str(runtime_dir),
+        audit_path=str(tmp_path / "audit.jsonl"),
+        kill_switch_path=str(tmp_path / "DISABLED"),
+        run_id="run-1",
+        isolation_strategy="kernel-bwrap",
+        gateway_session=None,  # type: ignore[arg-type]
+        ollama_base_url="http://127.0.0.1:11434/v1",
+    )
+
+    assert result.outcome == (
+        "unavailable" if setup_failure in {"missing_workspace", "missing_codex"} else "failed"
+    )
+    assert not authorized
 
 
 # --- compiler routing: harness_backend == codex -----------------------------

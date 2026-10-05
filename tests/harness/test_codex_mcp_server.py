@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from locus_runtime.harness.codex_mcp_server import McpToolServer
+from locus_runtime.harness.codex_mcp_server import McpToolServer, _capabilities
 
 
 class _FakeToolset:
@@ -76,3 +76,7 @@ def test_mcp_server_kill_switch_denies_tool_dispatch(tmp_path: Path):
     )
     assert result is not None and result["result"]["isError"] is True
     assert not toolset.calls
+
+
+def test_mcp_server_retains_zero_action_budget() -> None:
+    assert _capabilities({"max_actions": 0}).max_actions == 0

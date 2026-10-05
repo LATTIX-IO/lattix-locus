@@ -19444,6 +19444,23 @@ def loop_tracker_bridge(request: Request, payload: dict[str, Any] = Body(default
         raise HTTPException(status_code=422, detail="Unsupported Linear MCP tracker operation.")
     if operation not in {"list_candidate_issues", "list_project_issues", "get_issue", "has_state", "find_issue_with_text"}:
         _enforce_emergency_write_policy("loop.tracker", actor)
+    create_priority: int | None = None
+    if operation == "create_issue":
+        raw_priority = payload.get("priority")
+        if raw_priority is None:
+            create_priority = 3
+        elif isinstance(raw_priority, int) and not isinstance(raw_priority, bool):
+            create_priority = raw_priority
+        elif isinstance(raw_priority, str) and raw_priority.strip() in {"0", "1", "2", "3", "4"}:
+            create_priority = int(raw_priority.strip())
+        else:
+            raise HTTPException(
+                status_code=422, detail="Issue priority must be an integer from 0 to 4."
+            )
+        if not 0 <= create_priority <= 4:
+            raise HTTPException(
+                status_code=422, detail="Issue priority must be an integer from 0 to 4."
+            )
     try:
         adapter = _linear_mcp_adapter(actor)
         if operation == "list_candidate_issues":
@@ -19494,9 +19511,9 @@ def loop_tracker_bridge(request: Request, payload: dict[str, Any] = Body(default
                 title=str(payload.get("title") or "")[:200],
                 description=str(payload.get("description") or "")[:8000],
                 project_slug=str(payload.get("project_slug") or project_slug)[:120],
-                priority=int(payload.get("priority") or 3),
-                state_name=str(payload.get("state_name") or "Todo")[:100],
-                label_name=str(payload.get("label_name") or "agent:eligible")[:120],
+                priority=3 if create_priority is None else create_priority,
+                state_name=str(payload.get("state_name", "Todo") or "")[:100],
+                label_name=str(payload.get("label_name", "agent:eligible") or "")[:120],
             )
         _append_audit_event(
             f"loop.tracker.{operation}", actor, "allowed", {"issue_id": str(payload.get("issue_id") or "")[:120]}

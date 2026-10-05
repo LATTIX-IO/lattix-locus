@@ -89,6 +89,12 @@ deny if {
 }
 
 deny if {
+  max_actions := object.get(input, "max_actions", -1)
+  max_actions >= 0
+  object.get(input, "actions_used", 0) > max_actions
+}
+
+deny if {
   operation == "llm_call"
   input.classification == "restricted"
   input.provider != "local"

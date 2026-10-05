@@ -102,7 +102,7 @@ except (LinearError, LinearNotConfigured) as exc:
     raise SystemExit(f"Linear MCP preflight failed: {exc}") from None
 print(json.dumps({"policy": "ready", "toolchain": toolchain, "linear": "connected", "eligible_count": len(issues)}))
 '@
-    $preflightOutput = & $python -c $preflight
+    $preflightOutput = $preflight | & $python -
     if ($LASTEXITCODE -ne 0) {
         throw "Locus preflight failed. Confirm the local backend and Linear OAuth connection are ready."
     }

@@ -7,9 +7,11 @@ credential or bypassing the integration's policy path.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -51,17 +53,31 @@ class LinearMcpTracker:
         timeout: float = 25.0,
     ) -> None:
         self.base_url = (
-            str(
-                api_base_url
-                or os.getenv("LOCUS_LOCAL_API_BASE_URL")
-                or os.getenv("NEXT_PUBLIC_API_BASE_URL")
-                or "http://127.0.0.1:8000"
-            )
+            str(api_base_url or os.getenv("LOCUS_LOCAL_API_BASE_URL") or "http://127.0.0.1:8000")
             .strip()
             .rstrip("/")
         )
-        if not self.base_url.startswith(("http://", "https://")):
-            raise LinearNotConfigured("Locus API base URL must use http(s)")
+        host = ""
+        try:
+            parsed = urlsplit(self.base_url)
+            host = parsed.hostname or ""
+            try:
+                is_loopback = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                is_loopback = host.lower() == "localhost"
+        except ValueError:
+            is_loopback = False
+            parsed = urlsplit("")
+        if (
+            parsed.username
+            or parsed.password
+            or not host
+            or parsed.scheme not in {"http", "https"}
+            or (parsed.scheme == "http" and not is_loopback)
+        ):
+            raise LinearNotConfigured(
+                "Locus API URL must use HTTPS, or HTTP on a loopback host, without credentials"
+            )
         self._token = api_token
         self._token_resolver = token_resolver
         self._transport = transport

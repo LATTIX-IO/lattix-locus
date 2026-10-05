@@ -54,6 +54,7 @@ def _capabilities(raw: Mapping[str, Any]) -> Capabilities:
         allowed_egress_hosts=tuple(str(item) for item in raw.get("allowed_egress_hosts", [])),
         autonomy_tier=str(raw.get("autonomy_tier") or "tiered"),  # type: ignore[arg-type]
         max_tool_calls=int(raw.get("max_tool_calls") or 0),
+        max_actions=(int(raw["max_actions"]) if raw.get("max_actions") is not None else None),
         budget=budget,
         runtime_profile=str(raw.get("runtime_profile") or ""),
         data_classification=str(raw.get("data_classification") or ""),

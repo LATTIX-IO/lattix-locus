@@ -198,7 +198,8 @@ def normalize_issue(node: Mapping[str, Any]) -> dict[str, Any]:
                 labels.append(str(item.get("name") or item.get("label") or item))
             elif isinstance(item, str):
                 labels.append(item)
-    team = node.get("team") or {}
+    team_value = node.get("team")
+    team = team_value if isinstance(team_value, dict) else {}
     comments = node.get("comments") or []
     if isinstance(comments, dict):
         comments = comments.get("nodes") or comments.get("items") or []
@@ -476,6 +477,8 @@ class LinearMcpAdapter:
                     "",
                 )
             except LinearMcpError:
+                # Some MCP servers cannot enumerate team workflow statuses;
+                # update_issue can still resolve the requested status by name.
                 pass
         self._call(
             "update_issue",
@@ -538,6 +541,8 @@ class LinearMcpAdapter:
         if not issue_id:
             raise LinearMcpError("Linear MCP did not return the created issue id")
         self.set_priority(issue_id, priority)
-        self.transition(issue_id, state_name)
-        self.add_label(issue_id, label_name)
+        if state_name:
+            self.transition(issue_id, state_name)
+        if label_name:
+            self.add_label(issue_id, label_name)
         return str((issue or {}).get("identifier") or issue_id)
