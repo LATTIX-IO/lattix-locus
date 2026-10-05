@@ -1,0 +1,27 @@
+id: stub-shout
+category: coding-edit
+kind: coding
+source: LOCUS-382 public test stub (NOT a held-out task; the real split is private)
+problem: words.shout(text) must return the text upper-cased with a trailing "!".
+files:
+  words.py: |
+    def shout(text):
+        return text
+visible_test: |
+  import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+  from words import shout
+  assert shout('hi') == 'HI!'
+  print('OK')
+grader:
+  - id: hidden-tests
+    type: tests
+    script: |
+      import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+      from words import shout
+      assert shout('hi') == 'HI!'
+      assert shout('') == '!'
+      assert shout('a b') == 'A B!'
+reference:
+  words.py: |
+    def shout(text):
+        return text.upper() + "!"

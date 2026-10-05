@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import logging
 import re
 import sqlite3
 import threading
@@ -10,12 +11,56 @@ from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
+from locus_runtime.legacy import LEGACY_TABLES, normalize_legacy_identifiers
+
+LOGGER = logging.getLogger(__name__)
+
+def _legacy_table_name(current: str) -> str | None:
+    for legacy, name in LEGACY_TABLES.items():
+        if name == current:
+            return legacy
+    return None
+
+
+def _rename_legacy_tables_postgres(cursor: Any, tables: tuple[str, ...]) -> None:
+    """Rename pre-Locus tables in place so existing data carries over."""
+    for current in tables:
+        legacy = _legacy_table_name(current)
+        if legacy is None:
+            continue
+        cursor.execute("SELECT to_regclass(%s), to_regclass(%s)", (legacy, current))
+        row = cursor.fetchone()
+        if row and row[0] and not row[1]:
+            # Both names come from the LEGACY_TABLES constant, never from input.
+            cursor.execute(f"ALTER TABLE {legacy} RENAME TO {current}")
+            LOGGER.info("renamed legacy table %s to %s", legacy, current)
+
+
+def _rename_legacy_tables_sqlite(connection: Any, tables: tuple[str, ...]) -> None:
+    for current in tables:
+        legacy = _legacy_table_name(current)
+        if legacy is None:
+            continue
+        names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?)",
+                (legacy, current),
+            ).fetchall()
+        }
+        if legacy in names and current not in names:
+            connection.execute(f"ALTER TABLE {legacy} RENAME TO {current}")
+            LOGGER.info("renamed legacy table %s to %s", legacy, current)
+
+PSYCOPG_IMPORT_ERROR: str | None = None
+
 try:
     import psycopg
     from psycopg import sql as psycopg_sql
-except Exception:  # pragma: no cover - optional dependency in some local test paths
+except Exception as exc:  # pragma: no cover - optional dependency in some local test paths
     psycopg = None
     psycopg_sql = None
+    PSYCOPG_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 try:
     import redis
@@ -27,10 +72,10 @@ try:
 except Exception:  # pragma: no cover - optional dependency in some local test paths
     GraphDatabase = None
 
-try:
-    from openai import OpenAI
-except Exception:  # pragma: no cover - optional dependency in some local test paths
-    OpenAI = None
+# Embedded long-term memory (LOCUS-387): re-exported so the backend's composition
+# root resolves both adapters of the memory port from this module.
+from locus_runtime.memory.contract import Embedder, EmbeddingUnavailable  # noqa: E402
+from locus_runtime.memory.sqlite_store import SQLiteLongTermMemoryStore  # noqa: E402,F401
 
 
 def _json_default(value: Any) -> Any:
@@ -74,7 +119,7 @@ def _vector_type_sql(dimensions: int) -> Any:
 def _embedding_column_statement(dimensions: int) -> str:
     validated_dimensions = _validated_embedding_dimensions(dimensions)
     return (
-        "ALTER TABLE frontier_long_term_memory "
+        "ALTER TABLE locus_long_term_memory "
         f"ADD COLUMN IF NOT EXISTS embedding vector({validated_dimensions})"
     )
 
@@ -84,13 +129,14 @@ class _BasePostgresService:
         self.dsn = str(dsn or "").strip()
         self.enabled = bool(self.dsn) and psycopg is not None
         self._initialized = False
+        self.import_error = PSYCOPG_IMPORT_ERROR
 
     @contextmanager
     def _connect(self) -> Iterator[Any]:
         if not self.enabled:
             raise RuntimeError("Postgres service is not enabled")
         assert psycopg is not None
-        with psycopg.connect(self.dsn, autocommit=True) as connection:
+        with psycopg.connect(self.dsn, autocommit=True, connect_timeout=5) as connection:
             yield connection
 
     def healthcheck(self) -> bool:
@@ -105,6 +151,15 @@ class _BasePostgresService:
         except Exception:  # noqa: BLE001
             return False
 
+    def status(self) -> tuple[str, str]:
+        if not self.dsn:
+            return "disabled", "POSTGRES_DSN is not configured"
+        if psycopg is None:
+            return "degraded", self.import_error or "psycopg is unavailable"
+        if self.healthcheck():
+            return "connected", ""
+        return "degraded", "Postgres connection healthcheck failed"
+
 
 class PostgresStateStore(_BasePostgresService):
     SECTION_KEY_PREFIX = "section:"
@@ -114,9 +169,10 @@ class PostgresStateStore(_BasePostgresService):
             return
         with self._connect() as connection:
             with connection.cursor() as cursor:
+                _rename_legacy_tables_postgres(cursor, ("locus_state_store",))
                 cursor.execute(
                     """
-					CREATE TABLE IF NOT EXISTS frontier_state_store (
+					CREATE TABLE IF NOT EXISTS locus_state_store (
 						state_key TEXT PRIMARY KEY,
 						payload JSONB NOT NULL,
 						updated_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
@@ -131,14 +187,14 @@ class PostgresStateStore(_BasePostgresService):
         self.initialize()
         with self._connect() as connection:
             with connection.cursor() as cursor:
-                cursor.execute("SELECT state_key, payload FROM frontier_state_store")
+                cursor.execute("SELECT state_key, payload FROM locus_state_store")
                 rows = cursor.fetchall()
         if not rows:
             return None
         legacy: dict[str, Any] = {}
         sections: dict[str, Any] = {}
         for state_key, raw_payload in rows:
-            value = _safe_json_loads(raw_payload)
+            value = normalize_legacy_identifiers(_safe_json_loads(raw_payload))
             key = str(state_key)
             if key == "global" and isinstance(value, dict):
                 legacy = value
@@ -161,7 +217,7 @@ class PostgresStateStore(_BasePostgresService):
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-					INSERT INTO frontier_state_store (state_key, payload, updated_at)
+					INSERT INTO locus_state_store (state_key, payload, updated_at)
 					VALUES (%s, %s::jsonb, timezone('utc', now()))
 					ON CONFLICT (state_key)
 					DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
@@ -186,7 +242,7 @@ class PostgresStateStore(_BasePostgresService):
                 for section, encoded in encoded_sections.items():
                     cursor.execute(
                         """
-						INSERT INTO frontier_state_store (state_key, payload, updated_at)
+						INSERT INTO locus_state_store (state_key, payload, updated_at)
 						VALUES (%s, %s::jsonb, timezone('utc', now()))
 						ON CONFLICT (state_key)
 						DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
@@ -195,7 +251,7 @@ class PostgresStateStore(_BasePostgresService):
                     )
                 if replace_all:
                     cursor.execute(
-                        "DELETE FROM frontier_state_store WHERE state_key = %s",
+                        "DELETE FROM locus_state_store WHERE state_key = %s",
                         ("global",),
                     )
 
@@ -213,9 +269,10 @@ class PostgresAuditLog(_BasePostgresService):
             return
         with self._connect() as connection:
             with connection.cursor() as cursor:
+                _rename_legacy_tables_postgres(cursor, ("locus_audit_events",))
                 cursor.execute(
                     """
-					CREATE TABLE IF NOT EXISTS frontier_audit_events (
+					CREATE TABLE IF NOT EXISTS locus_audit_events (
 						id TEXT PRIMARY KEY,
 						action TEXT NOT NULL,
 						actor TEXT NOT NULL,
@@ -236,7 +293,7 @@ class PostgresAuditLog(_BasePostgresService):
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-					INSERT INTO frontier_audit_events
+					INSERT INTO locus_audit_events
 						(id, action, actor, outcome, created_at, metadata)
 					VALUES (%s, %s, %s, %s, %s, %s::jsonb)
 					ON CONFLICT (id) DO NOTHING
@@ -260,7 +317,7 @@ class PostgresAuditLog(_BasePostgresService):
                 cursor.execute(
                     """
 					SELECT id, action, actor, outcome, created_at, metadata
-					FROM frontier_audit_events
+					FROM locus_audit_events
 					ORDER BY inserted_at DESC
 					LIMIT %s
 					""",
@@ -328,9 +385,10 @@ class SQLiteStateStore(_BaseSQLiteService):
         if not self.enabled or self._initialized:
             return
         with self._lock:
+            _rename_legacy_tables_sqlite(self._connect(), ("locus_state_store",))
             self._connect().execute(
                 """
-				CREATE TABLE IF NOT EXISTS frontier_state_store (
+				CREATE TABLE IF NOT EXISTS locus_state_store (
 					state_key TEXT PRIMARY KEY,
 					payload TEXT NOT NULL,
 					updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -347,7 +405,7 @@ class SQLiteStateStore(_BaseSQLiteService):
         with self._lock:
             rows = (
                 self._connect()
-                .execute("SELECT state_key, payload FROM frontier_state_store")
+                .execute("SELECT state_key, payload FROM locus_state_store")
                 .fetchall()
             )
         if not rows:
@@ -355,7 +413,7 @@ class SQLiteStateStore(_BaseSQLiteService):
         legacy: dict[str, Any] = {}
         sections: dict[str, Any] = {}
         for state_key, raw_payload in rows:
-            value = _safe_json_loads(raw_payload)
+            value = normalize_legacy_identifiers(_safe_json_loads(raw_payload))
             key = str(state_key)
             if key == "global" and isinstance(value, dict):
                 legacy = value
@@ -375,7 +433,7 @@ class SQLiteStateStore(_BaseSQLiteService):
         with self._lock:
             connection = self._connect()
             connection.execute(
-                "INSERT OR REPLACE INTO frontier_state_store (state_key, payload, updated_at) "
+                "INSERT OR REPLACE INTO locus_state_store (state_key, payload, updated_at) "
                 "VALUES (?, ?, datetime('now'))",
                 ("global", encoded_payload),
             )
@@ -391,13 +449,13 @@ class SQLiteStateStore(_BaseSQLiteService):
             connection = self._connect()
             for section, encoded in encoded_sections.items():
                 connection.execute(
-                    "INSERT OR REPLACE INTO frontier_state_store (state_key, payload, updated_at) "
+                    "INSERT OR REPLACE INTO locus_state_store (state_key, payload, updated_at) "
                     "VALUES (?, ?, datetime('now'))",
                     (f"{self.SECTION_KEY_PREFIX}{section}", encoded),
                 )
             if replace_all:
                 connection.execute(
-                    "DELETE FROM frontier_state_store WHERE state_key = ?", ("global",)
+                    "DELETE FROM locus_state_store WHERE state_key = ?", ("global",)
                 )
             connection.commit()
 
@@ -409,9 +467,10 @@ class SQLiteAuditLog(_BaseSQLiteService):
         if not self.enabled or self._initialized:
             return
         with self._lock:
+            _rename_legacy_tables_sqlite(self._connect(), ("locus_audit_events",))
             self._connect().execute(
                 """
-				CREATE TABLE IF NOT EXISTS frontier_audit_events (
+				CREATE TABLE IF NOT EXISTS locus_audit_events (
 					id TEXT PRIMARY KEY,
 					action TEXT NOT NULL,
 					actor TEXT NOT NULL,
@@ -431,7 +490,7 @@ class SQLiteAuditLog(_BaseSQLiteService):
         with self._lock:
             connection = self._connect()
             connection.execute(
-                "INSERT OR IGNORE INTO frontier_audit_events "
+                "INSERT OR IGNORE INTO locus_audit_events "
                 "(id, action, actor, outcome, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     str(event.get("id") or ""),
@@ -453,7 +512,7 @@ class SQLiteAuditLog(_BaseSQLiteService):
                 self._connect()
                 .execute(
                     "SELECT id, action, actor, outcome, created_at, metadata "
-                    "FROM frontier_audit_events ORDER BY rowid DESC LIMIT ?",
+                    "FROM locus_audit_events ORDER BY rowid DESC LIMIT ?",
                     (max(1, int(limit)),),
                 )
                 .fetchall()
@@ -479,19 +538,19 @@ class RedisMemoryStore:
         self.url = str(url or "").strip()
         self.enabled = bool(self.url) and redis is not None
         self._client = redis.from_url(self.url, decode_responses=True) if self.enabled else None
-        self.max_entries = max(10, int(os.getenv("FRONTIER_SHORT_TERM_MEMORY_MAX", "200")))
-        self.wal_enabled = os.getenv("FRONTIER_MEMORY_WAL_ENABLED", "").strip().lower() in {
+        self.max_entries = max(10, int(os.getenv("LOCUS_SHORT_TERM_MEMORY_MAX", "200")))
+        self.wal_enabled = os.getenv("LOCUS_MEMORY_WAL_ENABLED", "").strip().lower() in {
             "1",
             "true",
             "yes",
         }
-        self.wal_dir = Path(os.getenv("FRONTIER_MEMORY_WAL_DIR", ".frontier/memory-wal"))
+        self.wal_dir = Path(os.getenv("LOCUS_MEMORY_WAL_DIR", ".locus/memory-wal"))
 
     def _key(self, session_id: str) -> str:
-        return f"frontier:memory:short:{session_id}"
+        return f"locus:memory:short:{session_id}"
 
     def _nonce_key(self, nonce: str) -> str:
-        return f"frontier:a2a:nonce:{nonce}"
+        return f"locus:a2a:nonce:{nonce}"
 
     def healthcheck(self) -> bool:
         if not self.enabled or self._client is None:
@@ -614,17 +673,41 @@ class RedisMemoryStore:
 
 
 class PostgresLongTermMemoryStore(_BasePostgresService):
-    def __init__(self, dsn: str) -> None:
+    """Long-term memory port adapter on Postgres + pgvector (the full stack).
+
+    Embeddings come from the injected embedder (the gated local engine, LOCUS-378);
+    without one, or while it is unavailable, entries are stored without a vector
+    and search falls back to keywords.
+    """
+
+    store_kind = "postgres"
+    backend_label = "Postgres + pgvector"
+
+    def __init__(self, dsn: str, *, embedder: Embedder | None = None) -> None:
         super().__init__(dsn)
         self.vector_enabled = False
+        # Must match the embedding model's output (768 for the default
+        # nomic-embed-text); vectors of another size are stored without the
+        # pgvector column (keyword search still finds them).
         self.embedding_dimensions = _validated_embedding_dimensions(
-            int(os.getenv("FRONTIER_MEMORY_EMBEDDING_DIMENSIONS", "1536"))
+            int(os.getenv("LOCUS_MEMORY_EMBEDDING_DIMENSIONS", "768"))
         )
-        self.embedding_model = str(
-            os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-            or "text-embedding-3-small"
-        ).strip()
-        self._openai_client: Any | None = None
+        self.embedder = embedder
+
+    @property
+    def embedding_model(self) -> str:
+        return self.embedder.model if self.embedder is not None else ""
+
+    def describe(self) -> dict[str, Any]:
+        status = self.embedder.status() if self.embedder is not None else None
+        return {
+            "store": self.store_kind,
+            "keyword_search": "ilike",
+            "vector_extension": "pgvector" if self.vector_enabled else "unavailable",
+            "semantic_search": status.state if status is not None else "disabled",
+            "semantic_search_reason": status.reason if status is not None else "",
+            "embedding_model": self.embedding_model,
+        }
 
     def initialize(self) -> None:
         if not self.enabled or self._initialized:
@@ -646,9 +729,10 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                 except Exception:  # noqa: BLE001
                     self.vector_enabled = False
 
+                _rename_legacy_tables_postgres(cursor, ("locus_long_term_memory",))
                 cursor.execute(
                     """
-					CREATE TABLE IF NOT EXISTS frontier_long_term_memory (
+					CREATE TABLE IF NOT EXISTS locus_long_term_memory (
 						id TEXT PRIMARY KEY,
 						bucket_id TEXT NOT NULL,
 						session_id TEXT NOT NULL,
@@ -668,17 +752,18 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                     # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
                     cursor.execute(_embedding_column_statement(self.embedding_dimensions))
                 cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS frontier_long_term_memory_bucket_idx ON frontier_long_term_memory (bucket_id, created_at DESC)"
+                    "CREATE INDEX IF NOT EXISTS locus_long_term_memory_bucket_idx ON locus_long_term_memory (bucket_id, created_at DESC)"
                 )
                 cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS frontier_long_term_memory_session_idx ON frontier_long_term_memory (session_id, created_at DESC)"
+                    "CREATE INDEX IF NOT EXISTS locus_long_term_memory_session_idx ON locus_long_term_memory (session_id, created_at DESC)"
                 )
                 cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS frontier_long_term_memory_scope_idx ON frontier_long_term_memory (memory_scope, created_at DESC)"
+                    "CREATE INDEX IF NOT EXISTS locus_long_term_memory_scope_idx ON locus_long_term_memory (memory_scope, created_at DESC)"
                 )
+                _rename_legacy_tables_postgres(cursor, ("locus_memory_consolidation_queue",))
                 cursor.execute(
                     """
-					CREATE TABLE IF NOT EXISTS frontier_memory_consolidation_queue (
+					CREATE TABLE IF NOT EXISTS locus_memory_consolidation_queue (
 						id TEXT PRIMARY KEY,
 						entry_id TEXT NOT NULL UNIQUE,
 						bucket_id TEXT NOT NULL,
@@ -696,45 +781,36 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 					"""
                 )
                 cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS frontier_memory_consolidation_queue_status_idx ON frontier_memory_consolidation_queue (status, created_at DESC)"
+                    "CREATE INDEX IF NOT EXISTS locus_memory_consolidation_queue_status_idx ON locus_memory_consolidation_queue (status, created_at DESC)"
                 )
                 cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS frontier_memory_consolidation_queue_bucket_idx ON frontier_memory_consolidation_queue (bucket_id, created_at DESC)"
+                    "CREATE INDEX IF NOT EXISTS locus_memory_consolidation_queue_bucket_idx ON locus_memory_consolidation_queue (bucket_id, created_at DESC)"
                 )
                 cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS frontier_memory_consolidation_queue_scope_idx ON frontier_memory_consolidation_queue (memory_scope, created_at DESC)"
+                    "CREATE INDEX IF NOT EXISTS locus_memory_consolidation_queue_scope_idx ON locus_memory_consolidation_queue (memory_scope, created_at DESC)"
                 )
                 if self.vector_enabled:
                     try:
                         cursor.execute(
-                            "CREATE INDEX IF NOT EXISTS frontier_long_term_memory_embedding_idx ON frontier_long_term_memory USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)"
+                            "CREATE INDEX IF NOT EXISTS locus_long_term_memory_embedding_idx ON locus_long_term_memory USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)"
                         )
                     except Exception:  # noqa: BLE001
                         pass
         self._initialized = True
 
-    def _get_openai_client(self) -> Any | None:
-        if OpenAI is None:
-            return None
-        api_key = str(os.getenv("OPENAI_API_KEY", "") or "").strip()
-        if not api_key:
-            return None
-        if self._openai_client is None:
-            self._openai_client = OpenAI(api_key=api_key)
-        return self._openai_client
-
     def _embed_text(self, text: str) -> tuple[list[float] | None, str | None]:
-        if not text.strip():
-            return None, None
-        client = self._get_openai_client()
-        if client is None:
+        """Embed through the gated embedder (a gateway ``model_call``, LOCUS-378)."""
+        if not text.strip() or self.embedder is None:
             return None, None
         try:
-            response = client.embeddings.create(model=self.embedding_model, input=text[:8000])
-            vector = response.data[0].embedding if getattr(response, "data", None) else None
-        except Exception:  # noqa: BLE001
+            vectors = self.embedder.embed([text[:8000]])
+        except EmbeddingUnavailable:
             return None, None
-        if not isinstance(vector, list) or not vector:
+        except Exception:  # noqa: BLE001 - embeddings never fail a memory write
+            LOGGER.warning("long-term memory embedding failed", exc_info=False)
+            return None, None
+        vector = vectors[0] if vectors else None
+        if not isinstance(vector, list) or len(vector) != self.embedding_dimensions:
             return None, None
         return [float(value) for value in vector], self.embedding_model
 
@@ -804,7 +880,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                 cursor.execute(
                     """
 					SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at
-					FROM frontier_long_term_memory
+					FROM locus_long_term_memory
 					WHERE (%s IS NULL OR bucket_id = %s)
 					AND (%s IS NULL OR session_id = %s)
 					AND (%s IS NULL OR memory_scope = %s)
@@ -849,7 +925,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                     cursor.execute(
                         """
 						SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at
-						FROM frontier_long_term_memory
+						FROM locus_long_term_memory
 						WHERE (%s::text IS NULL OR bucket_id = %s::text)
 						AND (%s::text IS NULL OR session_id = %s::text)
 						AND (%s::text IS NULL OR memory_scope = %s::text)
@@ -885,7 +961,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                     cursor.execute(
                         f"""
 						SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at
-						FROM frontier_long_term_memory
+						FROM locus_long_term_memory
 						WHERE (%s::text IS NULL OR bucket_id = %s::text)
 						AND (%s::text IS NULL OR session_id = %s::text)
 						AND (%s::text IS NULL OR memory_scope = %s::text)
@@ -933,7 +1009,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                 if self.vector_enabled and vector:
                     cursor.execute(
                         """
-						INSERT INTO frontier_long_term_memory (
+						INSERT INTO locus_long_term_memory (
 							id, bucket_id, session_id, memory_scope, source, task_id, content,
 							metadata, embedding_model, embedding_json, embedding, created_at, updated_at
 						)
@@ -972,7 +1048,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                 else:
                     cursor.execute(
                         """
-						INSERT INTO frontier_long_term_memory (
+						INSERT INTO locus_long_term_memory (
 							id, bucket_id, session_id, memory_scope, source, task_id, content,
 							metadata, embedding_model, embedding_json, created_at, updated_at
 						)
@@ -1033,7 +1109,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-					INSERT INTO frontier_memory_consolidation_queue (
+					INSERT INTO locus_memory_consolidation_queue (
 						id, entry_id, bucket_id, session_id, memory_scope, source, task_id,
 						candidate_kind, status, content, metadata, created_at, updated_at
 					)
@@ -1086,7 +1162,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                     """
 					SELECT id, entry_id, bucket_id, session_id, memory_scope, source, task_id,
 					candidate_kind, status, created_at, updated_at, content, metadata
-					FROM frontier_memory_consolidation_queue
+					FROM locus_memory_consolidation_queue
 					WHERE (%s IS NULL OR bucket_id = %s)
 					AND (%s IS NULL OR memory_scope = %s)
 					AND (%s IS NULL OR status = %s)
@@ -1122,7 +1198,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                 if isinstance(extra_metadata, dict) and extra_metadata:
                     cursor.execute(
                         """
-						UPDATE frontier_memory_consolidation_queue
+						UPDATE locus_memory_consolidation_queue
 						SET status = %s,
 						metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
 						updated_at = timezone('utc', now())
@@ -1137,7 +1213,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                 else:
                     cursor.execute(
                         """
-						UPDATE frontier_memory_consolidation_queue
+						UPDATE locus_memory_consolidation_queue
 						SET status = %s,
 						updated_at = timezone('utc', now())
 						WHERE id = %s
@@ -1161,7 +1237,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-					DELETE FROM frontier_long_term_memory
+					DELETE FROM locus_long_term_memory
 					WHERE (%s IS NULL OR bucket_id = %s)
 					AND (%s IS NULL OR session_id = %s)
 					AND (%s IS NULL OR memory_scope = %s)
@@ -1200,7 +1276,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                     """
 					SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at,
 						1 - (embedding <=> %s::vector) AS similarity
-					FROM frontier_long_term_memory
+					FROM locus_long_term_memory
 					WHERE embedding IS NOT NULL
 					AND (%s IS NULL OR bucket_id = %s)
 					AND (%s IS NULL OR memory_scope = %s)
@@ -1234,7 +1310,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
         with self._connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT COUNT(*) FROM frontier_memory_consolidation_queue WHERE status = %s",
+                    "SELECT COUNT(*) FROM locus_memory_consolidation_queue WHERE status = %s",
                     (str(status or "pending"),),
                 )
                 row = cursor.fetchone()
@@ -1425,6 +1501,217 @@ class Neo4jRunGraph:
         except Exception:  # noqa: BLE001
             return
 
+    def project_causal_assembly(self, *, projection: dict[str, Any]) -> bool:
+        if not self.enabled or self._driver is None:
+            return False
+
+        assembly = (
+            projection.get("assembly") if isinstance(projection.get("assembly"), dict) else {}
+        )
+        if not assembly:
+            return False
+
+        assembly_id = str(assembly.get("assembly_id") or assembly.get("id") or "").strip()
+        if not assembly_id:
+            return False
+        assembly_graph_id = str(assembly.get("id") or f"causal-assembly:{assembly_id}").strip()
+
+        columns = [item for item in projection.get("columns", []) if isinstance(item, dict)]
+        belief_snapshots = [
+            item for item in projection.get("belief_snapshots", []) if isinstance(item, dict)
+        ]
+        beliefs = [item for item in projection.get("beliefs", []) if isinstance(item, dict)]
+        confidence_samples = [
+            item for item in projection.get("confidence_samples", []) if isinstance(item, dict)
+        ]
+        outcomes = [item for item in projection.get("outcomes", []) if isinstance(item, dict)]
+        support_edges = [
+            item for item in projection.get("support_edges", []) if isinstance(item, dict)
+        ]
+        dissent_edges = [
+            item for item in projection.get("dissent_edges", []) if isinstance(item, dict)
+        ]
+
+        try:
+            with self._driver.session() as session:
+                tx = session.begin_transaction()
+                try:
+                    tx.run(
+                        """
+                        MATCH (assembly:CausalAssembly {assembly_id: $assembly_id})
+                        OPTIONAL MATCH path = (assembly)-[*0..4]->(node)
+                        WITH [item IN collect(DISTINCT node) WHERE item IS NOT NULL] AS nodes
+                        UNWIND nodes AS node
+                        DETACH DELETE node
+                        """,
+                        {"assembly_id": assembly_id},
+                    )
+
+                    tx.run(
+                        """
+                        MERGE (assembly:CausalAssembly {assembly_id: $assembly_id})
+                        SET assembly.id = $assembly_graph_id,
+                            assembly.updated_at = $updated_at,
+                            assembly.column_count = $column_count,
+                            assembly.belief_snapshot_count = $belief_snapshot_count,
+                            assembly.belief_count = $belief_count,
+                            assembly.confidence_sample_count = $confidence_sample_count,
+                            assembly.outcome_count = $outcome_count,
+                            assembly.projected_at = datetime()
+                        """,
+                        {
+                            "assembly_id": assembly_id,
+                            "assembly_graph_id": assembly_graph_id,
+                            "updated_at": float(assembly.get("updated_at") or 0.0),
+                            "column_count": int(assembly.get("column_count") or 0),
+                            "belief_snapshot_count": int(
+                                assembly.get("belief_snapshot_count") or 0
+                            ),
+                            "belief_count": int(assembly.get("belief_count") or 0),
+                            "confidence_sample_count": int(
+                                assembly.get("confidence_sample_count") or 0
+                            ),
+                            "outcome_count": int(assembly.get("outcome_count") or 0),
+                        },
+                    )
+
+                    if columns:
+                        tx.run(
+                            """
+                        UNWIND $columns AS column
+                        MERGE (assembly:CausalAssembly {assembly_id: $assembly_id})
+                        MERGE (node:CausalColumn {id: column.id})
+                        SET node.assembly_id = column.assembly_id,
+                            node.column_id = column.column_id,
+                            node.kind = column.kind,
+                            node.confidence = column.confidence,
+                            node.last_updated = column.last_updated,
+                            node.evidence_refs = column.evidence_refs,
+                            node.adaptation_metrics_json = column.adaptation_metrics_json,
+                            node.belief_count = column.belief_count,
+                            node.projected_at = datetime()
+                        MERGE (assembly)-[rel:HAS_COLUMN]->(node)
+                        SET rel.updated_at = datetime()
+                        """,
+                            {"assembly_id": assembly_id, "columns": columns},
+                        )
+
+                    if belief_snapshots:
+                        tx.run(
+                            """
+                        UNWIND $belief_snapshots AS snapshot
+                        MATCH (column:CausalColumn {id: snapshot.column_node_id})
+                        MERGE (node:CausalBeliefSnapshot {id: snapshot.id})
+                        SET node.assembly_id = snapshot.assembly_id,
+                            node.column_id = snapshot.column_id,
+                            node.recorded_at = snapshot.recorded_at,
+                            node.confidence = snapshot.confidence,
+                            node.evidence_refs = snapshot.evidence_refs,
+                            node.cause_json = snapshot.cause_json,
+                            node.belief_count = snapshot.belief_count,
+                            node.projected_at = datetime()
+                        MERGE (column)-[rel:HAS_BELIEF_SNAPSHOT]->(node)
+                        SET rel.updated_at = datetime()
+                        """,
+                            {"belief_snapshots": belief_snapshots},
+                        )
+
+                    if beliefs:
+                        tx.run(
+                            """
+                        UNWIND $beliefs AS belief
+                        MATCH (snapshot:CausalBeliefSnapshot {id: belief.snapshot_id})
+                        MERGE (node:CausalBelief {id: belief.id})
+                        SET node.assembly_id = belief.assembly_id,
+                            node.column_id = belief.column_id,
+                            node.belief_key = belief.belief_key,
+                            node.value_json = belief.value_json,
+                            node.confidence = belief.confidence,
+                            node.evidence_refs = belief.evidence_refs,
+                            node.rationale = belief.rationale,
+                            node.metadata_json = belief.metadata_json,
+                            node.projected_at = datetime()
+                        MERGE (snapshot)-[rel:HAS_BELIEF]->(node)
+                        SET rel.updated_at = datetime()
+                        """,
+                            {"beliefs": beliefs},
+                        )
+
+                    if confidence_samples:
+                        tx.run(
+                            """
+                        UNWIND $confidence_samples AS sample
+                        MATCH (column:CausalColumn {id: sample.column_node_id})
+                        MERGE (node:CausalConfidenceSample {id: sample.id})
+                        SET node.assembly_id = sample.assembly_id,
+                            node.column_id = sample.column_id,
+                            node.recorded_at = sample.recorded_at,
+                            node.confidence = sample.confidence,
+                            node.adaptation_metrics_json = sample.adaptation_metrics_json,
+                            node.cause_json = sample.cause_json,
+                            node.projected_at = datetime()
+                        MERGE (column)-[rel:HAS_CONFIDENCE_SAMPLE]->(node)
+                        SET rel.updated_at = datetime()
+                        """,
+                            {"confidence_samples": confidence_samples},
+                        )
+
+                    if outcomes:
+                        tx.run(
+                            """
+                        UNWIND $outcomes AS outcome
+                        MERGE (assembly:CausalAssembly {assembly_id: $assembly_id})
+                        MERGE (node:CausalOutcome {id: outcome.id})
+                        SET node.assembly_id = outcome.assembly_id,
+                            node.outcome = outcome.outcome,
+                            node.recorded_at = outcome.recorded_at,
+                            node.metadata_json = outcome.metadata_json,
+                            node.decision = outcome.decision,
+                            node.commitment_confidence = outcome.commitment_confidence,
+                            node.is_ready = outcome.is_ready,
+                            node.blockers = outcome.blockers,
+                            node.next_actions = outcome.next_actions,
+                            node.supporting_columns = outcome.supporting_columns,
+                            node.dissenting_columns = outcome.dissenting_columns,
+                            node.projected_at = datetime()
+                        MERGE (assembly)-[rel:HAS_OUTCOME]->(node)
+                        SET rel.updated_at = datetime()
+                        """,
+                            {"assembly_id": assembly_id, "outcomes": outcomes},
+                        )
+
+                    if support_edges:
+                        tx.run(
+                            """
+                        UNWIND $support_edges AS edge
+                        MATCH (outcome:CausalOutcome {id: edge.outcome_id})
+                        MATCH (column:CausalColumn {id: edge.column_id})
+                        MERGE (outcome)-[rel:SUPPORTED_BY]->(column)
+                        SET rel.updated_at = datetime()
+                        """,
+                            {"support_edges": support_edges},
+                        )
+
+                    if dissent_edges:
+                        tx.run(
+                            """
+                        UNWIND $dissent_edges AS edge
+                        MATCH (outcome:CausalOutcome {id: edge.outcome_id})
+                        MATCH (column:CausalColumn {id: edge.column_id})
+                        MERGE (outcome)-[rel:DISSENTED_BY]->(column)
+                        SET rel.updated_at = datetime()
+                        """,
+                            {"dissent_edges": dissent_edges},
+                        )
+
+                    tx.commit()
+                except Exception:
+                    tx.rollback()
+                    raise
+                return True
+        except Exception:  # noqa: BLE001
+            return False
+
     def query_memory_context(
         self,
         *,
@@ -1527,7 +1814,7 @@ class PostgresWorldGraph(_BasePostgresService):
     """World-model graph hosted in the bundled Postgres (no Java / no Neo4j).
 
     Drop-in for :class:`Neo4jRunGraph` — same methods + return shapes — backed by
-    two relational tables (``frontier_kg_nodes`` / ``frontier_kg_edges``) queried
+    two relational tables (``locus_kg_nodes`` / ``locus_kg_edges``) queried
     with plain SQL. Node labels and edge relation names mirror the Cypher model
     (KnowledgeOwner / KnowledgeMemory / KnowledgeTopic / MemoryEvidence /
     WorkflowRun / Agent / Workflow; OWNS_MEMORY / DERIVED_FROM / MENTIONS_TOPIC /
@@ -1539,9 +1826,10 @@ class PostgresWorldGraph(_BasePostgresService):
         if self._initialized or not self.enabled:
             return
         with self._connect() as connection, connection.cursor() as cursor:
+            _rename_legacy_tables_postgres(cursor, ("locus_kg_nodes",))
             cursor.execute(
                 """
-                CREATE TABLE IF NOT EXISTS frontier_kg_nodes (
+                CREATE TABLE IF NOT EXISTS locus_kg_nodes (
                     id TEXT PRIMARY KEY,
                     label TEXT NOT NULL,
                     memory_scope TEXT NOT NULL DEFAULT '',
@@ -1550,9 +1838,10 @@ class PostgresWorldGraph(_BasePostgresService):
                 )
                 """
             )
+            _rename_legacy_tables_postgres(cursor, ("locus_kg_edges",))
             cursor.execute(
                 """
-                CREATE TABLE IF NOT EXISTS frontier_kg_edges (
+                CREATE TABLE IF NOT EXISTS locus_kg_edges (
                     src TEXT NOT NULL,
                     dst TEXT NOT NULL,
                     rel TEXT NOT NULL,
@@ -1563,57 +1852,78 @@ class PostgresWorldGraph(_BasePostgresService):
                 """
             )
             cursor.execute(
-                "CREATE INDEX IF NOT EXISTS frontier_kg_nodes_label_scope "
-                "ON frontier_kg_nodes(label, memory_scope)"
+                "CREATE INDEX IF NOT EXISTS locus_kg_nodes_label_scope "
+                "ON locus_kg_nodes(label, memory_scope)"
             )
             cursor.execute(
-                "CREATE INDEX IF NOT EXISTS frontier_kg_edges_src_rel "
-                "ON frontier_kg_edges(src, rel)"
+                "CREATE INDEX IF NOT EXISTS locus_kg_edges_src_rel "
+                "ON locus_kg_edges(src, rel)"
             )
         self._initialized = True
 
-    def _merge_node(self, cursor: Any, *, node_id: str, label: str, props: dict[str, Any], memory_scope: str = "") -> None:
+    def _merge_node(
+        self,
+        cursor: Any,
+        *,
+        node_id: str,
+        label: str,
+        props: dict[str, Any],
+        memory_scope: str = "",
+    ) -> None:
         if not node_id:
             return
         cursor.execute(
             """
-            INSERT INTO frontier_kg_nodes (id, label, memory_scope, props)
+            INSERT INTO locus_kg_nodes (id, label, memory_scope, props)
             VALUES (%s, %s, %s, %s::jsonb)
             ON CONFLICT (id) DO UPDATE SET
                 label = EXCLUDED.label,
                 memory_scope = EXCLUDED.memory_scope,
-                props = frontier_kg_nodes.props || EXCLUDED.props,
+                props = locus_kg_nodes.props || EXCLUDED.props,
                 updated_at = now()
             """,
             (node_id, label, memory_scope, json.dumps(props, default=_json_default)),
         )
 
-    def _merge_edge(self, cursor: Any, *, src: str, dst: str, rel: str, props: dict[str, Any] | None = None) -> None:
+    def _merge_edge(
+        self, cursor: Any, *, src: str, dst: str, rel: str, props: dict[str, Any] | None = None
+    ) -> None:
         if not src or not dst:
             return
         cursor.execute(
             """
-            INSERT INTO frontier_kg_edges (src, dst, rel, props)
+            INSERT INTO locus_kg_edges (src, dst, rel, props)
             VALUES (%s, %s, %s, %s::jsonb)
             ON CONFLICT (src, dst, rel) DO UPDATE SET
-                props = frontier_kg_edges.props || EXCLUDED.props,
+                props = locus_kg_edges.props || EXCLUDED.props,
                 updated_at = now()
             """,
             (src, dst, rel, json.dumps(props or {}, default=_json_default)),
         )
 
-    def record_run(self, *, run_id: str, title: str, agent: str | None, workflow: str | None) -> None:
+    def record_run(
+        self, *, run_id: str, title: str, agent: str | None, workflow: str | None
+    ) -> None:
         if not self.enabled:
             return
         try:
             self._ensure()
             with self._connect() as connection, connection.cursor() as cursor:
-                self._merge_node(cursor, node_id=run_id, label="WorkflowRun", props={"title": title})
+                self._merge_node(
+                    cursor, node_id=run_id, label="WorkflowRun", props={"title": title}
+                )
                 if agent:
-                    self._merge_node(cursor, node_id=f"agent:{agent}", label="Agent", props={"name": agent})
+                    self._merge_node(
+                        cursor, node_id=f"agent:{agent}", label="Agent", props={"name": agent}
+                    )
                     self._merge_edge(cursor, src=run_id, dst=f"agent:{agent}", rel="EXECUTED_BY")
                 if workflow:
-                    self._merge_node(cursor, node_id=f"workflow:{workflow}", label="Workflow", props={"name": workflow})
+                    self._merge_node(
+                        cursor,
+                        node_id=f"workflow:{workflow}",
+                        label="Workflow",
+                        props={"name": workflow},
+                    )
                     self._merge_edge(cursor, src=run_id, dst=f"workflow:{workflow}", rel="PART_OF")
         except Exception:  # noqa: BLE001
             return
@@ -1624,7 +1934,9 @@ class PostgresWorldGraph(_BasePostgresService):
         owner = projection.get("owner") if isinstance(projection.get("owner"), dict) else {}
         memory = projection.get("memory") if isinstance(projection.get("memory"), dict) else {}
         topics = projection.get("topics") if isinstance(projection.get("topics"), list) else []
-        evidences = projection.get("evidences") if isinstance(projection.get("evidences"), list) else []
+        evidences = (
+            projection.get("evidences") if isinstance(projection.get("evidences"), list) else []
+        )
         if not owner or not memory:
             return
         owner_id = str(owner.get("id") or "")
@@ -1634,7 +1946,9 @@ class PostgresWorldGraph(_BasePostgresService):
             self._ensure()
             with self._connect() as connection, connection.cursor() as cursor:
                 self._merge_node(
-                    cursor, node_id=owner_id, label="KnowledgeOwner",
+                    cursor,
+                    node_id=owner_id,
+                    label="KnowledgeOwner",
                     memory_scope=str(owner.get("memory_scope") or scope),
                     props={
                         "name": str(owner.get("name") or ""),
@@ -1643,7 +1957,10 @@ class PostgresWorldGraph(_BasePostgresService):
                     },
                 )
                 self._merge_node(
-                    cursor, node_id=memory_id, label="KnowledgeMemory", memory_scope=scope,
+                    cursor,
+                    node_id=memory_id,
+                    label="KnowledgeMemory",
+                    memory_scope=scope,
                     props={
                         "content": str(memory.get("content") or ""),
                         "kind": str(memory.get("kind") or "memory-consolidation"),
@@ -1655,16 +1972,27 @@ class PostgresWorldGraph(_BasePostgresService):
                         "created_at": str(memory.get("at") or memory.get("created_at") or ""),
                     },
                 )
-                self._merge_edge(cursor, src=owner_id, dst=memory_id, rel="OWNS_MEMORY", props={"memory_scope": scope})
+                self._merge_edge(
+                    cursor,
+                    src=owner_id,
+                    dst=memory_id,
+                    rel="OWNS_MEMORY",
+                    props={"memory_scope": scope},
+                )
                 for item in evidences:
                     if not isinstance(item, dict) or not str(item.get("id") or ""):
                         continue
                     ev_id = str(item.get("id"))
                     self._merge_node(
-                        cursor, node_id=ev_id, label="MemoryEvidence", memory_scope=scope,
+                        cursor,
+                        node_id=ev_id,
+                        label="MemoryEvidence",
+                        memory_scope=scope,
                         props={
                             "name": str(item.get("name") or item.get("id") or ""),
-                            "bucket_id": str(item.get("bucket_id") or memory.get("bucket_id") or ""),
+                            "bucket_id": str(
+                                item.get("bucket_id") or memory.get("bucket_id") or ""
+                            ),
                             "memory_scope": str(item.get("memory_scope") or scope),
                         },
                     )
@@ -1675,13 +2003,164 @@ class PostgresWorldGraph(_BasePostgresService):
                     t_id = str(item.get("id"))
                     weight = int(item.get("weight") or 0)
                     self._merge_node(
-                        cursor, node_id=t_id, label="KnowledgeTopic",
+                        cursor,
+                        node_id=t_id,
+                        label="KnowledgeTopic",
                         props={"name": str(item.get("name") or ""), "weight": weight},
                     )
-                    self._merge_edge(cursor, src=memory_id, dst=t_id, rel="MENTIONS_TOPIC", props={"weight": weight})
+                    self._merge_edge(
+                        cursor,
+                        src=memory_id,
+                        dst=t_id,
+                        rel="MENTIONS_TOPIC",
+                        props={"weight": weight},
+                    )
                     self._merge_edge(cursor, src=owner_id, dst=t_id, rel="RELATES_TO_TOPIC")
         except Exception:  # noqa: BLE001
             return
+
+    _CAUSAL_LABELS = (
+        "CausalAssembly",
+        "CausalColumn",
+        "CausalBeliefSnapshot",
+        "CausalBelief",
+        "CausalConfidenceSample",
+        "CausalOutcome",
+    )
+
+    def project_causal_assembly(self, *, projection: dict[str, Any]) -> bool:
+        """Relational mirror of :meth:`Neo4jRunGraph.project_causal_assembly`.
+
+        Replaces the assembly's previous projection (same labels / relation names as
+        the Cypher model) inside one transaction; returns False on any failure.
+        """
+        if not self.enabled:
+            return False
+        assembly = (
+            projection.get("assembly") if isinstance(projection.get("assembly"), dict) else {}
+        )
+        if not assembly:
+            return False
+        assembly_id = str(assembly.get("assembly_id") or assembly.get("id") or "").strip()
+        if not assembly_id:
+            return False
+        assembly_node_id = f"causal-assembly-node:{assembly_id}"
+
+        def _items(key: str) -> list[dict[str, Any]]:
+            raw = projection.get(key)
+            return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+
+        def _props(item: dict[str, Any], *exclude: str) -> dict[str, Any]:
+            return {k: v for k, v in item.items() if k not in exclude}
+
+        try:
+            self._ensure()
+            with self._connect() as connection, connection.transaction(), connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    DELETE FROM locus_kg_edges
+                    WHERE src IN (
+                        SELECT id FROM locus_kg_nodes
+                        WHERE label = ANY(%s) AND props->>'assembly_id' = %s
+                    ) OR dst IN (
+                        SELECT id FROM locus_kg_nodes
+                        WHERE label = ANY(%s) AND props->>'assembly_id' = %s
+                    )
+                    """,
+                    (list(self._CAUSAL_LABELS), assembly_id, list(self._CAUSAL_LABELS), assembly_id),
+                )
+                cursor.execute(
+                    "DELETE FROM locus_kg_nodes WHERE label = ANY(%s) AND props->>'assembly_id' = %s",
+                    (list(self._CAUSAL_LABELS), assembly_id),
+                )
+                self._merge_node(
+                    cursor,
+                    node_id=assembly_node_id,
+                    label="CausalAssembly",
+                    props={
+                        "assembly_id": assembly_id,
+                        "id": str(assembly.get("id") or f"causal-assembly:{assembly_id}"),
+                        "updated_at": float(assembly.get("updated_at") or 0.0),
+                        "column_count": int(assembly.get("column_count") or 0),
+                        "belief_snapshot_count": int(assembly.get("belief_snapshot_count") or 0),
+                        "belief_count": int(assembly.get("belief_count") or 0),
+                        "confidence_sample_count": int(
+                            assembly.get("confidence_sample_count") or 0
+                        ),
+                        "outcome_count": int(assembly.get("outcome_count") or 0),
+                    },
+                )
+                for column in _items("columns"):
+                    node_id = str(column.get("id") or "")
+                    self._merge_node(
+                        cursor,
+                        node_id=node_id,
+                        label="CausalColumn",
+                        props={**_props(column), "assembly_id": assembly_id},
+                    )
+                    self._merge_edge(cursor, src=assembly_node_id, dst=node_id, rel="HAS_COLUMN")
+                for snapshot in _items("belief_snapshots"):
+                    node_id = str(snapshot.get("id") or "")
+                    self._merge_node(
+                        cursor,
+                        node_id=node_id,
+                        label="CausalBeliefSnapshot",
+                        props={**_props(snapshot, "column_node_id"), "assembly_id": assembly_id},
+                    )
+                    self._merge_edge(
+                        cursor,
+                        src=str(snapshot.get("column_node_id") or ""),
+                        dst=node_id,
+                        rel="HAS_BELIEF_SNAPSHOT",
+                    )
+                for belief in _items("beliefs"):
+                    node_id = str(belief.get("id") or "")
+                    self._merge_node(
+                        cursor,
+                        node_id=node_id,
+                        label="CausalBelief",
+                        props={**_props(belief, "snapshot_id"), "assembly_id": assembly_id},
+                    )
+                    self._merge_edge(
+                        cursor,
+                        src=str(belief.get("snapshot_id") or ""),
+                        dst=node_id,
+                        rel="HAS_BELIEF",
+                    )
+                for sample in _items("confidence_samples"):
+                    node_id = str(sample.get("id") or "")
+                    self._merge_node(
+                        cursor,
+                        node_id=node_id,
+                        label="CausalConfidenceSample",
+                        props={**_props(sample, "column_node_id"), "assembly_id": assembly_id},
+                    )
+                    self._merge_edge(
+                        cursor,
+                        src=str(sample.get("column_node_id") or ""),
+                        dst=node_id,
+                        rel="HAS_CONFIDENCE_SAMPLE",
+                    )
+                for outcome in _items("outcomes"):
+                    node_id = str(outcome.get("id") or "")
+                    self._merge_node(
+                        cursor,
+                        node_id=node_id,
+                        label="CausalOutcome",
+                        props={**_props(outcome), "assembly_id": assembly_id},
+                    )
+                    self._merge_edge(cursor, src=assembly_node_id, dst=node_id, rel="HAS_OUTCOME")
+                for rel, key in (("SUPPORTED_BY", "support_edges"), ("DISSENTED_BY", "dissent_edges")):
+                    for edge in _items(key):
+                        self._merge_edge(
+                            cursor,
+                            src=str(edge.get("outcome_id") or ""),
+                            dst=str(edge.get("column_id") or ""),
+                            rel=rel,
+                        )
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     def query_memory_context(
         self, *, bucket_id: str, memory_scope: str, query_text: str = "", limit: int = 10
@@ -1699,8 +2178,8 @@ class PostgresWorldGraph(_BasePostgresService):
                 cursor.execute(
                     """
                     SELECT n.id, n.props
-                    FROM frontier_kg_edges e
-                    JOIN frontier_kg_nodes n ON n.id = e.dst
+                    FROM locus_kg_edges e
+                    JOIN locus_kg_nodes n ON n.id = e.dst
                     WHERE e.src = %s AND e.rel = 'OWNS_MEMORY'
                       AND n.label = 'KnowledgeMemory'
                       AND n.props->>'memory_scope' = %s
@@ -1728,8 +2207,8 @@ class PostgresWorldGraph(_BasePostgresService):
                 cursor.execute(
                     """
                     SELECT n.id, n.props
-                    FROM frontier_kg_edges e
-                    JOIN frontier_kg_nodes n ON n.id = e.dst
+                    FROM locus_kg_edges e
+                    JOIN locus_kg_nodes n ON n.id = e.dst
                     WHERE e.src = %s AND e.rel = 'RELATES_TO_TOPIC'
                       AND n.label = 'KnowledgeTopic'
                     ORDER BY (n.props->>'weight')::int DESC NULLS LAST, n.props->>'name' ASC

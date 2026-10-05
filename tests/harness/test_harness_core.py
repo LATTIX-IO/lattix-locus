@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from frontier_runtime.harness.enforcement import (
+from locus_runtime.harness.enforcement import (
     ReaskPolicy,
     constraint_kwargs,
     schema_by_name,
     validate_tool_call,
 )
-from frontier_runtime.harness.model_profiles import BUILTIN_PROFILES, resolve_profile
-from frontier_runtime.harness.tools import CodingTelemetry, tool_schemas, truncate_output
-from frontier_runtime.harness.trajectory import TrajectoryRecorder
+from locus_runtime.harness.model_profiles import BUILTIN_PROFILES, resolve_profile
+from locus_runtime.harness.tools import CodingTelemetry, tool_schemas, truncate_output
+from locus_runtime.harness.trajectory import TrajectoryRecorder
 
 
 # -- trajectory -------------------------------------------------------------
@@ -53,11 +53,13 @@ def test_profile_pattern_resolution():
     assert resolve_profile("vllm", "gpt-oss-20b").profile_id == "gpt-oss-harmony"
     assert resolve_profile("vllm", "qwen3-coder").profile_id == "local-32b-class"
     assert resolve_profile("ollama", "llama3").profile_id == "local-weak"
-    assert resolve_profile("anthropic", "claude").profile_id == "frontier-default"
+    assert resolve_profile("anthropic", "claude").profile_id == "locus-default"
 
 
 def test_profile_forced_and_overrides():
-    p = resolve_profile("vllm", "x", profile_id="local-weak", overrides={"edit_format": "search-replace"})
+    p = resolve_profile(
+        "vllm", "x", profile_id="local-weak", overrides={"edit_format": "search-replace"}
+    )
     assert p.profile_id == "local-weak"
     assert p.edit_format == "search-replace"  # override wins
     # frozen dataclass: override produces a new instance
@@ -109,18 +111,18 @@ def test_validate_tool_call_accepts_and_rejects():
 
 def test_validate_coerces_stringified_int():
     schemas = schema_by_name(tool_schemas())
-    args, reason = validate_tool_call(
-        "execute_bash", '{"command": "ls", "timeout": "30"}', schemas
-    )
+    args, reason = validate_tool_call("execute_bash", '{"command": "ls", "timeout": "30"}', schemas)
     assert reason == "" and args["timeout"] == 30
 
 
 def test_constraint_kwargs_by_backend():
-    from frontier_runtime.harness.model_profiles import ModelCapabilityProfile
+    from locus_runtime.harness.model_profiles import ModelCapabilityProfile
 
     tools = tool_schemas()
     xg = ModelCapabilityProfile(structured_output="xgrammar")
-    assert constraint_kwargs("vllm", xg, tools)["extra_body"]["guided_decoding_backend"] == "xgrammar"
+    assert (
+        constraint_kwargs("vllm", xg, tools)["extra_body"]["guided_decoding_backend"] == "xgrammar"
+    )
     none = ModelCapabilityProfile(structured_output="none")
     assert constraint_kwargs("vllm", none, tools) == {}
 

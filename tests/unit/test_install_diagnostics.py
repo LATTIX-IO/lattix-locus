@@ -1,7 +1,7 @@
 from pathlib import Path
 import subprocess
 
-from frontier_runtime.install import (
+from locus_runtime.install import (
     docker_compose_available,
     docker_daemon_available,
     hostname_prefix_valid,
@@ -11,12 +11,12 @@ from frontier_runtime.install import (
 
 
 def test_hostname_prefix_valid_accepts_dns_safe_name() -> None:
-    result = hostname_prefix_valid("frontier-demo")
+    result = hostname_prefix_valid("locus-demo")
     assert result.ok is True
 
 
 def test_hostname_prefix_valid_rejects_unsafe_name() -> None:
-    result = hostname_prefix_valid("Frontier Demo")
+    result = hostname_prefix_valid("Locus Demo")
     assert result.ok is False
 
 

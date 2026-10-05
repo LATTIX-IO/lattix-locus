@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from frontier_runtime.harness.executor import LocalDirectExecutor
-from frontier_runtime.harness.tools import CodingToolset
-from frontier_runtime.harness.workspace import Workspace
+from locus_runtime.harness.executor import LocalDirectExecutor
+from locus_runtime.harness.tools import CodingToolset
+from locus_runtime.harness.workspace import Workspace
 
 requires_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="no bash")
 requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="no git")
@@ -24,8 +24,13 @@ requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="no git")
 
 def _repo(root: Path) -> None:
     (root / "u.py").write_text("def f():\n    return 0\n")
-    for a in (("init", "-q"), ("config", "user.email", "t@e.com"),
-              ("config", "user.name", "t"), ("add", "-A"), ("commit", "-qm", "x")):
+    for a in (
+        ("init", "-q"),
+        ("config", "user.email", "t@e.com"),
+        ("config", "user.name", "t"),
+        ("add", "-A"),
+        ("commit", "-qm", "x"),
+    ):
         subprocess.run(["git", *a], cwd=str(root), check=True, capture_output=True)
 
 
@@ -66,9 +71,10 @@ def test_submit_succeeds_with_real_edit(tmp_path):
     _repo(tmp_path)
     ws = Workspace(run_id="t", executor=LocalDirectExecutor(tmp_path))
     ts = CodingToolset(workspace=ws)
-    ts.dispatch("str_replace_editor",
-                {"command": "str_replace", "path": "u.py",
-                 "old_str": "return 0", "new_str": "return 1"})
+    ts.dispatch(
+        "str_replace_editor",
+        {"command": "str_replace", "path": "u.py", "old_str": "return 0", "new_str": "return 1"},
+    )
     out = ts.dispatch("submit", {"answer": "fixed"})
     assert ts.submitted is True
     assert "return 1" in ts.submission["patch"]

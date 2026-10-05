@@ -3,9 +3,9 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "lattix-frontier"
-version = "0.1.0"
-description = "Lattix xFrontier open-source orchestration and control plane"
+name = "lattix-locus"
+version = "0.2.0"
+description = "Lattix Locus open-source orchestration and control plane"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
@@ -14,28 +14,49 @@ authors = [
 ]
 dependencies = [
   "PyJWT[crypto]>=2.10.1",
+  "biscuit-python==0.4.0",
   "click>=8.1.7",
+  # Computer use (LOCUS-341). Playwright: Microsoft, Apache-2.0. comtypes: MIT
+  # (UI Automation COM on Windows). PyObjC: MIT (macOS Accessibility).
+  "comtypes==1.4.17; sys_platform == 'win32'",
   "fastapi>=0.115.0",
   "httpx>=0.28.0",
+  "keyring>=25.0.0",
   "presidio-analyzer>=2.2.355",
+  "pyobjc-framework-ApplicationServices==12.2.2; sys_platform == 'darwin'",
   "hvac>=2.3.0",
-  "langgraph>=0.3.0",
-  "langgraph-checkpoint-postgres>=2.0.0",
-  "nats-py>=2.10.0",
-  "opentelemetry-api>=1.30.0",
-  "opentelemetry-exporter-otlp>=1.30.0",
-  "opentelemetry-sdk>=1.30.0",
-  "opa-python-client>=0.2.3",
+  # Agent runtime (LOCUS-361, D-27): LangChain Deep Agents on LangGraph 1.x (MIT,
+  # LangChain Inc.), extended by locus_runtime.harness.deep_agents. Exact pins:
+  # every bump re-audits the middleware stack and the in-process vendor SDKs
+  # (docs/development/deep-agents-harness.md). The SQLite checkpointer makes runs
+  # durable across restarts. langgraph-checkpoint-postgres was dropped (unused).
+  "deepagents==0.7.21",
+  "langchain==1.4.3",
+  "langchain-core==1.6.6",
+  "langgraph==1.2.12",
+  "langgraph-checkpoint==4.2.0",
+  "langgraph-checkpoint-sqlite==3.1.1",
+  # AI observability (LOCUS-375): imported by locus_runtime.telemetry; pinned
+  # together (the OTLP exporter requires the matching SDK). Apache-2.0.
+  "opentelemetry-api==1.40.0",
+  "opentelemetry-exporter-otlp-proto-http==1.40.0",
+  "opentelemetry-sdk==1.40.0",
   "openai>=1.50.0",
+  "playwright==1.63.0",
   "psycopg[binary]>=3.2.0",
   "pydantic>=2.10.0",
   "pydantic-settings>=2.7.0",
   "python-dotenv>=1.0.1",
   "PyYAML>=6.0",
   "redis>=5.2.1",
-  "structlog>=24.4.0",
-  "uvicorn[standard]>=0.34.0",
-  "zeroconf>=0.145.0"
+  # Embedded long-term memory (LOCUS-387): vector search in SQLite. MIT OR
+  # Apache-2.0; pinned to the D-29-attested version (already a dependency of
+  # langgraph-checkpoint-sqlite), declared because locus_runtime.memory loads it.
+  "sqlite-vec==0.1.9",
+  # User-browser sites (LOCUS-350): Public Suffix List, BSD-3-Clause; already a
+  # presidio-analyzer dependency, declared because we import it directly.
+  "tldextract>=5.1.0",
+  "uvicorn[standard]>=0.34.0"
 ]
 
 [project.optional-dependencies]
@@ -44,22 +65,30 @@ dev = [
   "pytest>=8.3.0",
   "pytest-asyncio>=0.25.0",
   "pytest-cov>=6.0.0",
-  "ruff>=0.9.0"
+  "ruff>=0.9.0",
+  "types-PyYAML>=6.0"
 ]
 security = [
-  "biscuit-auth>=4.0.0",
   "gliner>=0.2.16"
+]
+# RSI scorecard harness (LOCUS-351): Inspect AI (MIT, UK AI Security Institute).
+# Pinned below 0.3.225, which added a hard dependency on agent-client-protocol
+# (maintainer in a P28-listed country; would need a D-29 inspection first).
+# Gated by `lattix provenance gate` (GATED_EXTRAS). Without it the suite runs on
+# its built-in engine and produces the same scorecard.
+evals = [
+  "inspect-ai==0.3.224"
 ]
 maf = [
   "microsoft-agent-framework @ git+https://github.com/microsoft/agent-framework-python.git"
 ]
 
 [project.scripts]
-lattix = "frontier_tooling.cli:cli"
-frontier-installer = "frontier_tooling.installer:main"
+lattix = "locus_tooling.cli:cli"
+locus-installer = "locus_tooling.installer:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["frontier_tooling", "frontier_runtime"]
+packages = ["locus_tooling", "locus_runtime"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -77,6 +106,23 @@ python_version = "3.12"
 strict = true
 warn_unused_configs = true
 plugins = []
+
+[[tool.mypy.overrides]]
+module = [
+  "locus_runtime.harness.codex_backend",
+  "locus_runtime.harness.enforcement",
+  "locus_runtime.harness.integrations",
+  "locus_runtime.harness.team",
+  "locus_runtime.harness.workspace",
+  "locus_runtime.harness.workspace_binding",
+  "locus_runtime.win_sandbox",
+  "locus_tooling.cli",
+  "locus_tooling.desktop",
+  "locus_tooling.desktop_main",
+  "locus_tooling.native_binaries",
+  "locus_tooling.native_secrets",
+]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["apps/backend/tests", "tests"]

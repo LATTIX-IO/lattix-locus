@@ -1,0 +1,38 @@
+id: fix-off-by-one
+category: coding-edit
+kind: coding
+source: LOCUS-351
+problem: >-
+  seqtools.chunks(seq, n) should split seq into lists of n items, with a shorter
+  last chunk when len(seq) is not a multiple of n. It drops the last partial
+  chunk. Fix it.
+files:
+  seqtools.py: |
+    def chunks(seq, n):
+        out = []
+        for start in range(0, len(seq) - n + 1, n):
+            out.append(list(seq[start:start + n]))
+        return out
+visible_test: |
+  import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+  from seqtools import chunks
+  assert chunks([1, 2, 3, 4], 2) == [[1, 2], [3, 4]]
+  assert chunks([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]
+  print('OK')
+grader:
+  - id: hidden-tests
+    type: tests
+    script: |
+      import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+      from seqtools import chunks
+      assert chunks([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]
+      assert chunks([], 3) == []
+      assert chunks([1, 2], 5) == [[1, 2]]
+      assert chunks('abcde', 2) == [['a', 'b'], ['c', 'd'], ['e']]
+reference:
+  seqtools.py: |
+    def chunks(seq, n):
+        out = []
+        for start in range(0, len(seq), n):
+            out.append(list(seq[start:start + n]))
+        return out

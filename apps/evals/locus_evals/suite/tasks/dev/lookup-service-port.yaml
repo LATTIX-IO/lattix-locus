@@ -1,0 +1,46 @@
+id: lookup-service-port
+category: knowledge-lookup
+kind: lookup
+source: LOCUS-351
+problem: >-
+  Which TCP port does the ledger-sync service listen on in production? Look it
+  up in this repository and write only the port number to answer.txt.
+files:
+  README.md: |
+    # Platform services
+
+    Service docs live in docs/. Deployment overrides live in deploy/.
+  docs/services.md: |
+    # Services
+
+    | Service      | Purpose                    | Default port |
+    |--------------|----------------------------|--------------|
+    | api-gateway  | public HTTP entry          | 8080         |
+    | ledger-sync  | syncs the ledger replicas  | 7001         |
+    | audit-sink   | append-only audit storage  | 7100         |
+
+    Defaults apply to local development. Production ports are set per
+    environment in deploy/<env>.yaml and override the defaults above.
+  deploy/staging.yaml: |
+    services:
+      api-gateway: {port: 8080}
+      ledger-sync: {port: 7001}
+  deploy/prod.yaml: |
+    services:
+      api-gateway: {port: 443}
+      ledger-sync: {port: 8743}
+      audit-sink: {port: 7100}
+done_criteria:
+  - id: answer-written
+    kind: file
+    path: answer.txt
+    pattern: '\A\s*\d+\s*\Z'
+    description: answer.txt holds one port number
+grader:
+  - id: correct-port
+    type: file_matches
+    path: answer.txt
+    pattern: '\A\s*8743\s*\Z'
+reference:
+  answer.txt: |
+    8743

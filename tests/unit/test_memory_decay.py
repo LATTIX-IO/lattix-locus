@@ -61,7 +61,7 @@ class TestRankWithDecay:
 
     @patch.dict(
         os.environ,
-        {"FRONTIER_MEMORY_DECAY_ENABLED": "true", "FRONTIER_MEMORY_DECAY_HALF_LIFE_DAYS": "30"},
+        {"LOCUS_MEMORY_DECAY_ENABLED": "true", "LOCUS_MEMORY_DECAY_HALF_LIFE_DAYS": "30"},
     )
     def test_decay_reduces_old_long_term_score(self):
         recent = self._make_entry("keyword match", "long-term", days_old=1)
@@ -75,7 +75,7 @@ class TestRankWithDecay:
 
     @patch.dict(
         os.environ,
-        {"FRONTIER_MEMORY_DECAY_ENABLED": "true", "FRONTIER_MEMORY_DECAY_HALF_LIFE_DAYS": "30"},
+        {"LOCUS_MEMORY_DECAY_ENABLED": "true", "LOCUS_MEMORY_DECAY_HALF_LIFE_DAYS": "30"},
     )
     def test_short_term_not_decayed(self):
         old = self._make_entry("keyword match", "short-term", days_old=90)
@@ -87,7 +87,7 @@ class TestRankWithDecay:
         # Short-term base is 90 + overlap bonus, should not be decayed
         assert ranked[0]["retrieval_score"] >= 90
 
-    @patch.dict(os.environ, {"FRONTIER_MEMORY_DECAY_ENABLED": "false"})
+    @patch.dict(os.environ, {"LOCUS_MEMORY_DECAY_ENABLED": "false"})
     def test_decay_disabled_no_effect(self):
         old = self._make_entry("keyword match", "long-term", days_old=365)
         ranked = _rank_hybrid_memory_entries(

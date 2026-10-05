@@ -1,0 +1,6 @@
+apiVersion: v2
+name: lattix-locus
+description: Helm chart for the Lattix Locus multi-agent platform
+type: application
+version: 0.2.0
+appVersion: 0.2.0

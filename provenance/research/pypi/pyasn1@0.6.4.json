@@ -1,0 +1,176 @@
+{
+  "prepared_by": "Claude Code (agent) for LOCUS-358, 2026-10-04",
+  "origin": {
+    "p28_status": "not-listed",
+    "countries": [
+      "DE",
+      "CA"
+    ],
+    "organizations": [
+      "pyasn1 maintenance organization (GitHub org 'pyasn1', created 2022-07-11)",
+      "Red Hat (employer named on all three maintainers' GitHub profiles)"
+    ],
+    "summary": "Maintained since 2022 by Christian Heimes (GitHub profile: Hamburg, Germany; Red Hat) and Simon Pichugin (GitHub profile: Vancouver, Canada; Red Hat) in the pyasn1 GitHub organization. Simon Pichugin made the v0.6.4 release commit and ran the publish workflow. The original author, Ilya Etingof (GitHub profile: 'Central Europe'; Red Hat), still holds PyPI owner rights but has no commits in the organization's repository since 2020-03-21. Locations are self-reported profile fields and were not independently verified. No evidence ties a maintainer, the organization or a funder to a P28-listed country.",
+    "confidence": "medium",
+    "evidence": [
+      {
+        "claim": "PyPI 0.6.4 metadata: maintainer 'pyasn1 maintenance organization', maintainer e-mail Christian Heimes <christian@python.org>, author Ilya Etingof.",
+        "url": "https://pypi.org/pypi/pyasn1/0.6.4/json",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "README: 'The package is now maintained by Christian Heimes and Simon Pichugin in project https://github.com/pyasn1/pyasn1'.",
+        "url": "https://github.com/pyasn1/pyasn1/blob/main/README.md",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "github.com/pyasn1/pyasn1 is a fork of etingof/pyasn1, created 2022-07-11; the only public member of the org is droideck (Simon Pichugin).",
+        "url": "https://github.com/pyasn1",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "Tag v0.6.4 points to commit 72e48034 'Prepare release 0.6.4' by droideck (2026-07-09T00:47:50Z).",
+        "url": "https://github.com/pyasn1/pyasn1/commit/72e4803405816c371ed3b2cb4be181c47f038406",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "Workflow 'Build and upload to PyPI' run 28986955362 (workflow_dispatch by droideck, 2026-07-09T01:11:03Z, head 72e48034) succeeded; PyPI shows the files uploaded at 01:12:32-01:12:33Z.",
+        "url": "https://github.com/pyasn1/pyasn1/actions/runs/28986955362",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "The publish workflow uploads with a long-lived PyPI API token (secrets.PYPI_API_TOKEN), not Trusted Publishing; PyPI has no PEP 740 provenance for the 0.6.4 files.",
+        "url": "https://github.com/pyasn1/pyasn1/blob/main/.github/workflows/pypi.yml",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "PyPI XML-RPC package_roles('pyasn1') returned Owner for droideck, etingof, ilya and tiran.",
+        "url": "https://pypi.org/pypi",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "GitHub profile tiran: Christian Heimes, Red Hat, Hamburg, Germany.",
+        "url": "https://github.com/tiran",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "GitHub profile droideck: Simon Pichugin, @RedHatOfficial, Vancouver, Canada.",
+        "url": "https://github.com/droideck",
+        "retrieved": "2026-10-04"
+      },
+      {
+        "claim": "GitHub profile etingof: Ilya Etingof, Red Hat, 'Central Europe'; last commit in pyasn1/pyasn1 2020-03-21.",
+        "url": "https://github.com/pyasn1/pyasn1/commits?author=etingof",
+        "retrieved": "2026-10-04"
+      }
+    ]
+  },
+  "maintainers": [
+    {
+      "name": "Simon Pichugin",
+      "handle": "droideck",
+      "role": "maintainer; PyPI owner; release manager for 0.6.4",
+      "affiliation": "Red Hat",
+      "location": "Vancouver, Canada",
+      "location_basis": "self-reported GitHub profile",
+      "evidence": [
+        "https://github.com/droideck",
+        "https://github.com/pyasn1/pyasn1/actions/runs/28986955362"
+      ]
+    },
+    {
+      "name": "Christian Heimes",
+      "handle": "tiran",
+      "role": "maintainer; PyPI owner; maintainer of record in package metadata",
+      "affiliation": "Red Hat; CPython core developer (python.org e-mail)",
+      "location": "Hamburg, Germany",
+      "location_basis": "self-reported GitHub profile",
+      "evidence": [
+        "https://github.com/tiran",
+        "https://pypi.org/pypi/pyasn1/0.6.4/json"
+      ]
+    },
+    {
+      "name": "Ilya Etingof",
+      "handle": "etingof",
+      "role": "original author (2005-2020); PyPI owner; inactive in the org repository",
+      "affiliation": "Red Hat",
+      "location": "Central Europe",
+      "location_basis": "self-reported GitHub profile (no country given)",
+      "evidence": [
+        "https://github.com/etingof"
+      ]
+    },
+    {
+      "name": "unidentified PyPI account 'ilya'",
+      "handle": "ilya (PyPI)",
+      "role": "PyPI owner (upload rights)",
+      "location_basis": "not established: the PyPI account could not be tied to a person; the GitHub user of the same name is unrelated evidence and was not used",
+      "evidence": [
+        "https://pypi.org/pypi"
+      ]
+    }
+  ],
+  "funding": {
+    "summary": "No funding source declared: .github/FUNDING.yml has only a 'custom' link to the documentation site. No GitHub Sponsors, Open Collective or corporate sponsorship found. The maintainers' employer (Red Hat) is named on their profiles; whether the work is employer-funded was not established.",
+    "sources": [
+      {
+        "name": "FUNDING.yml custom link to https://pyasn1.readthedocs.io/ (documentation, not a funder)",
+        "evidence": "https://github.com/pyasn1/pyasn1/blob/main/.github/FUNDING.yml",
+        "verified": true
+      }
+    ]
+  },
+  "screening_queries": [
+    {
+      "name": "Ilya Etingof",
+      "kind": "person"
+    },
+    {
+      "name": "Christian Heimes",
+      "kind": "person"
+    },
+    {
+      "name": "Simon Pichugin",
+      "kind": "person"
+    },
+    {
+      "name": "Red Hat",
+      "kind": "org"
+    },
+    {
+      "name": "pyasn1",
+      "kind": "org"
+    },
+    {
+      "name": "Python Software Foundation",
+      "kind": "org"
+    }
+  ],
+  "entity_reviews": [],
+  "source": {
+    "repo": "pyasn1/pyasn1",
+    "tag": "v0.6.4",
+    "package_dirs": [
+      "pyasn1"
+    ]
+  },
+  "modules": [
+    "pyasn1"
+  ],
+  "exercise": "from pyasn1.type import univ, namedtype, char, useful\nfrom pyasn1.codec.der import encoder as der_encoder, decoder as der_decoder\nfrom pyasn1.codec.ber import decoder as ber_decoder\nfrom pyasn1.codec.cer import encoder as cer_encoder\n\n\nclass Record(univ.Sequence):\n    componentType = namedtype.NamedTypes(\n        namedtype.NamedType('id', univ.Integer()),\n        namedtype.NamedType('name', char.UTF8String()),\n        namedtype.NamedType('oid', univ.ObjectIdentifier()),\n        namedtype.NamedType('when', useful.GeneralizedTime()),\n    )\n\n\nrecord = Record()\nrecord['id'] = 358\nrecord['name'] = 'locus'\nrecord['oid'] = '1.2.840.113549.1.1.11'\nrecord['when'] = '20261004120000Z'\ndata = der_encoder.encode(record)\nback, rest = der_decoder.decode(data, asn1Spec=Record())\nassert int(back['id']) == 358 and str(back['name']) == 'locus' and not rest\nassert ber_decoder.decode(cer_encoder.encode(record), asn1Spec=Record())[0] == record\n",
+  "exercise_summary": "import pyasn1; DER/CER encode and DER/BER decode a SEQUENCE (INTEGER, UTF8String, OID, GeneralizedTime)",
+  "decision": {
+    "outcome": "conditional",
+    "conditions": [
+      "Principal accepts that PyPI owner account 'ilya' (upload rights) could not be tied to a person.",
+      "Install pinned by version and hash once Locus has a hash-locked dependency set (D-29 step 5); until then the attested sha256 values are the reference.",
+      "Re-inspect on any version change (google-auth pulls pyasn1 unpinned)."
+    ],
+    "rationale": "No P28-listed origin found for maintainers, organization or funding; the Entity List, the rest of the Consolidated Screening List and the 1260H notice show no hit. All 32 wheel files are byte-identical to the v0.6.4 git tag, and the sdist differs from it only in build metadata (PKG-INFO, egg-info, setup.cfg). The release commit and the upload were made by a current maintainer from the tagged commit. The static ruleset found no telemetry, network, obfuscated-execution, install-hook or native-code finding; OSV lists no vulnerability for 0.6.4; the sandboxed import plus a DER/BER/CER round trip made no connection attempt. The conditions cover the unidentified PyPI owner, token-based uploads without PEP 740 provenance, and hash pinning."
+  },
+  "notes": [
+    "pyasn1 is pulled transitively by google-auth (deepagents -> langchain-google-genai -> google-genai -> google-auth), not imported by Locus code paths (docs/development/deep-agents-harness.md section 8).",
+    "Uploads use a long-lived API token rather than PyPI Trusted Publishing, so there is no PEP 740 provenance; the link from the PyPI files to the tagged commit rests on the byte-for-byte source comparison and the workflow-run timing."
+  ]
+}

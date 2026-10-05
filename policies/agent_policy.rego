@@ -6,6 +6,10 @@ default allow = false
 
 network_allowlist := {target | some target in input.allowed_targets}
 
+# The resource as a lower-case "/" path, so the read_file deny rules also match
+# Windows paths ("C:\ws\.env"); before LOCUS-362 they silently missed them.
+resource_path := lower(replace(sprintf("%v", [object.get(input, "resource", "")]), "\\", "/"))
+
 tool_calls_used := object.get(input, "tool_calls_used", object.get(input, "tool_calls", 0))
 
 operation := value if {
@@ -42,27 +46,27 @@ allow if {
 
 deny if {
   operation == "read_file"
-  regex.match("(^|/)(\\.env(\\..+)?)$", lower(input.resource))
+  regex.match("(^|/)(\\.env(\\..+)?)$", resource_path)
 }
 
 deny if {
   operation == "read_file"
-  regex.match("(^|/)(id_rsa|id_dsa|id_ed25519|authorized_keys|credentials|secrets?\\.(json|ya?ml)|service[-_]account.*\\.json|token\\.json|\\.npmrc|\\.pypirc|\\.netrc)$", lower(input.resource))
+  regex.match("(^|/)(id_rsa|id_dsa|id_ed25519|authorized_keys|credentials|secrets?\\.(json|ya?ml)|service[-_]account.*\\.json|token\\.json|\\.npmrc|\\.pypirc|\\.netrc)$", resource_path)
 }
 
 deny if {
   operation == "read_file"
-  regex.match("(\\.ssh/|\\.gnupg/|\\.aws/|/\\.config/gcloud/|\\.kube/)", lower(input.resource))
+  regex.match("(\\.ssh/|\\.gnupg/|\\.aws/|/\\.config/gcloud/|\\.kube/)", resource_path)
 }
 
 deny if {
   operation == "read_file"
-  regex.match("\\.(pem|key|p12|pfx|kdbx|asc|p8|csr|keystore|jks)$", lower(input.resource))
+  regex.match("\\.(pem|key|p12|pfx|kdbx|asc|p8|csr|keystore|jks)$", resource_path)
 }
 
 deny if {
   operation == "read_file"
-  regex.match("(apikey|api-key|access_token|access-token|auth_token|auth-token|bearer|client_secret|client-secret|private(_|-)?key|refresh_token|refresh-token|service[-_]account|oauth)", lower(input.resource))
+  regex.match("(apikey|api-key|access_token|access-token|auth_token|auth-token|bearer|client_secret|client-secret|private(_|-)?key|refresh_token|refresh-token|service[-_]account|oauth)", resource_path)
 }
 
 deny if {

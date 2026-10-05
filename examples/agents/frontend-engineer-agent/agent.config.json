@@ -17,6 +17,6 @@
     "capability_profile": "local-32b-class"
   },
   "tools": [
-    { "name": "coding-harness", "type": "frontier-coding", "config": { "toolset": ["execute_bash", "search", "str_replace_editor", "run_tests", "submit"] } }
+    { "name": "coding-harness", "type": "locus-coding", "config": { "toolset": ["execute_bash", "search", "str_replace_editor", "run_tests", "submit"] } }
   ]
 }

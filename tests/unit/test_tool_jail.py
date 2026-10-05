@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from frontier_runtime.sandbox import (
+from locus_runtime.sandbox import (
     ExecutionSpec,
     HostPlatform,
     IsolationStrategy,
@@ -37,7 +37,7 @@ def test_tool_jail_plans_linux_hardened_execution(tmp_path: Path) -> None:
     result = asyncio.run(service.plan(spec, policy=policy))
     assert result.executed is False
     assert result.plan.backend == "hardened-docker"
-    assert result.plan.network_name == "frontier-sandbox-internal"
+    assert result.plan.network_name == "locus-sandbox-internal"
     cmd = result.plan.docker_command
     assert "--cap-drop=ALL" in cmd
     assert "--read-only" in cmd

@@ -1,17 +1,17 @@
 # System Architecture
 
-This document describes the implemented architecture of Lattix xFrontier as a working system rather than as a product pitch. It focuses on how the control plane, memory system, execution isolation, multi-agent runtime, and frontend interact in practice. Zero trust is an important cross-cutting property of the design, but it is not the center of the story. The center is a local-first orchestration platform that separates authoring, coordination, execution, memory, and review into explicit layers and surfaces.
+This document describes the implemented architecture of Lattix Locus as a working system rather than as a product pitch. It focuses on how the control plane, memory system, execution isolation, multi-agent runtime, and frontend interact in practice. Zero trust is an important cross-cutting property of the design, but it is not the center of the story. The center is a local-first orchestration platform that separates authoring, coordination, execution, memory, and review into explicit layers and surfaces.
 
 ## 1. System shape
 
-At a high level, xFrontier is organized into five cooperating planes:
+At a high level, Locus is organized into five cooperating planes:
 
 1. **User interface plane**
    The Next.js frontend in `apps/frontend/` provides the builder, run console, settings, collaboration, artifacts, and operator-facing screens.
 2. **Control plane**
    The FastAPI backend in `apps/backend/app/main.py` is the canonical API surface. It owns route classification, auth enforcement, workflow and agent definitions, run management, memory APIs, collaboration state, observability summaries, and operator settings.
 3. **Runtime and orchestration plane**
-   Shared runtime primitives in `frontier_runtime/` and worker runtime code in `apps/workers/runtime/` manage staged execution, approvals, agent discovery, event envelopes, middleware, A2A dispatch, and sandbox planning.
+   Shared runtime primitives in `locus_runtime/` and worker runtime code in `apps/workers/runtime/` manage staged execution, approvals, agent discovery, event envelopes, middleware, A2A dispatch, and sandbox planning.
 4. **Execution plane**
    Agents and tools execute through bounded runtime contracts. Agent-to-agent work happens through envelopes and event topics, while tool execution is mediated by the sandbox subsystem instead of direct unconstrained host execution.
 5. **State and memory plane**
@@ -21,16 +21,16 @@ The system is intentionally not a monolith with one undifferentiated memory or o
 
 ## 1.1 Cognitive MVP layer
 
-xFrontier now includes a shipped **cognitive MVP** layered on top of the existing graph execution model. The current implementation is intentionally additive and bounded: it introduces lightweight cognitive primitives without replacing the rest of the runtime.
+Locus now includes a shipped **cognitive MVP** layered on top of the existing graph execution model. The current implementation is intentionally additive and bounded: it introduces lightweight cognitive primitives without replacing the rest of the runtime.
 
 The MVP adds four graph-native node types:
 
-- `frontier/goal`
-- `frontier/evidence`
-- `frontier/assembly`
-- `frontier/commitment`
+- `locus/goal`
+- `locus/evidence`
+- `locus/assembly`
+- `locus/commitment`
 
-Those nodes map to a lightweight runtime in `frontier_runtime/cognitive.py` with:
+Those nodes map to a lightweight runtime in `locus_runtime/cognitive.py` with:
 
 - column state for goal, evidence, and synthesis reasoning
 - a bounded assembly runtime
@@ -64,7 +64,7 @@ That route inventory is validated at startup so new endpoints cannot silently ap
 
 ## 3. How memory works
 
-Memory in xFrontier is tiered, scoped, and selectively promotable. It is not a single chat transcript bucket.
+Memory in Locus is tiered, scoped, and selectively promotable. It is not a single chat transcript bucket.
 
 ### 3.1 Short-term memory
 
@@ -79,7 +79,21 @@ This tier is used for active context injection and recent execution continuity. 
 
 ### 3.2 Long-term memory
 
-Long-term memory is stored in PostgreSQL through `PostgresLongTermMemoryStore`.
+Long-term memory sits behind the memory port `LongTermMemoryStore`
+(`locus_runtime/memory/contract.py`, port version 1.0, D-28). Two adapters pass its
+contract suite (`tests/unit/test_memory_store_contract.py`):
+
+- **Embedded SQLite** (`locus_runtime/memory/sqlite_store.py`), the default on the
+  desktop / local profile (LOCUS-387): one file at `<app_home>/data/memory/locus-memory.db`,
+  FTS5 keyword search and semantic search (pure-Python cosine by default; sqlite-vec with
+  `LOCUS_MEMORY_SQLITE_VEC=1` once its attestation is re-signed) fused by reciprocal rank. No server
+  runs, so memory is on with zero setup. First run creates the file owner-only (0600 in a
+  0700 directory on POSIX; the per-user app-home ACL on Windows) and registers the default
+  **Personal** knowledge collection; the backend re-checks both on every start.
+- **Postgres + pgvector** (`PostgresLongTermMemoryStore`), selected when `POSTGRES_DSN`
+  is set (the full stack).
+
+`LOCUS_MEMORY_STORE=sqlite|postgres` overrides the choice.
 
 Each entry carries at least:
 
@@ -91,13 +105,21 @@ Each entry carries at least:
 - `content`
 - `metadata`
 
-When available, pgvector embeddings are added so the platform can support semantic recall, similarity search, and ranking instead of relying only on exact filters. Embeddings are optional at runtime, but the store is designed to benefit from them when the OpenAI embedding client is configured.
+Embeddings add semantic recall, similarity search and ranking. They come from a **local**
+embedding model (default `nomic-embed-text` on Ollama, `LOCUS_MEMORY_EMBEDDING_MODEL`)
+through the gated model client: each request is a gateway `model_call`
+(`operation: embeddings`) under the same policy and usage audit as chat calls, and hosted
+providers are refused (D-29; LOCUS-378 closed the old direct OpenAI path). Embeddings are
+optional at runtime: without a model, entries are still stored and keyword search answers,
+the status endpoints report semantic search as `pending_embedding_model`, and a background
+backfill embeds pending entries once the model is available. Memory content is never
+logged; the gateway audit records counts only.
 
 ### 3.3 Consolidation pipeline
 
-xFrontier separates raw remembered events from promoted knowledge.
+Locus separates raw remembered events from promoted knowledge.
 
-When entries are appended, the backend can enqueue them into `frontier_memory_consolidation_queue`. Consolidation is then responsible for:
+When entries are appended, the backend can enqueue them into `locus_memory_consolidation_queue`. Consolidation is then responsible for:
 
 - grouping candidate memories by bucket and scope
 - summarizing repeated or important items into a smaller durable representation
@@ -153,11 +175,11 @@ This is one of the most important architectural traits of the memory system: mem
 
 ## 4. How isolation exists
 
-Isolation in xFrontier is layered. The architecture assumes that orchestration, policy, transport validation, and the sandbox all contribute to containment. No single isolation mechanism is expected to carry the whole burden.
+Isolation in Locus is layered. The architecture assumes that orchestration, policy, transport validation, and the sandbox all contribute to containment. No single isolation mechanism is expected to carry the whole burden.
 
 ### 4.1 Execution isolation
 
-Tool execution is mediated through `SandboxManager` in `frontier_runtime/sandbox.py`. It chooses the strongest available isolation strategy for the current environment:
+Tool execution is mediated through `SandboxManager` in `locus_runtime/sandbox.py`. It chooses the strongest available isolation strategy for the current environment:
 
 1. **Kernel sandbox** on Linux or macOS
    Uses `bubblewrap` or `sandbox-exec` for direct host-level confinement.
@@ -212,11 +234,11 @@ The event bus only delivers envelopes that survive middleware checks. This means
 
 ## 5. How the multi-agent ecosystem exists
 
-xFrontier’s multi-agent model is ecosystem-based rather than single-loop. Agents are not just prompts in a list; they participate in a controlled message fabric with explicit discovery, routing, and security semantics.
+Locus’s multi-agent model is ecosystem-based rather than single-loop. Agents are not just prompts in a list; they participate in a controlled message fabric with explicit discovery, routing, and security semantics.
 
 ### 5.1 Agent registry and discovery
 
-Agent discovery begins with the registry layer. `frontier_runtime/agents.py` builds a registry from discovered agent records and ensures a baseline catalog of roles such as:
+Agent discovery begins with the registry layer. `locus_tooling.common.discover_agent_records()` (`lattix agent list`) builds the catalog from discovered agent records, and the worker runtime trusts a baseline set of roles (`apps/workers/runtime/layer2/security.py`) such as:
 
 - `research`
 - `code`
@@ -326,7 +348,7 @@ The `StudioFullCanvas` component lets operators:
 - assemble workflow graphs from typed nodes and links
 - validate graph wiring before execution
 - run the graph through the backend
-- inspect runtime engine selection and hybrid routing
+- inspect the model runtime (provider, model, temperature, session)
 - inspect memory counts
 - manage collaboration state
 - view observability summaries

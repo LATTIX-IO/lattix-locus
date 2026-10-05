@@ -1,5 +1,5 @@
 {
-  "_comment": "xFrontier strict seccomp profile — matches Codex kernel sandbox restrictions. Blocks dangerous syscalls while allowing normal tool execution.",
+  "_comment": "Locus strict seccomp profile — matches Codex kernel sandbox restrictions. Blocks dangerous syscalls while allowing normal tool execution.",
   "defaultAction": "SCMP_ACT_ALLOW",
   "syscalls": [
     {

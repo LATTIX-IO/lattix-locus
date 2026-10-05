@@ -12,16 +12,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 if not str(os.environ.get("A2A_JWT_SECRET") or "").strip():
     os.environ["A2A_JWT_SECRET"] = "unit-test-super-secret-value-32bytes"
-if not str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").strip():
-    os.environ["FRONTIER_API_BEARER_TOKEN"] = "unit-test-bearer"
+if not str(os.environ.get("LOCUS_API_BEARER_TOKEN") or "").strip():
+    os.environ["LOCUS_API_BEARER_TOKEN"] = "unit-test-bearer"
 
 import app.main as main_module
 from app.main import app, store
 
 client = TestClient(app)
 
-READ_HEADERS = {"x-frontier-actor": "tester"}
-ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "frontier-admin"}
+READ_HEADERS = {"x-locus-actor": "tester"}
+ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-locus-actor": "locus-admin"}
 
 
 def test_local_catalog_includes_gpt_oss_models() -> None:
@@ -218,7 +218,13 @@ def test_skill_injection_increments_usage_metrics() -> None:
     assert commit.last_used_at != ""
 
 
-def test_skill_test_endpoint_dry_runs_a_skill() -> None:
+def test_skill_test_endpoint_dry_runs_a_skill(monkeypatch) -> None:
+    # Explicit fake provider (test double) — production has no simulated output.
+    def _fake_chat(*, system_prompt, user_prompt, model, temperature, **_kwargs):
+        assert "### Skill: commit" in system_prompt
+        return "Staged and committed.", {"mode": "live", "model": model, "provider": "openai"}
+
+    monkeypatch.setattr(main_module, "_run_openai_chat", _fake_chat)
     response = client.post(
         "/skills/skill-commit/test",
         json={"prompt": "Commit the current changes."},
@@ -227,8 +233,23 @@ def test_skill_test_endpoint_dry_runs_a_skill() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["skill_id"] == "skill-commit"
-    assert body["mode"] in {"live", "simulated"}
-    assert isinstance(body["output"], str) and body["output"]
+    assert body["mode"] == "live"
+    assert body["output"] == "Staged and committed."
+
+
+def test_skill_test_endpoint_reports_unconfigured_provider(monkeypatch) -> None:
+    monkeypatch.setattr(main_module, "_openai_api_key", lambda: "")
+    response = client.post(
+        "/skills/skill-commit/test",
+        json={"prompt": "Commit the current changes.", "model": "gpt-test-model"},
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 412
+    detail = response.json()["detail"]
+    assert detail["code"] == "provider_not_configured"
+    assert detail["provider"] == "openai"
+    assert detail["model"] == "gpt-test-model"
+    assert "Commit the current changes." not in str(detail)
 
 
 def test_skill_test_endpoint_validates_input() -> None:
@@ -252,32 +273,47 @@ def test_observability_dashboard_includes_skill_metrics() -> None:
     assert {"usage_count", "last_used_at", "status", "version"} <= set(sample.keys())
 
 
-def test_skill_carries_maturity_tier_defaults_and_accepts_overrides() -> None:
-    created = client.post(
-        "/skills",
-        json={
-            "name": "tiered-skill",
-            "content": "## Goal\nDo the thing.",
-            "tier": "tier2",
-            "maturity": "incubating",
-            "owner": "platform-team",
-            "dependencies": ["commit"],
-            "eval_rubric": "Was the thing done correctly?",
-            "eval_dataset": [{"prompt": "Do it", "expectation": "done"}],
-        },
-        headers=ADMIN_HEADERS,
-    )
+def test_skill_save_cannot_set_tier_or_maturity() -> None:
+    # LOCUS-374: tier and maturity are earned only through eval + promote.
+    base = {
+        "name": "tiered-skill",
+        "content": "## Goal\nDo the thing.",
+        "owner": "platform-team",
+        "dependencies": ["commit"],
+        "eval_rubric": "Was the thing done correctly?",
+        "eval_dataset": [{"prompt": "Do it", "expectation": "done"}],
+    }
+    for field, value in (("tier", "tier1"), ("tier", "tier2"), ("maturity", "standard")):
+        refused = client.post("/skills", json={**base, field: value}, headers=ADMIN_HEADERS)
+        assert refused.status_code == 422, (field, value)
+        assert "promote" in refused.json()["detail"]
+    created = client.post("/skills", json=base, headers=ADMIN_HEADERS)
     assert created.status_code == 200
     body = created.json()
     skill_id = body["id"]
     try:
-        assert body["tier"] == "tier2"
-        assert body["maturity"] == "incubating"
+        assert body["tier"] == "tier3"
+        assert body["maturity"] == "draft"
+        # Echoing the current values back (as the UI does on edit) is accepted.
+        echoed = client.post(
+            "/skills",
+            json={**base, "id": skill_id, "tier": "tier3", "maturity": "draft"},
+            headers=ADMIN_HEADERS,
+        )
+        assert echoed.status_code == 200
+        # Raising it on an existing skill is still refused.
+        raised = client.post(
+            "/skills", json={**base, "id": skill_id, "tier": "tier1"}, headers=ADMIN_HEADERS
+        )
+        assert raised.status_code == 422
+        assert store.skills[skill_id].tier == "tier3"
         assert body["owner"] == "platform-team"
         assert body["dependencies"] == ["commit"]
         assert len(body["eval_dataset"]) == 1
         # Bundled skills default to tier3/draft.
-        bundled = next(s for s in client.get("/skills", headers=READ_HEADERS).json() if s["name"] == "commit")
+        bundled = next(
+            s for s in client.get("/skills", headers=READ_HEADERS).json() if s["name"] == "commit"
+        )
         assert bundled["tier"] == "tier3"
         assert bundled["maturity"] == "draft"
     finally:
@@ -303,7 +339,10 @@ def test_skill_eval_scores_and_sets_validated(monkeypatch) -> None:
     def _fake_chat(*, system_prompt, user_prompt, model, temperature, **_kwargs):
         calls["n"] += 1
         if "grading an AI response" in user_prompt:
-            return '{"score": 0.9, "reason": "uppercased correctly"}', {"mode": "live", "model": model}
+            return '{"score": 0.9, "reason": "uppercased correctly"}', {
+                "mode": "live",
+                "model": model,
+            }
         return "HI", {"mode": "live", "model": model}
 
     monkeypatch.setattr(main_module, "_run_openai_chat", _fake_chat)

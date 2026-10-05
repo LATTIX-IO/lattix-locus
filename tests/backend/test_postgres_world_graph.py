@@ -31,7 +31,13 @@ def test_disabled_without_dsn():
 
 def test_interface_parity_with_neo4j():
     # Same public surface so it drops into the _NEO4J_GRAPH alias unchanged.
-    for name in ("enabled", "healthcheck", "record_run", "project_memory_summary", "query_memory_context"):
+    for name in (
+        "enabled",
+        "healthcheck",
+        "record_run",
+        "project_memory_summary",
+        "query_memory_context",
+    ):
         assert hasattr(PostgresWorldGraph(""), name)
         assert hasattr(Neo4jRunGraph("", "", ""), name)
 

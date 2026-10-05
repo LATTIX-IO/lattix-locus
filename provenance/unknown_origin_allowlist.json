@@ -1,0 +1,42 @@
+{
+  "schema_version": "1",
+  "description": "Packages whose origin is unknown (provenance/origins.json p28_status 'unknown') and that the dependency gate may still allow. Every entry needs a reason, a reviewer and a date; entries not signed by the principal are reported as warnings (and fail with --strict).",
+  "entries": [
+    {
+      "name": "filetype",
+      "ecosystem": "pypi",
+      "version": "1.2.0",
+      "reason": "Transitive (langchain-google-genai), not imported on Locus code paths; pure-Python file-type sniffing by Tomas Aparicio, whose profile says 'Decentralized'. Allowed at the resolved version until origin evidence is recorded or a D-29 inspection is run.",
+      "reviewed_by": "agent-prepared, principal sign-off pending",
+      "date": "2026-10-04",
+      "tracking": "LOCUS-358"
+    },
+    {
+      "name": "httpx",
+      "ecosystem": "pypi",
+      "version": "*",
+      "reason": "Core HTTP client (backend, model client tests, OTLP export). BSD-3-Clause, maintained by Encode / Tom Christie; no public location for the organization or the author. No indicator of a P28-listed origin; allowed until origin evidence (e.g. the maintaining company's registration) is recorded or a D-29 inspection is run.",
+      "reviewed_by": "agent-prepared, principal sign-off pending",
+      "date": "2026-10-04",
+      "tracking": "LOCUS-358"
+    },
+    {
+      "name": "presidio-analyzer",
+      "ecosystem": "pypi",
+      "version": "*",
+      "reason": "PII detection behind the DLP filter. Created by Microsoft (the microsoft/presidio repository redirects to data-privacy-stack/presidio); the current organization's location and ownership were not established. Allowed until that is recorded or a D-29 inspection is run.",
+      "reviewed_by": "agent-prepared, principal sign-off pending",
+      "date": "2026-10-04",
+      "tracking": "LOCUS-358"
+    },
+    {
+      "name": "psycopg",
+      "ecosystem": "pypi",
+      "version": "*",
+      "reason": "PostgreSQL driver (LGPL-3.0), maintained by Daniele Varrazzo / The Psycopg Team for many years; no location on the public profiles. Allowed until origin evidence is recorded or a D-29 inspection is run.",
+      "reviewed_by": "agent-prepared, principal sign-off pending",
+      "date": "2026-10-04",
+      "tracking": "LOCUS-358"
+    }
+  ]
+}

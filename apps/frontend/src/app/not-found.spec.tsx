@@ -11,11 +11,11 @@ describe("NotFound", () => {
     expect(screen.getByText(/does not exist/)).toBeTruthy();
   });
 
-  it("has a link to inbox", () => {
+  it("has a link to home", () => {
     render(<NotFound />);
 
-    const link = screen.getByText("Go to Inbox");
+    const link = screen.getByText("Go to Home");
     expect(link).toBeTruthy();
-    expect(link.getAttribute("href")).toBe("/inbox");
+    expect(link.getAttribute("href")).toBe("/home");
   });
 });

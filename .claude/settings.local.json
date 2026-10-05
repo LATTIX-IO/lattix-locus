@@ -27,7 +27,20 @@
       "Bash(git status *)",
       "Bash(git add *)",
       "Bash(tasklist //FI \"IMAGENAME eq git.exe\")",
-      "PowerShell(Set-Location E:\\\\lattix\\\\lattix-xfrontier; Test-Path apps\\\\backend\\\\requirements.txt; Get-ChildItem apps\\\\backend | Select-Object Name -First 12; \"--- container view of /workspace ---\"; docker run --rm -v \"${PWD}:/workspace\" alpine ls /workspace/apps/backend 2>&1 | Select-Object -First 12)"
+      "PowerShell(Set-Location E:\\\\lattix\\\\lattix-xfrontier; Test-Path apps\\\\backend\\\\requirements.txt; Get-ChildItem apps\\\\backend | Select-Object Name -First 12; \"--- container view of /workspace ---\"; docker run --rm -v \"${PWD}:/workspace\" alpine ls /workspace/apps/backend 2>&1 | Select-Object -First 12)",
+      "Bash(mkdir -p /tmp/xfrontier-design)",
+      "Bash(cp /Users/jamesbooth/.claude/projects/-Users-jamesbooth-dev-lattix-lattix-xfrontier--claude-worktrees-sad-mendel-1352d6/e96d6d5b-3787-4a88-bd3b-a21be6d4a53d/tool-results/webfetch-1777247951135-fqm5th.bin design.gz)",
+      "Bash(gunzip -k design.gz)",
+      "Read(//private/tmp/xfrontier-design/**)",
+      "Bash(tar -tf design)",
+      "Bash(npm ci *)",
+      "Bash(git stash *)",
+      "Bash(npx --prefix apps/frontend tsc -p apps/frontend --noEmit)",
+      "Bash(./node_modules/.bin/eslint src/components/app-shell.tsx src/components/classification-banner.tsx src/components/mode-switch.tsx src/components/navigation/left-nav.tsx src/components/navigation/user-console-sidebar.tsx)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(./node_modules/.bin/vitest run *)",
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(./node_modules/.bin/eslint src/components/fx-ui.tsx src/components/command-center.tsx src/components/memory-screen.tsx src/components/playbooks-screen.tsx src/components/workflow-pipeline.tsx src/components/reasoning-block.tsx src/components/tasks-composer.tsx src/components/tasks-chat-workspace.tsx src/components/navigation/user-console-sidebar.tsx src/app/home/page.tsx src/app/memory/page.tsx src/app/playbooks/page.tsx 'src/app/tasks/[id]/page.tsx' src/app/builder/agents/page.tsx src/app/builder/workflows/page.tsx src/app/builder/guardrails/page.tsx src/app/builder/integrations/page.tsx src/app/builder/playbooks/page.tsx)"
     ]
   }
 }

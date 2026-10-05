@@ -13,13 +13,14 @@ from __future__ import annotations
 from pathlib import Path
 
 
-from frontier_runtime.harness.executor import LocalDirectExecutor
-from frontier_runtime.harness.llm import ChatResponse, ScriptedChatClient
-from frontier_runtime.harness.loop import LoopBudgets, LoopOutcome
-from frontier_runtime.harness.model_profiles import resolve_profile
-from frontier_runtime.harness.swe_agent import SweAgent, SweTask
+from locus_runtime.harness.executor import LocalDirectExecutor
+from locus_runtime.harness.llm import ChatResponse, ScriptedChatClient
+from locus_runtime.harness.loop import LoopBudgets, LoopOutcome
+from locus_runtime.harness.model_profiles import resolve_profile
+from locus_runtime.harness.swe_agent import SweAgent, SweTask
 
 from tests.harness.conftest import git_init, requires_bash, requires_git, tool_response
+
 
 def _shell_python() -> str:
     """Find a python interpreter the *shell* can execute (git-bash on Windows
@@ -40,7 +41,9 @@ PYTHON = _shell_python()
 # Self-contained assertion runner — no pytest dependency in the target
 # interpreter, and self-locating (sys.path from __file__, not cwd) so it works
 # regardless of which shell/python resolves the command.
-TEST_CMD = f"{PYTHON} runtests.py"
+# -B: the fix keeps the file size and can land in the same mtime second, so a cached
+# .pyc from the pre-fix run would otherwise be reused on Linux.
+TEST_CMD = f"{PYTHON} -B runtests.py"
 RUNTESTS = (
     "import os, sys\n"
     "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n"
@@ -126,7 +129,9 @@ def test_budget_exhaustion_yields_zero_credit(tmp_path):
     executor = LocalDirectExecutor(tmp_path)
     # A client that never submits — just keeps running cheap bash.
     client = ScriptedChatClient(
-        responses=[tool_response(f"c{i}", "execute_bash", command="echo working") for i in range(20)],
+        responses=[
+            tool_response(f"c{i}", "execute_bash", command="echo working") for i in range(20)
+        ],
     )
     agent = SweAgent(
         client=client,
@@ -150,16 +155,18 @@ def test_budget_exhaustion_yields_zero_credit(tmp_path):
 def test_malformed_tool_call_triggers_reask(tmp_path):
     _make_repo(tmp_path)
     executor = LocalDirectExecutor(tmp_path)
-    # First a malformed call (bad JSON), then a valid submit.
+    # First a malformed call (bad JSON), then the fix and a valid submit
+    # (LOCUS-337: submit is accepted only once the test command passes).
     client = ScriptedChatClient(
         responses=[
             ChatResponse(
                 tool_calls=[
-                    __import__("frontier_runtime.harness.llm", fromlist=["ToolCall"]).ToolCall(
+                    __import__("locus_runtime.harness.llm", fromlist=["ToolCall"]).ToolCall(
                         id="bad", name="execute_bash", arguments="{not valid json"
                     )
                 ]
             ),
+            _fix_call("fix"),
             tool_response("ok", "submit", answer="done"),
         ]
     )
@@ -188,7 +195,7 @@ def test_trajectory_is_written(tmp_path):
     executor = LocalDirectExecutor(tmp_path)
     traj_dir = tmp_path / "traj"
     client = ScriptedChatClient(
-        responses=[tool_response("s", "submit", answer="trivial")]
+        responses=[_fix_call("fix"), tool_response("s", "submit", answer="fixed")]
     )
     agent = SweAgent(
         client=client,
@@ -209,4 +216,18 @@ def test_trajectory_is_written(tmp_path):
     records = result.trajectory.parse(path.read_text(encoding="utf-8"))
     assert records[0]["kind"] == "meta"
     assert records[-1]["kind"] == "outcome"
-    assert records[-1]["status"] == "submitted"
+    # Verified loop (LOCUS-337): the end state, not the legacy "submitted".
+    assert records[-1]["status"] == "done"
+    assert result.end_state == "done"
+    assert (traj_dir / "traj-test.checkpoint.json").exists()
+
+
+def _fix_call(call_id: str):
+    return tool_response(
+        call_id,
+        "str_replace_editor",
+        command="str_replace",
+        path="mathlib/core.py",
+        old_str=FIXED_LINE_OLD,
+        new_str=FIXED_LINE_NEW,
+    )

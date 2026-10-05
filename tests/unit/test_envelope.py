@@ -1,4 +1,4 @@
-from frontier_runtime.envelope import Envelope, EnvelopeStatus, envelope_from_json, envelope_to_json
+from locus_runtime.envelope import Envelope, EnvelopeStatus, envelope_from_json, envelope_to_json
 
 
 def test_envelope_round_trip() -> None:

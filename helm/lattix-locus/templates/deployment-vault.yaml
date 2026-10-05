@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lattix-locus.fullname" . }}-vault
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lattix-vault
+  template:
+    metadata:
+      labels:
+        app: lattix-vault
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: vault
+          image: {{ include "lattix-locus.imageRef" .Values.vault.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

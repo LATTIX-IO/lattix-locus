@@ -57,6 +57,6 @@ def test_seed_vault_uses_configured_token_and_seed_payload(monkeypatch) -> None:
 
     assert captured["url"] == "http://vault:8200"
     assert captured["token"] == "configured-token"
-    assert captured["path"] == "dev/frontier"
+    assert captured["path"] == "dev/locus"
     assert captured["mount_point"] == "secret"
     assert captured["secret"] == {"status": "seeded", "placeholder": "replace-me"}

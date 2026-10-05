@@ -3,9 +3,9 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "frontier-evals"
+name = "locus-evals"
 version = "0.1.0"
-description = "SWE-bench / DeepSWE evaluation harness for the Lattix xFrontier coding agent"
+description = "SWE-bench / DeepSWE evaluation harness for the Lattix Locus coding agent"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -23,7 +23,7 @@ dev = [
 ]
 
 [project.scripts]
-frontier-evals = "frontier_evals.cli:cli"
+locus-evals = "locus_evals.cli:cli"
 
 [tool.hatch.build.targets.wheel]
-packages = ["frontier_evals"]
+packages = ["locus_evals"]

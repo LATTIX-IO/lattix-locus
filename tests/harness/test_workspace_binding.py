@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from frontier_runtime.harness.executor import LocalDirectExecutor
-from frontier_runtime.harness.tools import CodingToolset
-from frontier_runtime.harness.workspace import Workspace
-from frontier_runtime.harness.workspace_binding import WorkspaceBinding, WorkspaceManager
+from locus_runtime.harness.executor import LocalDirectExecutor
+from locus_runtime.harness.tools import CodingToolset
+from locus_runtime.harness.workspace import Workspace
+from locus_runtime.harness.workspace_binding import WorkspaceBinding, WorkspaceManager
 
 requires_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="no bash")
 requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="no git")
@@ -19,15 +19,26 @@ requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="no git")
 
 def _repo(root: Path) -> None:
     (root / "app.py").write_text("x = 1\n")
-    for a in (("init", "-q"), ("config", "user.email", "t@e.com"), ("config", "user.name", "t"),
-              ("add", "-A"), ("commit", "-qm", "init")):
+    for a in (
+        ("init", "-q"),
+        ("config", "user.email", "t@e.com"),
+        ("config", "user.name", "t"),
+        ("add", "-A"),
+        ("commit", "-qm", "init"),
+    ):
         subprocess.run(["git", *a], cwd=str(root), check=True, capture_output=True)
 
 
 # -- binding payload round-trip --------------------------------------------
 def test_binding_payload_roundtrip():
-    b = WorkspaceBinding(repo_path="/repo", base_ref="main", branch="feat/x",
-                         allow_outside="deny", extra_paths=["/shared"], test_command="pytest")
+    b = WorkspaceBinding(
+        repo_path="/repo",
+        base_ref="main",
+        branch="feat/x",
+        allow_outside="deny",
+        extra_paths=["/shared"],
+        test_command="pytest",
+    )
     p = b.to_payload()
     assert p["isolation"] == "worktree" and p["allow_outside"] == "deny"
     b2 = WorkspaceBinding.from_payload(p)
@@ -59,13 +70,15 @@ def test_editor_escalates_out_of_bounds(tmp_path):
         out_of_bounds="ask",
     )
     # in-bounds edit works
-    ok = ts.dispatch("str_replace_editor",
-                     {"command": "create", "path": "new.py", "file_text": "y = 2\n"})
+    ok = ts.dispatch(
+        "str_replace_editor", {"command": "create", "path": "new.py", "file_text": "y = 2\n"}
+    )
     assert "written" in ok.lower()
     # out-of-bounds edit is blocked + escalated, NOT executed
     outside = str((tmp_path / "evil.py"))
-    res = ts.dispatch("str_replace_editor",
-                      {"command": "create", "path": outside, "file_text": "pwn"})
+    res = ts.dispatch(
+        "str_replace_editor", {"command": "create", "path": outside, "file_text": "pwn"}
+    )
     assert "permission required" in res.lower()
     assert not (tmp_path / "evil.py").exists()  # nothing written outside
     assert ts.escalations and ts.escalations[0]["path"] == outside
@@ -83,8 +96,9 @@ def test_out_of_bounds_deny_policy_blocks_without_escalation_invite(tmp_path):
         out_of_bounds="deny",
         on_escalation=seen.append,
     )
-    res = ts.dispatch("str_replace_editor",
-                      {"command": "view", "path": str(tmp_path / "outside.py")})
+    res = ts.dispatch(
+        "str_replace_editor", {"command": "view", "path": str(tmp_path / "outside.py")}
+    )
     assert "[denied]" in res
     assert len(seen) == 1  # escalation still recorded for audit
 
@@ -99,8 +113,9 @@ def test_extra_path_grant_allows_outside_repo(tmp_path):
     shared.mkdir()
     (shared / "lib.py").write_text("Z = 9\n")
     ts = CodingToolset(
-        workspace=Workspace(run_id="t",
-                            executor=LocalDirectExecutor(root, extra_paths=[str(shared)])),
+        workspace=Workspace(
+            run_id="t", executor=LocalDirectExecutor(root, extra_paths=[str(shared)])
+        ),
         out_of_bounds="ask",
     )
     res = ts.dispatch("str_replace_editor", {"command": "view", "path": str(shared / "lib.py")})
@@ -121,7 +136,7 @@ def test_worktree_provision_isolates_and_cleans_up(tmp_path):
         # the worktree is a separate dir, checked out, on a task branch
         assert prov.root != repo and prov.root.exists()
         assert (prov.root / "app.py").read_text() == "x = 1\n"
-        assert prov.branch == "frontier/FRONT-42"
+        assert prov.branch == "locus/FRONT-42"
         # editing in the worktree does NOT touch the main repo working tree
         prov.workspace.executor.write_file("app.py", "x = 2\n")
         assert (repo / "app.py").read_text() == "x = 1\n"

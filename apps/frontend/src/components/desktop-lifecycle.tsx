@@ -10,9 +10,14 @@ import { useEffect } from "react";
  * to tear down all its child processes (/api/system/shutdown) and finally tell
  * the Tauri shell to exit (`quit_now`). No-op outside the desktop shell.
  */
+type DesktopTauri = {
+  event?: { listen?: (event: string, handler: () => void | Promise<void>) => Promise<() => void> };
+  core: { invoke: (command: string) => Promise<unknown> };
+};
+
 export function DesktopLifecycle() {
   useEffect(() => {
-    const tauri = (window as unknown as { __TAURI__?: any }).__TAURI__;
+    const tauri = (window as unknown as { __TAURI__?: DesktopTauri }).__TAURI__;
     if (!tauri?.event?.listen) return;
 
     let unlisten: (() => void) | undefined;
@@ -35,7 +40,7 @@ export function DesktopLifecycle() {
           active > 0
             ? window.confirm(
                 `${active} agent run${active === 1 ? "" : "s"} still in progress.\n\n` +
-                  `Quit Lattix xFrontier and stop ${active === 1 ? "it" : "them"}?`,
+                  `Quit Lattix Locus and stop ${active === 1 ? "it" : "them"}?`,
               )
             : true;
         if (!proceed) return;

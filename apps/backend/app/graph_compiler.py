@@ -1,7 +1,7 @@
 """Compile a reactflow ``graph_json`` into a real, runnable LangGraph multi-agent system.
 
 The Workflow Studio canvas saves a graph of ``nodes`` + ``links`` (see
-``frontier-graph/1.0``). Historically that graph was cosmetic at run time — the
+``locus-graph/1.0``). Historically that graph was cosmetic at run time — the
 backend executed a hardcoded single-agent loop and ignored the canvas. This
 module turns the canvas into the actual execution engine:
 
@@ -12,7 +12,7 @@ module turns the canvas into the actual execution engine:
   with ``agreed`` vs ``continue_discussion``) becomes a *conditional edge* whose
   router reads the node's ``route`` decision and enforces a bounded-loop guard so
   back-edges (consensus→facilitate, gate→build) provably terminate;
-* ``frontier/agent`` nodes resolve their ``config.agent_id`` to the studio
+* ``locus/agent`` nodes resolve their ``config.agent_id`` to the studio
   agent's real system prompt + model (gpt-oss:20b on local Ollama) and either
   answer in one shot (``chat``), run the harness coding loop for real file edits
   + tests (``code`` → ``SweAgent``), or run the full collaborative team
@@ -29,7 +29,7 @@ can import it without a circular dependency.
 from __future__ import annotations
 
 import operator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Annotated, Any, Callable, Optional, TypedDict
 
 try:  # langgraph is a declared dependency; degrade clearly if it is ever absent.
@@ -86,6 +86,9 @@ class AgentResolution:
     reasoning_effort: str = ""  # "" | low | medium | high
     harness_backend: str = "native"  # native (SweAgent) | codex
     found: bool = True
+    # Where provider/model came from: "agent" (agent config), "override" (run
+    # input), or "default" (nothing named one; the D-21 agent chain applies).
+    model_source: str = "agent"
 
 
 @dataclass
@@ -95,7 +98,9 @@ class CompilerDeps:
     # AgentResolution -> harness ChatClient (e.g. OpenAIChatClient on Ollama)
     make_chat_client: Callable[[AgentResolution], Any]
     # (node, incoming, incoming_by_port) -> result dict ; reuses main._execute_node
-    execute_native: Callable[[Any, list[dict[str, Any]], dict[str, list[dict[str, Any]]]], dict[str, Any]]
+    execute_native: Callable[
+        [Any, list[dict[str, Any]], dict[str, list[dict[str, Any]]]], dict[str, Any]
+    ]
     run_id: str = "run/default"
     repo_root: Optional[str] = None
     workspace: Optional[dict[str, Any]] = None  # WorkspaceBinding.from_payload input
@@ -110,6 +115,13 @@ class CompilerDeps:
     # Run-level focus: execute = tools/code/team enabled; plan = analyze + produce
     # an execution plan (no file mutation); chat = pure conversation (no tools).
     mode: str = "execute"
+    # (workspace_root, extra_paths) -> GatewaySession for this run's harness
+    # executors (LOCUS-332). None => executors are unbound and the gateway denies.
+    gateway_session_factory: Optional[Callable[[Any, list[str]], Any]] = None
+    # Computer-use tools / desktop apps for code and team nodes (LOCUS-346); the
+    # session factory above must grant their gateway operations.
+    computer_use_tools: tuple[str, ...] = ()
+    computer_use_apps: tuple[str, ...] = ()
     # run-scoped, populated by run_compiled_graph:
     provisioned: Any = None  # ProvisionedWorkspace | None
 
@@ -138,8 +150,8 @@ class CompiledGraph:
 def _norm_type(node_type: str) -> str:
     candidate = str(node_type or "").strip()
     if not candidate:
-        return "frontier/unknown"
-    return candidate if candidate.startswith("frontier/") else f"frontier/{candidate}"
+        return "locus/unknown"
+    return candidate if candidate.startswith("locus/") else f"locus/{candidate}"
 
 
 def _port(edge: Any) -> str:
@@ -163,18 +175,10 @@ def _classify(nodes: list[Any], links: list[Any]) -> dict[str, Any]:
             routing_nodes[nid] = ports
 
     entry = next(
-        (
-            n.id
-            for n in nodes
-            if _norm_type(n.type) == "frontier/trigger" or not in_links[n.id]
-        ),
+        (n.id for n in nodes if _norm_type(n.type) == "locus/trigger" or not in_links[n.id]),
         nodes[0].id if nodes else "",
     )
-    terminals = [
-        n.id
-        for n in nodes
-        if not out_links[n.id] or _norm_type(n.type) == "frontier/output"
-    ]
+    terminals = [n.id for n in nodes if not out_links[n.id] or _norm_type(n.type) == "locus/output"]
 
     # ancestors via reverse reachability (used to find the loop's forward port)
     rev: dict[str, set[str]] = {n.id: set() for n in nodes}
@@ -225,7 +229,9 @@ def _has_cycle(node_ids: list[str], links: list[Any]) -> bool:
     return visited != len(node_ids)
 
 
-def _forward_port(node_id: str, port_targets: dict[str, str], ancestors_of: Callable[[str], set[str]]) -> str | None:
+def _forward_port(
+    node_id: str, port_targets: dict[str, str], ancestors_of: Callable[[str], set[str]]
+) -> str | None:
     """The port whose target is not an ancestor of this node — i.e. the
     non-back-edge that makes the loop progress (consensus→build, gate→output)."""
     anc = ancestors_of(node_id)
@@ -365,6 +371,19 @@ def _reasoning_text(resp: Any) -> str:
     return ""
 
 
+# Stable error code shared with the backend's ProviderUnavailableError contract.
+PROVIDER_CALL_FAILED = "provider_call_failed"
+
+
+def _provider_failure_message(r: AgentResolution, exc: BaseException) -> str:
+    """Explicit, actionable failure text for an agent node whose model call failed."""
+    provider = r.provider or "unknown"
+    return (
+        f"[{PROVIDER_CALL_FAILED}] Model provider '{provider}' call failed for model "
+        f"'{r.model}': {str(exc)[:300]}"
+    )
+
+
 def _run_agent_node(
     node: Any,
     incoming: list[dict[str, Any]],
@@ -422,13 +441,17 @@ def _run_agent_node(
             reasoning = ""  # don't duplicate it as both message and reasoning
         usage = getattr(resp, "usage", {}) or {}
         mode = "live"
-    except Exception as exc:  # noqa: BLE001 - degrade, never crash the run
-        text = f"[agent unavailable: {exc}]"
+        error_code = ""
+    except Exception as exc:  # noqa: BLE001 - recorded as an explicit node failure
+        # Never pretend: the node reports a typed provider failure (LOCUS-309)
+        # and the run is marked Failed by the caller.
+        text = _provider_failure_message(r, exc)
         reasoning = ""
         usage = {}
-        mode = "simulated"
-    route = _extract_route(text, out_ports) if len(out_ports) > 1 else ""
-    return {
+        mode = "failed"
+        error_code = PROVIDER_CALL_FAILED
+    route = _extract_route(text, out_ports) if len(out_ports) > 1 and not error_code else ""
+    result = {
         "agent_id": r.agent_id,
         "title": getattr(node, "title", node.id),
         "model": f"{r.provider}/{r.model}" if r.provider else r.model,
@@ -441,9 +464,14 @@ def _run_agent_node(
         "mode": mode,
         "resolved": r.found,
     }
+    if error_code:
+        result["error_code"] = error_code
+    return result
 
 
-def _delegate_to_swe_agent(node: Any, r: AgentResolution, user_prompt: str, deps: CompilerDeps) -> dict[str, Any]:
+def _delegate_to_swe_agent(
+    node: Any, r: AgentResolution, user_prompt: str, deps: CompilerDeps
+) -> dict[str, Any]:
     """Real implementation: run the harness coding loop in the bound workspace."""
     prov = deps.provisioned
     if prov is None:
@@ -451,8 +479,8 @@ def _delegate_to_swe_agent(node: Any, r: AgentResolution, user_prompt: str, deps
         # arbitrary/over-broad tree. Safe default.
         return _plan_only_fallback(node, r, user_prompt, deps, reason="no_workspace_bound")
     try:
-        from frontier_runtime.harness.model_profiles import resolve_profile
-        from frontier_runtime.harness.swe_agent import SweAgent, SweTask
+        from locus_runtime.harness.model_profiles import resolve_profile
+        from locus_runtime.harness.swe_agent import SweAgent, SweTask
 
         profile = None
         try:
@@ -478,6 +506,8 @@ def _delegate_to_swe_agent(node: Any, r: AgentResolution, user_prompt: str, deps
             out_of_bounds=getattr(binding, "allow_outside", "ask") or "ask",
             on_event=(lambda kind, data: deps._emit(f"swe.{kind}", node_id=node.id, **data)),
             on_escalation=deps.on_escalation,
+            computer_use_tools=tuple(deps.computer_use_tools),
+            computer_use_apps=tuple(deps.computer_use_apps),
         )
         deps._emit("code_node_started", node_id=node.id, agent_id=r.agent_id)
         result = agent.solve(task)
@@ -500,15 +530,17 @@ def _delegate_to_swe_agent(node: Any, r: AgentResolution, user_prompt: str, deps
         return _plan_only_fallback(node, r, user_prompt, deps, reason=f"swe_error: {exc}")
 
 
-def _delegate_to_codex_agent(node: Any, r: AgentResolution, user_prompt: str, deps: CompilerDeps) -> dict[str, Any]:
+def _delegate_to_codex_agent(
+    node: Any, r: AgentResolution, user_prompt: str, deps: CompilerDeps
+) -> dict[str, Any]:
     """Run the build via the Codex subprocess backend in the bound worktree.
-    xFrontier still owns memory (prompt), workspace, diff capture, and events.
+    Locus still owns memory (prompt), workspace, diff capture, and events.
     Degrades to the native SweAgent if the codex binary is unavailable."""
     prov = deps.provisioned
     if prov is None:
         return _plan_only_fallback(node, r, user_prompt, deps, reason="no_workspace_bound")
     try:
-        from frontier_runtime.harness import codex_backend as cb
+        from locus_runtime.harness import codex_backend as cb
 
         binding = prov.binding
         cwd = prov.workspace.executor.workdir()
@@ -527,7 +559,31 @@ def _delegate_to_codex_agent(node: Any, r: AgentResolution, user_prompt: str, de
             sandbox=sandbox,
             on_event=_sink,
             timeout=deps.node_timeout_s if deps.node_timeout_s else 900,
+            gateway_session=getattr(prov.workspace.executor, "gateway_session", None),
         )
+        if result.outcome in {"denied", "approval_required"}:
+            # The gateway did not allow launching the engine: report, don't fall back
+            # to another engine (that would route around the decision).
+            deps._emit(
+                "codex_gateway_blocked",
+                node_id=node.id,
+                outcome=result.outcome,
+                reasons=result.gateway_reasons,
+                audit_id=result.gateway_audit_id,
+            )
+            return {
+                "agent_id": r.agent_id,
+                "title": getattr(node, "title", node.id),
+                "model": f"{r.provider}/{r.model}",
+                "response": "",
+                "message": f"Codex launch {result.outcome} by the gateway",
+                "summary": f"codex {result.outcome}: {', '.join(result.gateway_reasons)}"[:240],
+                "patch": "",
+                "route": "request_changes",
+                "outcome": result.outcome,
+                "mode": "codex",
+                "error_code": "gateway_" + result.outcome,
+            }
         if result.outcome == "unavailable":
             # No codex binary on this host — fall back to the native engine.
             deps._emit("codex_unavailable", node_id=node.id)
@@ -578,15 +634,17 @@ def _analyzer_focus(agent_id: str) -> str:
     )
 
 
-def _delegate_to_analyzer_agent(node: Any, r: AgentResolution, user_prompt: str, deps: CompilerDeps) -> dict[str, Any]:
+def _delegate_to_analyzer_agent(
+    node: Any, r: AgentResolution, user_prompt: str, deps: CompilerDeps
+) -> dict[str, Any]:
     """Read+exec analyzer (security / QA / performance): reads code, runs
     tests/scanners in the bound workspace, and returns findings — never edits."""
     prov = deps.provisioned
     if prov is None:
         return _plan_only_fallback(node, r, user_prompt, deps, reason="no_workspace_bound")
     try:
-        from frontier_runtime.harness.model_profiles import resolve_profile
-        from frontier_runtime.harness.swe_agent import SweAgent, SweTask
+        from locus_runtime.harness.model_profiles import resolve_profile
+        from locus_runtime.harness.swe_agent import SweAgent, SweTask
 
         try:
             profile = resolve_profile(
@@ -619,7 +677,17 @@ def _delegate_to_analyzer_agent(node: Any, r: AgentResolution, user_prompt: str,
         # Heuristic verdict: flag changes when the analyzer reports blocking issues.
         low = findings.lower()
         blocking = any(
-            kw in low for kw in ("critical", "high severity", "vulnerab", "test failed", "tests failed", "fail:", "must fix", "blocking")
+            kw in low
+            for kw in (
+                "critical",
+                "high severity",
+                "vulnerab",
+                "test failed",
+                "tests failed",
+                "fail:",
+                "must fix",
+                "blocking",
+            )
         )
         route = "request_changes" if blocking else "agreed"
         return {
@@ -638,13 +706,15 @@ def _delegate_to_analyzer_agent(node: Any, r: AgentResolution, user_prompt: str,
         return _plan_only_fallback(node, r, user_prompt, deps, reason=f"analyze_error: {exc}")
 
 
-def _delegate_to_collaborative_team(node: Any, r: AgentResolution, user_prompt: str, deps: CompilerDeps) -> dict[str, Any]:
+def _delegate_to_collaborative_team(
+    node: Any, r: AgentResolution, user_prompt: str, deps: CompilerDeps
+) -> dict[str, Any]:
     prov = deps.provisioned
     if prov is None:
         return _plan_only_fallback(node, r, user_prompt, deps, reason="no_workspace_bound")
     try:
-        from frontier_runtime.harness.collaboration import build_collaborative_team
-        from frontier_runtime.harness.swe_agent import SweTask
+        from locus_runtime.harness.collaboration import build_collaborative_team
+        from locus_runtime.harness.swe_agent import SweTask
 
         team = build_collaborative_team(
             client_for=lambda role: deps.make_chat_client(r),
@@ -654,6 +724,8 @@ def _delegate_to_collaborative_team(node: Any, r: AgentResolution, user_prompt: 
             out_of_bounds=getattr(prov.binding, "allow_outside", "ask") or "ask",
             on_event=(lambda kind, data: deps._emit(f"team.{kind}", node_id=node.id, **data)),
             on_escalation=deps.on_escalation,
+            computer_use_tools=tuple(deps.computer_use_tools),
+            computer_use_apps=tuple(deps.computer_use_apps),
         )
         task = SweTask(
             instance_id=f"{deps.run_id}-{node.id}",
@@ -682,7 +754,9 @@ def _delegate_to_collaborative_team(node: Any, r: AgentResolution, user_prompt: 
         return _plan_only_fallback(node, r, user_prompt, deps, reason=f"team_error: {exc}")
 
 
-def _plan_only_fallback(node: Any, r: AgentResolution, user_prompt: str, deps: CompilerDeps, *, reason: str) -> dict[str, Any]:
+def _plan_only_fallback(
+    node: Any, r: AgentResolution, user_prompt: str, deps: CompilerDeps, *, reason: str
+) -> dict[str, Any]:
     """When real code execution can't run (no bound repo / harness error), have
     the agent produce an implementation plan instead of editing files."""
     note = (
@@ -712,10 +786,12 @@ def _plan_only_fallback(node: Any, r: AgentResolution, user_prompt: str, deps: C
         )
         text = (resp.text or "").strip()
         mode = "plan_only"
-    except Exception as exc:  # noqa: BLE001
-        text = f"[implementer unavailable: {exc}]"
-        mode = "simulated"
-    return {
+        error_code = ""
+    except Exception as exc:  # noqa: BLE001 - recorded as an explicit node failure
+        text = _provider_failure_message(r, exc)
+        mode = "failed"
+        error_code = PROVIDER_CALL_FAILED
+    result = {
         "agent_id": r.agent_id,
         "title": getattr(node, "title", node.id),
         "response": text,
@@ -726,6 +802,9 @@ def _plan_only_fallback(node: Any, r: AgentResolution, user_prompt: str, deps: C
         "mode": mode,
         "degraded_reason": reason,
     }
+    if error_code:
+        result["error_code"] = error_code
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -742,7 +821,7 @@ def _make_node_runner(node: Any, deps: CompilerDeps, topo: dict[str, Any]):
         incoming, incoming_by_port = _gather_incoming(node_id, in_links, node_outputs)
         deps._emit("node_started", node_id=node_id, type=ntype)
         try:
-            if ntype.startswith("frontier/agent"):
+            if ntype.startswith("locus/agent"):
                 res = _run_agent_node(node, incoming, out_ports, state, deps)
             else:
                 res = deps.execute_native(node, incoming, incoming_by_port)
@@ -769,7 +848,7 @@ def _make_node_runner(node: Any, deps: CompilerDeps, topo: dict[str, Any]):
             node_id=node_id,
             node_type=ntype,
             title=getattr(node, "title", node_id),
-            agent_id=rd.get("agent_id") if ntype.startswith("frontier/agent") else None,
+            agent_id=rd.get("agent_id") if ntype.startswith("locus/agent") else None,
             response=str(rd.get("response") or rd.get("message") or ""),
             reasoning=str(rd.get("reasoning") or ""),
             route=str(rd.get("route", "")),
@@ -779,7 +858,13 @@ def _make_node_runner(node: Any, deps: CompilerDeps, topo: dict[str, Any]):
         update: dict[str, Any] = {
             "node_outputs": {node_id: res},
             "loop_counts": {node_id: new_count},
-            "events": [{"node_id": node_id, "type": "node_completed", "summary": (res.get("summary", "") if isinstance(res, dict) else "")}],
+            "events": [
+                {
+                    "node_id": node_id,
+                    "type": "node_completed",
+                    "summary": (res.get("summary", "") if isinstance(res, dict) else ""),
+                }
+            ],
         }
         if message:
             update["message"] = message
@@ -793,7 +878,7 @@ def _make_node_runner(node: Any, deps: CompilerDeps, topo: dict[str, Any]):
 # --------------------------------------------------------------------------- #
 # Compile + run
 # --------------------------------------------------------------------------- #
-def compile_frontier_graph(nodes: list[Any], links: list[Any], deps: CompilerDeps) -> CompiledGraph:
+def compile_locus_graph(nodes: list[Any], links: list[Any], deps: CompilerDeps) -> CompiledGraph:
     if not LANGGRAPH_AVAILABLE:
         raise RuntimeError("langgraph is not installed; cannot compile the workflow graph.")
     if not nodes:
@@ -834,23 +919,32 @@ def compile_frontier_graph(nodes: list[Any], links: list[Any], deps: CompilerDep
         entry=entry,
         terminals=terminals,
         has_cycle=topo["has_cycle"],
-        agent_node_ids=[n.id for n in nodes if _norm_type(n.type).startswith("frontier/agent")],
+        agent_node_ids=[n.id for n in nodes if _norm_type(n.type).startswith("locus/agent")],
         routing_nodes=routing_nodes,
         node_count=len(nodes),
     )
 
 
-def run_compiled_graph(compiled: CompiledGraph, run_input: dict[str, Any], deps: CompilerDeps) -> dict[str, Any]:
+def run_compiled_graph(
+    compiled: CompiledGraph, run_input: dict[str, Any], deps: CompilerDeps
+) -> dict[str, Any]:
     """Provision the workspace (once, if any code/team node needs it), invoke the
     compiled graph with a recursion backstop, then clean up."""
     needs_workspace = bool(compiled.agent_node_ids) and deps.workspace is not None
     cleanup = None
     if needs_workspace:
         try:
-            from frontier_runtime.harness.workspace_binding import WorkspaceBinding, WorkspaceManager
+            from locus_runtime.harness.workspace_binding import (
+                WorkspaceBinding,
+                WorkspaceManager,
+            )
 
             binding = WorkspaceBinding.from_payload(deps.workspace or {})
-            prov = WorkspaceManager().provision(binding, run_id=deps.run_id.replace("/", "-"))
+            prov = WorkspaceManager().provision(
+                binding,
+                run_id=deps.run_id.replace("/", "-"),
+                session_factory=deps.gateway_session_factory,
+            )
             deps.provisioned = prov
             cleanup = prov.cleanup
             deps._emit("workspace_provisioned", root=str(prov.root), branch=prov.branch)

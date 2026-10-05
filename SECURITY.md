@@ -19,7 +19,7 @@ It must not contain:
 
 ## Reporting a vulnerability
 
-Please report security issues privately to the project maintainers through your established Lattix security contact (secops@lattix.io) or private disclosure channel.
+Please report security issues privately to the project maintainers through your established Lattix security contact (<secops@lattix.io>) or private disclosure channel.
 
 Do not include exploit details in public issues or pull requests.
 
@@ -30,13 +30,19 @@ The local-first stack is designed to remain functional and secure by default:
 - demo agents are sourced from `examples/agents/`
 - local compose should not require public users to access private repositories
 
+## Runtime security expectations
+
+The canonical zero-trust runtime and deployment runbook lives in `docs/SECURITY.md`, with threat assumptions in `THREAT-MODEL.md` and architecture notes in `docs/ARCHITECTURE.md`.
+
+Hosted and secure-profile deployments must require authenticated operator access, signed A2A runtime messages, replay protection, egress allowlists, and MCP local-server policy unless remote MCP usage is explicitly confirmed. Check authenticated `/healthz/details` and `/platform/settings` for the `secure_profile` report before promoting or reopening write traffic after rollback.
+
 ---
 
 # Engineering Security Standard
 
 This section is the engineering-facing companion to the disclosure policy above. `THREAT-MODEL.md` holds the full threat model; `.github/instructions/lattix-security.instructions.md` holds the path-scoped rules applied automatically to every edit.
 
-xFrontier sits on a sensitive boundary: operator intent becomes agent execution against real tools, networks, and data. Treat it as a policy and isolation system, not a convenient runner.
+Locus sits on a sensitive boundary: operator intent becomes agent execution against real tools, networks, and data. Treat it as a policy and isolation system, not a convenient runner.
 
 ## Trust boundaries
 
@@ -54,17 +60,21 @@ xFrontier sits on a sensitive boundary: operator intent becomes agent execution 
 | Control | Where | Requirement |
 | --- | --- | --- |
 | Runtime profile | `_RUNTIME_PROFILES` in `apps/backend/app/main.py` | Anything non-local pins `local-secure` or `hosted`. The unset default is `local-lightweight`, which permits unauthenticated requests — never rely on it outside a laptop. |
-| Operator authentication | OIDC (`FRONTIER_AUTH_OIDC_*`), operator session cookie | Header-only actor trust stays disabled in secure profiles |
-| Actor authorization | `FRONTIER_ADMIN_ACTORS`, `FRONTIER_BUILDER_ACTORS` | Least privilege; bootstrap admin is a first-run convenience, not a standing identity |
-| Signed A2A runtime headers | `frontier_runtime/security.py`, `apps/workers/runtime/security/jwt.py` | Required in `hosted`; verified, not assumed |
+| Operator authentication | OIDC (`LOCUS_AUTH_OIDC_*`), operator session cookie | Header-only actor trust stays disabled in secure profiles |
+| Actor authorization | `LOCUS_ADMIN_ACTORS`, `LOCUS_BUILDER_ACTORS` | Least privilege; bootstrap admin is a first-run convenience, not a standing identity |
+| Signed A2A runtime headers | `locus_runtime/security.py`, `apps/workers/runtime/security/jwt.py` | Required in `hosted`; verified, not assumed |
 | Replay protection | Nonce + TTL, Redis cache with Postgres snapshot fallback | **Fails closed** — `503` when replay state is unavailable |
-| Capability tokens | `CapabilityMinter` / `CapabilityVerifier`, optional Biscuit | Scope-limited, verified at use |
-| Policy decisions | OPA — agent, budget, data classification, filesystem, network egress, network, tool jail | An unavailable PDP is a deny |
-| Guardrails | `frontier_runtime/guardrails.py` — prompt render, DLP, capability enforcement | Applied to output paths; redaction before persistence and logging |
-| Tool isolation | `frontier_runtime/sandbox.py` | Explicit strategy per host platform — `kernel-bwrap` (Linux), `kernel-seatbelt` (macOS), `windows-appcontainer` (Windows), `hardened-docker` — with declared capabilities and no silent downgrade |
+| Capability grants | Biscuit (`biscuit-python`, Ed25519) — `locus_runtime/grants.py`, verified by the gateway PEP (`locus_runtime/gateway.py`, LOCUS-334) | Grants are stored server-side per principal and never accepted from action input; a covering grant turns an R3 `ask` into `allow` but never overrides a policy deny or R4; standing grants expire after 30 days unless pinned; revocation ids are persisted. No grant authority key (`LOCUS_GRANT_AUTHORITY_KEY`, OS keychain/DPAPI) → no grants (R3 asks). The retired HMAC `CapabilityMinter`/`CapabilityVerifier` tokens are gone; A2A HS256 signing is unchanged (separate follow-up). |
+| Policy decisions | OPA — agent, budget, computer use, data classification, filesystem, network egress, network, tool jail | An unavailable PDP is a deny |
+| Computer use | `locus_runtime/computer_use/` (agent browser, Windows UIA, macOS AX), `policies/computer_use.rego` — LOCUS-341, see `docs/COMPUTER-USE.md` | Every UI action is a gateway `ui_*` / `browser_*` action classified from the perceived element: typing into password / card / CVV / SSN / OTP fields is R4 (never grantable); send / pay / delete-like controls are R3 and, because screen text is tainted, only a single-use human approval (never a standing grant) allows them; desktop apps need the run's allowlist and the built-in deny list (password managers, banking, OS security and credential prompts, shells, the user's browsers, Locus) always wins; the agent browser has its own profile and every connection passes the egress allowlist (request interception plus a loopback egress proxy); panic (`POST /computer-use/panic`) latches and cancels in-flight actions. macOS is unverified on real hardware. |
+| Desktop shell confirmation | `apps/backend/app/request_security.py` (capability effect of every mutating route), `apps/backend/app/capability_widening.py`, `locus_tooling/shell_confirmation.py`, Tauri `shell_actions.rs` / `browser_tier.rs` — LOCUS-350, LOCUS-357, see `docs/COMPUTER-USE.md` | On the desktop profile (`local-native`) every loopback caller is the operator, so every capability-widening or approving request (escalation and run approvals, panic reset, widening platform or user settings, guardrail publish / activate / rollback / archive / delete, integrations and MCP, skills, provider keys, triggers, enabled schedules, browser tier and pairing) also needs a single-use HMAC proof bound to its method, path and canonical body. Only the Tauri shell can produce it, after the human confirms a native dialog. Missing or bad proofs are refused (403) and audited; narrowing never needs one; startup refuses an unclassified mutating route; a desktop backend without the shell secret refuses widening. Other profiles are unchanged. Same-OS-user code that reads process memory or fakes input is out of scope. The webview reaches the shell only through the Tauri ACL: `capabilities/desktop-ui.json` grants exactly the app commands (one `allow-<command>` each, from the `build.rs` app manifest) plus event listen and app version to the UI origin `http://127.0.0.1:3000`; no dialog, fs or shell permission. |
+| Guardrails | `locus_runtime/guardrails.py` — prompt render, DLP; capability-scoped envelopes fail closed (capabilities are not carried in messages) | Applied to output paths; redaction before persistence and logging |
+| Tool isolation | `locus_runtime/sandbox.py` | Explicit strategy per host platform — `kernel-bwrap` (Linux), `kernel-seatbelt` (macOS), `windows-appcontainer` (Windows), `hardened-docker` — with declared capabilities and no silent downgrade |
 | Egress control | Sandbox egress gateway, per-integration `egress_allowlist` | Deny by default; allowlist is data, not code |
 | Secret storage | Vault (`hvac`), installer-managed mirroring | Secrets never in the repo, logs, or memory records |
-| Audit integrity | Hash-chained, signed events (`frontier_runtime/events.py`) | No execution path bypasses the event log |
+| Telemetry and trace egress | `locus_runtime/telemetry/` (OpenTelemetry, local SQLite store), exporter settings in `apps/backend/app/main.py`, `capability_widening.py` — LOCUS-375, see `docs/OBSERVABILITY.md` | Traces stay local by default; message and tool content is not captured unless the principal turns it on, and is then redacted and truncated; every exported string is redacted again before any sink. External exporters (OTLP, LangSmith) are off by default, need the host on the egress allowlist (fail closed, checked on every export) and a credential resolved from native secrets by name; enabling one, a new endpoint or content capture is capability-widening (confirmation, and the shell proof on the desktop). Audit stays in the audit log. |
+| Dependency and model provenance (P28, D-29) | `locus_tooling/provenance/`, `provenance/` (attestations, `origins.json`, `unknown_origin_allowlist.json`), the CI dependency gate, `provenance_denial()` in `locus_runtime/model_client.py` — LOCUS-358, see [`docs/PROVENANCE.md`](docs/PROVENANCE.md) | Every declared dependency has a reviewed origin record. A package from a P28-listed origin needs a principal-signed passing attestation for the exact pinned version; an unknown origin needs an allowlist entry with a reason; CI fails otherwise (no network). A model of a P28-listed lineage runs only on a local engine (Ollama on loopback) with a passing local-model attestation whose weights digest matches what the engine loads; hosted, API or web inference of those lineages is always refused. |
+| Audit integrity | Hash-chained, signed events (`locus_runtime/events.py`) | No execution path bypasses the event log |
 | Transport and headers | Envoy, `apps/backend/app/security_headers.py`, `request_security.py` | Security headers and request validation are not optional middleware |
 
 ## Hard limits
@@ -74,7 +84,7 @@ xFrontier sits on a sensitive boundary: operator intent becomes agent execution 
 - Never include real PII, customer data, or production identifiers in tests, docs, or examples. Use `<API_KEY>` / `<REDACTED>`.
 - Never invent crypto, token formats, or random ID schemes. Use vetted libraries and existing project patterns.
 - Never weaken a fail-closed path to make a test or a local run pass.
-- Never commit private Lattix agent definitions. Demo assets live in `examples/agents/`; private assets come from `FRONTIER_AGENT_ASSETS_ROOT`.
+- Never commit private Lattix agent definitions. Demo assets live in `examples/agents/`; private assets come from `LOCUS_AGENT_ASSETS_ROOT`.
 - Replace the placeholder `A2A_JWT_SECRET` in the Helm chart before applying it anywhere.
 
 ## Review checkpoints
@@ -91,6 +101,7 @@ Require explicit security review when a change touches:
 - the event hash chain or event signing
 - the installer's secret handling or state manifest
 - Helm secrets, network policies, RBAC, seccomp profile, or RuntimeClass
+- anything under `provenance/` (attestations, origins, the unknown-origin allowlist), the provenance gate, or the model client's provenance check: signing off an attestation is the principal's decision (see `docs/PROVENANCE.md`)
 
 ## Known posture gaps
 
@@ -103,4 +114,4 @@ Do not describe these as covered:
 - **`apps/backend/app/main.py:1587` calls `platform.system()` without importing `platform`** — a latent `NameError` on that path, currently flagged by `ruff` as `F821`.
 - The test suite does not collect (`tests/` lacks `__init__.py`, breaking `tests.harness`), so there is no automated security-regression signal until that is fixed.
 
-Windows tool confinement **is** implemented — `_WindowsAppContainerStrategy` with the `windows-appcontainer` tier, selected fail-closed rather than downgrading to a bare Job Object (`FRONTIER_FORCE_WINDOWS_APPCONTAINER` forces it).
+Windows tool confinement **is** implemented — `_WindowsAppContainerStrategy` with the `windows-appcontainer` tier, selected fail-closed rather than downgrading to a bare Job Object (`LOCUS_FORCE_WINDOWS_APPCONTAINER` forces it).

@@ -12,16 +12,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 if not str(os.environ.get("A2A_JWT_SECRET") or "").strip():
     os.environ["A2A_JWT_SECRET"] = "unit-test-super-secret-value-32bytes"
-if not str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").strip():
-    os.environ["FRONTIER_API_BEARER_TOKEN"] = "unit-test-bearer"
+if not str(os.environ.get("LOCUS_API_BEARER_TOKEN") or "").strip():
+    os.environ["LOCUS_API_BEARER_TOKEN"] = "unit-test-bearer"
 
 import app.main as main_module
 from app.main import app
 
 client = TestClient(app)
 
-READ_HEADERS = {"x-frontier-actor": "tester"}
-ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "frontier-admin"}
+READ_HEADERS = {"x-locus-actor": "tester"}
+ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-locus-actor": "locus-admin"}
 
 
 def test_resolve_chat_provider_prefixes() -> None:
@@ -98,8 +98,10 @@ def test_ai_providers_save_merges_and_respects_secret_semantics() -> None:
             headers=ADMIN_HEADERS,
         )
         assert first.status_code == 200
+        # LOCUS-336: the key lives in the OS keychain, never in platform settings.
         # Settings saves replace the model instance; always re-read the store.
-        assert main_module.store.platform_settings.ai_providers["google"]["api_key"] == "google-key-1"
+        assert main_module.store.platform_settings.ai_providers["google"]["api_key"] == ""
+        assert main_module._provider_api_key("google") == "google-key-1"
 
         # Blank key keeps the stored value; other fields update.
         client.post(
@@ -111,7 +113,8 @@ def test_ai_providers_save_merges_and_respects_secret_semantics() -> None:
             headers=ADMIN_HEADERS,
         )
         current = main_module.store.platform_settings.ai_providers["google"]
-        assert current["api_key"] == "google-key-1"
+        assert current["api_key"] == ""
+        assert main_module._provider_api_key("google") == "google-key-1"
         assert current["default_model"] == "gemini-2.5-flash"
 
         # Clear sentinel removes the key; unknown providers are ignored.
@@ -127,6 +130,7 @@ def test_ai_providers_save_merges_and_respects_secret_semantics() -> None:
             headers=ADMIN_HEADERS,
         )
         assert main_module.store.platform_settings.ai_providers["google"]["api_key"] == ""
+        assert main_module._provider_api_key("google") == ""
         assert "not-a-provider" not in main_module.store.platform_settings.ai_providers
     finally:
         main_module.store.platform_settings.ai_providers = original
@@ -223,7 +227,9 @@ def test_platform_settings_save_secret_semantics() -> None:
             headers=ADMIN_HEADERS,
         )
         assert saved.status_code == 200
-        assert main_module.store.platform_settings.nim_api_key == "nvapi-first-value-111111"
+        # LOCUS-336: stored in the keychain, blank in platform settings.
+        assert main_module.store.platform_settings.nim_api_key == ""
+        assert main_module._nim_api_key() == "nvapi-first-value-111111"
 
         # Empty submission leaves it unchanged.
         client.post(
@@ -231,7 +237,7 @@ def test_platform_settings_save_secret_semantics() -> None:
             json={"nim_api_key": "", "confirm_security_change": True},
             headers=ADMIN_HEADERS,
         )
-        assert main_module.store.platform_settings.nim_api_key == "nvapi-first-value-111111"
+        assert main_module._nim_api_key() == "nvapi-first-value-111111"
 
         # The clear sentinel removes it.
         client.post(
@@ -240,6 +246,7 @@ def test_platform_settings_save_secret_semantics() -> None:
             headers=ADMIN_HEADERS,
         )
         assert main_module.store.platform_settings.nim_api_key == ""
+        assert main_module._nim_api_key() == ""
     finally:
         main_module.store.platform_settings.nim_api_key = original
         main_module._apply_provider_settings_side_effects()
@@ -264,11 +271,13 @@ def test_settings_save_invalidates_provider_client_cache() -> None:
 
 
 def test_settings_save_rejects_invalid_types_with_400_not_500() -> None:
-    # Regression: the settings page sent a Boolean for the hostname list and
-    # the API crashed with a 500, silently losing the rest of the save.
+    # Regression: the settings page sent a non-list value for the hostname list
+    # and the API crashed with a 500, silently losing the rest of the save.
+    # (A Boolean is now an accepted on/off toggle; see
+    # test_save_platform_settings_accepts_boolean_local_hostname_toggle.)
     response = client.post(
         "/platform/settings",
-        json={"allow_local_network_hostnames": True},
+        json={"allow_local_network_hostnames": 12345},
         headers=ADMIN_HEADERS,
     )
     assert response.status_code == 400
@@ -299,7 +308,7 @@ def test_pull_requires_authentication_when_auth_enforced() -> None:
         response = client.post(
             "/models/local/pull",
             json={"model": "qwen2.5:0.5b"},
-            headers={"x-frontier-actor": "tester"},
+            headers={"x-locus-actor": "tester"},
         )
         assert response.status_code in {401, 403}
     finally:

@@ -27,11 +27,11 @@ describe("GlobalError", () => {
     expect(reset).toHaveBeenCalledTimes(1);
   });
 
-  it("has a link to inbox", () => {
+  it("has a link to home", () => {
     render(<GlobalError error={new Error("fail")} reset={vi.fn()} />);
 
-    const link = screen.getByText("Go to Inbox");
+    const link = screen.getByText("Go to Home");
     expect(link).toBeTruthy();
-    expect(link.getAttribute("href")).toBe("/inbox");
+    expect(link.getAttribute("href")).toBe("/home");
   });
 });

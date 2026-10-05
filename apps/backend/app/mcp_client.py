@@ -1,12 +1,17 @@
 """Minimal Model Context Protocol client (streamable HTTP transport).
 
 Patterned after Open WebUI's MIT-licensed MCP integration, implemented
-independently for the xFrontier runtime. Supports the initialize handshake,
+independently for the Locus runtime. Supports the initialize handshake,
 tools/list, and tools/call over JSON-RPC 2.0. Responses may arrive as plain
 JSON or as a server-sent-event stream; both are handled.
 
 Only HTTP/SSE transports are supported — stdio servers require process
 supervision and are deferred to the plugin runtime.
+
+``tools/call`` is a side effect: :meth:`McpHttpClient.call_tool` refuses to run
+without a gateway ``allow`` decision issued in this process for the same tool
+and arguments (LOCUS-332, P6). ``initialize`` and ``tools/list`` are discovery
+and are not gated.
 """
 
 from __future__ import annotations
@@ -15,12 +20,32 @@ import json
 import urllib.request
 from typing import Any
 
+from locus_runtime.gateway import GatewayDecision, args_digest, verify_decision
+
 _PROTOCOL_VERSION = "2025-03-26"
-_CLIENT_INFO = {"name": "lattix-xfrontier", "version": "0.1.0"}
+_CLIENT_INFO = {"name": "lattix-locus", "version": "0.1.0"}
 
 
 class McpError(RuntimeError):
     """Raised when an MCP server returns an error or an unusable response."""
+
+
+class McpGatewayRequired(McpError):
+    """``call_tool`` was invoked without a matching gateway allow decision."""
+
+
+def _check_decision(decision: GatewayDecision | None, name: str, arguments: dict[str, Any]) -> None:
+    if decision is None or not isinstance(decision, GatewayDecision):
+        raise McpGatewayRequired("MCP tools/call requires a gateway decision")
+    if decision.outcome != "allow" or not verify_decision(decision):
+        raise McpGatewayRequired(f"gateway did not allow MCP tool '{name}'")
+    if decision.action_kind != "mcp_tool_call":
+        raise McpGatewayRequired("gateway decision is not for an MCP tool call")
+    if decision.tool != name and not decision.tool.endswith(f"__{name}"):
+        raise McpGatewayRequired("gateway decision was issued for a different tool")
+    expected = args_digest({"args": arguments, "command": "", "target": decision.target})
+    if decision.args_digest != expected:
+        raise McpGatewayRequired("gateway decision was issued for different arguments")
 
 
 class McpHttpClient:
@@ -160,11 +185,16 @@ class McpHttpClient:
             )
         return tools
 
-    def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> str:
+    def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        decision: GatewayDecision | None = None,
+    ) -> str:
+        _check_decision(decision, str(name), dict(arguments or {}))
         self.initialize()
-        result = self._call(
-            "tools/call", {"name": str(name), "arguments": arguments or {}}
-        )
+        result = self._call("tools/call", {"name": str(name), "arguments": arguments or {}})
         if result.get("isError"):
             parts = result.get("content") or []
             detail = "; ".join(

@@ -1,8 +1,8 @@
 #requires -version 5
 <#
 .SYNOPSIS
-  Build the Lattix xFrontier desktop installer locally on Windows (unsigned —
-  fine for testing the install/first-run UX). Produces an .msi + .exe under
+  Build the Lattix Locus desktop installer locally on Windows (unsigned —
+  fine for testing the install/first-run UX). Produces an NSIS .exe under
   apps/desktop-tauri/src-tauri/target/<triple>/release/bundle/.
 
 .PREREQUISITES (install once)
@@ -61,11 +61,22 @@ if ($LASTEXITCODE -ne 0) {
 $triple = (& rustc -vV | Select-String "^host:").ToString().Split(":")[1].Trim()
 Write-Host "== target triple: $triple =="
 
-# 1) Backend sidecar (PyInstaller) -> bin/frontier-backend-<triple>.exe
+# 1) Backend sidecar (PyInstaller) -> bin/locus-backend-<triple>.exe
 Write-Host "== building backend sidecar (PyInstaller) =="
-& $Py -m PyInstaller --noconfirm (Join-Path $root "packaging/frontier-backend.spec")
+& $Py -m PyInstaller --noconfirm (Join-Path $root "packaging/locus-backend.spec")
 CheckExit "PyInstaller backend build"
-Copy-Item (Join-Path $root "dist/frontier-backend.exe") (Join-Path $bin "frontier-backend-$triple.exe") -Force
+Copy-Item (Join-Path $root "dist/locus-backend.exe") (Join-Path $bin "locus-backend-$triple.exe") -Force
+
+# 1b) Policy engine: the pinned OPA release, sha256-verified (fails closed), beside
+#     the backend for the self-check, then as the Tauri externalBin sidecars/locus-opa.
+Write-Host "== fetching the pinned OPA policy engine =="
+& $Py -m locus_tooling.opa_release fetch --triple $triple --dest (Join-Path $root "dist/locus-opa.exe")
+CheckExit "OPA fetch + sha256 verification"
+& (Join-Path $root "dist/locus-backend.exe") --self-check
+CheckExit "backend self-check (modules + policy engine)"
+$sidecars = Join-Path $tauri "sidecars"
+New-Item -ItemType Directory -Force -Path $sidecars | Out-Null
+Copy-Item (Join-Path $root "dist/locus-opa.exe") (Join-Path $sidecars "locus-opa-$triple.exe") -Force
 
 # 2) Frontend standalone + vendored Node
 Write-Host "== building frontend (Next.js standalone) =="
@@ -90,17 +101,12 @@ Write-Host "== generating icons from icon-source.png =="
 & cargo tauri icon (Join-Path $root "apps/desktop-tauri/icon-source.png")
 CheckExit "cargo tauri icon"
 
-# 4) Build the installer. The updater pubkey + GitHub Releases endpoint are baked
-#    into tauri.conf.json (committed; public keys are safe), so the in-app
-#    one-click updater is always configured. Signed update artifacts (latest.json
-#    + .sig) are only emitted when TAURI_SIGNING_PRIVATE_KEY is set — that's done
-#    in CI (desktop-release.yml). A keyless local build still produces a working
-#    installer; it just doesn't sign an update manifest (you don't need one locally).
-if ($env:TAURI_SIGNING_PRIVATE_KEY) {
-  Write-Host "== cargo tauri build (signing update artifacts) =="
-} else {
-  Write-Host "== cargo tauri build (local build; update signing skipped — set `$env:TAURI_SIGNING_PRIVATE_KEY to sign) =="
-}
+# 4) Build the installer. The updater pubkey and the two channel endpoints are
+#    compiled in (tauri.conf.json, src/updates.rs), so the in-app updater is always
+#    configured. Signed updater bundles and latest.json are only produced by CI
+#    (desktop-dev.yml, LOCUS-349); a local build makes a working installer with no
+#    update artifacts and no backend version stamp (its version check is skipped).
+Write-Host "== cargo tauri build (local build; no updater artifacts) =="
 Push-Location $tauri
 try { & cargo tauri build; CheckExit "cargo tauri build" } finally { Pop-Location }
 
@@ -110,12 +116,12 @@ $installers = @(
   (Join-Path $tauri "target/release/bundle"),
   (Join-Path $tauri "target/$triple/release/bundle")
 ) | Where-Object { Test-Path $_ } |
-  ForEach-Object { Get-ChildItem -Recurse $_ -Include *.msi, *.exe -ErrorAction SilentlyContinue }
+  ForEach-Object { Get-ChildItem -Recurse $_ -Include *.exe -ErrorAction SilentlyContinue }
 
 if ($installers) {
   Write-Host "`n== DONE. Installers built: =="
   $installers | ForEach-Object { Write-Host "  $($_.FullName)" }
   Write-Host "`nSmartScreen will warn on the unsigned installer: click 'More info' -> 'Run anyway'."
 } else {
-  throw "Build finished but no .msi/.exe found under target/**/release/bundle."
+  throw "Build finished but no .exe found under target/**/release/bundle."
 }

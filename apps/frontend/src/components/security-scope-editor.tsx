@@ -12,7 +12,7 @@ import type {
   PlatformSignalEnforcement,
   SecurityPolicyResponse,
   SecurityScopeConfig,
-} from "@/types/frontier";
+} from "@/types/locus";
 
 type Props = {
   entityType: "agent" | "workflow";
@@ -62,7 +62,7 @@ function ToggleRow({
   onChange: (next: boolean) => void;
 }) {
   return (
-    <label className="flex items-start justify-between gap-3 rounded border border-[var(--fx-border)] px-3 py-2 text-xs">
+    <label className="flex items-start justify-between gap-3 rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.82)] px-3.5 py-3 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.34)]">
       <div className="min-w-0">
         <div className="font-medium text-[var(--foreground)] break-words">{label}</div>
         <p className="mt-0.5 fx-muted leading-5 break-words">{description}</p>
@@ -103,13 +103,13 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
   const { addToast } = useToast();
   const [policy, setPolicy] = useState<SecurityPolicyResponse | null>(null);
   const [rulesets, setRulesets] = useState<GuardrailRuleSet[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [blockedKeywords, setBlockedKeywords] = useState(listToText(value.blocked_keywords));
   const [allowedEgressHosts, setAllowedEgressHosts] = useState(listToText(value.allowed_egress_hosts));
   const [allowedRetrievalSources, setAllowedRetrievalSources] = useState(listToText(value.allowed_retrieval_sources));
   const [allowedMcpServers, setAllowedMcpServers] = useState(listToText(value.allowed_mcp_server_urls));
-  const [allowedRuntimeEngines, setAllowedRuntimeEngines] = useState(listToText(value.allowed_runtime_engines));
   const [allowedMemoryScopes, setAllowedMemoryScopes] = useState(listToText(value.allowed_memory_scopes));
   const [maxToolCalls, setMaxToolCalls] = useState(value.max_tool_calls_per_run ? String(value.max_tool_calls_per_run) : "");
   const [maxRetrievalItems, setMaxRetrievalItems] = useState(value.max_retrieval_items ? String(value.max_retrieval_items) : "");
@@ -120,7 +120,6 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
     setAllowedEgressHosts(listToText(value.allowed_egress_hosts));
     setAllowedRetrievalSources(listToText(value.allowed_retrieval_sources));
     setAllowedMcpServers(listToText(value.allowed_mcp_server_urls));
-    setAllowedRuntimeEngines(listToText(value.allowed_runtime_engines));
     setAllowedMemoryScopes(listToText(value.allowed_memory_scopes));
     setMaxToolCalls(value.max_tool_calls_per_run ? String(value.max_tool_calls_per_run) : "");
     setMaxRetrievalItems(value.max_retrieval_items ? String(value.max_retrieval_items) : "");
@@ -142,15 +141,23 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
     let cancelled = false;
 
     async function load() {
-      const [policyResult, rulesetResult] = await Promise.all([
-        entityType === "agent" ? getAgentSecurityPolicy(entityId) : getWorkflowSecurityPolicy(entityId),
-        getGuardrailRulesets(),
-      ]);
-      if (cancelled) {
-        return;
+      try {
+        const [policyResult, rulesetResult] = await Promise.all([
+          entityType === "agent" ? getAgentSecurityPolicy(entityId) : getWorkflowSecurityPolicy(entityId),
+          getGuardrailRulesets(),
+        ]);
+        if (cancelled) {
+          return;
+        }
+        setPolicy(policyResult);
+        setRulesets(rulesetResult.filter((item) => item.status === "published"));
+        setLoadError(null);
+      } catch (error) {
+        if (!cancelled) {
+          setPolicy(null);
+          setLoadError(error instanceof Error ? error.message : "Unable to load the security policy.");
+        }
       }
-      setPolicy(policyResult);
-      setRulesets(rulesetResult.filter((item) => item.status === "published"));
     }
 
     void load();
@@ -165,7 +172,6 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
     }
     return [
       `Classification resolves to ${policy.effective.classification}`,
-      `Effective engines: ${policy.effective.allowed_runtime_engines.join(", ") || "none"}`,
       `Effective tool-call cap: ${policy.effective.max_tool_calls_per_run}`,
       `Effective retrieval cap: ${policy.effective.max_retrieval_items}`,
       `Signals: ${policy.effective.enable_platform_signals ? policy.effective.platform_signal_enforcement : "off"}`,
@@ -190,11 +196,11 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
   }
 
   return (
-    <div className="fx-panel p-3 text-[var(--foreground)] shadow-[0_8px_20px_rgba(0,0,0,0.35)]">
+    <div className="fx-panel rounded-[1.45rem] p-4 text-[var(--foreground)] shadow-[0_22px_52px_rgba(15,23,42,0.08)]">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[10px] uppercase tracking-[0.08em] fx-muted">Scoped security</p>
-          <h3 className="text-sm font-semibold break-words">{entityName}</h3>
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] fx-muted">Scoped security</p>
+          <h3 className="mt-2 text-[1.02rem] font-semibold tracking-[-0.02em] break-words">{entityName}</h3>
           <p className="mt-1 text-xs fx-muted leading-5 break-words">
             Tighten policy for this {entityType} without widening the platform envelope.
           </p>
@@ -204,12 +210,18 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
         </button>
       </div>
 
+      {loadError ? (
+        <p role="alert" className="mt-3 text-xs text-[var(--fx-danger)]">
+          Could not load the effective policy: {loadError}
+        </p>
+      ) : null}
+
       {collapsed ? (
         <p className="mt-3 text-[10px] fx-muted">Panel collapsed to leave more room for the canvas.</p>
       ) : (
         <div className="mt-3 max-h-[42vh] space-y-3 overflow-auto pr-1">
           <div className="grid gap-3 md:grid-cols-2">
-            <label className="block min-w-0 text-xs">
+            <label className="block min-w-0 text-xs text-[var(--foreground)]">
               <span className="font-medium text-[var(--foreground)]">Classification</span>
               <select
                 className="fx-field mt-2 w-full px-3 py-2 text-sm"
@@ -221,7 +233,7 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
                 ))}
               </select>
             </label>
-            <label className="block min-w-0 text-xs">
+            <label className="block min-w-0 text-xs text-[var(--foreground)]">
               <span className="font-medium text-[var(--foreground)]">Guardrail ruleset</span>
               <select
                 className="fx-field mt-2 w-full px-3 py-2 text-sm"
@@ -278,16 +290,6 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
               placeholder="http://localhost:8787"
             />
             <TextListField
-              label="Allowed runtime engines"
-              description="Optional narrower engine allowlist for this scope."
-              value={allowedRuntimeEngines}
-              onChange={(next) => {
-                setAllowedRuntimeEngines(next);
-                patchConfig({ allowed_runtime_engines: textToList(next) });
-              }}
-              placeholder="native, langgraph"
-            />
-            <TextListField
               label="Allowed memory scopes"
               description="Limit memory exposure for this scope."
               value={allowedMemoryScopes}
@@ -300,7 +302,7 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
           </div>
 
           <div className="grid gap-3 md:grid-cols-3">
-            <label className="block text-xs">
+            <label className="block text-xs text-[var(--foreground)]">
               <span className="font-medium text-[var(--foreground)]">Max tool calls</span>
               <input
                 className="fx-field mt-2 w-full px-3 py-2 text-sm"
@@ -313,7 +315,7 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
                 placeholder="leave blank for platform"
               />
             </label>
-            <label className="block text-xs">
+            <label className="block text-xs text-[var(--foreground)]">
               <span className="font-medium text-[var(--foreground)]">Max retrieval items</span>
               <input
                 className="fx-field mt-2 w-full px-3 py-2 text-sm"
@@ -326,7 +328,7 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
                 placeholder="leave blank for platform"
               />
             </label>
-            <label className="block text-xs">
+            <label className="block text-xs text-[var(--foreground)]">
               <span className="font-medium text-[var(--foreground)]">Max collaborators</span>
               <input
                 className="fx-field mt-2 w-full px-3 py-2 text-sm"
@@ -368,7 +370,7 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
             />
           </div>
 
-          <label className="block min-w-0 text-xs">
+          <label className="block min-w-0 text-xs text-[var(--foreground)]">
             <span className="font-medium text-[var(--foreground)]">Platform signal enforcement</span>
             <select
               className="fx-field mt-2 w-full px-3 py-2 text-sm"
@@ -381,7 +383,7 @@ export function SecurityScopeEditor({ entityType, entityId, entityName, value, o
             </select>
           </label>
 
-          <div className="rounded border border-[var(--fx-border)] px-3 py-2 text-xs">
+          <div className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.82)] px-3.5 py-3 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.34)]">
             <p className="font-medium text-[var(--foreground)]">Effective policy snapshot</p>
             <ul className="mt-2 space-y-1.5 text-[var(--foreground)]">
               {effectiveHighlights.map((item) => (

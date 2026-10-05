@@ -5,7 +5,7 @@ $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $FrontendRoot = Join-Path $RepoRoot "apps\frontend"
 $StepResults = [System.Collections.Generic.List[object]]::new()
 
-Write-Host "Lattix xFrontier pre-commit checks"
+Write-Host "Lattix Locus pre-commit checks"
 
 function Get-PythonCommand {
   $venvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
@@ -209,11 +209,18 @@ $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 
 Invoke-Step -Name "Install Python dependencies" -Action { Invoke-Python -Arguments @("-m", "pip", "install", "-e", ".[dev]") }
-Invoke-Step -Name "Install frontend dependencies" -Action { npm ci } -WorkingDirectory $FrontendRoot
+if (Get-Command npm -ErrorAction SilentlyContinue) {
+  Invoke-Step -Name "Install frontend dependencies" -Action { npm ci } -WorkingDirectory $FrontendRoot
+}
+else {
+  $npmDetail = "missing npm"
+  Write-Host ("SKIP: Install frontend dependencies ({0})" -f $npmDetail)
+  Add-StepResult -Name "Install frontend dependencies" -Status "SKIP" -Detail $npmDetail
+}
 Invoke-Step -Name "Python lint" -Action { Invoke-Python -Arguments @("-m", "ruff", "check", ".") }
 Invoke-Step -Name "Python format check" -Action { Invoke-Python -Arguments @("-m", "ruff", "format", ".", "--check") }
-Invoke-Step -Name "Python typecheck" -Action { Invoke-Python -Arguments @("-m", "mypy", "frontier_tooling/", "frontier_runtime/") }
-Invoke-Step -Name "Python tests" -Action { Invoke-Python -Arguments @("-m", "pytest", "apps/backend/tests", "tests", "-v", "--cov=app", "--cov=frontier_runtime", "--cov-report=term-missing") }
+Invoke-Step -Name "Python typecheck" -Action { Invoke-Python -Arguments @("-m", "mypy", "locus_tooling/", "locus_runtime/") }
+Invoke-Step -Name "Python tests" -Action { Invoke-Python -Arguments @("-m", "pytest", "apps/backend/tests", "tests", "-v", "--cov=app", "--cov=locus_runtime", "--cov-report=term-missing") }
 
 if ($Opa) {
   Invoke-Step -Name "Policy tests" -Action { Invoke-Python -Arguments @("scripts/run_opa.py", "test", "policies/", "-v") }
@@ -224,9 +231,20 @@ else {
   Add-StepResult -Name "Policy tests" -Status "SKIP" -Detail $policyDetail
 }
 
-Invoke-Step -Name "Frontend lint" -Action { npm run lint } -WorkingDirectory $FrontendRoot
-Invoke-Step -Name "Frontend tests" -Action { npm test } -WorkingDirectory $FrontendRoot
-Invoke-Step -Name "Frontend build" -Action { npm run build } -WorkingDirectory $FrontendRoot
+if (Get-Command npm -ErrorAction SilentlyContinue) {
+  Invoke-Step -Name "Frontend lint" -Action { npm run lint } -WorkingDirectory $FrontendRoot
+  Invoke-Step -Name "Frontend tests" -Action { npm test } -WorkingDirectory $FrontendRoot
+  Invoke-Step -Name "Frontend build" -Action { npm run build } -WorkingDirectory $FrontendRoot
+}
+else {
+  $npmDetail = "missing npm"
+  Write-Host ("SKIP: Frontend lint ({0})" -f $npmDetail)
+  Add-StepResult -Name "Frontend lint" -Status "SKIP" -Detail $npmDetail
+  Write-Host ("SKIP: Frontend tests ({0})" -f $npmDetail)
+  Add-StepResult -Name "Frontend tests" -Status "SKIP" -Detail $npmDetail
+  Write-Host ("SKIP: Frontend build ({0})" -f $npmDetail)
+  Add-StepResult -Name "Frontend build" -Status "SKIP" -Detail $npmDetail
+}
 
 Invoke-IfAvailable -CommandName "docker" -Description "Compose config validation" -Action {
   docker compose config --quiet
@@ -237,7 +255,7 @@ Invoke-IfAvailable -CommandName "docker" -Description "Compose config validation
 } -WorkingDirectory $RepoRoot
 
 Invoke-IfAvailable -CommandName "semgrep" -Description "SAST via Semgrep" -Action { semgrep --config=auto --exclude .venv --exclude .next --exclude node_modules --exclude dist . }
-Invoke-IfAvailable -CommandName "gitleaks" -Description "Secret scanning via Gitleaks" -Action { gitleaks detect --source . --no-git --redact }
+Invoke-IfAvailable -CommandName "gitleaks" -Description "Secret scanning via Gitleaks" -Action { gitleaks detect --source . --no-git --redact --config .gitleaks.toml }
 Invoke-IfAvailable -CommandName "trivy" -Description "SCA/config via Trivy" -Action { trivy fs --scanners vuln,misconfig --severity HIGH,CRITICAL --exit-code 1 --skip-dirs .venv,.next,node_modules,dist . }
 if ($Syft) {
   Invoke-Step -Name "SBOM generation via Syft" -Action {
@@ -258,15 +276,15 @@ else {
 }
 if ($Helm) {
   Invoke-Step -Name "Helm chart validation" -Action {
-    & $Helm lint ./helm/lattix-frontier
+    & $Helm lint ./helm/lattix-locus
     if ($LASTEXITCODE -ne 0) {
       exit $LASTEXITCODE
     }
-    & $Helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml | Out-Null
+    & $Helm template lattix ./helm/lattix-locus -f helm/lattix-locus/values-prod.yaml | Out-Null
   }
 }
 else {
-  $helmDetail = "missing helm.exe (run .\\scripts\\frontier.ps1 install-helm or add helm.exe to PATH)"
+  $helmDetail = "missing helm.exe (run .\\scripts\\locus.ps1 install-helm or add helm.exe to PATH)"
   Write-Host ("SKIP: Helm chart validation ({0})" -f $helmDetail)
   Add-StepResult -Name "Helm chart validation" -Status "SKIP" -Detail $helmDetail
 }

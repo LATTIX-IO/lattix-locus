@@ -10,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 if not str(os.environ.get("A2A_JWT_SECRET") or "").strip():
     os.environ["A2A_JWT_SECRET"] = "unit-test-super-secret-value-32bytes"
-if not str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").strip():
-    os.environ["FRONTIER_API_BEARER_TOKEN"] = "unit-test-bearer"
+if not str(os.environ.get("LOCUS_API_BEARER_TOKEN") or "").strip():
+    os.environ["LOCUS_API_BEARER_TOKEN"] = "unit-test-bearer"
 
 import app.main as main_module
 from app.main import IntegrationDefinition, store
@@ -20,10 +20,7 @@ from app.main import IntegrationDefinition, store
 def test_mcp_sse_payload_parsing() -> None:
     from app.mcp_client import McpHttpClient
 
-    body = (
-        "event: message\n"
-        'data: {"jsonrpc":"2.0","id":1,"result":{"tools":[]}}\n\n'
-    )
+    body = 'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"tools":[]}}\n\n'
     parsed = McpHttpClient._parse_sse_payload(body)
     assert parsed is not None
     assert parsed["result"]["tools"] == []

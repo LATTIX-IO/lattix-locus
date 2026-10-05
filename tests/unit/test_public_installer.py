@@ -5,12 +5,12 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PUBLIC_INSTALLER_PATH = REPO_ROOT / "install" / "frontier-installer.py"
+PUBLIC_INSTALLER_PATH = REPO_ROOT / "install" / "locus-installer.py"
 
 
 def _load_public_installer_module():
     spec = importlib.util.spec_from_file_location(
-        "frontier_public_installer", PUBLIC_INSTALLER_PATH
+        "locus_public_installer", PUBLIC_INSTALLER_PATH
     )
     assert spec is not None
     assert spec.loader is not None
@@ -22,9 +22,9 @@ def _load_public_installer_module():
 def test_public_installer_detects_bundled_repo_root(tmp_path: Path) -> None:
     install_dir = tmp_path / "install"
     install_dir.mkdir(parents=True, exist_ok=True)
-    script_path = install_dir / "frontier-installer.py"
+    script_path = install_dir / "locus-installer.py"
     script_path.write_text("# placeholder\n", encoding="utf-8")
-    packaged_installer = tmp_path / "frontier_tooling" / "installer.py"
+    packaged_installer = tmp_path / "locus_tooling" / "installer.py"
     packaged_installer.parent.mkdir(parents=True, exist_ok=True)
     packaged_installer.write_text("# packaged installer\n", encoding="utf-8")
 

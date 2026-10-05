@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from frontier_runtime.sandbox import DEFAULT_SANDBOX_RUNNER_IMAGE, sandbox_runner_image
+from locus_runtime.sandbox import DEFAULT_SANDBOX_RUNNER_IMAGE, sandbox_runner_image
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PINNED_PYTHON_IMAGE = "python:3.12.10-slim-bookworm"
-PINNED_AGENT_IMAGE = "lattix-frontier/agent-base:3.12.10-slim-bookworm"
+PINNED_AGENT_IMAGE = "lattix-locus/agent-base:3.12.10-slim-bookworm"
 
 
 def test_agent_dockerfile_uses_pinned_lightweight_python_base() -> None:
@@ -25,14 +25,14 @@ def test_backend_and_agent_dockerfiles_copy_license_for_package_metadata() -> No
 
     for dockerfile in (backend_dockerfile, agent_dockerfile):
         assert "COPY pyproject.toml README.md LICENSE ./" in dockerfile
-        assert "COPY frontier_tooling ./frontier_tooling" in dockerfile
-        assert "COPY frontier_runtime ./frontier_runtime" in dockerfile
+        assert "COPY locus_tooling ./locus_tooling" in dockerfile
+        assert "COPY locus_runtime ./locus_runtime" in dockerfile
 
 
 def test_full_compose_uses_pinned_default_agent_image() -> None:
     compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    assert f"FRONTIER_AGENT_IMAGE:-{PINNED_AGENT_IMAGE}" in compose
-    assert f"FRONTIER_AGENT_PYTHON_BASE_IMAGE:-{PINNED_PYTHON_IMAGE}" in compose
+    assert f"LOCUS_AGENT_IMAGE:-{PINNED_AGENT_IMAGE}" in compose
+    assert f"LOCUS_AGENT_PYTHON_BASE_IMAGE:-{PINNED_PYTHON_IMAGE}" in compose
 
 
 def test_local_compose_uses_pinned_python_images_for_backend_and_workers() -> None:

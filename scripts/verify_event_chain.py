@@ -9,10 +9,10 @@ from pathlib import Path
 
 
 def _default_chain_path() -> Path:
-    configured = str(os.getenv("FRONTIER_EVENT_CHAIN_PATH", "") or "").strip()
+    configured = str(os.getenv("LOCUS_EVENT_CHAIN_PATH", "") or "").strip()
     if configured:
         return Path(configured)
-    return Path(".frontier/event-chain.json")
+    return Path(".locus/event-chain.json")
 
 
 def _load_events(path: Path) -> list[dict[str, object]]:

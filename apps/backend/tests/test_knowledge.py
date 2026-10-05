@@ -12,15 +12,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 if not str(os.environ.get("A2A_JWT_SECRET") or "").strip():
     os.environ["A2A_JWT_SECRET"] = "unit-test-super-secret-value-32bytes"
-if not str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").strip():
-    os.environ["FRONTIER_API_BEARER_TOKEN"] = "unit-test-bearer"
+if not str(os.environ.get("LOCUS_API_BEARER_TOKEN") or "").strip():
+    os.environ["LOCUS_API_BEARER_TOKEN"] = "unit-test-bearer"
 
 import app.main as main_module
 from app.knowledge import chunk_text, collection_bucket
 from app.main import app, store
 
 client = TestClient(app)
-ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "frontier-admin"}
+ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-locus-actor": "locus-admin"}
 
 
 def test_chunk_text_packs_paragraphs() -> None:
@@ -64,9 +64,7 @@ def test_collection_crud_lifecycle() -> None:
         listing = client.get("/knowledge/collections", headers=ADMIN_HEADERS)
         assert any(item["id"] == collection_id for item in listing.json())
 
-        deleted = client.delete(
-            f"/knowledge/collections/{collection_id}", headers=ADMIN_HEADERS
-        )
+        deleted = client.delete(f"/knowledge/collections/{collection_id}", headers=ADMIN_HEADERS)
         assert deleted.status_code == 200
         collection_id = None
     finally:
@@ -120,9 +118,7 @@ def test_create_defaults_to_platform_vector_store() -> None:
 
 
 def test_document_add_degrades_without_memory_store(monkeypatch) -> None:
-    created = client.post(
-        "/knowledge/collections", json={"name": "KB"}, headers=ADMIN_HEADERS
-    )
+    created = client.post("/knowledge/collections", json={"name": "KB"}, headers=ADMIN_HEADERS)
     collection_id = created.json()["id"]
     try:
         monkeypatch.setattr(main_module._POSTGRES_MEMORY, "enabled", False, raising=False)

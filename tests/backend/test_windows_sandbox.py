@@ -12,8 +12,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from frontier_runtime import sandbox as sb  # noqa: E402
-from frontier_runtime import win_sandbox as ws  # noqa: E402
+from locus_runtime import sandbox as sb  # noqa: E402
+from locus_runtime import win_sandbox as ws  # noqa: E402
 
 
 # --- pure helpers ------------------------------------------------------------
@@ -98,8 +98,8 @@ def test_run_confined_fails_closed_when_appcontainer_required(monkeypatch):
     # Hostile-code posture: if AppContainer can't be established and it's required,
     # run_confined must raise — never silently degrade to the Job-Object tier.
     monkeypatch.setattr(ws, "_is_windows", lambda: True)
-    monkeypatch.setenv("FRONTIER_WIN_SANDBOX_REQUIRE_APPCONTAINER", "1")
-    monkeypatch.delenv("FRONTIER_WIN_SANDBOX_TIER", raising=False)
+    monkeypatch.setenv("LOCUS_WIN_SANDBOX_REQUIRE_APPCONTAINER", "1")
+    monkeypatch.delenv("LOCUS_WIN_SANDBOX_TIER", raising=False)
 
     def _boom(*_a, **_k):
         raise OSError("appcontainer unavailable")
@@ -112,8 +112,8 @@ def test_run_confined_fails_closed_when_appcontainer_required(monkeypatch):
 def test_run_confined_falls_back_when_not_required(monkeypatch):
     # Default posture (flag unset): AppContainer failure degrades to the Job tier.
     monkeypatch.setattr(ws, "_is_windows", lambda: True)
-    monkeypatch.delenv("FRONTIER_WIN_SANDBOX_REQUIRE_APPCONTAINER", raising=False)
-    monkeypatch.delenv("FRONTIER_WIN_SANDBOX_TIER", raising=False)
+    monkeypatch.delenv("LOCUS_WIN_SANDBOX_REQUIRE_APPCONTAINER", raising=False)
+    monkeypatch.delenv("LOCUS_WIN_SANDBOX_TIER", raising=False)
 
     def _boom(*_a, **_k):
         raise OSError("appcontainer unavailable")
@@ -145,7 +145,7 @@ def test_appcontainer_strategy_build_command():
     spec = sb.ExecutionSpec(tool_id="coding", command=["python", "-c", "print(1)"], cwd="")
     plan = mgr.plan(spec, policy)
     assert plan.backend == "windows-appcontainer"
-    assert "frontier_runtime.win_sandbox" in plan.command
+    assert "locus_runtime.win_sandbox" in plan.command
     assert "run" in plan.command and "--memory" in plan.command and "256m" in plan.command
     assert "--allow-network" not in plan.command
     assert "--" in plan.command and plan.command[-3:] == ["python", "-c", "print(1)"]
@@ -168,15 +168,15 @@ def test_appcontainer_strategy_passes_network_flag():
 
 # --- detection ---------------------------------------------------------------
 def test_detect_windows_native_picks_appcontainer(monkeypatch):
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-native")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-native")
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
     monkeypatch.setattr(sb, "detect_host_platform", lambda *a, **k: sb.HostPlatform.WINDOWS)
     assert sb.SandboxManager()._detect() == sb.IsolationStrategy.WINDOWS_APPCONTAINER
 
 
 def test_detect_windows_opt_in_force(monkeypatch):
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-lightweight")
-    monkeypatch.setenv("FRONTIER_FORCE_WINDOWS_APPCONTAINER", "1")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-lightweight")
+    monkeypatch.setenv("LOCUS_FORCE_WINDOWS_APPCONTAINER", "1")
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
     monkeypatch.setattr(sb, "detect_host_platform", lambda *a, **k: sb.HostPlatform.WINDOWS)
     assert sb.SandboxManager()._detect() == sb.IsolationStrategy.WINDOWS_APPCONTAINER
@@ -185,7 +185,7 @@ def test_detect_windows_opt_in_force(monkeypatch):
 def test_native_isolation_parity_across_os(monkeypatch):
     """Native installs get OS-deep isolation on all three platforms:
     Linux→bwrap, macOS→seatbelt, Windows→AppContainer."""
-    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-native")
+    monkeypatch.setenv("LOCUS_RUNTIME_PROFILE", "local-native")
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
 
     # Linux → bwrap (present)
@@ -196,6 +196,7 @@ def test_native_isolation_parity_across_os(monkeypatch):
     # macOS → seatbelt (sandbox-exec present)
     monkeypatch.setattr(sb, "detect_host_platform", lambda *a, **k: sb.HostPlatform.MACOS)
     import types as _types
+
     monkeypatch.setattr(sb, "Path", lambda p: _types.SimpleNamespace(is_file=lambda: True))
     assert sb.SandboxManager()._detect() == sb.IsolationStrategy.KERNEL_SEATBELT
 
@@ -213,8 +214,8 @@ def test_run_confined_rejected_off_windows(monkeypatch):
 # --- live Job-Object smoke (Windows only) -----------------------------------
 @pytest.mark.skipif(sys.platform != "win32", reason="Job Object confinement is Windows-only")
 def test_job_object_runs_trivial_command(monkeypatch):
-    monkeypatch.setenv("FRONTIER_WIN_SANDBOX_TIER", "job")  # force the baseline tier
-    result = ws.run_confined(["cmd", "/c", "echo frontier-ok"], memory="256m", pids=16)
+    monkeypatch.setenv("LOCUS_WIN_SANDBOX_TIER", "job")  # force the baseline tier
+    result = ws.run_confined(["cmd", "/c", "echo locus-ok"], memory="256m", pids=16)
     assert result.exit_code == 0
     assert result.tier == "job-object"
 
@@ -223,10 +224,13 @@ def test_job_object_runs_trivial_command(monkeypatch):
 def test_appcontainer_default_runs_or_falls_back(monkeypatch, tmp_path):
     # Default tier attempts AppContainer; if the environment blocks it, it must
     # fall back to the Job-Object tier — either way the command runs cleanly.
-    monkeypatch.delenv("FRONTIER_WIN_SANDBOX_TIER", raising=False)
+    monkeypatch.delenv("LOCUS_WIN_SANDBOX_TIER", raising=False)
     result = ws.run_confined(
-        ["cmd", "/c", "echo frontier-ok"], memory="256m", pids=16,
-        write_paths=[str(tmp_path)], cwd=str(tmp_path),
+        ["cmd", "/c", "echo locus-ok"],
+        memory="256m",
+        pids=16,
+        write_paths=[str(tmp_path)],
+        cwd=str(tmp_path),
     )
     assert result.exit_code == 0
     assert result.tier in {"appcontainer-job", "job-object"}

@@ -11,7 +11,7 @@ export default function GlobalError({
 }) {
   useEffect(() => {
     // Log to an error reporting service in the future
-    console.error("[Frontier] Unhandled error:", error);
+    console.error("[Locus] Unhandled error:", error);
   }, [error]);
 
   return (
@@ -44,8 +44,8 @@ export default function GlobalError({
         <button onClick={reset} className="fx-btn-primary px-4 py-2 text-sm font-medium">
           Try again
         </button>
-        <a href="/inbox" className="fx-btn-secondary px-4 py-2 text-sm font-medium no-underline">
-          Go to Inbox
+        <a href="/home" className="fx-btn-secondary px-4 py-2 text-sm font-medium no-underline">
+          Go to Home
         </a>
       </div>
     </div>

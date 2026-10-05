@@ -2,12 +2,12 @@
 
 ## Purpose
 
-This document is the canonical security expectations and migration-boundary reference for Lattix xFrontier.
+This document is the canonical security expectations and migration-boundary reference for Lattix Locus.
 
 It serves two jobs:
 
 1. describe the **current-state** security posture and failure modes of the repository as it exists today; and
-2. constrain implementation toward the **target-state** architecture where `apps/backend` is the sole canonical backend surface and the removed `lattix_frontier/` package remains fully disconnected from active backend/runtime responsibility.
+2. constrain implementation toward the **target-state** architecture where `apps/backend` is the sole canonical backend surface and the removed `lattix_locus/` package remains fully disconnected from active backend/runtime responsibility.
 
 This file should be updated whenever security-relevant behavior, deployment modes, trust boundaries, or accepted exceptions change.
 
@@ -20,7 +20,7 @@ In scope:
 - `policies/`
 - `docker-compose.yml`
 - `docker-compose.local.yml`
-- `helm/lattix-frontier/`
+- `helm/lattix-locus/`
 - top-level deployment and security documentation
 
 Out of scope for this document:
@@ -30,7 +30,7 @@ Out of scope for this document:
 
 ## Current-state architecture
 
-The repository no longer contains the old `lattix_frontier/` package in the working tree, but it still carries historical migration assumptions from that legacy surface. The current active code paths are the canonical backend/runtime surfaces below.
+The repository no longer contains the old `lattix_locus/` package in the working tree, but it still carries historical migration assumptions from that legacy surface. The current active code paths are the canonical backend/runtime surfaces below.
 
 ### 1. Backend model (`apps/backend`)
 
@@ -64,16 +64,16 @@ Current strengths:
 - memory reads/writes now enforce actor, tenant, collaboration-session, or internal-service authorization depending on scope
 - signed shared-runtime bearer JWTs can now carry actor, tenant, and internal-service identity into backend request auth context
 - worker A2A JWT issuance and verification now understand the same `actor`, `tenant_id`, `subject`, and `internal_service` identity claims used by the canonical backend
-- worker JWT defaults and deployment examples now align on the shared `frontier-runtime` audience and hosted-profile runtime settings used by backend/runtime security policy
-- worker A2A client now rejects non-HTTPS endpoints when `FRONTIER_RUNTIME_PROFILE=hosted`
+- worker JWT defaults and deployment examples now align on the shared `locus-runtime` audience and hosted-profile runtime settings used by backend/runtime security policy
+- worker A2A client now rejects non-HTTPS endpoints when `LOCUS_RUNTIME_PROFILE=hosted`
 - worker service templates now keep `/healthz` minimal in strict profiles, move detailed health/readiness behind authenticated bearer checks, and require `internal_service=true` for hosted/local-secure envelope handling
 - shared fallback and Rego agent policy now honor explicit capability-style `allowed_tools` and `max_tool_calls` inputs instead of relying only on static per-agent allowlists
 - capability token verification now enforces tool-call budgets and canonical read/write path scopes when those claims are supplied to runtime checks
 - worker runtime envelopes now carry a normalized `auth_context`, local bus middleware enforces strict-profile service identity plus scope-aware memory authorization before subscriber delivery, and remote A2A dispatch propagates the same actor/tenant/subject context
-- strict worker A2A transport now signs `X-Frontier-Subject` / `X-Frontier-Nonce` / `X-Frontier-Signature` headers, verifies them at the receiving service, and rejects nonce replay for non-local profiles
-- backend shared security headers now add HSTS automatically when `FRONTIER_RUNTIME_PROFILE=hosted`
-- CI now performs real Helm lint/template validation for `helm/lattix-frontier`, and local helper tooling exposes the same check when Helm is installed
-- backend runtime behavior is now pinned by explicit `FRONTIER_RUNTIME_PROFILE` values for `local-lightweight`, `local-secure`, and `hosted`
+- strict worker A2A transport now signs `X-Locus-Subject` / `X-Locus-Nonce` / `X-Locus-Signature` headers, verifies them at the receiving service, and rejects nonce replay for non-local profiles
+- backend shared security headers now add HSTS automatically when `LOCUS_RUNTIME_PROFILE=hosted`
+- CI now performs real Helm lint/template validation for `helm/lattix-locus`, and local helper tooling exposes the same check when Helm is installed
+- backend runtime behavior is now pinned by explicit `LOCUS_RUNTIME_PROFILE` values for `local-lightweight`, `local-secure`, and `hosted`
 
 Current weaknesses:
 
@@ -89,15 +89,15 @@ The target architecture is:
 
 - `apps/backend` is the **only** canonical backend/control-plane surface.
 - `apps/workers` remains the worker/runtime surface.
-- logic that previously lived under `lattix_frontier/` is either:
+- logic that previously lived under `lattix_locus/` is either:
   - migrated into `apps/backend` or `apps/workers`,
   - extracted into a small shared library with no competing backend surface, or
   - deleted.
 
 ### Target-state rules
 
-1. No new feature work should recreate `lattix_frontier/` as a parallel backend.
-2. Any reusable security primitive inherited from `lattix_frontier/` must be either:
+1. No new feature work should recreate `lattix_locus/` as a parallel backend.
+2. Any reusable security primitive inherited from `lattix_locus/` must be either:
    - ported into `apps/backend`, or
    - extracted as a shared primitive with a clearly documented owner.
 3. Deployment docs, runtime wiring, and tests must all point to `apps/backend` as the canonical backend.
@@ -162,6 +162,7 @@ The following assets require explicit protection:
 - OPA policy inputs and authorization decisions
 - deployment secrets (`.env`, installer env overlays, Vault-backed config)
 - audit/event streams and observability data
+- cortical assembly definitions, column state, belief/evidence records, commitment outcomes, replay markers, and causal graph projections
 
 ## Actor classes
 
@@ -181,7 +182,81 @@ The following assets require explicit protection:
 5. Runtime → sandbox/tool jail
 6. Service → service across local/full stack network boundaries
 7. Deployment/configuration layer → running services
+8. Column runtime → causal state persistence and graph projection
+9. Cognitive message transport → backend admission handler
 
+
+## Threats
+
+Use severity: Critical, High, Medium, Low.
+
+| ID | Threat | Severity | Affected Boundary | Description |
+|----|--------|----------|-------------------|-------------|
+| T1 | Unauthenticated API access | Critical | Browser/UI → backend API | Anonymous or weakly authenticated callers reach mutating endpoints in non-secure profiles |
+| T2 | Credential leakage in logs/traces | Critical | Deployment/configuration → running services | Secrets, tokens, or auth headers accidentally logged in structured logs, traces, or error responses |
+| T3 | SQL/injection via graph definition inputs | High | Backend API → persistence services | Malicious graph/agent/guardrail definitions trigger injection in Postgres/Neo4j/Redis |
+| T4 | Path traversal in shared filesystem access | High | Runtime → sandbox/tool jail / Backend/shared path auth | Attacker escapes approved roots via symlink, \..\, or canonicalization bypass |
+| T5 | SSRF via sandbox egress or runtime fetch | High | Runtime → sandbox/tool jail | Sandbox/tool makes outbound requests to internal metadata services or private networks |
+| T6 | Replay of A2A / worker messages | High | Service → service / Orchestrator → worker | Captured signed envelopes replayed to impersonate legitimate worker/orchestrator |
+| T7 | Capability token forgery or escalation | High | Orchestrator/worker → policy engine | Forged or over-permissioned capability tokens bypass tool-call budgets or path scopes |
+| T8 | Memory scope bypass | High | Backend runtime → worker/A2A | Cross-tenant or cross-scope memory read/write due to missing authorization checks |
+| T9 | Policy drift between Rego and Python fallback | Medium | Orchestrator/worker → policy engine | Allow/deny decisions diverge when fallback and Rego logic evolve independently |
+| T10 | Introspection leakage via health/diagnostic endpoints | Medium | Browser/UI → backend API / Deployment → services | \/healthz\, \/ready\, \/platform/*\ expose runtime config, versions, or topology to unauthenticated callers |
+| T11 | CORS misconfiguration | Medium | Browser/UI → backend API | Overly permissive origins/headers allow browser-based credentialed attacks |
+| T12 | Supply chain: compromised dependency | Medium | Deployment/configuration → running services | Malicious package in Python/npm supply chain executes at build or runtime |
+| T13 | Container escape via sandbox breakout | Low | Runtime → sandbox/tool jail | Attacker breaks out of seccomp/bubblewrap/Docker isolation to host kernel |
+| T14 | Denial of service via unbounded queues/retries | Low | Orchestrator/worker → policy engine / Runtime → sandbox | Unbounded work queues, retries, or tool calls exhaust memory/CPU |
+| T15 | Configuration drift between local and hosted profiles | Low | Deployment/configuration → running services | Secure/full and lightweight modes diverge, leading to wrong operator assumptions |
+| T16 | Local process widens capability through the desktop loopback bootstrap | High | Local process → backend API (desktop `local-native`) | On the desktop every loopback request is authenticated as the operator, so an un-jailed local process (or a confused page) approves its own agent asks, clears panic, loosens settings or guardrails, adds integrations, skills, keys, triggers or schedules, or widens the browser tier |
+
+## Mitigations
+
+| Threat ID | Mitigation | Status | Implementation |
+|-----------|------------|--------|----------------|
+| T1 | Central route inventory with middleware enforcement; startup validation catches unclassified endpoints; secure/local full-stack fails closed via env-backed auth defaults | **Implemented** | `apps/backend/app/request_security.py`, `apps/backend/app/main.py` (route classification), `LOCUS_RUNTIME_PROFILE=local-secure` |
+| T2 | Structured logging redacts auth headers, tokens, secrets; error responses sanitize guardrail internals; no PII in traces by default | **Implemented** | `apps/backend/app/logging_config.py`, runtime sanitization in `locus_runtime/security.py` |
+| T3 | Prepared statements / safe query builders in backend; graph schema validation; input length/format checks at API boundary | **Implemented** | SQLAlchemy ORM, Pydantic models in `apps/backend/app/schemas.py` |
+| T4 | Canonical containment checks (not prefix matching) in backend loaders and shared fallback policy; symlink resolution before containment test | **Implemented** | `apps/backend/app/filesystem.py`, `policies/fs.rego` |
+| T5 | Squid domain allowlist (fail-closed) replacing open IP-range ACL; network namespace isolation when `allow_network=False` | **Implemented** | `docker/sandbox/squid.conf`, `locus_runtime/sandbox.py` |
+| T6 | A2A replay protection: TTL-based nonce expiry with bounded pruning; signed `X-Locus-Subject`/`Nonce`/`Signature` headers verified at receiver | **Implemented** | `apps/backend/app/a2a_replay.py`, worker A2A client in `apps/workers/` |
+| T7 | Capability grants are Biscuit tokens (Ed25519, key id + accepted-key list for rotation, attenuation only narrows, persisted revocation ids, expiry: run ≤ 24h, standing 30 days unless pinned). The gateway looks grants up server-side for the authenticated principal; a covering grant turns R3 `ask` into `allow` only after policy allowed and never for R4. HMAC capability tokens retired (LOCUS-334) | **Implemented** | `locus_runtime/grants.py`, `locus_runtime/gateway.py` step 3 |
+| T8 | Memory reads/writes enforce actor, tenant, collaboration-session, or internal-service authorization per scope; scope-to-bucket validation | **Implemented** | `apps/backend/app/memory.py`, worker runtime envelope auth middleware |
+| T9 | Python copy of the rules removed (LOCUS-328); `policies/*.rego` evaluated only by a real Rego engine behind `PolicyEngine` (OPA loopback sidecar, fail closed); parity suite over all 7 policies. Not yet on an execution-path gateway (posture: unverified) | **Partial** | `locus_runtime/policy_engine.py`, `tests/policy/test_policy_parity.py`, `tests/unit/test_policy_engine.py` |
+| T10 | Central route classification marks /healthz public (minimal), diagnostics authenticated; secure local mode serves minimal public healthz | **Implemented** | `apps/backend/app/request_security.py` access classes |
+| T11 | CORS uses explicit local origins/methods/headers instead of wildcards; localhost-only in local profiles | **Implemented** | `apps/backend/app/main.py` CORS middleware config |
+| T12 | Gitleaks secret scanning in CI; Semgrep SAST; Trivy SCA for vuln/misconfig; SBOM via Syft; pinned dependencies in `pyproject.toml`/`package-lock.json` | **Implemented** | `.github/workflows/security-lifecycle.yml`, `precommit.ps1` |
+| T13 | Three-tier sandbox: seccomp BPF, read-only rootfs, network namespace, non-root, resource limits, IPC isolation, gVisor/Kata RuntimeClasses for K8s | **Implemented** | `docker/sandbox/seccomp-strict.json`, `locus_runtime/sandbox.py`, Helm chart `locus-sandbox` RuntimeClass |
+| T14 | Bounded pids-limit (256), memory (512m), CPU (1.0); capability token `max_tool_calls` budget; sandbox resource limits | **Implemented** | `locus_runtime/sandbox.py`, capability token claims |
+| T15 | Explicit `LOCUS_RUNTIME_PROFILE` values (`local-lightweight`, `local-secure`, `hosted`); Helm values-prod.yaml codifies hosted posture; CI validates Helm render | **Implemented** | `locus_tooling/common.py`, `helm/lattix-locus/values-prod.yaml`, CI Helm lint |
+| T16 | Every mutating route is classified `widening` / `narrowing` / `conditional` / `neutral` in one table (startup refuses an unclassified route). On the desktop profile a widening request also needs the Tauri shell's single-use HMAC proof (per-launch secret over stdin, ±60 s, bound to action, method, path and canonical body), produced only after the human confirms a native dialog whose text the shell builds from the request and the backend's state; refusals are audited; narrowing needs none; no shell secret means no widening (LOCUS-350, LOCUS-357). **Residual:** same-OS-user code can read process memory or fake input to the dialog; only jailed runs (no loopback) are excluded. In the desktop shell the UI sends these calls through `confirm_action` (`apps/frontend/src/lib/desktop-confirmation.ts`). | **Implemented** (Rust shell compiled in CI only) | `apps/backend/app/request_security.py`, `apps/backend/app/capability_widening.py`, `locus_tooling/shell_confirmation.py`, `apps/desktop-tauri/src-tauri/src/shell_actions.rs`, `browser_tier.rs` |
+
+## Required Tests
+
+The following tests provide regression coverage for the threats and mitigations above. All tests must pass in CI before merge.
+
+| Test Target | Test File(s) | Threat Coverage | Frequency |
+|-------------|--------------|-----------------|-----------|
+| Route classification & auth enforcement | \pps/backend/tests/test_request_security.py\ | T1 | Every PR |
+| Security headers & sanitized errors | \	ests/unit/test_security_headers.py\ | T2, T10 | Every PR |
+| Graph schema validation & injection safety | \pps/backend/tests/test_graph_validation.py\ | T3 | Every PR |
+| Filesystem canonical containment | \	ests/unit/test_compose_auth_contract.py\, \policies/tests/fs_test.rego\ | T4 | Every PR |
+| Sandbox egress allowlist & network isolation | \	ests/unit/test_sandbox_policy.py\, \	ests/backend/test_windows_sandbox.py\ | T5, T13 | Every PR |
+| A2A replay protection & nonce expiry | \	ests/unit/test_event_signing.py\, \pps/backend/tests/test_a2a_replay.py\ | T6 | Every PR |
+| Capability grant verification (signature, key rotation, expiry, attenuation, revocation, gateway R3/R4/deny) | `tests/unit/test_biscuit_tokens.py`, `tests/unit/test_gateway_grants.py`, `apps/backend/tests/test_gateway_grants_api.py`, `tests/policy/test_gateway_opa.py` | T7 | Every PR |
+| Memory scope authorization (actor, tenant, collaboration, internal) | \pps/backend/tests/test_memory_scope.py\ | T8 | Every PR |
+| Policy parity (PolicyEngine vs expected Rego decisions) | `policies/tests/*.rego`, `tests/policy/test_policy_parity.py` (CI: quality-policy-helm, real OPA) | T9 | Every PR |
+| Health/diagnostic endpoint visibility | \pps/backend/tests/test_endpoint_visibility.py\ | T10 | Every PR |
+| CORS configuration | \pps/backend/tests/test_cors.py\ | T11 | Every PR |
+| Secret scanning (Gitleaks), SAST (Semgrep), SCA (Trivy) | CI-only: \.github/workflows/security-lifecycle.yml\ | T12 | Every PR + scheduled |
+| Sandbox isolation (seccomp, bubblewrap, gVisor) | \	ests/backend/test_windows_sandbox.py\, Helm chart render tests | T13 | Every PR + Windows CI |
+| Resource limits & tool-call budgets | \	ests/unit/test_sandbox_policy.py\ | T14 | Every PR |
+| Profile consistency (local-lightweight vs local-secure vs hosted) | \	ests/unit/test_helm_security_contract.py\, \helm/lattix-locus/values-*.yaml\ diff check | T15 | Every PR |
+| Compose config validation (both compose files) | \docker compose config --quiet\ in CI | T5, T13, T15 | Every PR |
+| Helm lint & template render (prod values) | \make helm-validate\ in CI | T15 | Every PR |
+| OPA policy tests | \make policy-test\ | T4, T9 | Every PR |
+| Desktop shell proof for widening endpoints (refused + audited, valid, replay, bound to the request, narrowing free, route inventory complete, `is_widening`, Rust/Python sync) | `apps/backend/tests/test_shell_proof_endpoints.py`, `apps/backend/tests/test_capability_widening.py`, `apps/backend/tests/test_user_browser_endpoint.py`, `tests/unit/test_shell_confirmation.py`, `tests/backend/test_desktop_packaging.py` | T16 | Every PR |
+
+---
 ## Service-level zero trust expectations
 
 The secure/full stack target is **service-level zero trust**.
@@ -207,13 +282,83 @@ The following must remain true as the system evolves:
 7. Memory scope labels are not treated as sufficient protection without actual access control enforcement.
 8. Backend/runtime error responses do not reveal guardrail rule internals to untrusted callers.
 9. Deployment docs and runtime defaults describe the same security posture.
+10. Cognitive messages cannot mutate causal state unless they are signed, fresh, tenant-consistent, assembly-consistent, and non-replayed.
+11. Column capabilities are enforced by column kind and assembly policy before model, tool, retrieval, memory, or commitment actions.
+12. Causal graph projection is a tenant-authorized derived view and must never be the only copy of causal state.
+
+## Cortical column zero-trust threat model
+
+The cortical assembly runtime extends the service-level zero-trust model into intra-runtime execution. A column, runtime helper, or message sender is not trusted because it runs in the same backend process, worker process, Docker network, or Kubernetes namespace. The security model assumes columns and runtime messages may be malformed, stale, replayed, tenant-confused, over-permissioned, or carrying sensitive payloads until backend admission proves otherwise.
+
+### Zero-trust column assumptions
+
+- Column kind is an authorization boundary. A goal column can read input and emit goal beliefs, evidence can retrieve, evaluation can score or veto, synthesis can propose commitments, and unknown kinds deny by default.
+- Assembly definitions are untrusted input. They must be admitted before runtime execution and bounded by max columns, max iterations, max messages, required goal/evidence/evaluation/synthesis participation, and tenant/provider/model/tool policy.
+- Runtime execution steps require a shared policy gate. Capability checks alone are not sufficient without authenticated context, tenant ownership, runtime allowlists, network/tool/retrieval allowlists, budget counters, and audit events.
+- Commitments are high-impact decisions. Evidence/evaluation participation, veto/blocker state, confidence thresholds, high-risk human approval, and an audited decision trail must be checked before a ready commitment is accepted.
+- Projection is not authorization. Neo4j/world-graph causal projection is a bounded derived view of persisted causal state and must fail without corrupting the source state.
+
+### Tenant isolation model
+
+Tenant identity can enter through authenticated backend request context, signed shared-runtime bearer claims, and cognitive message metadata. The expected behavior is fail-closed when those sources conflict. Cross-tenant assembly replay, tenant-mismatched cognitive messages, wrong-tenant graph projection, and scope-label-only memory access are security failures.
+
+The minimum tenant isolation contract is:
+
+1. every admitted cognitive message includes tenant and assembly identity;
+2. the authenticated or signed runtime tenant must match persisted assembly ownership;
+3. replay markers are scoped by assembly, tenant, source column, target column, message type, and payload ref;
+4. causal graph projection requires the caller tenant to match the persisted assembly tenant; and
+5. memory and causal state access use authenticated actor, tenant claim, collaboration membership, or internal-service identity instead of trusting caller-supplied bucket labels alone.
+
+### Signed message flow
+
+The trusted flow for column messages is:
+
+1. runtime code converts a `ColumnMessage` into a cognitive `AgentEvent` or `Envelope`;
+2. the sender signs the request with `X-Locus-Subject`, `X-Locus-Nonce`, `X-Locus-Timestamp`, `X-Correlation-ID`, and `X-Locus-Signature`;
+3. backend request security verifies profile-required authentication, signature freshness, and nonce replay status;
+4. cognitive admission validates message type, tenant ownership, assembly existence, known source and target columns, and semantic replay marker; and
+5. accepted messages can record replay evidence and audit events before any state mutation proceeds.
+
+Unsigned, stale, replayed, wrong-tenant, unknown-column, or conflicting messages must be rejected before belief history, confidence history, commitment outcomes, or projection state changes.
+
+### Policy gate flow
+
+The shared column runtime gate is the central authorization checkpoint for cortical execution. It must run before model calls, retrieval, tool calls, memory writes, and commitment publication. The gate evaluates authenticated context, tenant ownership, column capability, explicit assembly grants, runtime provider/model allowlists, tool/retrieval/network allowlists, budget counters, and audit emission.
+
+The policy-gate threat assumption is that any future direct path around `admit_column_runtime_step(...)`, `require_column_capability(...)`, assembly admission, or commitment validation can become a privilege-escalation path and should be treated as a security regression.
+
+### Deployment profile requirements
+
+Runtime profiles define which local exceptions are allowed:
+
+| Profile | Intended use | Security expectation |
+| --- | --- | --- |
+| `local-lightweight` | quick local iteration | local dev remains usable; public health/settings behavior may be lightweight where explicitly classified |
+| `local-secure` | secure local/full stack | authenticated operator access, signed/internal service identity for protected paths, replay protection, egress mediation, and degraded status for unsafe secure controls |
+| `hosted` | non-local service deployment | authenticated access, required A2A runtime headers, signed messages, replay protection, egress allowlist, MCP local policy unless explicitly confirmed, and blocked/unhealthy status for unsafe controls |
+
+Hosted deployments must not rely on legacy local-only flags, unsigned actor headers, direct internal health detail exposure, or raw MCP endpoint entry as a substitute for staged/admin-approved connection policy.
+
+### Rollback and monitoring expectations
+
+Rollback should preserve causal state and audit evidence. Operators should roll back application code/configuration to the previous known-good release, not delete replay markers, causal state, or audit/event-chain artifacts as a first response. If signing material is compromised, A2A secret rotation is a separate security action and should be coordinated across all runtime senders.
+
+Monitoring should include:
+
+- authenticated `/healthz/details` and `/platform/settings` `secure_profile` status;
+- audit events for cognition admission/rejection, policy decisions, column lifecycle, message acceptance/rejection, commitment finalization/escalation, and projection success/failure;
+- runtime security counters and traces with correlation IDs;
+- projection statuses such as `skipped`, `unavailable`, or `write_failed`;
+- tenant-isolation block events; and
+- redaction markers plus absence of raw secrets in audit, persistence, projection, and error-response payloads.
 
 ## Sandbox hardening status (three-tier hybrid)
 
 The sandbox subsystem has been hardened with the following controls:
 
 | Control | Status | Implementation |
-|---------|--------|---------------|
+| --------- | -------- | --------------- |
 | Custom seccomp BPF profile | **Implemented** | `docker/sandbox/seccomp-strict.json` blocks ptrace, io_uring, mount, bpf, setuid, and 30+ other syscalls |
 | Read-only root filesystem | **Implemented** | `--read-only` flag in hardened Docker; `--ro-bind / /` in bubblewrap |
 | Network isolation (namespace) | **Implemented** | `--network=none` (Docker) / `--unshare-net` (bubblewrap) when `allow_network=False` |
@@ -223,14 +368,14 @@ The sandbox subsystem has been hardened with the following controls:
 | Capability token expiration | **Implemented** | `exp` field with 10-minute TTL; verifier rejects expired tokens |
 | Squid domain allowlist | **Implemented** | Fail-closed domain allowlist replacing open IP-range ACL |
 | Kernel sandbox (no Docker) | **Implemented** | bubblewrap (Linux) / seatbelt (macOS) auto-detected by `SandboxManager` |
-| K8s gVisor RuntimeClass | **Implemented** | Helm chart deploys `frontier-sandbox` RuntimeClass with `runsc` handler |
-| K8s Kata RuntimeClass | **Implemented** | Optional `frontier-sandbox-vm` RuntimeClass for hardware-level isolation |
-| K8s seccomp ConfigMap | **Implemented** | `frontier-strict.json` deployed as ConfigMap for node sync |
+| K8s gVisor RuntimeClass | **Implemented** | Helm chart deploys `locus-sandbox` RuntimeClass with `runsc` handler |
+| K8s Kata RuntimeClass | **Implemented** | Optional `locus-sandbox-vm` RuntimeClass for hardware-level isolation |
+| K8s seccomp ConfigMap | **Implemented** | `locus-strict.json` deployed as ConfigMap for node sync |
 
 ## Known failure modes and current mitigation status
 
 | Area | Current issue | Impact | Current mitigation / compensating control | Planned remediation |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Backend auth | `apps/backend` now centralizes route classification and request enforcement, but deployment profiles still decide when authenticated-read/mutate routes are mandatory outside secure/local full-stack mode | anonymous or weakly gated access if weaker profiles are misconfigured | central route inventory, middleware enforcement, startup validation, and secure local fail-closed defaults | make secure/hosted profile behavior immutable and consistently selected |
 | Security policy disclosure | `/platform/security-policy` should not be public in secure/full mode | attacker reconnaissance | central route classification now marks it authenticated-read and secure local mode requires auth | classify endpoint visibility consistently across hosted/internal profiles |
 | Introspection leakage | `/healthz` and runtime readiness/provider endpoints can expose too much detail | service and trust boundary reconnaissance | central route classification plus secure local mode now serves minimal public `/healthz` and authenticated diagnostics endpoints | extend the same contract to all hosted/internal profiles |
@@ -249,32 +394,37 @@ The sandbox subsystem has been hardened with the following controls:
 | Helm network policies | template was previously malformed; repo now has real Helm lint/render validation in CI, though this local machine still lacks a Helm binary for an interactive run | sharply reduced false-confidence risk because PRs/pushes now render the chart | repaired control-plane policy template, selector audit against current chart workloads, and CI Helm lint/template validation | optionally run the same check locally in Helm-capable operator environments before release |
 | Release/promotion drift | release docs previously promised staged promotion and rollback behavior that CI did not implement | unsafe or unverifiable production promotion path | release automation now builds versioned bundles, publishes release assets, gates `dev -> stage -> prod` promotion with environment smoke checks, and exposes a manual rollback workflow driven by rollback metadata | extend the same promotion evidence into deployment apply/reconcile jobs as those surfaces mature |
 | Deployment drift | docs/defaults around secure vs lightweight modes have been inconsistent | wrong operator assumptions | recent cleanup improved this | codify in docs + threat model + tests |
-| Legacy backend drift | the deleted `lattix_frontier/` package is still referenced by some docs and historical migration notes | dual-surface confusion and documentation/operator drift | package removed from the working tree; migration intent documented in this file | complete Phase 3 legacy-surface retirement across docs/tooling/tests |
+| Cognitive message replay | signed transport nonce checks alone do not catch semantic duplicate messages with new nonces | duplicate belief or commitment mutation | persisted replay markers now bind assembly, tenant, columns, message type, and payload ref; completed assemblies replay idempotently | keep replay marker coverage for new message/outcome mutation paths |
+| Column privilege escalation | a future runtime path could call model/tool/retrieval/memory/commitment logic without the column runtime gate | unauthorized tool use, tenant data access, or premature commitment | shared `admit_column_runtime_step` and column capability checks cover current cortical execution paths | treat any direct bypass as a security regression and add tests before new runtime paths merge |
+| Causal projection abuse | graph projection could reveal cross-tenant state or corrupt persisted causal history if treated as source of truth | tenant leakage or data loss | projection is tenant-checked, bounded, idempotent, and failure-isolated from persisted state | keep projection authorization and failure-mode tests with future graph adapters |
+| Secure profile misconfiguration | hosted settings can disable controls that the deployment profile requires | hosted service starts or stays healthy without auth/signature/replay/egress/MCP controls | secure profile report, startup validation, settings rejection, and health blocking/degradation | keep profile requirements immutable and extend parity across worker/service surfaces |
+| Desktop update channels (D-26, LOCUS-349) | the updater signing key (repo secret `TAURI_SIGNING_PRIVATE_KEY`) is the root of trust for every Dev and Stable install, and Dev installs auto-install code the self-improvement loop wrote | a leaked key plus release write access, or a loop PR that slips past the gates, ships code to every Dev install without a click | mandatory minisign verification in the app against the committed pubkey; only two compiled-in channel URLs; CI publishes no `latest.json` without the key and verifies every signature against the pubkey before publishing; channel pointers only move forward, serialized; the update trust chain (`apps/desktop-tauri/src-tauri/`, `scripts/desktop_channel.py`, `locus_tooling/{update_contract,desktop_update,build_info}.py`, workflows) is D-22 protected; Stable is a manual promotion of tested bytes; the app refuses a backend whose build stamp differs (tauri#15134) | LOCUS-351 scorecard as a Dev gate; code-signing certificates (D-24); consider a key held outside GitHub (offline signing for Stable) |
+| Legacy backend drift | the deleted `lattix_locus/` package is still referenced by some docs and historical migration notes | dual-surface confusion and documentation/operator drift | package removed from the working tree; migration intent documented in this file | complete Phase 3 legacy-surface retirement across docs/tooling/tests |
 
-## Historical migration record for removed `lattix_frontier/`
+## Historical migration record for removed `lattix_locus/`
 
 The following is the Phase 0 migration matrix preserved as a historical record of how legacy surfaces were intended to be migrated, extracted, or deleted.
 
 | Surface | Current role | Phase 0 disposition | Notes |
-|---|---|---|---|
-| `lattix_frontier/api/middleware/auth.py` | stronger auth pattern | migrate to `apps/backend` or extract shared primitive | do not keep as legacy-only behavior |
-| `lattix_frontier/api/middleware/security_headers.py` | stronger response-header hardening | migrate to `apps/backend` or extract shared primitive | should become canonical backend behavior |
-| `lattix_frontier/security/jwt_auth.py` | stronger replay/revocation/token validation | extract shared primitive or port into backend auth layer | avoid parallel auth implementations |
-| `lattix_frontier/security/opa_client.py` | OPA client + fallback | extract shared primitive after remediation, or retire if backend replaces policy path | fix path semantics before reuse |
-| `lattix_frontier/sandbox/` | tool jail / isolation model | extract shared primitive for worker/backend use | security-critical; not a delete-first area |
-| `lattix_frontier/guardrails/` | legacy filter-chain guardrails | migrate useful primitives, delete parallel runtime wiring | avoid second guardrail architecture |
-| `lattix_frontier/orchestrator/` | legacy orchestration/runtime surface | disconnect then delete or reduce to worker/shared execution primitives | should not remain canonical |
-| `lattix_frontier/api/routes/` | legacy API surface | disconnect from deployment path, then delete | target is `apps/backend` only |
-| `lattix_frontier/agents/` | legacy A2A/client/server helpers | migrate needed runtime pieces to `apps/workers` or shared package | keep only what workers actually use |
-| `lattix_frontier/persistence/` | state helpers | evaluate for extraction or replacement by backend platform services | no duplicate system of record |
-| `lattix_frontier/events/` / `observability/` | event integrity / telemetry primitives | extract if still needed, otherwise delete duplicate surface | preserve audit guarantees |
-| `lattix_frontier/cli.py` / install helpers | legacy operator entrypoints | update to point at canonical backend/workers or remove | no stale control path |
-| `lattix_frontier/config.py` | shared settings and secret validation | extract shared config primitive if still needed | keep one config truth |
+| --- | --- | --- | --- |
+| `lattix_locus/api/middleware/auth.py` | stronger auth pattern | migrate to `apps/backend` or extract shared primitive | do not keep as legacy-only behavior |
+| `lattix_locus/api/middleware/security_headers.py` | stronger response-header hardening | migrate to `apps/backend` or extract shared primitive | should become canonical backend behavior |
+| `lattix_locus/security/jwt_auth.py` | stronger replay/revocation/token validation | extract shared primitive or port into backend auth layer | avoid parallel auth implementations |
+| `lattix_locus/security/opa_client.py` | OPA client + fallback | extract shared primitive after remediation, or retire if backend replaces policy path | fix path semantics before reuse |
+| `lattix_locus/sandbox/` | tool jail / isolation model | extract shared primitive for worker/backend use | security-critical; not a delete-first area |
+| `lattix_locus/guardrails/` | legacy filter-chain guardrails | migrate useful primitives, delete parallel runtime wiring | avoid second guardrail architecture |
+| `lattix_locus/orchestrator/` | legacy orchestration/runtime surface | disconnect then delete or reduce to worker/shared execution primitives | should not remain canonical |
+| `lattix_locus/api/routes/` | legacy API surface | disconnect from deployment path, then delete | target is `apps/backend` only |
+| `lattix_locus/agents/` | legacy A2A/client/server helpers | migrate needed runtime pieces to `apps/workers` or shared package | keep only what workers actually use |
+| `lattix_locus/persistence/` | state helpers | evaluate for extraction or replacement by backend platform services | no duplicate system of record |
+| `lattix_locus/events/` / `observability/` | event integrity / telemetry primitives | extract if still needed, otherwise delete duplicate surface | preserve audit guarantees |
+| `lattix_locus/cli.py` / install helpers | legacy operator entrypoints | update to point at canonical backend/workers or remove | no stale control path |
+| `lattix_locus/config.py` | shared settings and secret validation | extract shared config primitive if still needed | keep one config truth |
 | `policies/*.rego` | policy source | retain, but feed from canonical backend/worker inputs | do not duplicate policy logic in two backends |
 
 ### Migration rule
 
-Every legacy `lattix_frontier/` surface was assigned one of three dispositions before new security work proceeded beyond Phase 0:
+Every legacy `lattix_locus/` surface was assigned one of three dispositions before new security work proceeded beyond Phase 0:
 
 - **migrate** — port into `apps/backend` / `apps/workers`
 - **extract** — move into a small shared primitive package with one owner
@@ -288,8 +438,8 @@ Phase 0 is complete when:
 
 1. `THREAT-MODEL.md` exists and is treated as canonical.
 2. Current-state and target-state architectures are both documented.
-3. the removed `lattix_frontier/` package is explicitly documented as historical/transitional rather than current.
-4. the migration matrix covers every formerly live security/runtime area in `lattix_frontier/`.
+3. the removed `lattix_locus/` package is explicitly documented as historical/transitional rather than current.
+4. the migration matrix covers every formerly live security/runtime area in `lattix_locus/`.
 5. New work is guided toward `apps/backend` / `apps/workers`, not legacy backend expansion.
 6. Repo docs point readers to this threat model for security expectations and architecture convergence.
 
@@ -303,17 +453,17 @@ Any security-relevant change should update this file if it changes:
 - token/replay/auth semantics
 - sandbox policy/invariants
 - memory boundary expectations
-- the migration status of any historically referenced `lattix_frontier/` surface
+- the migration status of any historically referenced `lattix_locus/` surface
 
 ## Phase 3 focus
 
 Phase 3 is the **legacy-surface retirement and documentation convergence** wave.
 
-Its goal is to finish the repo-level cleanup that becomes possible after the functional/security migration work: remove stale references to the deleted `lattix_frontier/` package, keep release/docs/tooling aligned to the canonical surfaces, and prevent drift from reintroducing a phantom second backend.
+Its goal is to finish the repo-level cleanup that becomes possible after the functional/security migration work: remove stale references to the deleted `lattix_locus/` package, keep release/docs/tooling aligned to the canonical surfaces, and prevent drift from reintroducing a phantom second backend.
 
 ### Phase 3 objectives
 
-1. remove stale documentation and release references that still describe `lattix_frontier/` as a live in-tree package
+1. remove stale documentation and release references that still describe `lattix_locus/` as a live in-tree package
 2. add regression coverage for canonical repo structure assumptions so deleted legacy surfaces do not silently reappear in docs/tooling
 3. narrow historical migration notes so they remain useful context without confusing operators about the active architecture
 
@@ -321,9 +471,9 @@ Its goal is to finish the repo-level cleanup that becomes possible after the fun
 
 Implemented:
 
-- stale README architecture/layout references to a live `lattix_frontier/` package have been removed
+- stale README architecture/layout references to a live `lattix_locus/` package have been removed
 - `docs/ARCHITECTURE.md` now describes the active canonical surfaces instead of a deleted dual-surface package layout
-- FOSS/security docs now treat `lattix_frontier/` as historical migration context rather than a current canonical path
+- FOSS/security docs now treat `lattix_locus/` as historical migration context rather than a current canonical path
 
 Still remaining for this workstream:
 
@@ -392,7 +542,7 @@ Implemented:
 - signed shared-runtime JWT bearer claims now populate backend actor, tenant, and internal-service auth context
 - regression coverage for JWT-backed tenant memory access and internal-route gating
 - worker JWT helpers and A2A envelope posting now emit/consume the same actor, tenant, subject, and internal-service identity claims used by shared runtime auth
-- worker runtime defaults/examples now pin the shared `frontier-runtime` audience and `hosted` profile expectations instead of a divergent worker-only audience
+- worker runtime defaults/examples now pin the shared `locus-runtime` audience and `hosted` profile expectations instead of a divergent worker-only audience
 - regression coverage for worker JWT claim round-tripping and A2A claim propagation
 - backend auth and public health exposure now resolve through explicit runtime profiles, with compose defaults pinned to `local-lightweight` and `local-secure`
 - regression coverage for `local-secure` and `hosted` runtime-profile behavior
@@ -426,7 +576,7 @@ Implemented:
 
 - Python fallback policy and `policies/agent_policy.rego` now both honor explicit per-request `allowed_tools`
 - Python fallback policy and Rego policy now both enforce `max_tool_calls` budgets
-- shared policy evaluation now flows through a normalized `PolicyEvaluationRequest` / `PolicyDecision` contract
+- policy evaluation now flows through `locus_runtime.policy_engine.PolicyEngine` (Rego via OPA sidecar); the `PolicyEvaluationRequest` / `OPAClient` Python rule copy was removed (LOCUS-328)
 - capability verification now enforces canonical read/write path scopes and tool-call budgets rather than only tool-name membership
 - guardrail filter-chain enforcement now evaluates richer capability claims before targeted runtime actions proceed
 - regression coverage now exercises dynamic allowlists, capability budgets, canonical path containment, and structured policy decisions
@@ -531,3 +681,4 @@ Phase 2 is complete when:
 3. memory access control
 4. service-to-service transport hardening
 5. deployment control repair and hosted-profile documentation cleanup
+

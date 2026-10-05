@@ -1,14 +1,14 @@
-# Lattix xFrontier — Desktop Shell (Tauri v2)
+# Lattix Locus — Desktop Shell (Tauri v2)
 
 A thin, auditable desktop wrapper. It spawns **one** backend sidecar — the
 packaged native supervisor — which brings up every local service (Postgres +
 pgvector, **Neo4j world models**, NATS, Ollama, the confined agents, the FastAPI
 backend, and the Next.js frontend) with **no Docker**, then opens a webview at
-the local UI. The heavy lifting stays in Python (`frontier_tooling`), so the Rust
+the local UI. The heavy lifting stays in Python (`locus_tooling`), so the Rust
 layer is just a window + lifecycle manager.
 
 ```
-Tauri shell  ──spawns──▶  frontier-backend (PyInstaller)  ──native_launcher──▶  Postgres / Neo4j / NATS / Ollama / agents / backend / frontend
+Tauri shell  ──spawns──▶  locus-backend (PyInstaller)  ──native_launcher──▶  Postgres / Neo4j / NATS / Ollama / agents / backend / frontend
      │                                                                                          │
      └───────────────── webview navigates to http://127.0.0.1:3000 once /healthz is green ──────┘
 ```
@@ -19,10 +19,12 @@ Tauri shell  ──spawns──▶  frontier-backend (PyInstaller)  ──native
 | --- | --- |
 | `src-tauri/tauri.conf.json` | Bundle targets, `externalBin` sidecar, signing + updater config |
 | `src-tauri/src/main.rs` | Spawn the sidecar, wait for `/healthz`, navigate to the UI |
-| `src-tauri/capabilities/default.json` | v2 permissions (spawn sidecar, navigate, updater) |
+| `src-tauri/capabilities/default.json` | The bundled loading page (local origin): `core:default`, sidecar spawn, panic-hotkey status |
+| `src-tauri/capabilities/desktop-ui.json` | The UI at `http://127.0.0.1:3000` (a **remote** origin to Tauri): exactly the app commands it invokes, event listen/unlisten and the app version |
+| `src-tauri/build.rs` | App ACL manifest: one `allow-<command>` permission per command in `generate_handler!` |
 | `src-tauri/loading/index.html` | Splash shown while services start |
-| `../../packaging/frontier-backend.spec` | PyInstaller spec for the backend sidecar |
-| `frontier_tooling/desktop_main.py` | The sidecar entrypoint (runs the supervisor in the foreground) |
+| `../../packaging/locus-backend.spec` | PyInstaller spec for the backend sidecar |
+| `locus_tooling/desktop_main.py` | The sidecar entrypoint (runs the supervisor in the foreground) |
 
 ## Prerequisites (not installable on the dev box used so far)
 
@@ -35,63 +37,89 @@ Tauri shell  ──spawns──▶  frontier-backend (PyInstaller)  ──native
 ## Build
 
 ```bash
-# 1. Backend sidecar  →  dist/frontier-backend(.exe)
-pyinstaller packaging/frontier-backend.spec
+# 1. Backend sidecar  →  dist/locus-backend(.exe)
+pyinstaller packaging/locus-backend.spec
 
 # 2. Place it where Tauri expects externalBin, with the target-triple suffix:
-#    e.g. apps/desktop-tauri/src-tauri/bin/frontier-backend-x86_64-pc-windows-msvc.exe
+#    e.g. apps/desktop-tauri/src-tauri/bin/locus-backend-x86_64-pc-windows-msvc.exe
 #    (Tauri appends the triple; copy/rename accordingly per target.)
 
-# 3. Vendor the sidecar binaries the supervisor needs (nats/caddy/ollama/...):
-python -m frontier_tooling.cli native-fetch        # → app-home/bin (dev)
+# 3. The policy engine (required: the gateway denies everything without it).
+#    The pinned OPA release, sha256-verified, beside the backend for the
+#    self-check, then as the externalBin `sidecars/locus-opa-<triple>(.exe)`:
+python -m locus_tooling.opa_release fetch --triple x86_64-pc-windows-msvc --dest dist/locus-opa.exe
+dist/locus-backend.exe --self-check   # fails unless OPA runs over the bundled policies
+#    copy to apps/desktop-tauri/src-tauri/sidecars/locus-opa-x86_64-pc-windows-msvc.exe
+
+# 4. Vendor the sidecar binaries the supervisor needs (nats/caddy/ollama/...):
+python -m locus_tooling.cli native-fetch        # → app-home/bin (dev)
 #    For a self-contained bundle, copy these into src-tauri/bin/ as resources.
 
-# 4. Build the desktop app
+# 5. Build the desktop app
 cd apps/desktop-tauri/src-tauri
-cargo tauri build       # produces MSI/NSIS (Win), .dmg/.app (mac), .deb/AppImage (Linux)
+cargo tauri build       # produces NSIS .exe (Win), .dmg/.app (mac), .deb/AppImage (Linux)
+# No MSI: Windows Installer caps the third version field at 65535, below the
+# D-31 PATCH cap (99999); see docs/VERSIONING.md.
 ```
+
+## IPC permissions (Tauri ACL)
+
+Once the backend is healthy the shell navigates the window to the UI served by
+the bundled Next server at `http://127.0.0.1:3000`. Tauri treats that as a
+**remote** origin and rejects every IPC call from it that no capability covers,
+app commands included (`Command confirm_browser_tier not allowed by ACL`).
+`build.rs` therefore declares an app manifest (`tauri_build::AppManifest`) that
+generates `allow-<command>` for each command in `generate_handler!`, and
+`capabilities/desktop-ui.json` grants exactly those to the main window on that
+one origin, plus `core:event:allow-listen`/`allow-unlisten` and
+`core:app:allow-version`. No dialog, fs or other plugin permission: native
+confirmations are shown from Rust. Adding a command means adding it to both the
+manifest and the capability; `tests/backend/test_desktop_packaging.py` fails
+otherwise.
+
+## Policy engine (OPA)
+
+The gateway evaluates `policies/*.rego` with OPA and denies every model call,
+tool call and computer-use action when it cannot (fail closed). The bundle ships
+the pinned OPA release (`locus_tooling/opa_release.py`: version and one sha256
+per platform) as the externalBin `locus-opa`, installed beside the backend
+sidecar; the supervisor sets `LOCUS_OPA_BIN` to it before the backend starts, and
+the Rego policies ship inside the sidecar (`packaging/locus-backend.spec`). If it
+is missing anyway, chat shows "Policy engine missing: reinstall Lattix Locus".
 
 ## Code signing
 
 - **Windows (Authenticode):** set `bundle.windows.certificateThumbprint` in
   `tauri.conf.json` (or the `TAURI_SIGNING_*` env) to your cert thumbprint; the
-  NSIS/MSI bundler signs the installer. `timestampUrl` is preconfigured.
+  NSIS bundler signs the installer. `timestampUrl` is preconfigured.
 - **macOS (notarization):** set `bundle.macOS.signingIdentity` to your Developer
   ID Application identity and provide notarization creds via env
   (`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`); `hardenedRuntime` is on.
 
-## Auto-update (one-click "Update & Restart")
+## Auto-update: Dev and Stable channels (LOCUS-349, D-26)
 
-UX: when an update is available the app shows a slim banner → **Update &
-Restart** → a confirm ("the app will close, install, and restart") → the shell
-silently downloads + installs the signed update and relaunches. Wiring:
-`UpdateBanner` (frontend) calls the Rust commands `check_for_update` /
-`install_update_and_restart` (`src-tauri/src/main.rs`), which use the
-`tauri-plugin-updater` (`update.download_and_install()` → `app.restart()`).
+Code: `src-tauri/src/updates.rs` (channel setting, background checks, Dev
+auto-install, version handshake) and the sidebar panel
+`apps/frontend/src/components/navigation/platform-update-panel.tsx`. Commands:
+`get_update_status`, `set_update_channel` (`"dev"` or `"stable"` only),
+`check_for_update`, `install_update_and_restart`; events `update-status`,
+`update-available`, `backend-version-mismatch`.
 
-The updater plugin is **always compiled in but inactive by default**, so a
-keyless dev build still works (the check just errors → no banner). To enable it:
+* **Stable** (default): a banner "Update available: Update & Restart"; installs
+  on click.
+* **Dev**: downloads by itself, waits until the backend reports no active run
+  and holds the loop (`POST /system/update/prepare`), stops the sidecar,
+  installs, restarts.
 
-1. **Generate a signing keypair** (once):
-   ```bash
-   cargo tauri signer generate -w "$HOME/.tauri/lattix-updater.key"
-   ```
-   This prints a **public key** and writes the private key. The public key is
-   safe to commit.
-2. **Put the public key** in `src-tauri/updater.conf.json` → `plugins.updater.pubkey`
-   (replace `REPLACE_WITH_MINISIGN_PUBLIC_KEY`) and set `endpoints` to where you
-   host `latest.json`.
-3. **Build with it enabled**:
-   - Local: set `TAURI_SIGNING_PRIVATE_KEY` (+ `_PASSWORD`) and re-run
-     `scripts/build-desktop.ps1` — it auto-applies `--config updater.conf.json`
-     when both the pubkey and the signing key are present.
-   - CI: `desktop-release.yml` already builds with `--config updater.conf.json`
-     and the `TAURI_SIGNING_PRIVATE_KEY` secret, emitting the signed
-     `latest.json` update manifest. Host it (or the GitHub release) at the
-     `endpoints` URL.
-
-Until you do this, the app simply never shows the update banner — everything
-else works.
+The updater only ever uses the two compiled-in URLs
+(`releases/download/channel-{dev,stable}/latest.json`) and verifies every update
+against `plugins.updater.pubkey`. Updater bundles are built only by
+`.github/workflows/desktop-dev.yml` when the `TAURI_SIGNING_PRIVATE_KEY` secret
+exists; without it no update metadata is published and the check just reports
+an error (no banner). Key generation and setup: `docs/INSTALLER.md`, "Principal
+setup: the updater signing key". A local `scripts/build-desktop.ps1` build makes
+no updater bundles and carries no backend version stamp, so its version check is
+skipped with a warning.
 
 ## Icons
 
@@ -114,23 +142,24 @@ The installers are produced by `.github/workflows/desktop-release.yml` — they 
    - `WINDOWS_PFX_BASE64` — your Authenticode cert (`base64 -w0 cert.pfx`)
    - `WINDOWS_PFX_PASSWORD` — the PFX password
    - `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — the
-     updater minisign key (`cargo tauri signer generate`); put the **public** key
-     in `tauri.conf.json` → `plugins.updater.pubkey`.
+     updater minisign key, used by the Dev channel workflow only (see
+     `docs/INSTALLER.md` for generation and the pubkey swap).
    - (later) `APPLE_CERTIFICATE` / `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`
      to enable macOS notarization.
 2. **Generate + commit icons** (above).
 3. **Host the pgvector artifacts** once via `.github/workflows/pgvector-build.yml`
    so first-run fetch can install the extension (else vector search degrades to
    keyword; the relational world-graph is unaffected).
-4. **Tag the release:** `git tag v0.1.0 && git push origin v0.1.0` (or run the
-   workflow manually). The matrix builds Windows/macOS/Linux, signs the Windows
-   `.msi`/`.exe`, and uploads all installers as artifacts/release assets.
-5. **Verify Windows:** download the `.msi`, `signtool verify /pa <file>`, install
+4. **Tag the release:** `git tag v0.2.7 && git push origin v0.2.7` (or run the
+   workflow manually; versions follow docs/VERSIONING.md and must not reuse a
+   published Dev/Stable version). The matrix builds Windows/macOS/Linux, signs
+   the Windows `.exe`, and uploads all installers as artifacts/release assets.
+5. **Verify Windows:** download the `.exe`, `signtool verify /pa <file>`, install
    on a clean VM, launch → first-run fetch → working multi-agent run.
 
 ## Status / what's environment-gated
 
-The Python integration layer (`frontier_tooling/desktop.py`, `desktop_main.py`,
+The Python integration layer (`locus_tooling/desktop.py`, `desktop_main.py`,
 the supervisor `serve()` loop, and the `native-serve` CLI) is implemented and
 unit-tested. The Rust shell, PyInstaller build, icon assets, code-signing, and
 notarization require the toolchains/certs above and a per-OS CI matrix — they are

@@ -1,0 +1,327 @@
+# Dev update channel (LOCUS-349, D-26): every merge to main builds the desktop
+# app and publishes it as a Dev prerelease. Installs on the Dev channel update
+# themselves from the rolling `channel-dev` release's latest.json.
+#
+#   merge to main -> build Windows x64 (NSIS) + macOS arm64 -> prerelease
+#   `dev-v<MAJOR>.<MINOR>.<PATCH>` -> (signing key present) channel-dev/latest.json
+#
+# Version (D-31, docs/VERSIONING.md): MAJOR.MINOR is the repo-root VERSION file;
+# PATCH is a build counter, 1 + the highest PATCH among the release tags of that
+# MAJOR.MINOR (dev-v*, stable-v*, v*), 0 for the first build. No pre-release
+# suffix. PATCH is capped at 99999: past it the plan job fails and asks for a
+# MINOR bump (never wraps). Releases are immutable: a version that already has
+# a tag or release is never re-published (re-run the whole workflow for a new
+# PATCH). Windows ships NSIS only: Windows Installer (MSI) caps the third
+# version field at 65535, below the PATCH cap.
+#
+# Updater signing (root of trust for every Dev install): repo secrets
+# TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD. Without them
+# the installers are still published, but NO updater metadata (no latest.json)
+# is written and the channel pointer does not move; never unsigned metadata.
+# With them, every signature must verify against plugins.updater.pubkey before
+# anything is published.
+#
+# Promotion to Stable without a rebuild: desktop-promote.yml.
+
+name: desktop-dev
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - ".ai-memory/**"
+      - "*.png"
+      - "LICENSE"
+      - "NOTICE"
+
+# Least privilege: read-only by default; only `publish` may write releases.
+permissions:
+  contents: read
+
+# One Dev publish at a time, in merge order. A newer merge waits (the pending
+# run is replaced by the newest one), so the channel pointer never races.
+concurrency:
+  group: desktop-dev-channel
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The tag list comes from the remote (complete, no pagination), not the
+      # shallow checkout. The concurrency group above keeps two main builds from
+      # picking the same PATCH; publish re-checks before it creates anything.
+      - id: version
+        shell: bash
+        run: |
+          git ls-remote --tags --refs origin > "$RUNNER_TEMP/tags.txt"
+          version="$(python locus_tooling/versioning.py next \
+            --version-file VERSION --tags-file "$RUNNER_TEMP/tags.txt")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - id: matrix
+        shell: python
+        env:
+          # Intel macOS is optional: macos-13 runners can queue for hours.
+          WITH_MACOS_INTEL: ${{ vars.LOCUS_DEV_MACOS_INTEL == 'true' }}
+        run: |
+          import json, os
+          rows = [
+              {"os": "windows-latest", "triple": "x86_64-pc-windows-msvc", "ext": ".exe",
+               "platform": "windows-x86_64", "bundles": "nsis", "optional": False},
+              {"os": "macos-latest", "triple": "aarch64-apple-darwin", "ext": "",
+               "platform": "darwin-aarch64", "bundles": "app,dmg", "optional": False},
+          ]
+          if os.environ["WITH_MACOS_INTEL"] == "true":
+              rows.append({"os": "macos-13", "triple": "x86_64-apple-darwin", "ext": "",
+                           "platform": "darwin-x86_64", "bundles": "app,dmg", "optional": True})
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write("matrix=" + json.dumps({"include": rows}) + chr(10))
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional }}
+    timeout-minutes: 120
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # --- 1) Backend sidecar, stamped with the app version (tauri#15134) ----
+      - name: Build backend sidecar
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          python -m pip install -e .
+          # The shell refuses a backend whose stamp differs from the app version.
+          python -m locus_tooling.build_info "$VERSION"
+          pyinstaller packaging/locus-backend.spec
+          # The gateway's policy engine (fail closed without it): the pinned OPA
+          # release, sha256-verified against locus_tooling/opa_release.py (the
+          # step fails on a mismatch), placed beside the backend exactly as the
+          # installed app lays it out, so --self-check runs it over the bundled
+          # policies and fails the build when it is missing or broken.
+          python -m locus_tooling.opa_release fetch --triple "${{ matrix.triple }}" \
+            --dest "dist/locus-opa${{ matrix.ext }}"
+          "dist/locus-backend${{ matrix.ext }}" --self-check
+          mkdir -p apps/desktop-tauri/src-tauri/bin apps/desktop-tauri/src-tauri/sidecars
+          cp "dist/locus-backend${{ matrix.ext }}" \
+             "apps/desktop-tauri/src-tauri/bin/locus-backend-${{ matrix.triple }}${{ matrix.ext }}"
+          # Tauri externalBin "sidecars/locus-opa": installed beside the app as locus-opa.
+          cp "dist/locus-opa${{ matrix.ext }}" \
+             "apps/desktop-tauri/src-tauri/sidecars/locus-opa-${{ matrix.triple }}${{ matrix.ext }}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # --- 2) Frontend standalone + vendored Node ------------------------------
+      - name: Build frontend (Next.js standalone)
+        shell: bash
+        working-directory: apps/frontend
+        run: |
+          npm ci
+          npm run build
+          mkdir -p ../../apps/desktop-tauri/src-tauri/resources/frontend
+          cp -r .next/standalone/. ../../apps/desktop-tauri/src-tauri/resources/frontend/
+          cp -r .next/static ../../apps/desktop-tauri/src-tauri/resources/frontend/.next/static
+          cp -r public ../../apps/desktop-tauri/src-tauri/resources/frontend/public || true
+
+      - name: Vendor Node runtime into the bundle
+        shell: bash
+        run: |
+          node_path="$(command -v node)"
+          cp "$node_path" "apps/desktop-tauri/src-tauri/bin/node${{ matrix.ext }}" || true
+
+      # --- 3) Rust + Tauri build -----------------------------------------------
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+
+      - name: Install the Tauri CLI and generate icons
+        working-directory: apps/desktop-tauri/src-tauri
+        shell: bash
+        run: |
+          cargo install tauri-cli --version "^2" --locked
+          cargo tauri icon ../icon-source.png
+
+      # Dev version + updater artifacts via a config overlay. Updater artifacts
+      # (signed bundles) are only requested when the signing key exists; a
+      # keyless build would fail to sign them. No MSI (NSIS only, see the
+      # header): WiX rejects a third version field above 65535.
+      - name: Write the Dev build overlay
+        shell: python
+        run: |
+          import json, os
+          overlay = {
+              "version": os.environ["VERSION"],
+              "bundle": {"createUpdaterArtifacts": os.environ["HAS_UPDATER_KEY"] == "true"},
+          }
+          path = os.path.join("apps", "desktop-tauri", "src-tauri", "dev-channel.conf.json")
+          with open(path, "w", encoding="utf-8") as fh:
+              json.dump(overlay, fh)
+          print(json.dumps(overlay))
+
+      - name: Build installers
+        working-directory: apps/desktop-tauri/src-tauri
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          cargo tauri build --target "${{ matrix.triple }}" \
+            --bundles "${{ matrix.bundles }}" --config dev-channel.conf.json
+
+      # No post-build Authenticode signing here: re-signing the installer after
+      # the updater signature was made would invalidate that signature. When a
+      # code-signing certificate exists (D-24), sign through Tauri's
+      # bundle.windows.signCommand so it happens before updater signing.
+
+      - name: Stage release assets
+        shell: bash
+        run: |
+          python scripts/desktop_channel.py stage \
+            --bundle-dir "apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle" \
+            --platform "${{ matrix.platform }}" --version "$VERSION" --out staging
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-dev-${{ matrix.platform }}
+          path: staging/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-dev-*
+          merge-multiple: true
+          path: assets
+
+      - name: Require the blocking platforms
+        shell: bash
+        run: |
+          for platform in windows-x86_64 darwin-aarch64; do
+            test -f "assets/${platform}.platform.json" || {
+              echo "::error::missing the ${platform} build"; exit 1; }
+          done
+
+      # Releases are immutable (D-31): each version is published once, never
+      # replaced. Refuse if any release tag of this version exists (a manual
+      # tag, or a re-run of this run's failed jobs: re-run the whole workflow,
+      # which picks the next PATCH).
+      - name: Refuse an already published version
+        shell: bash
+        run: |
+          python locus_tooling/versioning.py validate "$VERSION" --version-file VERSION
+          taken="$(git ls-remote --tags origin "refs/tags/dev-v$VERSION" \
+            "refs/tags/stable-v$VERSION" "refs/tags/v$VERSION")"
+          if [ -n "$taken" ] || gh release view "dev-v$VERSION" >/dev/null 2>&1; then
+            echo "::error::$VERSION is already published; releases are immutable"
+            exit 1
+          fi
+
+      # Signed metadata only. Every signature must verify against the pubkey the
+      # app ships with, or nothing is published (a mismatch would break updates).
+      - name: Write the signed Dev manifest
+        if: env.HAS_UPDATER_KEY == 'true'
+        shell: bash
+        run: |
+          python -m pip install "cryptography>=42"
+          python scripts/desktop_channel.py manifest \
+            --assets assets --version "$VERSION" --repo "$GH_REPO" --tag "dev-v$VERSION" \
+            --pubkey-conf apps/desktop-tauri/src-tauri/tauri.conf.json --require-crypto \
+            --out assets/latest.json
+
+      - name: Publish the Dev prerelease
+        shell: bash
+        run: |
+          tag="dev-v$VERSION"
+          mapfile -t files < <(find assets -maxdepth 1 -type f ! -name '*.platform.json' | sort)
+          notes="Dev build of ${GITHUB_SHA} (merge to main). Untested beyond CI; see docs/INSTALLER.md."
+          # Create only: never upload into or overwrite an existing release.
+          gh release create "$tag" "${files[@]}" --prerelease --latest=false \
+            --target "$GITHUB_SHA" --title "Lattix Locus $VERSION (Dev)" --notes "$notes"
+
+      - name: Advance the Dev channel
+        id: channel
+        if: env.HAS_UPDATER_KEY == 'true'
+        shell: bash
+        run: |
+          mkdir -p current
+          gh release download channel-dev --pattern latest.json --dir current 2>/dev/null || true
+          advance="$(python scripts/desktop_channel.py should-advance \
+            --candidate "$VERSION" --current current/latest.json)"
+          echo "advanced=$advance" >> "$GITHUB_OUTPUT"
+          if [ "$advance" != "true" ]; then
+            echo "channel-dev already points at the same or a newer version; not moved"
+            exit 0
+          fi
+          if ! gh release view channel-dev >/dev/null 2>&1; then
+            gh release create channel-dev --prerelease --latest=false --target "$GITHUB_SHA" \
+              --title "Dev channel" \
+              --notes "Rolling pointer for the Dev update channel. latest.json names the current Dev build."
+          fi
+          gh release upload channel-dev assets/latest.json --clobber
+
+      - name: Summary
+        if: always()
+        shell: bash
+        env:
+          ADVANCED: ${{ steps.channel.outputs.advanced }}
+        run: |
+          {
+            echo "## Desktop Dev build $VERSION"
+            echo
+            echo "Release: \`dev-v$VERSION\` (prerelease, commit \`$GITHUB_SHA\`)."
+            if [ "$HAS_UPDATER_KEY" != "true" ]; then
+              echo
+              echo "> **WARNING: no updater metadata was published.** The repository secret"
+              echo "> \`TAURI_SIGNING_PRIVATE_KEY\` is not set, so no signed updater bundles"
+              echo "> were built, no \`latest.json\` was written and \`channel-dev\` was not moved."
+              echo "> Dev installs will not auto-update. Installers are attached for manual install."
+              echo "> Key setup: docs/INSTALLER.md, \"Update channels\"."
+            elif [ "$ADVANCED" = "true" ]; then
+              echo
+              echo "Signed \`latest.json\` published; \`channel-dev\` now points at $VERSION."
+            else
+              echo
+              echo "\`channel-dev\` was not moved (it points at the same or a newer version, or a step failed)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

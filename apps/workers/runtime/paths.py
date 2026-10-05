@@ -17,7 +17,7 @@ def runtime_root() -> Path:
 
 
 def configured_agent_assets_root() -> Path | None:
-    configured = str(os.getenv("FRONTIER_AGENT_ASSETS_ROOT") or "").strip()
+    configured = str(os.getenv("LOCUS_AGENT_ASSETS_ROOT") or "").strip()
     if not configured:
         return None
 

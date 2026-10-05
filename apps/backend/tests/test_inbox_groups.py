@@ -12,13 +12,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 if not str(os.environ.get("A2A_JWT_SECRET") or "").strip():
     os.environ["A2A_JWT_SECRET"] = "unit-test-super-secret-value-32bytes"
-if not str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").strip():
-    os.environ["FRONTIER_API_BEARER_TOKEN"] = "unit-test-bearer"
+if not str(os.environ.get("LOCUS_API_BEARER_TOKEN") or "").strip():
+    os.environ["LOCUS_API_BEARER_TOKEN"] = "unit-test-bearer"
 
 from app.main import app, store
 
 client = TestClient(app)
-ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "frontier-admin"}
+ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-locus-actor": "locus-admin"}
 
 
 def test_inbox_group_crud_and_assignment() -> None:
@@ -75,14 +75,14 @@ def test_update_missing_group_is_404() -> None:
 
 
 def test_runs_expose_kind_field() -> None:
-    response = client.get("/workflow-runs", headers={"x-frontier-actor": "frontier-admin"})
+    response = client.get("/workflow-runs", headers={"x-locus-actor": "locus-admin"})
     assert response.status_code == 200
     for run in response.json():
-        assert run.get("kind") in {"individual", "agent", "workflow", "playbook"}
+        assert run.get("kind") in {"individual", "agent", "workflow", "chat", "playbook", "task"}
 
 
 def test_rename_run_updates_title() -> None:
-    runs = client.get("/workflow-runs", headers={"x-frontier-actor": "frontier-admin"}).json()
+    runs = client.get("/workflow-runs", headers={"x-locus-actor": "locus-admin"}).json()
     if not runs:
         return
     run_id = runs[0]["id"]
@@ -101,10 +101,8 @@ def test_rename_run_updates_title() -> None:
 
 
 def test_rename_run_requires_title() -> None:
-    runs = client.get("/workflow-runs", headers={"x-frontier-actor": "frontier-admin"}).json()
+    runs = client.get("/workflow-runs", headers={"x-locus-actor": "locus-admin"}).json()
     if not runs:
         return
-    response = client.post(
-        f"/workflow-runs/{runs[0]['id']}/rename", json={}, headers=ADMIN_HEADERS
-    )
+    response = client.post(f"/workflow-runs/{runs[0]['id']}/rename", json={}, headers=ADMIN_HEADERS)
     assert response.status_code == 400

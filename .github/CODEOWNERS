@@ -1,0 +1,41 @@
+# Protected paths (docs/product/20 §2 D-22): changes here need principal review
+# and are never auto-merged by the self-improvement loop.
+/policies/                         @jmsbooth
+/locus_runtime/gateway.py          @jmsbooth
+/locus_runtime/policy_engine.py    @jmsbooth
+/locus_runtime/sandbox.py          @jmsbooth
+/locus_runtime/win_sandbox.py      @jmsbooth
+/locus_runtime/gate_definitions.py @jmsbooth
+/locus_runtime/security.py         @jmsbooth
+/locus_runtime/legacy.py           @jmsbooth
+/locus_tooling/native_secrets.py   @jmsbooth
+/apps/backend/app/policy_gateway.py    @jmsbooth
+/apps/backend/app/request_security.py  @jmsbooth
+/apps/backend/app/control_status.py    @jmsbooth
+/.github/                          @jmsbooth
+/AGENTS.md                         @jmsbooth
+/SECURITY.md                       @jmsbooth
+/THREAT-MODEL.md                   @jmsbooth
+/docs/product/                     @jmsbooth
+# Update trust chain (LOCUS-349, D-26): Dev installs auto-install what merges.
+/apps/desktop-tauri/src-tauri/     @jmsbooth
+/scripts/desktop_channel.py        @jmsbooth
+/locus_tooling/update_contract.py  @jmsbooth
+/locus_tooling/desktop_update.py   @jmsbooth
+/locus_tooling/build_info.py       @jmsbooth
+# RSI scorecard (LOCUS-351): what "better" means for the self-improvement loop.
+# The eval suite (tasks, graders, held-out split) and the scorecard, comparator
+# and candidate-isolation code; the loop must not grade or redefine itself.
+/apps/evals/locus_evals/suite/     @jmsbooth
+/locus_runtime/rsi/                @jmsbooth
+# Release versions (D-31, docs/VERSIONING.md): the bump rules and their check.
+# VERSION is special-cased by the loop's merge guard: a MINOR bump may
+# auto-merge, a MAJOR bump (or any malformed / out-of-step change) is held for
+# the principal. Every other path here is held outright.
+/VERSION                           @jmsbooth
+/docs/VERSIONING.md                @jmsbooth
+/locus_tooling/versioning.py       @jmsbooth
+# The private held-out split (LOCUS-382): its pinned source and the sync that
+# verifies and installs it.
+/locus_tooling/evals_sync.py       @jmsbooth
+/locus_tooling/evals_heldout.py    @jmsbooth

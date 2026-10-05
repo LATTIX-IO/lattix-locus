@@ -10,7 +10,7 @@ import {
   getPublishedWorkflows,
   type ComposerOptions,
 } from "@/lib/api";
-import type { AgentDefinition, PlaybookDefinition, WorkflowDefinition } from "@/types/frontier";
+import type { AgentDefinition, PlaybookDefinition, WorkflowDefinition } from "@/types/locus";
 import { ComposerControls } from "@/components/composer-controls";
 
 type TokenKind = "data" | "tag" | "workflow" | "agent" | "playbook";
@@ -118,7 +118,9 @@ export function TaskKickoffComposer({
   const [draft, setDraft] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdRunId, setCreatedRunId] = useState<string | null>(null);
+  const [submitInfo, setSubmitInfo] = useState<string | null>(null);
   const [cursorPosition, setCursorPosition] = useState(0);
+  const [mentionLoadError, setMentionLoadError] = useState<string | null>(null);
   const [publishedAgents, setPublishedAgents] = useState<AgentDefinition[]>([]);
   const [publishedWorkflows, setPublishedWorkflows] = useState<WorkflowDefinition[]>([]);
   const [activePlaybooks, setActivePlaybooks] = useState<PlaybookDefinition[]>([]);
@@ -132,17 +134,24 @@ export function TaskKickoffComposer({
     let cancelled = false;
 
     async function loadMentions() {
-      const [agentDefs, workflowDefs, playbookDefs] = await Promise.all([
-        getAgentDefinitions(),
-        getPublishedWorkflows(),
-        getPlaybooks().catch(() => [] as PlaybookDefinition[]),
+      // Each list loads on its own; a failure is reported, never shown as "none".
+      const [agentDefs, workflowDefs, playbookDefs] = await Promise.allSettled([
+        Promise.resolve().then(() => getAgentDefinitions()),
+        Promise.resolve().then(() => getPublishedWorkflows()),
+        Promise.resolve().then(() => getPlaybooks()),
       ]);
       if (cancelled) {
         return;
       }
-      setPublishedAgents(agentDefs.filter((agent) => agent.status === "published"));
-      setPublishedWorkflows(workflowDefs.filter((workflow) => workflow.status === "published"));
-      setActivePlaybooks(playbookDefs.filter((playbook) => playbook.status === "active"));
+      if (agentDefs.status === "fulfilled") setPublishedAgents(agentDefs.value.filter((agent) => agent.status === "published"));
+      if (workflowDefs.status === "fulfilled") setPublishedWorkflows(workflowDefs.value.filter((workflow) => workflow.status === "published"));
+      if (playbookDefs.status === "fulfilled") setActivePlaybooks(playbookDefs.value.filter((playbook: PlaybookDefinition) => playbook.status === "published"));
+      const failed = [
+        agentDefs.status === "rejected" ? "agents" : "",
+        workflowDefs.status === "rejected" ? "workflows" : "",
+        playbookDefs.status === "rejected" ? "playbooks" : "",
+      ].filter(Boolean);
+      setMentionLoadError(failed.length ? `Could not load ${failed.join(", ")} for suggestions.` : null);
     }
 
     void loadMentions();
@@ -256,6 +265,14 @@ export function TaskKickoffComposer({
   }
 
   function handleTextareaKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      if (!isSubmitting && draft.trim()) {
+        event.currentTarget.form?.requestSubmit();
+      }
+      return;
+    }
+
     if (!activeMention || mentionSuggestions.length === 0) {
       return;
     }
@@ -291,6 +308,7 @@ export function TaskKickoffComposer({
     event.preventDefault();
     if (!draft.trim()) return;
     setSubmitError(null);
+    setSubmitInfo(null);
 
     try {
       setIsSubmitting(true);
@@ -315,19 +333,23 @@ export function TaskKickoffComposer({
         .map((token) => token.value);
 
       const payload = {
+        session_kind: "task",
         prompt: draft,
         tokens: filteredTokens,
         ...(playbooks.length > 0 ? { playbooks } : {}),
         ...composerOpts,
       };
-      const result = await createWorkflowRun(payload);
+      const result = await createWorkflowRun(payload, { timeoutMs: 120000 });
       setCreatedRunId(result.id);
+      setSubmitInfo(`Task started. Opening run ${result.id}...`);
       setDraft("");
       // Tell the nav chat tree (and any listeners) to refetch the run list.
-      window.dispatchEvent(new CustomEvent("frontier:runs-changed"));
+      window.dispatchEvent(new CustomEvent("locus:runs-changed"));
+      router.push(`/activity?session=${encodeURIComponent(result.id)}`);
       router.refresh();
-    } catch {
-      setSubmitError("Unable to start task run. Please verify backend connectivity and try again.");
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : "Unable to start task run.";
+      setSubmitError(`${messageText} If the run is still processing, wait a few seconds and try again.`);
     } finally {
       setIsSubmitting(false);
     }
@@ -405,7 +427,7 @@ export function TaskKickoffComposer({
             {isSubmitting ? "Starting..." : "Start task"}
           </button>
           {createdRunId ? (
-            <Link className="fx-btn-secondary px-3 py-2 text-sm" href={`/runs/${createdRunId}`}>
+            <Link className="fx-btn-secondary px-3 py-2 text-sm" href={`/activity?session=${encodeURIComponent(createdRunId)}`}>
               Open run
             </Link>
           ) : null}
@@ -432,6 +454,12 @@ export function TaskKickoffComposer({
           </div>
         </div>
 
+        {submitInfo ? <p className="text-xs text-[var(--fx-muted)]">{submitInfo}</p> : null}
+        {mentionLoadError ? (
+          <p role="status" className="text-xs text-[var(--fx-danger)]">
+            {mentionLoadError}
+          </p>
+        ) : null}
         {submitError ? <p className="text-xs text-[var(--fx-danger)]">{submitError}</p> : null}
       </form>
     </div>

@@ -119,3 +119,34 @@ test_deny_tool_call_budget_exceeded if {
     "tool_calls_used": 2
   }
 }
+
+# LOCUS-362: the read_file deny rules match Windows paths too.
+test_deny_dotenv_windows_path if {
+  agent_policy.deny with input as {
+    "agent_id": "research",
+    "tool": "read_file",
+    "allowed_tools": ["read_file"],
+    "resource": `C:\Users\dev\ws\.env`,
+    "action": "read_file"
+  }
+}
+
+test_deny_ssh_dir_windows_path if {
+  agent_policy.deny with input as {
+    "agent_id": "research",
+    "tool": "read_file",
+    "allowed_tools": ["read_file"],
+    "resource": `C:\Users\dev\.ssh\config`,
+    "action": "read_file"
+  }
+}
+
+test_allow_ordinary_windows_read if {
+  agent_policy.allow with input as {
+    "agent_id": "research",
+    "tool": "read_file",
+    "allowed_tools": ["read_file"],
+    "resource": `C:\Users\dev\ws\src\app.py`,
+    "action": "read_file"
+  }
+}

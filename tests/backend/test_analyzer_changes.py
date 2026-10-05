@@ -16,9 +16,9 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 gc = pytest.importorskip("app.graph_compiler")
-from frontier_runtime.harness.executor import LocalDirectExecutor  # noqa: E402
-from frontier_runtime.harness.tools import CodingToolset  # noqa: E402
-from frontier_runtime.harness.workspace import Workspace  # noqa: E402
+from locus_runtime.harness.executor import LocalDirectExecutor  # noqa: E402
+from locus_runtime.harness.tools import CodingToolset  # noqa: E402
+from locus_runtime.harness.workspace import Workspace  # noqa: E402
 
 requires_git = pytest.mark.skipif(__import__("shutil").which("git") is None, reason="git required")
 
@@ -31,8 +31,13 @@ def test_allow_edits_false_blocks_mutation(tmp_path):
     # view is allowed
     assert "hello" in ro.dispatch("str_replace_editor", {"command": "view", "path": "f.txt"})
     # create / str_replace / insert are denied
-    assert "[denied]" in ro.dispatch("str_replace_editor", {"command": "create", "path": "g.txt", "file_text": "x"})
-    assert "[denied]" in ro.dispatch("str_replace_editor", {"command": "str_replace", "path": "f.txt", "old_str": "hello", "new_str": "bye"})
+    assert "[denied]" in ro.dispatch(
+        "str_replace_editor", {"command": "create", "path": "g.txt", "file_text": "x"}
+    )
+    assert "[denied]" in ro.dispatch(
+        "str_replace_editor",
+        {"command": "str_replace", "path": "f.txt", "old_str": "hello", "new_str": "bye"},
+    )
     assert not (tmp_path / "g.txt").exists()  # nothing written
 
     # default toolset still allows edits
@@ -50,7 +55,9 @@ def test_changed_files_reports_status_and_diff(tmp_path):
         subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
     (repo / "a.py").write_text("x = 1\n")
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, capture_output=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True, capture_output=True
+    )
     # modify a.py + add b.py
     (repo / "a.py").write_text("x = 1\ny = 2\n")
     (repo / "b.py").write_text("print('new')\n")
@@ -65,8 +72,8 @@ def test_changed_files_reports_status_and_diff(tmp_path):
 
 # --- A2: analyzer delegation never edits + returns findings -----------------
 def test_analyzer_delegate_returns_findings(monkeypatch):
-    from frontier_runtime.harness import swe_agent as swe_mod
-    from frontier_runtime.harness.loop import LoopOutcome
+    from locus_runtime.harness import swe_agent as swe_mod
+    from locus_runtime.harness.loop import LoopOutcome
 
     captured = {}
 
@@ -96,20 +103,43 @@ def test_analyzer_delegate_returns_findings(monkeypatch):
         binding = _Binding()
 
     class _FakeClient:
-        provider = "ollama"; model = "gpt-oss:20b"
+        provider = "ollama"
+        model = "gpt-oss:20b"
+
         def complete(self, *a, **k):
-            from frontier_runtime.harness.llm import ChatResponse
+            from locus_runtime.harness.llm import ChatResponse
+
             return ChatResponse(text="")
 
-    r = gc.AgentResolution(agent_id="security-auditor-agent", system_prompt="sp", model="m", provider="ollama", base_url="http://x/v1", execution_mode="analyze")
-    deps = gc.CompilerDeps(resolve_agent=lambda c: r, make_chat_client=lambda res: _FakeClient(), execute_native=lambda *a: {}, mode="execute")
+    r = gc.AgentResolution(
+        agent_id="security-auditor-agent",
+        system_prompt="sp",
+        model="m",
+        provider="ollama",
+        base_url="http://x/v1",
+        execution_mode="analyze",
+    )
+    deps = gc.CompilerDeps(
+        resolve_agent=lambda c: r,
+        make_chat_client=lambda res: _FakeClient(),
+        execute_native=lambda *a: {},
+        mode="execute",
+    )
     deps.provisioned = _Prov()
 
     class _Node:
-        id = "security-audit"; type = "frontier/agent"; title = "Security Audit"
-        config = {"agent_id": "security-auditor-agent", "phase": "verify", "harness_mode": "analyze"}
+        id = "security-audit"
+        type = "locus/agent"
+        title = "Security Audit"
+        config = {
+            "agent_id": "security-auditor-agent",
+            "phase": "verify",
+            "harness_mode": "analyze",
+        }
 
-    out = gc._run_agent_node(_Node(), incoming=[], out_ports=[], state={"run_input": {"message": "spec"}}, deps=deps)
+    out = gc._run_agent_node(
+        _Node(), incoming=[], out_ports=[], state={"run_input": {"message": "spec"}}, deps=deps
+    )
     assert captured["allow_edits"] is False  # analyzer cannot edit
     assert out["mode"] == "analyze"
     assert out["verdict"] == "request_changes"  # "HIGH severity ... must fix"
@@ -124,18 +154,43 @@ def test_cross_functional_v2_graph_compiles():
     assert {"security-audit", "qa-verify", "perf-verify"} <= node_ids
 
     class N:
-        def __init__(s, d): s.id = d["id"]; s.type = d["type"]; s.title = d.get("title", d["id"]); s.config = d.get("config", {})
+        def __init__(self, d):
+            self.id = d["id"]
+            self.type = d["type"]
+            self.title = d.get("title", d["id"])
+            self.config = d.get("config", {})
+
     class E:
-        def __init__(s, d): s.from_node = d["from"]; s.to_node = d["to"]; s.from_port = d.get("from_port"); s.to_port = d.get("to_port")
+        def __init__(self, d):
+            self.from_node = d["from"]
+            self.to_node = d["to"]
+            self.from_port = d.get("from_port")
+            self.to_port = d.get("to_port")
 
     nodes = [N(n) for n in graph["nodes"]]
     links = [E(e) for e in graph["links"]]
 
     def resolve(cfg):
-        mode = "analyze" if cfg.get("harness_mode") == "analyze" else ("code" if cfg.get("phase") == "build" else "chat")
-        return gc.AgentResolution(agent_id=cfg.get("agent_id", "a"), system_prompt="sp", model="m", provider="ollama", base_url="http://x/v1", execution_mode=mode)
+        mode = (
+            "analyze"
+            if cfg.get("harness_mode") == "analyze"
+            else ("code" if cfg.get("phase") == "build" else "chat")
+        )
+        return gc.AgentResolution(
+            agent_id=cfg.get("agent_id", "a"),
+            system_prompt="sp",
+            model="m",
+            provider="ollama",
+            base_url="http://x/v1",
+            execution_mode=mode,
+        )
 
-    deps = gc.CompilerDeps(resolve_agent=resolve, make_chat_client=lambda r: None, execute_native=lambda *a: {}, mode="execute")
-    compiled = gc.compile_frontier_graph(nodes, links, deps)
+    deps = gc.CompilerDeps(
+        resolve_agent=resolve,
+        make_chat_client=lambda r: None,
+        execute_native=lambda *a: {},
+        mode="execute",
+    )
+    compiled = gc.compile_locus_graph(nodes, links, deps)
     assert compiled.has_cycle is True
     assert set(compiled.routing_nodes) == {"consensus", "gate"}

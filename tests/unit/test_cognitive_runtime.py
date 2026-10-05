@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from frontier_runtime.cognitive import (
+from locus_runtime.cognitive import (
     AssemblyDefinition,
     AssemblyRuntime,
     CognitiveMessage,

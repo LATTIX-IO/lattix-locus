@@ -16,6 +16,11 @@ on:
         description: "PostgreSQL major version"
         default: "16"
 
+# Least privilege: the job only clones a public repo and uploads a workflow
+# artifact (which uses the runtime token, not GITHUB_TOKEN scopes).
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:

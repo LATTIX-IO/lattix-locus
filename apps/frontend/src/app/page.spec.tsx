@@ -6,12 +6,12 @@ vi.mock("next/navigation", () => ({
   redirect: redirectMock,
 }));
 
-import Home from "@/app/page";
+import RootPage from "@/app/page";
 
-describe("Home", () => {
-  it("redirects first-time visitors to the auth entry point", () => {
-    Home();
+describe("RootPage", () => {
+  it("lands on Home (the shell sends a web visitor without a session to /auth)", () => {
+    RootPage();
 
-    expect(redirectMock).toHaveBeenCalledWith("/auth");
+    expect(redirectMock).toHaveBeenCalledWith("/home");
   });
 });

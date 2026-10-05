@@ -1,0 +1,85 @@
+id: loc-multi-file-rename
+category: coding-edit
+kind: coding
+source: runtime-bakeoff-2026-10
+problem: >-
+  Rename the function shop.pricing.compute_total to order_total. Update the
+  definition and every caller in the shop package; do not keep the old name.
+files:
+  shop/__init__.py: ""
+  shop/pricing.py: |
+    def compute_total(items):
+        return sum(price * qty for price, qty in items)
+  shop/cart.py: |
+    from shop.pricing import compute_total
+
+
+    class Cart:
+        def __init__(self):
+            self.items = []
+
+        def add(self, price, qty=1):
+            self.items.append((price, qty))
+
+        def total(self):
+            return compute_total(self.items)
+  shop/report.py: |
+    from shop.pricing import compute_total
+
+
+    def summary(items):
+        return f"total={compute_total(items):.2f}"
+visible_test: |
+  import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+  import shop.pricing as pricing
+  from shop.pricing import order_total
+  from shop.cart import Cart
+  from shop.report import summary
+  assert not hasattr(pricing, 'compute_total'), 'old name still defined'
+  c = Cart(); c.add(2.5, 2); c.add(1)
+  assert c.total() == 6.0
+  assert order_total([(1, 3)]) == 3
+  assert summary([(1.5, 2)]) == 'total=3.00'
+  print('OK')
+done_criteria:
+  - {id: cart-renamed, kind: file, path: shop/cart.py, contains: order_total}
+  - {id: report-renamed, kind: file, path: shop/report.py, contains: order_total}
+grader:
+  - id: hidden-tests
+    type: tests
+    script: |
+      import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+      import shop.pricing as pricing
+      from shop.pricing import order_total
+      from shop.cart import Cart
+      from shop.report import summary
+      assert not hasattr(pricing, 'compute_total')
+      c = Cart(); c.add(2.5, 2); c.add(1)
+      assert c.total() == 6.0
+      assert order_total([]) == 0
+      assert summary([(1.5, 2)]) == 'total=3.00'
+  - {id: cart-no-old-name, type: file_lacks, path: shop/cart.py, text: compute_total}
+  - {id: report-no-old-name, type: file_lacks, path: shop/report.py, text: compute_total}
+reference:
+  shop/pricing.py: |
+    def order_total(items):
+        return sum(price * qty for price, qty in items)
+  shop/cart.py: |
+    from shop.pricing import order_total
+
+
+    class Cart:
+        def __init__(self):
+            self.items = []
+
+        def add(self, price, qty=1):
+            self.items.append((price, qty))
+
+        def total(self):
+            return order_total(self.items)
+  shop/report.py: |
+    from shop.pricing import order_total
+
+
+    def summary(items):
+        return f"total={order_total(items):.2f}"

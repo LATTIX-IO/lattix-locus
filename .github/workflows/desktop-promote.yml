@@ -1,0 +1,145 @@
+# Promote a Dev build to Stable (LOCUS-349, D-26) without rebuilding it.
+#
+# Input: a Dev version (e.g. 0.2.42) that was published by desktop-dev.yml and
+# tested on the Dev channel. The job downloads that prerelease's assets,
+# re-publishes the SAME bytes as the Stable release `stable-v<version>`
+# (non-prerelease, marked GitHub "latest") and moves the rolling `channel-stable`
+# release's latest.json to it. The updater signatures stay valid because the
+# files are byte-identical: what was tested is what ships.
+#
+# Versions are MAJOR.MINOR.PATCH with PATCH a build counter capped at 99999
+# (D-31, docs/VERSIONING.md); the Stable release keeps the Dev build's version.
+# Releases are immutable: an existing `stable-v<version>` is never replaced.
+#
+# Without a signed Dev latest.json (no TAURI_SIGNING_PRIVATE_KEY at build time)
+# the Stable release gets the installers only and NO updater metadata.
+
+name: desktop-promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Dev version to promote, e.g. 0.2.42 (release dev-v<version>)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-stable-channel
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      # Passed through env (never interpolated into a script) and validated below.
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # MAJOR.MINOR.PATCH, integers without leading zeros, PATCH <= 99999 (the
+      # regex allows at most five PATCH digits; versioning.py re-checks the cap).
+      - name: Validate the version
+        shell: bash
+        run: |
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]{0,4})$ ]]; then
+            echo "::error::version must be MAJOR.MINOR.PATCH with PATCH <= 99999, e.g. 0.2.42"; exit 1
+          fi
+          python locus_tooling/versioning.py validate "$VERSION"
+          if gh release view "stable-v$VERSION" >/dev/null 2>&1; then
+            echo "::error::stable-v$VERSION already exists; Stable releases are immutable"; exit 1
+          fi
+
+      - name: Download the Dev release
+        shell: bash
+        run: |
+          gh release download "dev-v$VERSION" --dir dev
+          ls -l dev
+
+      # Stable only moves forward. Promoting an older build than the current
+      # Stable would also make it GitHub "latest", so refuse before publishing.
+      - name: Check the Stable channel order
+        shell: bash
+        run: |
+          mkdir -p current
+          gh release download channel-stable --pattern latest.json --dir current 2>/dev/null || true
+          advance="$(python scripts/desktop_channel.py should-advance \
+            --candidate "$VERSION" --current current/latest.json)"
+          if [ "$advance" != "true" ]; then
+            echo "::error::channel-stable already points at $VERSION or a newer version"; exit 1
+          fi
+
+      - name: Write the Stable manifest
+        id: manifest
+        shell: bash
+        run: |
+          if [ -f dev/latest.json ]; then
+            python scripts/desktop_channel.py promote --manifest dev/latest.json --assets dev \
+              --repo "$GH_REPO" --tag "stable-v$VERSION" --out stable-latest.json
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish the Stable release
+        shell: bash
+        run: |
+          target="$(gh release view "dev-v$VERSION" --json targetCommitish --jq .targetCommitish)"
+          mapfile -t files < <(find dev -maxdepth 1 -type f ! -name 'latest.json' | sort)
+          if [ -f stable-latest.json ]; then
+            mkdir -p stable && cp stable-latest.json stable/latest.json
+            files+=("stable/latest.json")
+          fi
+          gh release create "stable-v$VERSION" "${files[@]}" --latest \
+            --target "$target" --title "Lattix Locus $VERSION" \
+            --notes "Stable promotion of Dev build $VERSION (same artifacts, no rebuild)."
+
+      - name: Advance the Stable channel
+        id: channel
+        if: steps.manifest.outputs.signed == 'true'
+        shell: bash
+        run: |
+          if ! gh release view channel-stable >/dev/null 2>&1; then
+            gh release create channel-stable --prerelease --latest=false \
+              --target "$(gh release view "dev-v$VERSION" --json targetCommitish --jq .targetCommitish)" \
+              --title "Stable channel" \
+              --notes "Rolling pointer for the Stable update channel. latest.json names the current Stable build."
+          fi
+          gh release upload channel-stable stable/latest.json --clobber
+          echo "advanced=true" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        if: always()
+        shell: bash
+        env:
+          SIGNED: ${{ steps.manifest.outputs.signed }}
+          ADVANCED: ${{ steps.channel.outputs.advanced }}
+        run: |
+          {
+            echo "## Stable promotion of $VERSION"
+            echo
+            echo "Release: \`stable-v$VERSION\` (GitHub latest), artifacts copied from \`dev-v$VERSION\`."
+            if [ "$SIGNED" != "true" ]; then
+              echo
+              echo "> **WARNING: no updater metadata was published.** The Dev release has no signed"
+              echo "> \`latest.json\` (it was built without \`TAURI_SIGNING_PRIVATE_KEY\`), so"
+              echo "> \`channel-stable\` was not moved. Stable installs will not see this update."
+            elif [ "$ADVANCED" = "true" ]; then
+              echo
+              echo "\`channel-stable\` now points at $VERSION."
+            else
+              echo
+              echo "\`channel-stable\` was not moved (a step failed)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -18,8 +18,8 @@ class TestInlineConsolidation:
     @patch.dict(
         os.environ,
         {
-            "FRONTIER_MEMORY_INLINE_CONSOLIDATION_ENABLED": "true",
-            "FRONTIER_MEMORY_INLINE_CONSOLIDATION_THRESHOLD": "5",
+            "LOCUS_MEMORY_INLINE_CONSOLIDATION_ENABLED": "true",
+            "LOCUS_MEMORY_INLINE_CONSOLIDATION_THRESHOLD": "5",
         },
     )
     def test_triggers_when_threshold_exceeded(self):
@@ -43,8 +43,8 @@ class TestInlineConsolidation:
     @patch.dict(
         os.environ,
         {
-            "FRONTIER_MEMORY_INLINE_CONSOLIDATION_ENABLED": "true",
-            "FRONTIER_MEMORY_INLINE_CONSOLIDATION_THRESHOLD": "10",
+            "LOCUS_MEMORY_INLINE_CONSOLIDATION_ENABLED": "true",
+            "LOCUS_MEMORY_INLINE_CONSOLIDATION_THRESHOLD": "10",
         },
     )
     def test_no_trigger_below_threshold(self):
@@ -60,13 +60,13 @@ class TestInlineConsolidation:
 
             mock_thread.assert_not_called()
 
-    @patch.dict(os.environ, {"FRONTIER_MEMORY_INLINE_CONSOLIDATION_ENABLED": "false"})
+    @patch.dict(os.environ, {"LOCUS_MEMORY_INLINE_CONSOLIDATION_ENABLED": "false"})
     def test_disabled_is_noop(self):
         with patch("app.main._POSTGRES_MEMORY") as mock_pg:
             _maybe_trigger_inline_consolidation("bucket-1")
             mock_pg.count_consolidation_candidates.assert_not_called()
 
-    @patch.dict(os.environ, {"FRONTIER_MEMORY_INLINE_CONSOLIDATION_ENABLED": "true"})
+    @patch.dict(os.environ, {"LOCUS_MEMORY_INLINE_CONSOLIDATION_ENABLED": "true"})
     def test_postgres_unavailable_is_noop(self):
         with patch("app.main._POSTGRES_MEMORY") as mock_pg:
             mock_pg.enabled = False

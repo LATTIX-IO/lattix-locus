@@ -21,6 +21,11 @@ const styleMap: Record<string, { backgroundColor: string; borderColor: string; c
     borderColor: "color-mix(in srgb, var(--fx-success) 45%, var(--fx-border))",
     color: "var(--foreground)",
   },
+  Archived: {
+    backgroundColor: "color-mix(in srgb, var(--fx-nav-active) 55%, transparent)",
+    borderColor: "var(--fx-border)",
+    color: "var(--foreground)",
+  },
   Failed: {
     backgroundColor: "color-mix(in srgb, var(--fx-danger) 20%, transparent)",
     borderColor: "color-mix(in srgb, var(--fx-danger) 45%, var(--fx-border))",
@@ -36,7 +41,7 @@ export function StatusChip({ status }: Props) {
   };
 
   return (
-    <span className="inline-flex items-center border px-2 py-0.5 text-xs font-medium" style={style}>
+    <span className="inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium tracking-[0.01em]" style={style}>
       {status}
     </span>
   );

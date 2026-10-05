@@ -1,0 +1,287 @@
+"""Backend wiring for the gateway PEP (LOCUS-332).
+
+The backend process owns one :class:`~locus_runtime.gateway.Gateway`, built on
+the configured policy engine (OPA sidecar by default) and the backend audit
+log. Each run opens a :class:`~locus_runtime.gateway.GatewaySession` whose
+capabilities come from operator configuration and the run's own definition
+(workspace roots, declared tools, egress allowlist) -- never from the agent.
+
+If the engine cannot start, the gateway is still installed: every decision is
+then ``deny`` (fail closed) and posture reports the control as not enforced.
+
+Capability grants (LOCUS-334): when the grant authority key resolves from the
+secure secret store, the gateway verifies Biscuit grants held in the backend's
+server-side :class:`~locus_runtime.grants.GrantStore`; otherwise it runs with
+``NoGrants`` (R3 still asks) and posture reports grants as not enforced.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from collections.abc import Callable, Iterable
+from pathlib import Path
+from typing import Any
+
+from locus_runtime.computer_use.operations import (
+    COMPUTER_USE_TOOL_NAMES,
+    computer_use_operations,
+)
+from locus_runtime.gateway import (
+    AuditSink,
+    Authorizer,
+    BudgetFigures,
+    Capabilities,
+    DecisionListener,
+    Gateway,
+    GatewaySession,
+    GrantVerifier,
+    NoGrants,
+    default_allowed_executables,
+    host_of,
+    install_gateway,
+    installed_gateway,
+)
+from locus_runtime.grants import (
+    BiscuitGrantVerifier,
+    GrantAuthority,
+    GrantStore,
+    load_grant_authority,
+)
+from locus_runtime.policy_engine import (
+    REASON_UNAVAILABLE,
+    Decision,
+    build_policy_engine,
+)
+
+LOGGER = logging.getLogger(__name__)
+_LOCK = threading.Lock()
+
+#: Operations a coding run's executors perform (agent_policy ``allowed_tools``).
+HARNESS_OPERATIONS = frozenset({"read_file", "write_file", "process_exec"})
+_MAX_COMPUTER_USE_APPS = 32
+_MAX_APP_CHARS = 128
+
+
+class UnavailableEngine:
+    """Stand-in when no engine could be constructed: every decision denies."""
+
+    name = "unavailable"
+    running = False
+
+    def decide(self, policy: str, input: dict[str, Any]) -> Decision:  # noqa: A002, ARG002
+        return Decision(
+            allow=False, reasons=[REASON_UNAVAILABLE], policy_version="unknown", backend=self.name
+        )
+
+    def close(self) -> None:
+        return None
+
+
+def build_grant_verifier(
+    grant_store: GrantStore | None,
+    authority_loader: Callable[[], GrantAuthority | None] = load_grant_authority,
+) -> GrantVerifier:
+    """Biscuit verifier when a grant authority key is available, else ``NoGrants``."""
+    if grant_store is None:
+        return NoGrants()
+    try:
+        authority = authority_loader()
+    except Exception:  # noqa: BLE001 - no authority means no grants (fail closed)
+        LOGGER.exception("gateway.grant_authority_error")
+        authority = None
+    if authority is None:
+        LOGGER.warning("gateway.grants_disabled: no grant authority key; R3 actions ask")
+        return NoGrants()
+    LOGGER.info("gateway.grants_enabled", extra={"key_ids": list(authority.accepted_key_ids)})
+    return BiscuitGrantVerifier(authority, grant_store)
+
+
+def ensure_backend_gateway(
+    audit_sink: AuditSink,
+    *,
+    grant_store: GrantStore | None = None,
+    authority_loader: Callable[[], GrantAuthority | None] = load_grant_authority,
+) -> Authorizer:
+    """Install the process gateway once (idempotent); return what is installed."""
+    with _LOCK:
+        existing = installed_gateway()
+        if existing is not None:
+            return existing
+        try:
+            engine: Any = build_policy_engine()
+        except Exception:  # noqa: BLE001 - misconfiguration denies, never allows
+            LOGGER.exception("gateway.engine_config_error")
+            engine = UnavailableEngine()
+        start = getattr(engine, "start", None)
+        if callable(start):
+            try:
+                start()
+            except Exception as exc:  # noqa: BLE001 - an engine that is down denies
+                LOGGER.warning("gateway.engine_unavailable: %s", type(exc).__name__)
+        gateway = Gateway(
+            engine, audit_sink, grants=build_grant_verifier(grant_store, authority_loader)
+        )
+        install_gateway(gateway)
+        LOGGER.info("gateway.installed", extra={"healthy": gateway.healthy})
+        return gateway
+
+
+def egress_hosts(
+    allowed_egress_hosts: Iterable[str], mcp_server_urls: Iterable[str]
+) -> tuple[str, ...]:
+    """Operator-configured egress allowlist plus the hosts of approved MCP servers."""
+    hosts = {str(host).strip().lower() for host in allowed_egress_hosts if str(host).strip()}
+    hosts |= {host_of(url) for url in mcp_server_urls if host_of(url)}
+    return tuple(sorted(hosts))
+
+
+def computer_use_request(raw: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(tools, apps)`` from a run input's ``computer_use`` block (LOCUS-346).
+
+    ``{"tools": ["browser_navigate", ...], "apps": ["notepad.exe", ...]}``. Only
+    known computer-use tool names survive; apps are trimmed, bounded strings.
+    Anything else is dropped (the run then gets no computer-use tools).
+    """
+    if not isinstance(raw, dict):
+        return (), ()
+    tools_raw = raw.get("tools")
+    apps_raw = raw.get("apps")
+    tools = sorted(
+        {str(t).strip() for t in tools_raw if str(t).strip() in COMPUTER_USE_TOOL_NAMES}
+        if isinstance(tools_raw, list)
+        else set()
+    )
+    apps: list[str] = []
+    if isinstance(apps_raw, list):
+        for app in apps_raw:
+            value = str(app or "").strip()
+            if value and len(value) <= _MAX_APP_CHARS and value not in apps:
+                apps.append(value)
+            if len(apps) >= _MAX_COMPUTER_USE_APPS:
+                break
+    return tuple(tools), tuple(apps)
+
+
+def run_capabilities(
+    *,
+    allowed_tools: Iterable[str],
+    roots: Iterable[str] = (),
+    egress: Iterable[str] = (),
+    max_tool_calls: int = 0,
+    budget: BudgetFigures | None = None,
+    apps: Iterable[str] = (),
+) -> Capabilities:
+    root_list = tuple(str(Path(root)) for root in roots if str(root or "").strip())
+    return Capabilities(
+        allowed_tools=frozenset(str(tool) for tool in allowed_tools if str(tool or "").strip()),
+        read_roots=root_list,
+        write_roots=root_list,
+        allowed_executables=default_allowed_executables(),
+        allowed_egress_hosts=tuple(egress),
+        max_tool_calls=max(0, int(max_tool_calls or 0)),
+        budget=budget,
+        allowed_apps=tuple(str(app) for app in apps if str(app or "").strip()),
+    )
+
+
+def open_run_session(
+    *,
+    run_id: str,
+    principal: str,
+    engine: str,
+    capabilities: Capabilities,
+    on_decision: DecisionListener | None = None,
+) -> GatewaySession | None:
+    """Open a session on the installed :class:`Gateway`.
+
+    Returns ``None`` when the installed authorizer is not a :class:`Gateway`
+    (only test doubles are); callers then act as unbound callers of that
+    authorizer, which a real gateway would deny.
+    """
+    gateway = installed_gateway()
+    if not isinstance(gateway, Gateway):
+        return None
+    return gateway.open_session(
+        run_id=run_id,
+        principal=principal or "anonymous",
+        engine=engine,
+        capabilities=capabilities,
+        on_decision=on_decision,
+    )
+
+
+def harness_session_factory(
+    *,
+    run_id: str,
+    principal: str,
+    egress: Iterable[str],
+    on_decision: DecisionListener | None,
+    opened: list[GatewaySession],
+    computer_use_tools: Iterable[str] = (),
+    apps: Iterable[str] = (),
+) -> Callable[[Any, list[str]], GatewaySession | None]:
+    """``(workspace_root, extra_paths) -> session`` for harness executors.
+
+    ``computer_use_tools`` adds the gateway operations those tools need
+    (``ui_*`` / ``browser_*`` / ``network_egress``) and ``apps`` the desktop
+    apps they may drive (LOCUS-346); both empty for a plain coding run.
+    """
+    egress_tuple = tuple(egress)
+    operations = HARNESS_OPERATIONS | computer_use_operations(computer_use_tools)
+    apps_tuple = tuple(apps)
+
+    def factory(root: Any, extra_paths: list[str]) -> GatewaySession | None:
+        session = open_run_session(
+            run_id=run_id,
+            principal=principal,
+            engine="harness",
+            capabilities=run_capabilities(
+                allowed_tools=operations,
+                roots=[str(root), *[str(p) for p in extra_paths]],
+                egress=egress_tuple,
+                apps=apps_tuple,
+            ),
+            on_decision=on_decision,
+        )
+        if session is not None:
+            opened.append(session)
+        return session
+
+    return factory
+
+
+def ensure_computer_use_controller() -> bool:
+    """Install the process computer-use controller when the gateway enforces (LOCUS-346).
+
+    Idempotent. The controller is the same instance ``/computer-use/panic`` and
+    ``/computer-use/status`` use (``get_controller()``). Returns whether one is
+    installed: without an enforcing gateway nothing is installed, so runs get no
+    computer-use tools and posture reports the control as off.
+    """
+    from locus_runtime.computer_use.controller import (
+        controller_installed,
+        get_controller,
+        install_controller,
+    )
+    from locus_runtime.gateway import gateway_enforcing
+
+    with _LOCK:
+        if controller_installed():
+            return True
+        if not gateway_enforcing():
+            LOGGER.warning("computer_use.not_installed: gateway is not enforcing")
+            return False
+        install_controller(get_controller())
+        LOGGER.info("computer_use.installed")
+        return True
+
+
+def close_sessions(sessions: Iterable[GatewaySession | None]) -> None:
+    for session in sessions:
+        if session is None:
+            continue
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001 - closing is cleanup
+            LOGGER.exception("gateway.session_close_error")

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from frontier_runtime.harness.llm import ChatResponse, ToolCall
+from locus_runtime.harness.llm import ChatResponse, ToolCall
 
 
 def tc(call_id: str, name: str, **arguments) -> ToolCall:
@@ -34,9 +34,7 @@ def git_available() -> bool:
 
 def git_init(root: Path) -> None:
     def run(*args: str) -> None:
-        subprocess.run(
-            ["git", *args], cwd=str(root), check=True, capture_output=True, text=True
-        )
+        subprocess.run(["git", *args], cwd=str(root), check=True, capture_output=True, text=True)
 
     run("init", "-q")
     run("config", "user.email", "test@example.com")

@@ -1,4 +1,4 @@
-from frontier_runtime.sandbox import (
+from locus_runtime.sandbox import (
     HostPlatform,
     IsolationStrategy,
     SandboxManager,
@@ -31,7 +31,7 @@ def test_sandbox_manager_k8s_strategy() -> None:
 
 
 def test_hardened_docker_has_seccomp_and_readonly() -> None:
-    from frontier_runtime.sandbox import ExecutionSpec
+    from locus_runtime.sandbox import ExecutionSpec
 
     manager = SandboxManager(force_strategy=IsolationStrategy.HARDENED_DOCKER)
     spec = ExecutionSpec(tool_id="test", command=["echo", "hello"])
@@ -49,7 +49,7 @@ def test_hardened_docker_has_seccomp_and_readonly() -> None:
 
 
 def test_k8s_plan_returns_pod_spec_metadata() -> None:
-    from frontier_runtime.sandbox import ExecutionSpec
+    from locus_runtime.sandbox import ExecutionSpec
 
     manager = SandboxManager(force_strategy=IsolationStrategy.K8S_GVISOR)
     spec = ExecutionSpec(tool_id="test", command=["python", "-c", "1+1"])
@@ -57,12 +57,12 @@ def test_k8s_plan_returns_pod_spec_metadata() -> None:
     plan = manager.plan(spec, policy)
     assert plan.backend == "k8s-gvisor"
     assert "runtimeClassName" in plan.metadata
-    assert plan.metadata["runtimeClassName"] == "frontier-sandbox"
+    assert plan.metadata["runtimeClassName"] == "locus-sandbox"
     assert plan.metadata["securityContext"]["runAsNonRoot"] is True
 
 
 def test_restricted_process_fallback_is_disabled_by_default() -> None:
-    from frontier_runtime.sandbox import ExecutionSpec
+    from locus_runtime.sandbox import ExecutionSpec
 
     manager = SandboxManager(force_strategy=IsolationStrategy.RESTRICTED_PROCESS)
     spec = ExecutionSpec(tool_id="test", command=["echo", "hello"])

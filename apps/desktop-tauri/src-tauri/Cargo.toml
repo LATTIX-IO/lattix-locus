@@ -1,7 +1,7 @@
 [package]
-name = "lattix-xfrontier-desktop"
-version = "0.1.0"
-description = "Lattix xFrontier desktop shell"
+name = "lattix-locus-desktop"
+version = "0.2.0"
+description = "Lattix Locus desktop shell"
 edition = "2021"
 rust-version = "1.77"
 
@@ -11,11 +11,22 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
-# Auto-update: the plugin is always compiled in but stays inactive unless the
-# build supplies updater config (pubkey + endpoints) via the updater.conf.json
-# overlay — so a keyless dev build still works (check() just returns an error,
-# which the UI ignores). Release builds enable it (see scripts/build-desktop.ps1).
+# Auto-update (Dev/Stable channels, LOCUS-349): src/updates.rs picks one of two
+# compiled-in endpoints at runtime (`updater_builder().endpoints`); the pubkey is
+# in tauri.conf.json. Without published signed metadata, check() just returns an
+# error, which the UI ignores. Signed bundles come from desktop-dev.yml only.
 tauri-plugin-updater = "2"
+# Computer-use panic hotkey (LOCUS-346): registered from Rust so it fires even
+# when the webview is frozen. Desktop targets only.
+tauri-plugin-global-shortcut = "2"
+# Out-of-band confirmation for widening the user-browser tier (LOCUS-350):
+# native OS dialogs (tauri-plugin-dialog, MIT/Apache-2.0), HMAC-SHA256 proofs
+# (RustCrypto hmac + sha2, MIT/Apache-2.0) and the OS CSPRNG (getrandom,
+# MIT/Apache-2.0).
+tauri-plugin-dialog = "2"
+hmac = "0.12"
+sha2 = "0.10"
+getrandom = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

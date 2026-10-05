@@ -1,24 +1,25 @@
 import type { Metadata } from "next";
-import { Inter, Space_Mono } from "next/font/google";
+import { Geist, IBM_Plex_Mono } from "next/font/google";
+import { Suspense } from "react";
 import { AppShell } from "@/components/app-shell";
 import { DesktopLifecycle } from "@/components/desktop-lifecycle";
 import { ToastProvider } from "@/components/toast";
 import "./globals.css";
 
-const inter = Inter({
-  variable: "--font-inter",
+const geist = Geist({
+  variable: "--font-geist-sans",
   subsets: ["latin"],
 });
 
-const spaceMono = Space_Mono({
-  variable: "--font-space-mono",
+const ibmPlexMono = IBM_Plex_Mono({
+  variable: "--font-ibm-plex-mono",
   weight: ["400", "700"],
   subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
-  title: "Lattix xFrontier",
-  description: "Dual-mode local-first orchestration UI for users and builders",
+  title: "Locus",
+  description: "Local-first AI operator by Lattix",
 };
 
 export default function RootLayout({
@@ -29,11 +30,13 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${inter.variable} ${spaceMono.variable} antialiased`}
+        className={`${geist.variable} ${ibmPlexMono.variable} antialiased`}
       >
         <ToastProvider>
           <DesktopLifecycle />
-          <AppShell>{children}</AppShell>
+          <Suspense fallback={<div className="min-h-screen bg-[hsl(var(--background))]" />}>
+            <AppShell>{children}</AppShell>
+          </Suspense>
         </ToastProvider>
       </body>
     </html>

@@ -20,7 +20,7 @@ def test_cognitive_graph_end_to_end(test_client, auth_headers) -> None:
         "/graph/runs",
         headers=auth_headers,
         json={
-            "schema_version": "frontier-graph/1.0",
+            "schema_version": "locus-graph/1.0",
             "nodes": [
                 {
                     "id": "trigger",
@@ -88,7 +88,12 @@ def test_cognitive_graph_end_to_end(test_client, auth_headers) -> None:
                 {"from": "trigger", "to": "evidence", "from_port": "payload", "to_port": "context"},
                 {"from": "goal", "to": "assembly", "from_port": "out", "to_port": "goal"},
                 {"from": "evidence", "to": "assembly", "from_port": "out", "to_port": "evidence"},
-                {"from": "assembly", "to": "commitment", "from_port": "out", "to_port": "commitment"},
+                {
+                    "from": "assembly",
+                    "to": "commitment",
+                    "from_port": "out",
+                    "to_port": "commitment",
+                },
                 {"from": "commitment", "to": "output", "from_port": "out", "to_port": "in"},
                 {"from": "commitment", "to": "output", "from_port": "result", "to_port": "result"},
             ],

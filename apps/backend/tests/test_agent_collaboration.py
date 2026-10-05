@@ -15,14 +15,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 if not str(os.environ.get("A2A_JWT_SECRET") or "").strip():
     os.environ["A2A_JWT_SECRET"] = "unit-test-super-secret-value-32bytes"
-if not str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").strip():
-    os.environ["FRONTIER_API_BEARER_TOKEN"] = "unit-test-bearer"
+if not str(os.environ.get("LOCUS_API_BEARER_TOKEN") or "").strip():
+    os.environ["LOCUS_API_BEARER_TOKEN"] = "unit-test-bearer"
 
 import app.main as main_module
 from app.main import app, store
 
 client = TestClient(app)
-ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "frontier-admin"}
+ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-locus-actor": "locus-admin"}
 
 
 @dataclass
@@ -33,7 +33,9 @@ class _FakeAgent:
 
 
 def test_extract_agent_mentions_dedup_and_order() -> None:
-    mentions = main_module._extract_agent_mentions("hey @analyst and @researcher, also @analyst again")
+    mentions = main_module._extract_agent_mentions(
+        "hey @analyst and @researcher, also @analyst again"
+    )
     assert mentions == ["analyst", "researcher"]
 
 
@@ -55,15 +57,23 @@ def _wire_fakes(monkeypatch, *, gate_respond: bool = True) -> None:
         "researcher": _FakeAgent("a-researcher", "Researcher"),
     }
     monkeypatch.setattr(
-        main_module, "_resolve_published_agent_definition", lambda token: agents.get(str(token).lower())
+        main_module,
+        "_resolve_published_agent_definition",
+        lambda token: agents.get(str(token).lower()),
     )
-    monkeypatch.setattr(main_module, "_resolve_agent_system_prompt", lambda a, requested_token=None: ("sys", "src"))
+    monkeypatch.setattr(
+        main_module, "_resolve_agent_system_prompt", lambda a, requested_token=None: ("sys", "src")
+    )
     monkeypatch.setattr(main_module, "_resolve_agent_chat_model", lambda a: "gpt-test")
     monkeypatch.setattr(main_module, "_augment_system_prompt_with_skills", lambda p: p)
 
     def fake_chat(*, system_prompt: str, user_prompt: str, model: str = "", **_kwargs):
         if "routing gate" in system_prompt:
-            payload = '{"respond": true, "reason": "asked"}' if gate_respond else '{"respond": false, "reason": "n/a"}'
+            payload = (
+                '{"respond": true, "reason": "asked"}'
+                if gate_respond
+                else '{"respond": false, "reason": "n/a"}'
+            )
             return payload, {"mode": "live"}
         return "Acknowledged. Nothing further.", {"mode": "live"}
 
@@ -198,7 +208,9 @@ def test_collaboration_records_decline(monkeypatch) -> None:
             max_turns=6,
             mask_secrets=False,
         )
-        declined = [e for e in store.run_events[run_id] if e.metadata and e.metadata.get("declined")]
+        declined = [
+            e for e in store.run_events[run_id] if e.metadata and e.metadata.get("declined")
+        ]
         assert declined, "a declined gate should still record an event"
         assert declined[0].metadata["decision"]["respond"] is False
     finally:
@@ -213,14 +225,23 @@ def test_endpoint_run_triggers_multi_agent_collaboration(monkeypatch) -> None:
     operations agent, the decide-to-respond gate says yes, and the operations
     agent replies (then stops). Exercises the real endpoint and run executor.
     """
-    published = {main_module._slugify(a.name) for a in store.agent_definitions.values() if a.status == "published"}
-    assert {"demo-research-agent", "demo-operations-agent"} <= published, "seeded demo agents required"
+    published = {
+        main_module._slugify(a.name)
+        for a in store.agent_definitions.values()
+        if a.status == "published"
+    }
+    assert {"demo-research-agent", "demo-operations-agent"} <= published, (
+        "seeded demo agents required"
+    )
 
     def fake_chat(*_args: Any, **kwargs: Any):
         system = str(kwargs.get("system_prompt") or "")
         user = str(kwargs.get("user_prompt") or "")
         if "routing gate" in system:
-            return '{"respond": true, "reason": "directly asked"}', {"mode": "live", "model": "test"}
+            return '{"respond": true, "reason": "directly asked"}', {
+                "mode": "live",
+                "model": "test",
+            }
         if "collaborating in a multi-agent run" in user:
             return "Action item created. Nothing further.", {"mode": "live", "model": "test"}
         # primary agent response — hand off to the operations agent
@@ -263,7 +284,9 @@ def test_endpoint_run_triggers_multi_agent_collaboration(monkeypatch) -> None:
                 break
             time.sleep(0.1)
 
-        assert ops_event is not None, "operations agent should have been @-called and threaded a reply"
+        assert ops_event is not None, (
+            "operations agent should have been @-called and threaded a reply"
+        )
         assert ops_event.metadata["thread_id"], "reply should carry a thread id"
         assert ops_event.metadata["decision"]["respond"] is True
     finally:
@@ -312,8 +335,7 @@ def test_send_run_message_continues_same_run(monkeypatch) -> None:
 
         # The user's message lands in this run immediately.
         assert any(
-            e.type == "user_message" and "summarize" in e.summary
-            for e in store.run_events[run_id]
+            e.type == "user_message" and "summarize" in e.summary for e in store.run_events[run_id]
         )
 
         # The agent reply lands in this same run (background worker).
@@ -347,9 +369,15 @@ def test_pinned_agents_stay_engaged_on_followups(monkeypatch) -> None:
     def fake_chat(*_args: Any, **kwargs: Any):
         system = str(kwargs.get("system_prompt") or "")
         if "routing gate" in system:
-            return '{"respond": true, "reason": "team follow-up"}', {"mode": "live", "model": "test"}
+            return '{"respond": true, "reason": "team follow-up"}', {
+                "mode": "live",
+                "model": "test",
+            }
         # No @mentions in replies — engagement must come from pinning, not text.
-        return "Contribution recorded. No further handoff needed.", {"mode": "live", "model": "test"}
+        return "Contribution recorded. No further handoff needed.", {
+            "mode": "live",
+            "model": "test",
+        }
 
     monkeypatch.setattr(main_module, "_run_openai_chat", fake_chat)
 
@@ -367,6 +395,7 @@ def test_pinned_agents_stay_engaged_on_followups(monkeypatch) -> None:
     assert created.status_code == 200
     run_id = created.json()["id"]
     try:
+
         def agents_since(start_index: int) -> set[str]:
             return {
                 str((e.metadata or {}).get("selected_agent_name") or "")
@@ -410,7 +439,7 @@ def test_pinned_agents_stay_engaged_on_followups(monkeypatch) -> None:
 
 
 def test_send_run_message_requires_text() -> None:
-    runs = client.get("/workflow-runs", headers={"x-frontier-actor": "frontier-admin"}).json()
+    runs = client.get("/workflow-runs", headers={"x-locus-actor": "locus-admin"}).json()
     if not runs:
         return
     response = client.post(

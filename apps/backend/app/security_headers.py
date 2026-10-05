@@ -21,7 +21,7 @@ HOSTED_SECURITY_HEADERS: dict[str, str] = {
 
 
 def _runtime_profile() -> str:
-    value = str(os.getenv("FRONTIER_RUNTIME_PROFILE", "local-lightweight") or "").strip().lower()
+    value = str(os.getenv("LOCUS_RUNTIME_PROFILE", "local-lightweight") or "").strip().lower()
     return value or "local-lightweight"
 
 

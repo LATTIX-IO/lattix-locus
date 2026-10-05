@@ -5,7 +5,7 @@ from test_generated_artifacts import AUTH_HEADERS, client
 
 def _cognitive_graph_payload(*, message: str) -> dict[str, object]:
     return {
-        "schema_version": "frontier-graph/1.0",
+        "schema_version": "locus-graph/1.0",
         "nodes": [
             {
                 "id": "trigger",
@@ -86,7 +86,12 @@ def test_node_definitions_include_cognitive_mvp_nodes() -> None:
 
     assert response.status_code == 200
     type_keys = {item["type_key"] for item in response.json()}
-    assert {"frontier/goal", "frontier/evidence", "frontier/assembly", "frontier/commitment"}.issubset(type_keys)
+    assert {
+        "locus/goal",
+        "locus/evidence",
+        "locus/assembly",
+        "locus/commitment",
+    }.issubset(type_keys)
 
 
 def test_graph_validation_accepts_cognitive_mvp_graph() -> None:

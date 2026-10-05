@@ -21,7 +21,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 gc = pytest.importorskip("app.graph_compiler", reason="langgraph / backend not importable")
-from frontier_runtime.harness.llm import ChatResponse  # noqa: E402
+from locus_runtime.harness.llm import ChatResponse  # noqa: E402
 
 if not gc.LANGGRAPH_AVAILABLE:  # pragma: no cover
     pytest.skip("langgraph not installed", allow_module_level=True)
@@ -69,7 +69,10 @@ def _native_executor(node, incoming, by_port):
     if "trigger" in t:
         return {"message": "Spec: add a /health endpoint."}
     if "output" in t:
-        return {"published": {"destination": node.config.get("destination")}, "message": "delivered"}
+        return {
+            "published": {"destination": node.config.get("destination")},
+            "message": "delivered",
+        }
     return {"message": f"native {node.id}"}
 
 
@@ -113,15 +116,15 @@ def _deps(client, *, resolve=None, workspace=None, max_loops=3, provisioned=None
 # --------------------------------------------------------------------------- #
 def test_linear_graph_compiles_with_entry_and_terminal():
     nodes = [
-        _Node({"id": "t", "type": "frontier/trigger", "title": "T"}),
-        _Node({"id": "a", "type": "frontier/agent", "title": "A", "config": {"agent_id": "x"}}),
-        _Node({"id": "o", "type": "frontier/output", "title": "O"}),
+        _Node({"id": "t", "type": "locus/trigger", "title": "T"}),
+        _Node({"id": "a", "type": "locus/agent", "title": "A", "config": {"agent_id": "x"}}),
+        _Node({"id": "o", "type": "locus/output", "title": "O"}),
     ]
     links = [
         _Edge({"from": "t", "to": "a", "from_port": "out", "to_port": "in"}),
         _Edge({"from": "a", "to": "o", "from_port": "out", "to_port": "in"}),
     ]
-    compiled = gc.compile_frontier_graph(nodes, links, _deps(_RoutingClient()))
+    compiled = gc.compile_locus_graph(nodes, links, _deps(_RoutingClient()))
     assert compiled.entry == "t"
     assert compiled.terminals == ["o"]
     assert compiled.has_cycle is False
@@ -131,7 +134,7 @@ def test_linear_graph_compiles_with_entry_and_terminal():
 
 def test_cross_functional_graph_is_cyclic_with_two_routers():
     nodes, links = _load_cross_functional_graph()
-    compiled = gc.compile_frontier_graph(nodes, links, _deps(_RoutingClient()))
+    compiled = gc.compile_locus_graph(nodes, links, _deps(_RoutingClient()))
     assert compiled.has_cycle is True
     assert compiled.entry == "trigger"
     assert compiled.terminals == ["output"]
@@ -153,11 +156,17 @@ def test_router_forces_forward_port_after_loop_bound():
     router = gc._router_for("consensus", port_targets, deps, ancestors_of)
 
     # model keeps voting to continue, but the bound forces the forward port
-    state = {"node_outputs": {"consensus": {"route": "continue_discussion"}}, "loop_counts": {"consensus": 3}}
+    state = {
+        "node_outputs": {"consensus": {"route": "continue_discussion"}},
+        "loop_counts": {"consensus": 3},
+    }
     assert router(state) == "agreed"  # forward (build is not an ancestor)
 
     # below the bound, honour the model's choice
-    state2 = {"node_outputs": {"consensus": {"route": "continue_discussion"}}, "loop_counts": {"consensus": 1}}
+    state2 = {
+        "node_outputs": {"consensus": {"route": "continue_discussion"}},
+        "loop_counts": {"consensus": 1},
+    }
     assert router(state2) == "continue_discussion"
 
 
@@ -181,7 +190,7 @@ def test_cross_functional_graph_runs_and_terminates():
         return _chat_resolution(cfg.get("agent_id", "a"), mode)
 
     deps = _deps(client, resolve=resolve, workspace=None, max_loops=3)
-    compiled = gc.compile_frontier_graph(nodes, links, deps)
+    compiled = gc.compile_locus_graph(nodes, links, deps)
     result = gc.run_compiled_graph(compiled, {"message": "Spec: add a /health endpoint."}, deps)
 
     node_results = result["node_results"]
@@ -197,8 +206,8 @@ def test_cross_functional_graph_runs_and_terminates():
 # Code-node delegation to the harness SweAgent
 # --------------------------------------------------------------------------- #
 def test_code_node_delegates_to_swe_agent(monkeypatch):
-    from frontier_runtime.harness import swe_agent as swe_mod
-    from frontier_runtime.harness.loop import LoopOutcome
+    from locus_runtime.harness import swe_agent as swe_mod
+    from locus_runtime.harness.loop import LoopOutcome
 
     class _FakeResult:
         outcome = LoopOutcome.SUBMITTED
@@ -222,18 +231,84 @@ def test_code_node_delegates_to_swe_agent(monkeypatch):
         workspace = _WS()
         binding = _Binding()
 
-    node = _Node({"id": "build", "type": "frontier/agent", "title": "Build", "config": {"agent_id": "sdet", "phase": "build"}})
-    deps = _deps(_RoutingClient(), resolve=lambda cfg: _chat_resolution("sdet", "code"), provisioned=_Prov())
+    node = _Node(
+        {
+            "id": "build",
+            "type": "locus/agent",
+            "title": "Build",
+            "config": {"agent_id": "sdet", "phase": "build"},
+        }
+    )
+    deps = _deps(
+        _RoutingClient(), resolve=lambda cfg: _chat_resolution("sdet", "code"), provisioned=_Prov()
+    )
 
-    res = gc._run_agent_node(node, incoming=[], out_ports=[], state={"run_input": {"message": "build it"}}, deps=deps)
+    res = gc._run_agent_node(
+        node, incoming=[], out_ports=[], state={"run_input": {"message": "build it"}}, deps=deps
+    )
     assert res["mode"] == "code"
     assert res["patch"].startswith("diff --git")
     assert res["route"] == "agreed"
 
 
 def test_code_node_without_workspace_degrades_to_plan_only():
-    node = _Node({"id": "build", "type": "frontier/agent", "title": "Build", "config": {"agent_id": "sdet", "phase": "build"}})
-    deps = _deps(_RoutingClient(), resolve=lambda cfg: _chat_resolution("sdet", "code"), provisioned=None)
-    res = gc._run_agent_node(node, incoming=[], out_ports=[], state={"run_input": {"message": "build it"}}, deps=deps)
-    assert res["mode"] in {"plan_only", "simulated"}
+    node = _Node(
+        {
+            "id": "build",
+            "type": "locus/agent",
+            "title": "Build",
+            "config": {"agent_id": "sdet", "phase": "build"},
+        }
+    )
+    deps = _deps(
+        _RoutingClient(), resolve=lambda cfg: _chat_resolution("sdet", "code"), provisioned=None
+    )
+    res = gc._run_agent_node(
+        node, incoming=[], out_ports=[], state={"run_input": {"message": "build it"}}, deps=deps
+    )
+    assert res["mode"] == "plan_only"
     assert res["route"] == "agreed"  # never traps the graph when it cannot build
+
+
+class _FailingClient:
+    provider = "scripted"
+    model = "scripted"
+
+    def complete(self, messages, **_kw):
+        raise ConnectionError("connection refused")
+
+
+def test_chat_node_provider_failure_is_explicit_not_simulated():
+    """LOCUS-309: a failing provider yields a typed node failure, never fake output."""
+    node = _Node({"id": "a", "type": "locus/agent", "title": "A", "config": {"agent_id": "x"}})
+    res = gc._run_agent_node(
+        node,
+        incoming=[],
+        out_ports=[],
+        state={"run_input": {"message": "hi"}},
+        deps=_deps(_FailingClient()),
+    )
+    assert res["mode"] == "failed"
+    assert res["error_code"] == "provider_call_failed"
+    assert "ollama" in res["response"] and "gpt-oss:20b" in res["response"]
+    assert "connection refused" in res["response"]
+    assert res["route"] == ""
+
+
+def test_plan_only_fallback_provider_failure_is_explicit():
+    node = _Node(
+        {
+            "id": "build",
+            "type": "locus/agent",
+            "title": "Build",
+            "config": {"agent_id": "sdet", "phase": "build"},
+        }
+    )
+    deps = _deps(
+        _FailingClient(), resolve=lambda cfg: _chat_resolution("sdet", "code"), provisioned=None
+    )
+    res = gc._run_agent_node(
+        node, incoming=[], out_ports=[], state={"run_input": {"message": "build it"}}, deps=deps
+    )
+    assert res["mode"] == "failed"
+    assert res["error_code"] == "provider_call_failed"

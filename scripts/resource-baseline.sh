@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Capture a resource baseline for the local Lattix xFrontier stack.
+# Capture a resource baseline for the local Lattix Locus stack.
 # Writes a timestamped snapshot to docs/perf/baselines/. Read-only.
 set -euo pipefail
 
@@ -9,7 +9,7 @@ mkdir -p "$out_dir"
 out_file="$out_dir/baseline-$(date +%Y%m%d-%H%M%S).txt"
 
 {
-  echo "# Lattix xFrontier resource baseline — $(date -Iseconds)"
+  echo "# Lattix Locus resource baseline — $(date -Iseconds)"
   echo
   echo "## Host"
   if command -v free >/dev/null 2>&1; then

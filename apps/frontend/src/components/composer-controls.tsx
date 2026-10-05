@@ -83,7 +83,7 @@ export function ComposerControls({ onChange }: Props) {
     let cancelled = false;
     void (async () => {
       const [settings, overview, servers, skillDefs, folderList] = await Promise.all([
-        getUserSettings(),
+        getUserSettings().catch(() => null),
         getModelsOverview().catch(() => null),
         getMcpServers().catch(() => []),
         getSkills().catch(() => []),
@@ -111,10 +111,10 @@ export function ComposerControls({ onChange }: Props) {
       setMcpServers((servers as McpServer[]).filter((s) => s.configured));
       setSkills((skillDefs as SkillDefinition[]).filter((s) => s.status === "enabled"));
       if (folderList) setFolders(folderList.folders ?? []);
-      setMode((settings.default_mode as Mode) || "execute");
-      setReasoning((settings.preferred_reasoning_effort as "" | "low" | "medium" | "high") || "");
-      setModel(settings.preferred_model || opts[0]?.value || "");
-      if (settings.default_working_folder) setWorkingFolder(settings.default_working_folder);
+      setMode((settings?.default_mode as Mode) || "execute");
+      setReasoning((settings?.preferred_reasoning_effort as "" | "low" | "medium" | "high") || "");
+      setModel(settings?.preferred_model || opts[0]?.value || "");
+      if (settings?.default_working_folder) setWorkingFolder(settings.default_working_folder);
     })();
     return () => {
       cancelled = true;

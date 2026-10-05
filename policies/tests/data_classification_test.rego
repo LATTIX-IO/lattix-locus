@@ -19,3 +19,7 @@ test_restricted_private_key_text if {
 test_confidential_password_text if {
   data_classification.classification == "confidential" with input as {"text": "password reset email"}
 }
+
+test_restricted_wins_over_confidential if {
+  data.lattix.data_classification.classification == "restricted" with input as {"text": "customer ssn export"}
+}

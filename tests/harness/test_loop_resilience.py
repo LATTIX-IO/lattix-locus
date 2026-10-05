@@ -11,12 +11,12 @@ import shutil
 
 import pytest
 
-from frontier_runtime.harness.executor import LocalDirectExecutor
-from frontier_runtime.harness.llm import ChatResponse, ScriptedChatClient, ToolCall
-from frontier_runtime.harness.loop import AgentLoop, LoopBudgets, LoopOutcome, _normalize_tool_name
-from frontier_runtime.harness.model_profiles import resolve_profile
-from frontier_runtime.harness.tools import CodingToolset
-from frontier_runtime.harness.workspace import Workspace
+from locus_runtime.harness.executor import LocalDirectExecutor
+from locus_runtime.harness.llm import ChatResponse, ScriptedChatClient, ToolCall
+from locus_runtime.harness.loop import AgentLoop, LoopBudgets, LoopOutcome, _normalize_tool_name
+from locus_runtime.harness.model_profiles import resolve_profile
+from locus_runtime.harness.tools import CodingToolset
+from locus_runtime.harness.workspace import Workspace
 
 requires_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="no bash")
 
@@ -107,16 +107,20 @@ def test_loop_handles_view_called_as_tool(tmp_path):
     client = ScriptedChatClient(
         responses=[
             # model calls editor sub-command 'view' directly as a tool
-            ChatResponse(tool_calls=[ToolCall(id="v", name="view",
-                                              arguments='{"path": "core.py"}')]),
-            ChatResponse(tool_calls=[ToolCall(id="s", name="submit",
-                                              arguments='{"answer": "seen"}')]),
+            ChatResponse(
+                tool_calls=[ToolCall(id="v", name="view", arguments='{"path": "core.py"}')]
+            ),
+            ChatResponse(
+                tool_calls=[ToolCall(id="s", name="submit", arguments='{"answer": "seen"}')]
+            ),
         ]
     )
     loop = AgentLoop(
-        client=client, toolset=ts,
+        client=client,
+        toolset=ts,
         profile=resolve_profile("scripted", "x", profile_id="local-32b-class"),
-        system_prompt="sys", user_prompt="look",
+        system_prompt="sys",
+        user_prompt="look",
         budgets=LoopBudgets(max_steps=5),
     )
     result = loop.run()

@@ -1,8 +1,8 @@
-"""Tests for frontier_runtime.context_dedup — File-aware context dedup."""
+"""Tests for locus_runtime.context_dedup — File-aware context dedup."""
 
 from __future__ import annotations
 
-from frontier_runtime.context_dedup import _extract_file_path, dedup_file_operations
+from locus_runtime.context_dedup import _extract_file_path, dedup_file_operations
 
 
 class TestExtractFilePath:

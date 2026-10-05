@@ -1,12 +1,21 @@
-# Build the native desktop installers (.msi/.exe, .dmg/.app, .deb/AppImage).
+# Build the native desktop installers (NSIS .exe, .dmg/.app, .deb/AppImage).
+#
+# Versions follow D-31 (docs/VERSIONING.md): MAJOR.MINOR.PATCH, integers, PATCH
+# <= 99999, MAJOR.MINOR equal to the commit's VERSION file. Windows ships NSIS
+# only: Windows Installer (MSI/WiX) caps the third version field at 65535.
 #
 # Pipeline per OS: PyInstaller backend sidecar → Next.js standalone + vendored
 # Node → `cargo tauri build` (Tauri bundles installers) → (Windows) Authenticode
 # sign → upload as release assets. Pure recipe; runs in CI, not on a dev box.
 #
-# Required secrets:
+# This is the manual / tagged installer path (D-24 test builds with
+# create_release=false, or a draft release). It publishes NO updater metadata:
+# the update channels (LOCUS-349, D-26) are fed only by desktop-dev.yml (merge
+# to main -> Dev) and desktop-promote.yml (Dev -> Stable), which sign and verify
+# every latest.json.
+#
+# Optional secrets:
 #   WINDOWS_PFX_BASE64 / WINDOWS_PFX_PASSWORD  (Authenticode signing)
-#   TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD  (updater minisign)
 # macOS is built unsigned/ad-hoc until an Apple Developer ID is added (then set
 #   APPLE_CERTIFICATE / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID).
 
@@ -16,31 +25,106 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 0.1.0)"
+        description: "MAJOR.MINOR.PATCH to build (e.g. 0.2.7); MAJOR.MINOR must match VERSION"
         required: true
+        type: string
+      platforms:
+        description: "Which installers to build"
+        type: choice
+        default: windows-macos
+        options: [windows-macos, windows, macos, all]
+      create_release:
+        description: "Create a draft GitHub release (otherwise artifacts only, D-24)"
+        type: boolean
+        default: false
   push:
     tags: ["v*"]
 
+# Least privilege: read by default; the build job may create the draft release.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+      release: ${{ steps.m.outputs.release }}
+      version: ${{ steps.m.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The version is what the app, the backend (/platform/version) and the
+      # installer report: the tag without its "v", or the dispatch input,
+      # validated by the same rules as every other build (D-31): numeric
+      # MAJOR.MINOR.PATCH, PATCH <= 99999, MAJOR.MINOR == this commit's VERSION.
+      # A build that creates a release must not reuse a version the update
+      # channels already published (dev-v / stable-v), and a dispatched one not
+      # an existing v<version> either: releases are immutable.
+      - id: m
+        shell: python
+        env:
+          PLATFORMS: ${{ github.event.inputs.platforms || 'all' }}
+          CREATE_RELEASE: ${{ github.event_name == 'push' || github.event.inputs.create_release == 'true' }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          VERSION_INPUT: ${{ github.event.inputs.version }}
+        run: |
+          import json, os, subprocess, sys
+          push = os.environ["EVENT_NAME"] == "push"
+          raw = os.environ["REF_NAME"] if push else os.environ["VERSION_INPUT"]
+          version = (raw or "").strip()
+          version = version[1:] if version[:1] == "v" else version
+          check = subprocess.run(
+              [sys.executable, "locus_tooling/versioning.py", "validate", version,
+               "--version-file", "VERSION"],
+              capture_output=True, text=True, check=False,
+          )
+          if check.returncode != 0:
+              raise SystemExit("::error::" + check.stderr.strip())
+          version = check.stdout.strip()
+          release = os.environ["CREATE_RELEASE"].lower() == "true"
+          if release:
+              tags = ["dev-v" + version, "stable-v" + version] + ([] if push else ["v" + version])
+              taken = subprocess.run(
+                  ["git", "ls-remote", "--tags", "origin"] + ["refs/tags/" + t for t in tags],
+                  capture_output=True, text=True, check=True,
+              ).stdout.strip()
+              if taken:
+                  raise SystemExit("::error::" + version + " is already published: " + taken)
+          rows = {
+              "windows": {"os": "windows-latest", "triple": "x86_64-pc-windows-msvc", "ext": ".exe",
+                          "bundles": "nsis"},
+              "macos": {"os": "macos-latest", "triple": "aarch64-apple-darwin", "ext": "", "bundles": ""},
+              "macos-intel": {"os": "macos-13", "triple": "x86_64-apple-darwin", "ext": "", "bundles": ""},
+              "linux": {"os": "ubuntu-latest", "triple": "x86_64-unknown-linux-gnu", "ext": "", "bundles": ""},
+          }
+          pick = {
+              "windows-macos": ["windows", "macos", "macos-intel"],
+              "windows": ["windows"],
+              "macos": ["macos", "macos-intel"],
+              "all": ["windows", "macos", "macos-intel", "linux"],
+          }[os.environ["PLATFORMS"]]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write("matrix=" + json.dumps({"include": [rows[k] for k in pick]}) + chr(10))
+              out.write("release=" + ("true" if release else "false") + chr(10))
+              out.write("version=" + version + chr(10))
+          print(json.dumps({"version": version, "release": release}))
+
   build:
+    needs: plan
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            triple: x86_64-pc-windows-msvc
-            ext: .exe
-          - os: macos-latest
-            triple: aarch64-apple-darwin
-            ext: ""
-          - os: ubuntu-latest
-            triple: x86_64-unknown-linux-gnu
-            ext: ""
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     env:
+      VERSION: ${{ needs.plan.outputs.version }}
       # Sign only when an Authenticode cert secret is present; otherwise the
       # build still produces an (unsigned) installer for testing.
       HAS_WIN_CERT: ${{ secrets.WINDOWS_PFX_BASE64 != '' }}
@@ -65,14 +149,27 @@ jobs:
         run: |
           python -m pip install --upgrade pip pyinstaller
           python -m pip install -e .
-          pyinstaller packaging/frontier-backend.spec
-          mkdir -p apps/desktop-tauri/src-tauri/bin
-          cp "dist/frontier-backend${{ matrix.ext }}" \
-             "apps/desktop-tauri/src-tauri/bin/frontier-backend-${{ matrix.triple }}${{ matrix.ext }}"
+          # Stamp the backend with the app version (the shell compares them).
+          python -m locus_tooling.build_info "$VERSION"
+          pyinstaller packaging/locus-backend.spec
+          # The gateway's policy engine (fail closed without it): the pinned OPA
+          # release, sha256-verified against locus_tooling/opa_release.py (the
+          # step fails on a mismatch), placed beside the backend as installed.
+          python -m locus_tooling.opa_release fetch --triple "${{ matrix.triple }}" \
+            --dest "dist/locus-opa${{ matrix.ext }}"
+          # Fail the build, not the installed app, when the bundle misses a module
+          # or the policy engine does not run over the bundled policies.
+          "dist/locus-backend${{ matrix.ext }}" --self-check
+          mkdir -p apps/desktop-tauri/src-tauri/bin apps/desktop-tauri/src-tauri/sidecars
+          cp "dist/locus-backend${{ matrix.ext }}" \
+             "apps/desktop-tauri/src-tauri/bin/locus-backend-${{ matrix.triple }}${{ matrix.ext }}"
+          # Tauri externalBin "sidecars/locus-opa": installed beside the app as locus-opa.
+          cp "dist/locus-opa${{ matrix.ext }}" \
+             "apps/desktop-tauri/src-tauri/sidecars/locus-opa-${{ matrix.triple }}${{ matrix.ext }}"
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       # --- 2) Frontend standalone + vendored Node -------------------------
       - name: Build frontend (Next.js standalone)
@@ -107,26 +204,48 @@ jobs:
           cargo install tauri-cli --version "^2" --locked
           cargo tauri icon ../icon-source.png
 
-      - uses: tauri-apps/tauri-action@v0
+      # The app version (package_info, LOCUS_APP_VERSION, the installer) comes
+      # from this overlay, the same way desktop-dev.yml sets the Dev version.
+      - name: Write the release version overlay
+        shell: python
+        run: |
+          import json, os
+          path = os.path.join("apps", "desktop-tauri", "src-tauri", "release.conf.json")
+          with open(path, "w", encoding="utf-8") as fh:
+              json.dump({"version": os.environ["VERSION"]}, fh)
+          print(path, os.environ["VERSION"])
+
+      - name: Build installers (release)
+        if: needs.plan.outputs.release == 'true'
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Signs the auto-update artifacts (latest.json + .sig). The matching
-          # public key is committed in tauri.conf.json (public keys are safe).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop-tauri/src-tauri
-          # Create/attach to a GitHub Release so the signed installers AND the
-          # generated latest.json land as release assets — that manifest is what
-          # the in-app one-click updater reads from
-          # github.com/.../releases/latest/download/latest.json.
-          tagName: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
-          releaseName: "Lattix xFrontier ${{ github.event.inputs.version || github.ref_name }}"
+          # Installers only. Updater metadata comes from the channel workflows
+          # (desktop-dev.yml / desktop-promote.yml), never from this path.
+          includeUpdaterJson: false
+          # The validated plan version, never the raw input.
+          tagName: v${{ needs.plan.outputs.version }}
+          releaseName: "Lattix Locus ${{ needs.plan.outputs.version }}"
           releaseDraft: true
           prerelease: false
-          args: --target ${{ matrix.triple }}
+          args: --target ${{ matrix.triple }} --config ${{ github.workspace }}/apps/desktop-tauri/src-tauri/release.conf.json${{ matrix.bundles != '' && format(' --bundles {0}', matrix.bundles) || '' }}
+
+      # Test builds (D-24): installers as workflow artifacts only, no tag/release.
+      - name: Build installers (artifacts only)
+        if: needs.plan.outputs.release != 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop-tauri/src-tauri
+          args: --target ${{ matrix.triple }} --config ${{ github.workspace }}/apps/desktop-tauri/src-tauri/release.conf.json${{ matrix.bundles != '' && format(' --bundles {0}', matrix.bundles) || '' }}
 
       # --- 4) Windows: Authenticode-sign the produced installers ----------
+      # Post-build signing changes the installer bytes. That is fine here (no
+      # updater signatures are published from this path); the channel builds
+      # must sign through Tauri's bundle.windows.signCommand instead.
       - name: Sign Windows installers
         if: matrix.os == 'windows-latest' && env.HAS_WIN_CERT == 'true'
         shell: pwsh
@@ -136,7 +255,7 @@ jobs:
           $st = "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe"
           $signtool = (Get-Item $st | Select-Object -First 1).FullName
           Get-ChildItem -Recurse apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle `
-            -Include *.msi,*.exe | ForEach-Object {
+            -Include *.exe | ForEach-Object {
               & $signtool sign /f $pfx /p $env:WINDOWS_PFX_PASSWORD /fd sha256 `
                 /tr http://timestamp.digicert.com /td sha256 $_.FullName
               & $signtool verify /pa $_.FullName
@@ -148,11 +267,10 @@ jobs:
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
-          name: installers-${{ matrix.triple }}
+          name: locus-${{ needs.plan.outputs.version }}-${{ matrix.triple }}
           path: |
-            apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.msi
             apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.exe
             apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.dmg
             apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.deb
             apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/**/*.AppImage
-          if-no-files-found: warn
+          if-no-files-found: error

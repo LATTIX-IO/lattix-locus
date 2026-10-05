@@ -1,10 +1,10 @@
-# GitHub Copilot Instructions — Lattix xFrontier
+# GitHub Copilot Instructions — Lattix Locus
 
 This repository participates in the Nexus Obsidian-backed AI memory system. Use the committed, repo-safe context; do not assume access to the private vault from cloud/IDE contexts.
 
 ## Repo role
 
-Lattix xFrontier is a standalone secure, local-first multi-agent orchestration platform (AGPL-3.0-or-later) — not a superproject. Control plane in `apps/backend/`, runtime in `apps/workers/` and `frontier_runtime/`, UI in `apps/frontend/`, CLI/installer in `frontier_tooling/`, contracts in `packages/contracts/`.
+Lattix Locus is a standalone secure, local-first multi-agent orchestration platform (AGPL-3.0-or-later) — not a superproject. Control plane in `apps/backend/`, runtime in `apps/workers/` and `locus_runtime/`, UI in `apps/frontend/`, CLI/installer in `locus_tooling/`, contracts in `packages/contracts/`.
 
 ## Use these committed files
 - `.ai-memory/repo-profile.md` — repo purpose, build/test commands, architecture, conventions
@@ -31,7 +31,7 @@ When a durable rule/decision should be remembered, include this block in your re
 type:
 scope: repo
 project: lattix
-repo: lattix-xfrontier
+repo: lattix-locus
 confidence:
 status: candidate
 memory:

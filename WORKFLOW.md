@@ -4,13 +4,15 @@ tracker:
   provider:
     endpoint: https://api.linear.app/graphql
     api_key: $LINEAR_API_KEY
-    project_slug: "<SET_FRONT_PROJECT_SLUG>"
+    project_slug: "3b160e533200"
   active_states:
     - Todo
     - In Progress
     - Rework
   exclude_labels:
     - epic
+    - agent:ineligible
+    - agent:human-review-required
   terminal_states:
     - Closed
     - Cancelled
@@ -20,12 +22,13 @@ tracker:
 polling:
   interval_ms: 30000
 workspace:
-  root: "$SYMPHONY_WORKSPACE_ROOT/lattix-xfrontier"
+  # Set by `make symphony` (default: ../.symphony/workspaces/lattix-locus); override per machine.
+  root: $SYMPHONY_WORKSPACE_ROOT
 hooks:
   timeout_ms: 120000
   after_create: |
     set -euo pipefail
-    git clone --branch "main" "https://github.com/LATTIX-IO/lattix-xfrontier.git" .
+    git clone --branch "main" "https://github.com/LATTIX-IO/lattix-locus.git" .
   before_run: |
     set -euo pipefail
     if [ -d .git ] && [ -z "$(git status --porcelain)" ]; then
@@ -51,9 +54,9 @@ codex:
   stall_timeout_ms: 300000
   approval_policy: never
 symphony:
-  repo: "lattix-xfrontier"
-  path: "lattix-xfrontier"
-  remote: "https://github.com/LATTIX-IO/lattix-xfrontier.git"
+  repo: "lattix-locus"
+  path: "."
+  remote: "https://github.com/LATTIX-IO/lattix-locus.git"
   default_branch: "main"
   linear_team_key: "FRONT"
   technologies:
@@ -66,11 +69,9 @@ symphony:
     - docs
 ---
 
-# Symphony Workflow — lattix-xfrontier
+# Symphony Workflow — lattix-locus
 
-You are the coding agent for **Lattix xFrontier** (`lattix-xfrontier`) running under Symphony. Symphony has selected this Linear issue and created an isolated per-issue workspace. Treat the workspace as the only place where commands and file edits may run.
-
-> `project_slug` above is a placeholder. Set it to this repo's Linear project id before enabling unattended runs; tracker transitions will not work until it is correct.
+You are the coding agent for **Lattix Locus** (`lattix-locus`) running under Symphony. Symphony has selected this Linear issue and created an isolated per-issue workspace. Treat the workspace as the only place where commands and file edits may run.
 
 ## Issue context
 
@@ -86,7 +87,7 @@ Use the issue description, labels, blockers, linked assets, and repository conte
 - Linear team: `FRONT`
 - Default branch: `main`
 - Detected technology profile: python, typescript, react, docker, helm, rego, docs
-- Surfaces: `apps/backend/` (control plane), `apps/workers/` + `frontier_runtime/` (runtime), `apps/frontend/` (UI), `frontier_tooling/` (CLI/installer), `packages/contracts/`, `policies/`, `helm/`
+- Surfaces: `apps/backend/` (control plane), `apps/workers/` + `locus_runtime/` (runtime), `apps/frontend/` (UI), `locus_tooling/` (CLI/installer), `packages/contracts/`, `policies/`, `helm/`
 
 ### Technology-specific execution spec
 
@@ -103,7 +104,7 @@ Use the issue description, labels, blockers, linked assets, and repository conte
 ### Linear state map
 
 - `Backlog`: out of scope for autonomous execution; do not start implementation unless moved to an active state.
-- `Todo`: queued and eligible. Before editing code, move or request movement to `In Progress` when tracker tooling is available.
+- `Todo`: queued and eligible only with `agent:eligible`. Before editing code, move or request movement to `In Progress` when tracker tooling is available.
 - `In Progress`: active implementation. Keep work scoped, validated, and ready for PR handoff.
 - `Human Review`: handoff state. Move here only after branch/PR, validation evidence, and final notes are complete.
 - `Rework`: reviewer feedback requires another pass; re-read feedback, update the plan, revalidate, then return to `Human Review`.
@@ -125,14 +126,14 @@ Use the local `git` command and the authenticated `gh` CLI for branch, pull-requ
 ## Required execution flow
 
 1. Re-read the issue and inspect current repository state before editing.
-2. Confirm the issue is in an executable state. If `Todo`, transition to `In Progress` when tracker tooling is available; if terminal, stop without changing files.
+2. Confirm the issue is in an executable state, has `agent:eligible`, and has no exclusion label. If `Todo`, transition to `In Progress` when tracker tooling is available; if terminal or ineligible, stop without changing files.
 3. Create or reuse a branch named from the issue identifier and short title. Never commit directly to `main`.
 4. Keep changes scoped to the issue.
 5. Prefer tests first for behavior changes. Preserve existing public APIs, node-type semantics, graph schemas, and CLI contracts unless the issue asks for an intentional change.
 6. Never print, commit, or log secrets. `LINEAR_API_KEY` reaches Symphony through environment indirection only; do not read or echo it from `.env`.
 7. Use the repo's existing tooling. Add dependencies only when justified by purpose, license, risk, and alternatives.
 8. Commit with a Conventional Commit message referencing the issue identifier when practical.
-9. Push the branch and open or update a pull request.
+9. Push the branch and open or update a pull request. The PR body declares one `Release-Impact: patch|minor|major` line per [docs/VERSIONING.md](docs/VERSIONING.md) (D-31). A new user-visible capability or setting, a changed default, a port contract version, a migration or a core-dependency major upgrade is at least `minor`: edit `VERSION`, run `lattix version sync` and add a `docs/release-notes/` fragment in the same PR. Never edit the PATCH digit; a `major` bump needs the principal.
 10. Before handoff, run the repo-native validation gate plus the targeted checks below, and fix failures caused by the current change.
 11. Sweep reviewer feedback on existing or updated PRs; address actionable comments or document justified pushback.
 12. Move to `Human Review` only after code, tests, docs, PR metadata, validation evidence, and rollback notes are complete. `Done` means merged or explicitly marked complete by the workflow owner.
@@ -157,13 +158,14 @@ Prefer the documented aggregate gate over hand-assembled commands, but still run
 | `helm/**` | `make helm-validate` |
 | `docker-compose*.yml`, `docker/**`, `envoy/**` | `docker compose config --quiet` for both compose files |
 | `apps/frontend/**` | `npm run lint`, `npm test`, `npm run build` |
-| `install/**`, `frontier_tooling/installer.py`, `frontier_runtime/install.py` | the installer test set in `tests/unit/` |
-| `frontier_runtime/sandbox.py`, `security.py` | `tests/unit/test_sandbox_policy.py`, `test_tool_jail.py`, `test_biscuit_tokens.py`, `test_event_signing.py` |
+| `install/**`, `locus_tooling/installer.py`, `locus_runtime/install.py` | the installer test set in `tests/unit/` |
+| `locus_runtime/sandbox.py`, `security.py` | `tests/unit/test_sandbox_policy.py`, `test_tool_jail.py`, `test_biscuit_tokens.py`, `test_event_signing.py` |
+| `locus_runtime/grants.py`, `gateway.py` | `tests/unit/test_biscuit_tokens.py`, `test_gateway_grants.py`, `test_gateway.py`, `apps/backend/tests/test_gateway_grants_api.py`, `tests/policy/test_gateway_opa.py` (real OPA) |
 | a node type | backend executor tests **and** `apps/frontend` schema/catalog tests together |
 
 ### Known gate limitations — state these in the handoff
 
-- `make typecheck` and CI cover only `frontier_tooling/` and `frontier_runtime/`. `apps/backend/` is **not** type-checked.
+- `make typecheck` and CI cover only `locus_tooling/` and `locus_runtime/`. `apps/backend/` is **not** type-checked.
 - CI runs `ruff check` but not `ruff format --check`. Run `ruff format` on files you touch.
 - The Python suite passes only in the `pyproject.toml` `testpaths` order (`apps/backend/tests` before `tests`). If you reorder, expect cross-file state leakage — do not "fix" it by muting tests.
 

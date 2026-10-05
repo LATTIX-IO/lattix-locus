@@ -17,7 +17,7 @@ except Exception:  # pragma: no cover
 from runtime.layer2.contracts import Envelope
 from runtime.layer2.validation import validate_envelope_dict
 from runtime.security.jwt import verify_token, JWTConfig
-from frontier_runtime.security import token_identity_from_claims
+from locus_runtime.security import token_identity_from_claims
 
 
 app = FastAPI(title=os.getenv("SERVICE_NAME", "agent-service")) if FastAPI else None
@@ -33,13 +33,13 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 def _runtime_profile() -> str:
-    value = str(os.getenv("FRONTIER_RUNTIME_PROFILE", "local-lightweight") or "").strip().lower()
+    value = str(os.getenv("LOCUS_RUNTIME_PROFILE", "local-lightweight") or "").strip().lower()
     return value or "local-lightweight"
 
 
 def _strict_service_auth_required() -> bool:
     return _runtime_profile() in {"local-secure", "hosted"} or _env_flag(
-        "FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", False
+        "LOCUS_REQUIRE_A2A_RUNTIME_HEADERS", False
     )
 
 
@@ -66,7 +66,7 @@ def _signing_secret() -> bytes:
 
 def _nonce_ttl_seconds() -> int:
     raw = str(
-        os.getenv("FRONTIER_A2A_NONCE_TTL_SECONDS") or os.getenv("A2A_REPLAY_TTL_SECONDS") or "600"
+        os.getenv("LOCUS_A2A_NONCE_TTL_SECONDS") or os.getenv("A2A_REPLAY_TTL_SECONDS") or "600"
     ).strip()
     try:
         ttl = int(raw)
@@ -101,7 +101,7 @@ def _register_seen_nonce_or_raise(nonce: str, *, now: float | None = None) -> No
     with _SEEN_NONCES_LOCK:
         _prune_seen_nonces_locked(current)
         if nonce in _SEEN_NONCES:
-            raise HTTPException(status_code=409, detail="frontier nonce replay detected")
+            raise HTTPException(status_code=409, detail="locus nonce replay detected")
         _SEEN_NONCES[nonce] = current + _nonce_ttl_seconds()
         _prune_seen_nonces_locked(current)
 
@@ -111,19 +111,19 @@ def _verify_runtime_headers(request: Request, body: bytes) -> str:
         return ""
 
     subject = str(
-        request.headers.get("X-Frontier-Subject") or request.headers.get("x-frontier-subject") or ""
+        request.headers.get("X-Locus-Subject") or request.headers.get("x-locus-subject") or ""
     ).strip()
     nonce = str(
-        request.headers.get("X-Frontier-Nonce") or request.headers.get("x-frontier-nonce") or ""
+        request.headers.get("X-Locus-Nonce") or request.headers.get("x-locus-nonce") or ""
     ).strip()
     signature = str(
-        request.headers.get("X-Frontier-Signature")
-        or request.headers.get("x-frontier-signature")
+        request.headers.get("X-Locus-Signature")
+        or request.headers.get("x-locus-signature")
         or ""
     ).strip()
     timestamp = str(
-        request.headers.get("X-Frontier-Timestamp")
-        or request.headers.get("x-frontier-timestamp")
+        request.headers.get("X-Locus-Timestamp")
+        or request.headers.get("x-locus-timestamp")
         or ""
     ).strip()
     correlation_id = str(
@@ -131,13 +131,13 @@ def _verify_runtime_headers(request: Request, body: bytes) -> str:
     ).strip()
 
     if not subject or subject not in _trusted_subjects():
-        raise HTTPException(status_code=401, detail="untrusted or missing frontier subject")
+        raise HTTPException(status_code=401, detail="untrusted or missing locus subject")
     if not nonce:
-        raise HTTPException(status_code=401, detail="missing frontier nonce")
+        raise HTTPException(status_code=401, detail="missing locus nonce")
     if not signature:
-        raise HTTPException(status_code=401, detail="missing frontier signature")
+        raise HTTPException(status_code=401, detail="missing locus signature")
     if not timestamp:
-        raise HTTPException(status_code=401, detail="missing frontier timestamp")
+        raise HTTPException(status_code=401, detail="missing locus timestamp")
     if not correlation_id:
         raise HTTPException(
             status_code=401, detail="missing correlation id header for signed A2A request"
@@ -145,15 +145,15 @@ def _verify_runtime_headers(request: Request, body: bytes) -> str:
     try:
         timestamp_value = int(timestamp)
     except ValueError as exc:
-        raise HTTPException(status_code=401, detail="invalid frontier timestamp") from exc
+        raise HTTPException(status_code=401, detail="invalid locus timestamp") from exc
     if abs(int(time.time()) - timestamp_value) > _clock_skew_seconds():
-        raise HTTPException(status_code=401, detail="stale frontier timestamp")
+        raise HTTPException(status_code=401, detail="stale locus timestamp")
 
     digest = hashlib.sha256(body).hexdigest()
     message = f"{subject}:{nonce}:{correlation_id}:{timestamp}:{digest}".encode("utf-8")
     expected = hmac.new(_signing_secret(), message, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):
-        raise HTTPException(status_code=401, detail="invalid frontier signature")
+        raise HTTPException(status_code=401, detail="invalid locus signature")
 
     _register_seen_nonce_or_raise(nonce)
     return subject
@@ -222,7 +222,7 @@ if app:
         if verified_subject and authenticated_subject and verified_subject != authenticated_subject:
             raise HTTPException(
                 status_code=401,
-                detail="frontier subject header does not match bearer token subject",
+                detail="locus subject header does not match bearer token subject",
             )
         data = json.loads(raw_body.decode("utf-8"))
         # Basic validation
@@ -242,7 +242,7 @@ if app:
             "accepted": True,
             "envelope_id": env.id,
             "correlation_id": corr,
-            "frontier_subject": verified_subject,
+            "locus_subject": verified_subject,
             "authenticated_subject": getattr(identity, "subject", str(claims.get("sub") or "")),
             "authenticated_actor": getattr(
                 identity, "actor", str(claims.get("actor") or claims.get("sub") or "")

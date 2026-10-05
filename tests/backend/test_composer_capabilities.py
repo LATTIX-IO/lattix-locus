@@ -17,13 +17,17 @@ if str(_BACKEND) not in sys.path:
 
 main = pytest.importorskip("app.main", reason="backend not importable")
 gc = pytest.importorskip("app.graph_compiler")
-from frontier_runtime.harness.llm import ChatResponse, OpenAIChatClient  # noqa: E402
+from locus_runtime.harness.llm import ChatResponse, OpenAIChatClient  # noqa: E402
 
 
 # --- user settings + composer options normalization --------------------------
 def test_normalize_user_settings_coerces_unknowns():
     out = main._normalize_user_settings(
-        {"default_mode": "bogus", "preferred_reasoning_effort": "ULTRA", "default_working_folder": " /projects/x "}
+        {
+            "default_mode": "bogus",
+            "preferred_reasoning_effort": "ULTRA",
+            "default_working_folder": " /projects/x ",
+        }
     )
     assert out["default_mode"] == "execute"
     assert out["preferred_reasoning_effort"] == ""
@@ -67,14 +71,23 @@ def test_resolve_working_folder_confines_to_root(tmp_path, monkeypatch):
 def test_skill_selection_filters(monkeypatch):
     from app.main import SkillDefinition
 
-    skill = SkillDefinition(id="sk-test", name="Test Skill", description="", content="DO THE X PROCEDURE", status="enabled", auto_inject=False)
+    skill = SkillDefinition(
+        id="sk-test",
+        name="Test Skill",
+        description="",
+        content="DO THE X PROCEDURE",
+        status="enabled",
+        auto_inject=False,
+    )
     monkeypatch.setitem(main.store.skills, "sk-test", skill)
 
     # explicit selection includes a non-auto-inject skill
     out = main._augment_system_prompt_with_skills("BASE", selected_skill_ids={"sk-test"})
     assert "DO THE X PROCEDURE" in out
     # empty selection injects nothing
-    assert "DO THE X PROCEDURE" not in main._augment_system_prompt_with_skills("BASE", selected_skill_ids=set())
+    assert "DO THE X PROCEDURE" not in main._augment_system_prompt_with_skills(
+        "BASE", selected_skill_ids=set()
+    )
     # default (None) respects auto_inject=False -> not injected
     assert "DO THE X PROCEDURE" not in main._augment_system_prompt_with_skills("BASE")
 
@@ -115,7 +128,7 @@ def test_reasoning_effort_in_request_body(monkeypatch):
 def test_plan_mode_forces_chat_not_code():
     class _Node:
         id = "build"
-        type = "frontier/agent"
+        type = "locus/agent"
         title = "Build"
         config = {"agent_id": "sdet", "phase": "build"}
 
@@ -127,8 +140,12 @@ def test_plan_mode_forces_chat_not_code():
             return ChatResponse(text="here is the execution plan")
 
     resolution = gc.AgentResolution(
-        agent_id="sdet", system_prompt="sp", model="m", provider="ollama",
-        base_url="http://x/v1", execution_mode="code",
+        agent_id="sdet",
+        system_prompt="sp",
+        model="m",
+        provider="ollama",
+        base_url="http://x/v1",
+        execution_mode="code",
     )
     deps = gc.CompilerDeps(
         resolve_agent=lambda cfg: resolution,
@@ -136,6 +153,8 @@ def test_plan_mode_forces_chat_not_code():
         execute_native=lambda *a: {},
         mode="plan",
     )
-    out = gc._run_agent_node(_Node(), incoming=[], out_ports=[], state={"run_input": {"message": "do it"}}, deps=deps)
+    out = gc._run_agent_node(
+        _Node(), incoming=[], out_ports=[], state={"run_input": {"message": "do it"}}, deps=deps
+    )
     assert out["mode"] == "live"  # chat path, not the SweAgent code path
     assert "patch" not in out  # no code delegation happened

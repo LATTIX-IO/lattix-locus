@@ -6,11 +6,20 @@ import {
   AtfAlignmentReport,
   AuditEvent,
   CollaborationSession,
+  DefinitionRevisionHistory,
+  DefinitionRevisionSummary,
   GuardrailRuleSet,
   InboxItem,
   IntegrationDefinition,
+  MCPConnectionDefinition,
+  MCPConnectionValidationResponse,
+  MCPStarterTemplate,
+  IntegrationOAuthConnectResponse,
+  IntegrationOAuthStatus,
+  IntegrationStarterTemplate,
   ObservabilityRunTrace,
   OperatorSession,
+  PlatformHealthDetails,
   PlaybookDefinition,
   PlatformVersionStatus,
   PlatformSettings,
@@ -18,19 +27,27 @@ import {
   TemplateCatalogItem,
   WorkflowDefinition,
   WorkflowRunEvent,
+  RunKind,
+  WorkflowRunKind,
   WorkflowRunSummary,
-} from "@/types/frontier";
-export type { ObservabilityRunTrace } from "@/types/frontier";
+} from "@/types/locus";
+import { RunStreamInterruptedError } from "@/lib/run-stream";
 import {
-  mockAgentDefinitions,
-  mockArtifacts,
-  mockEvents,
-  mockGuardrailRulesets,
-  mockInbox,
-  mockPublishedWorkflows,
-  mockRuns,
-  mockWorkflowDefinitions,
-} from "@/lib/mock-data";
+  confirmViaDesktopShell,
+  DesktopConfirmationCancelledError,
+  DesktopConfirmationError,
+  getDesktopInvoke,
+  isShellProofRefusal,
+  matchShellAction,
+  needsConfirmationUpfront,
+  requestBodyObject,
+} from "@/lib/desktop-confirmation";
+export type { ObservabilityRunTrace } from "@/types/locus";
+export {
+  CONFIRMATION_CANCELLED_MESSAGE,
+  DesktopConfirmationCancelledError,
+  DesktopConfirmationError,
+} from "@/lib/desktop-confirmation";
 
 /* ------------------------------------------------------------------ */
 /*  Configuration helpers                                              */
@@ -44,38 +61,39 @@ function getApiBase(): string {
   return process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 }
 
-function isMockDataEnabled(): boolean {
-  const flag = process.env.NEXT_PUBLIC_ENABLE_MOCK_DATA ?? "";
-  return flag === "1" || flag.toLowerCase() === "true";
-}
-
 function getRequestIdentityHeaders(): Record<string, string> {
-  const actor = (process.env.NEXT_PUBLIC_FRONTIER_ACTOR ?? "").trim();
+  const actor = (process.env.NEXT_PUBLIC_LOCUS_ACTOR ?? "").trim();
   const headers: Record<string, string> = {};
   if (actor) {
-    headers["x-frontier-actor"] = actor;
+    headers["x-locus-actor"] = actor;
   }
   return headers;
 }
 
-/**
- * Server-side only: forward the incoming request's cookies (including the
- * `frontier_operator_session` casdoor session) to the backend, so server
- * components authenticate as the logged-in user instead of anonymously.
- * Without this, server-side calls hit the backend with no session → 401 →
- * the UI silently falls back to mock data. Dynamically imports `next/headers`
- * so the client bundle is unaffected.
- */
-async function getServerAuthHeaders(): Promise<Record<string, string>> {
-  if (typeof window !== "undefined") return {};
-  try {
-    const { headers } = await import("next/headers");
-    const incoming = await headers();
-    const cookie = incoming.get("cookie");
-    return cookie ? { cookie } : {};
-  } catch {
-    return {};
+async function getRequestAuthHeaders(): Promise<Record<string, string>> {
+  const headers = getRequestIdentityHeaders();
+
+  if (typeof window !== "undefined") {
+    return headers;
   }
+
+  try {
+    const nextHeadersModule = await import("next/headers");
+    const requestHeaders = await nextHeadersModule.headers();
+    const cookieHeader = requestHeaders.get("cookie")?.trim();
+    const authorizationHeader = requestHeaders.get("authorization")?.trim();
+
+    if (cookieHeader) {
+      headers.cookie = cookieHeader;
+    }
+    if (authorizationHeader) {
+      headers.authorization = authorizationHeader;
+    }
+  } catch {
+    // Outside a Next request context there may be no incoming headers to forward.
+  }
+
+  return headers;
 }
 
 /* ------------------------------------------------------------------ */
@@ -134,7 +152,70 @@ function setApiConnected(connected: boolean) {
 
 type Json = Record<string, unknown> | unknown[];
 
-const FRONTIER_GRAPH_SCHEMA_VERSION = "frontier-graph/1.0";
+type CacheEntry<T> = {
+  value: T;
+  expiresAt: number;
+};
+
+const responseCache = new Map<string, CacheEntry<unknown>>();
+export const PLATFORM_SETTINGS_UPDATED_EVENT = "locus:platform-settings-updated";
+export const WORKFLOW_RUN_UPDATED_EVENT = "locus:workflow-run-updated";
+
+function readCachedValue<T>(cacheKey: string): T | null {
+  const cached = responseCache.get(cacheKey);
+  if (!cached) {
+    return null;
+  }
+  if (cached.expiresAt <= Date.now()) {
+    responseCache.delete(cacheKey);
+    return null;
+  }
+  return cached.value as T;
+}
+
+function writeCachedValue<T>(cacheKey: string, value: T, ttlMs: number): T {
+  responseCache.set(cacheKey, { value, expiresAt: Date.now() + ttlMs });
+  return value;
+}
+
+function deleteCachedValue(cacheKey: string): void {
+  responseCache.delete(cacheKey);
+}
+
+function invalidateWorkflowRunCaches(id: string): void {
+  deleteCachedValue(`workflow-run:${id}`);
+  deleteCachedValue(`workflow-run-events:${id}`);
+  deleteCachedValue("inbox");
+  for (const key of Array.from(responseCache.keys())) {
+    if (key.startsWith("workflow-runs:")) {
+      deleteCachedValue(key);
+    }
+  }
+}
+
+function invalidateOperatorSessionCache(): void {
+  deleteCachedValue("operator-session");
+}
+
+function publishWorkflowRunUpdate(run: WorkflowRunSummary): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent<WorkflowRunSummary>(WORKFLOW_RUN_UPDATED_EVENT, { detail: run }));
+}
+
+function isJsonRecord(value: Json): value is Record<string, unknown> {
+  return !Array.isArray(value) && typeof value === "object" && value !== null;
+}
+
+function publishPlatformSettingsUpdate(settings: PlatformSettings): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent<PlatformSettings>(PLATFORM_SETTINGS_UPDATED_EVENT, { detail: settings }));
+}
+
+const LOCUS_GRAPH_SCHEMA_VERSION = "locus-graph/1.0";
 
 export type GraphCanvasPayload = {
   schema_version?: string;
@@ -146,7 +227,7 @@ export type GraphCanvasPayload = {
 function withGraphSchemaVersion(payload: GraphCanvasPayload): GraphCanvasPayload {
   return {
     ...payload,
-    schema_version: payload.schema_version ?? FRONTIER_GRAPH_SCHEMA_VERSION,
+    schema_version: payload.schema_version ?? LOCUS_GRAPH_SCHEMA_VERSION,
   };
 }
 
@@ -154,37 +235,39 @@ export type RuntimeProvider = {
   provider: string;
   configured: boolean;
   model: string;
-  mode: "live" | "simulated";
-};
-
-export type RuntimeFrameworkAdapterProbe = {
-  engine: string;
-  available: boolean;
-  missing_modules: string[];
+  mode: "live" | "not_configured";
 };
 
 export type RuntimeProvidersResponse = {
   providers: RuntimeProvider[];
-  framework_adapters?: Record<string, RuntimeFrameworkAdapterProbe>;
 };
 
-export type RuntimeEngineName = "native" | "langgraph" | "langchain" | "semantic-kernel" | "autogen";
+export type UserRuntimeProviderConfig = {
+  provider: string;
+  configured: boolean;
+  model: string;
+  available_models?: string[];
+  base_url: string;
+  api_key_masked: string;
+  preferred?: boolean;
+  created_at?: string;
+  updated_at: string;
+  source: "user" | "environment";
+};
 
-export type RuntimeStrategyName = "single" | "hybrid";
+export type UserRuntimeProvidersResponse = {
+  principal_id: string;
+  providers: UserRuntimeProviderConfig[];
+};
 
-export type RuntimeHybridRole = "default" | "orchestration" | "retrieval" | "tooling" | "collaboration";
+export type UserSkillsResponse = {
+  principal_id: string;
+  skills: string[];
+  updated_at?: string;
+};
 
-export type RuntimeHybridRouting = Partial<Record<RuntimeHybridRole, RuntimeEngineName>>;
-
-export type PlatformRuntimePolicySettings = Pick<
-  PlatformSettings,
-  | "default_runtime_engine"
-  | "default_runtime_strategy"
-  | "default_hybrid_runtime_routing"
-  | "allowed_runtime_engines"
-  | "allow_runtime_engine_override"
-  | "enforce_runtime_engine_allowlist"
->;
+/** One strategy remains (LOCUS-352); the backend maps a stored "hybrid" to it. */
+export type RuntimeStrategyName = "single";
 
 export type GraphValidationResponse = {
   valid: boolean;
@@ -219,10 +302,6 @@ export type GraphRunResponse = {
       available?: boolean;
       missing_modules?: string[];
     };
-    hybrid_routing?: RuntimeHybridRouting;
-    hybrid_effective_routing?: RuntimeHybridRouting;
-    hybrid_role_modes?: Partial<Record<RuntimeHybridRole, string>>;
-    hybrid_resolution_notes?: string[];
     node_dispatches?: Array<{
       node_id: string;
       node_title?: string;
@@ -280,11 +359,20 @@ export type ChangedFile = {
 };
 
 export type WorkflowRunDetail = {
+  title?: string;
+  title_source?: "system" | "generated" | "user";
   artifacts: ArtifactSummary[];
   status: string;
   participants?: RunParticipants;
   changed_files?: ChangedFile[];
   working_folder?: string;
+  runtime?: {
+    provider?: string;
+    model?: string;
+    mode?: string;
+    source?: string;
+    state?: string;
+  };
   graph?: {
     nodes: Array<{ id: string; title: string; type: string; x: number; y: number; config?: Record<string, unknown> }>;
     links: Array<{ from: string; to: string; from_port?: string; to_port?: string }>;
@@ -341,55 +429,41 @@ export type WorkflowRunDetail = {
   };
 };
 
-async function safeFetch<T>(path: string, fallback: T, init?: RequestInit): Promise<T> {
+async function strictFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  // Inside the desktop shell, a capability-widening call is confirmed in a
+  // native dialog and sent by the shell (LOCUS-357); elsewhere it is a plain
+  // request. Narrowing calls never match a shell action.
+  const shellAction = matchShellAction(init?.method ?? "GET", path);
+  const invoke = shellAction ? getDesktopInvoke() : null;
+  if (shellAction && invoke) {
+    const body = requestBodyObject(init?.body);
+    if (needsConfirmationUpfront(shellAction, body)) {
+      const confirmed = await confirmViaDesktopShell<T>(invoke, shellAction, path, body);
+      setApiConnected(true);
+      return confirmed;
+    }
+  }
+
+  let res: Response;
   try {
-    const res = await fetchWithRetry(
+    const requestHeaders = await getRequestAuthHeaders();
+    res = await fetchWithRetry(
       `${getApiBase()}${path}`,
       {
         ...init,
         headers: {
           "Content-Type": "application/json",
-          ...getRequestIdentityHeaders(),
-          ...(await getServerAuthHeaders()),
+          ...requestHeaders,
           ...(init?.headers ?? {}),
         },
         cache: "no-store",
+        credentials: "include",
       },
     );
-
-    if (!res.ok) {
-      setApiConnected(true); // Server reachable, just returned an error
-      if (isMockDataEnabled()) return fallback;
-      return fallback;
-    }
-
-    setApiConnected(true);
-    return (await res.json()) as T;
-  } catch {
+  } catch (error) {
     setApiConnected(false);
-    if (!isMockDataEnabled()) {
-      // Return fallback even when mock is disabled so pages don't crash,
-      // but the connectivity listener will trigger a UI warning.
-      return fallback;
-    }
-    return fallback;
+    throw error;
   }
-}
-
-async function strictFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetchWithRetry(
-    `${getApiBase()}${path}`,
-    {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...getRequestIdentityHeaders(),
-        ...(await getServerAuthHeaders()),
-        ...(init?.headers ?? {}),
-      },
-      cache: "no-store",
-    },
-  );
 
   setApiConnected(true);
 
@@ -400,14 +474,76 @@ async function strictFetch<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       details = "";
     }
-    throw new Error(`Request failed (${res.status})${details ? `: ${details}` : ""}`);
+    // The backend decides from stored state that this change widens (for
+    // example a settings save that adds an egress host): confirm it in the
+    // shell's dialog. Not a silent retry: the human sees the dialog, and a
+    // cancel raises DesktopConfirmationCancelledError.
+    if (shellAction && invoke && isShellProofRefusal(res.status, details)) {
+      return confirmViaDesktopShell<T>(invoke, shellAction, path, requestBodyObject(init?.body));
+    }
+    throw new ApiRequestError(res.status, details);
   }
 
   return (await res.json()) as T;
 }
 
+/** A backend refusal: the status and the raw response body. The message keeps
+ * the historic "Request failed (<status>): <body>" form callers match on. */
+export class ApiRequestError extends Error {
+  readonly status: number;
+  readonly details: string;
+
+  constructor(status: number, details: string) {
+    super(`Request failed (${status})${details ? `: ${details}` : ""}`);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.details = details;
+  }
+}
+
+/** FastAPI's `{"detail": ...}` body of a refusal, or null when it is not JSON. */
+export function apiErrorDetail(error: unknown): unknown {
+  if (!(error instanceof ApiRequestError) || !error.details) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(error.details);
+    return parsed !== null && typeof parsed === "object" && "detail" in parsed ? (parsed as { detail: unknown }).detail : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A read where "not found" is a normal answer: 404 resolves to null, every
+ * other failure throws (no silent fallbacks, FRONTEND.md). */
+async function strictFetchOrNull<T>(path: string, init?: RequestInit): Promise<T | null> {
+  try {
+    return await strictFetch<T>(path, init);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Request failed (404)")) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+// Accept both run-kind vocabularies (WorkflowRunKind and the inbox RunKind) so
+// "individual" / "agent" runs are not silently rewritten to "workflow".
+const KNOWN_RUN_KINDS: ReadonlyArray<WorkflowRunKind | RunKind> = ["workflow", "chat", "playbook", "task", "individual", "agent"];
+
+function normalizeWorkflowRunSummary(run: WorkflowRunSummary): WorkflowRunSummary {
+  const candidate = typeof run.kind === "string" ? run.kind.toLowerCase() : "";
+  const kind: WorkflowRunKind | RunKind = (KNOWN_RUN_KINDS as readonly string[]).includes(candidate)
+    ? candidate as WorkflowRunKind | RunKind
+    : "workflow";
+  return {
+    ...run,
+    kind,
+  };
+}
+
 export async function getPublishedWorkflows(): Promise<WorkflowDefinition[]> {
-  return safeFetch<WorkflowDefinition[]>("/workflows/published", mockPublishedWorkflows);
+  return strictFetch<WorkflowDefinition[]>("/workflows/published");
 }
 
 export async function createWorkflowRun(
@@ -424,18 +560,21 @@ export async function createWorkflowRun(
   options?.signal?.addEventListener("abort", abortForwarder, { once: true });
 
   try {
+    const requestHeaders = await getRequestAuthHeaders();
     const res = await fetch(`${getApiBase()}/workflow-runs`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...getRequestIdentityHeaders(),
+        ...requestHeaders,
       },
       body: JSON.stringify(payload),
       cache: "no-store",
+      credentials: "include",
       signal: timeoutController.signal,
     });
 
     if (!res.ok) {
+      setApiConnected(true);
       let details = "";
       try {
         details = await res.text();
@@ -445,8 +584,10 @@ export async function createWorkflowRun(
       throw new Error(`Failed to create run (${res.status})${details ? `: ${details}` : ""}`);
     }
 
+    setApiConnected(true);
     return (await res.json()) as { id: string; status: string };
   } catch (error) {
+    setApiConnected(false);
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error(`Run creation timed out after ${Math.round(timeoutMs / 1000)}s. The model/backend may still be processing; please retry in a moment.`);
     }
@@ -462,21 +603,149 @@ export async function createWorkflowRun(
 
 export async function getWorkflowRuns(status?: string): Promise<WorkflowRunSummary[]> {
   const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
-  return safeFetch<WorkflowRunSummary[]>(`/workflow-runs${suffix}`, mockRuns);
+  const cacheKey = `workflow-runs:${status ?? "all"}`;
+  const cached = readCachedValue<WorkflowRunSummary[]>(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const response = await strictFetch<WorkflowRunSummary[]>(`/workflow-runs${suffix}`);
+  const value = response.map((run) => normalizeWorkflowRunSummary(run));
+  return writeCachedValue(cacheKey, value, 5000);
 }
 
 export async function getWorkflowRun(_id: string): Promise<WorkflowRunDetail> {
-  return safeFetch<WorkflowRunDetail>(`/workflow-runs/${_id}`, {
-    artifacts: mockArtifacts,
-    status: "Running",
-    graph: { nodes: [], links: [] },
-    agent_traces: [],
-    approvals: { required: false, pending: false },
-  });
+  const cacheKey = `workflow-run:${_id}`;
+  const cached = readCachedValue<WorkflowRunDetail>(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const value = await strictFetch<WorkflowRunDetail>(`/workflow-runs/${_id}`);
+  return writeCachedValue(cacheKey, value, 1500);
+}
+
+export async function updateWorkflowRunTitle(id: string, title: string): Promise<WorkflowRunSummary> {
+  const updated = normalizeWorkflowRunSummary(
+    await strictFetch<WorkflowRunSummary>(`/workflow-runs/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+  );
+
+  invalidateWorkflowRunCaches(id);
+
+  publishWorkflowRunUpdate(updated);
+  return updated;
 }
 
 export async function getWorkflowRunEvents(id: string): Promise<WorkflowRunEvent[]> {
-  return safeFetch<WorkflowRunEvent[]>(`/workflow-runs/${id}/events`, mockEvents);
+  const cacheKey = `workflow-run-events:${id}`;
+  const cached = readCachedValue<WorkflowRunEvent[]>(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const value = await strictFetch<WorkflowRunEvent[]>(`/workflow-runs/${id}/events`);
+  return writeCachedValue(cacheKey, value, 1500);
+}
+
+export type RunStreamItem = { id: string; type: string; createdAt: string; payload: Record<string, unknown> };
+
+/** Payload of the terminal `end` lifecycle frame. `terminal` reports whether the
+ * run's status is terminal — `end` alone only means the stream is finished. */
+export type RunStreamEnd = { run_id?: string; reason: string; status: string; terminal: boolean };
+
+/** Why a run stream stopped without an `end` frame. Never means completion:
+ * "timeout" = server rotated the connection, "dropped" = closed without a
+ * lifecycle frame, "error" = HTTP/transport failure. */
+export type RunStreamDisconnect = { reason: "timeout" | "dropped" | "error"; after?: string };
+
+/**
+ * Fetch-based consumer for `/workflow-runs/{id}/stream` (delta stream).
+ * Exactly one of `onEnd` / `onDisconnect` fires per connection (unless aborted).
+ * `onError` is kept for HTTP/transport failures and fires alongside
+ * `onDisconnect({ reason: "error" })`.
+ */
+export function streamWorkflowRun(
+  id: string,
+  handlers: {
+    onMessage: (event: RunStreamItem) => void;
+    onError?: () => void;
+    onOpen?: () => void;
+    onEnd?: (end: RunStreamEnd) => void;
+    onDisconnect?: (info: RunStreamDisconnect) => void;
+  },
+  options: { after?: string } = {},
+): () => void {
+  const controller = new AbortController();
+  const suffix = options.after ? `?after=${encodeURIComponent(options.after)}` : "";
+  void (async () => {
+    try {
+      const requestHeaders = await getRequestAuthHeaders();
+      const res = await fetch(`${getApiBase()}/workflow-runs/${encodeURIComponent(id)}/stream${suffix}`, {
+        method: "GET",
+        headers: {
+          ...requestHeaders,
+        },
+        cache: "no-store",
+        credentials: "include",
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) {
+        handlers.onError?.();
+        handlers.onDisconnect?.({ reason: "error" });
+        return;
+      }
+      handlers.onOpen?.();
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+        for (const frame of frames) {
+          const line = frame
+            .split("\n")
+            .find((candidate) => candidate.startsWith("data:"));
+          if (!line) {
+            continue;
+          }
+          let item: RunStreamItem;
+          try {
+            item = JSON.parse(line.slice(5).trim()) as RunStreamItem;
+          } catch {
+            continue; // A malformed frame is not a disconnect; skip it.
+          }
+          if (item.type === "end") {
+            handlers.onEnd?.(item.payload as unknown as RunStreamEnd);
+            return;
+          }
+          if (item.type === "stream_closed") {
+            const after = typeof item.payload?.after === "string" ? item.payload.after : undefined;
+            handlers.onDisconnect?.({ reason: "timeout", after: after || undefined });
+            return;
+          }
+          handlers.onMessage(item);
+        }
+      }
+      // Closed without `end`/`stream_closed`: a drop, never a completion.
+      if (!controller.signal.aborted) {
+        handlers.onDisconnect?.({ reason: "dropped" });
+      }
+    } catch {
+      if (!controller.signal.aborted) {
+        handlers.onError?.();
+        handlers.onDisconnect?.({ reason: "error" });
+      }
+    }
+  })();
+  return () => {
+    controller.abort();
+  };
 }
 
 // Live variants throw on failure instead of falling back to mock data, so pollers
@@ -890,11 +1159,14 @@ export type RunStreamOptions = {
   signal: AbortSignal;
   onEvent?: (event: WorkflowRunEvent) => void;
   onStatus?: (status: RunStatusFrame) => void;
+  onOpen?: () => void;
 };
 
 // Fetch-based SSE consumer (fetch can carry identity headers; EventSource cannot).
-// Resolves with the server's stream_end reason ("terminal" | "timeout"); throws on
-// transport/HTTP failure so callers can fall back to polling.
+// Resolves "terminal" only on the server's `end` frame and "timeout" on a
+// non-terminal `stream_closed` rotation (reconnect with the cursor). Throws on
+// HTTP/transport failure, and RunStreamInterruptedError when the stream closes
+// without either frame — a drop must never be read as completion.
 export async function streamWorkflowRunEvents(
   id: string,
   options: RunStreamOptions,
@@ -912,6 +1184,7 @@ export async function streamWorkflowRunEvents(
     throw new Error(`Run event stream failed (${res.status})`);
   }
   setApiConnected(true);
+  options.onOpen?.();
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -940,8 +1213,10 @@ export async function streamWorkflowRunEvents(
       options.onEvent?.(parsed as WorkflowRunEvent);
     } else if (eventName === "run_status") {
       options.onStatus?.(parsed as RunStatusFrame);
-    } else if (eventName === "stream_end") {
-      return String((parsed as { reason?: string }).reason ?? "terminal");
+    } else if (eventName === "end") {
+      return "terminal";
+    } else if (eventName === "stream_closed") {
+      return "timeout";
     }
     return null;
   };
@@ -949,7 +1224,7 @@ export async function streamWorkflowRunEvents(
   for (;;) {
     const { done, value } = await reader.read();
     if (done) {
-      return "terminal";
+      throw new RunStreamInterruptedError();
     }
     buffer += decoder.decode(value, { stream: true });
     let separator = buffer.indexOf("\n\n");
@@ -966,28 +1241,35 @@ export async function streamWorkflowRunEvents(
 }
 
 export async function archiveWorkflowRun(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/workflow-runs/${id}/archive`, { ok: true }, { method: "POST" });
+  const result = await strictFetch<{ ok: boolean }>(`/workflow-runs/${id}/archive`, { method: "POST" });
+  invalidateWorkflowRunCaches(id);
+  return result;
 }
 
 export async function createArtifactVersion(
   id: string,
   payload: Json,
 ): Promise<{ ok: boolean; artifactId: string }> {
-  return safeFetch(`/artifacts/${id}/versions`, { ok: true, artifactId: id }, {
+  return strictFetch(`/artifacts/${id}/versions`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
 export async function submitApproval(payload: Json): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>("/approvals", { ok: true }, {
+  return strictFetch<{ ok: boolean }>("/approvals", {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
 export async function getInbox(): Promise<InboxItem[]> {
-  return safeFetch<InboxItem[]>("/inbox", mockInbox);
+  const cached = readCachedValue<InboxItem[]>("inbox");
+  if (cached) {
+    return cached;
+  }
+  const value = await strictFetch<InboxItem[]>("/inbox");
+  return writeCachedValue("inbox", value, 5000);
 }
 
 export type InboxGroup = {
@@ -998,7 +1280,7 @@ export type InboxGroup = {
 };
 
 export async function getInboxGroups(): Promise<InboxGroup[]> {
-  return safeFetch<InboxGroup[]>("/inbox/groups", []);
+  return strictFetch<InboxGroup[]>("/inbox/groups");
 }
 
 export async function createInboxGroup(name: string): Promise<InboxGroup> {
@@ -1059,12 +1341,7 @@ export type UserSettings = {
 };
 
 export async function getUserSettings(): Promise<UserSettings> {
-  return safeFetch<UserSettings>("/user/settings", {
-    default_working_folder: "",
-    preferred_model: "",
-    preferred_reasoning_effort: "",
-    default_mode: "execute",
-  });
+  return strictFetch<UserSettings>("/user/settings");
 }
 
 export async function saveUserSettings(payload: Partial<UserSettings>): Promise<UserSettings> {
@@ -1084,13 +1361,7 @@ export type WorkspaceFolders = {
 
 export async function getWorkspaceFolders(path?: string): Promise<WorkspaceFolders> {
   const suffix = path ? `?path=${encodeURIComponent(path)}` : "";
-  return safeFetch<WorkspaceFolders>(`/workspace/folders${suffix}`, {
-    root: "/projects",
-    path: "",
-    exists: false,
-    is_git: false,
-    folders: [],
-  });
+  return strictFetch<WorkspaceFolders>(`/workspace/folders${suffix}`);
 }
 
 export type McpServer = {
@@ -1103,9 +1374,12 @@ export type McpServer = {
 };
 
 export async function getMcpServers(): Promise<McpServer[]> {
-  const res = await safeFetch<{ servers: McpServer[] }>("/mcp/servers", { servers: [] });
+  const res = await strictFetch<{ servers: McpServer[] }>("/mcp/servers");
   return res.servers ?? [];
 }
+
+/** The tier list an "Always allow on <site>" approval adds a site to. */
+export type BrowserSiteList = "allowlisted_sites" | "granted_sites";
 
 export type RunEscalation = {
   id: string;
@@ -1113,13 +1387,22 @@ export type RunEscalation = {
   workspace_root: string;
   policy: string;
   status: string;
+  /** "gateway" for a gateway ask; folder escalations have no kind. */
+  kind?: string;
+  action_kind?: string;
+  tool?: string;
+  risk?: string;
+  reasons?: string[];
+  created_at?: string;
+  /** User-browser asks (LOCUS-350): the registrable site the action targets,
+   * the effective tier, and the list "Always allow" adds it to (null: none). */
+  site?: string;
+  browser_tier?: string;
+  site_list?: BrowserSiteList | null;
 };
 
 export async function getRunEscalations(runId: string): Promise<RunEscalation[]> {
-  const res = await safeFetch<{ escalations: RunEscalation[] }>(
-    `/workflow-runs/${encodeURIComponent(runId)}/escalations`,
-    { escalations: [] },
-  );
+  const res = await strictFetch<{ escalations: RunEscalation[] }>(`/workflow-runs/${encodeURIComponent(runId)}/escalations`);
   return res.escalations ?? [];
 }
 
@@ -1133,22 +1416,34 @@ export async function approveRunEscalation(
   );
 }
 
+/** Deny an agent request (narrowing: grants nothing; a plain request). */
+export async function denyRunEscalation(runId: string, escalationId: string): Promise<{ ok: boolean; escalation: RunEscalation }> {
+  return strictFetch(
+    `/workflow-runs/${encodeURIComponent(runId)}/escalations/${encodeURIComponent(escalationId)}/deny`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
+}
+
 export async function getArtifacts(): Promise<ArtifactSummary[]> {
-  return safeFetch<ArtifactSummary[]>("/artifacts", mockArtifacts);
+  return strictFetch<ArtifactSummary[]>("/artifacts");
 }
 
 export async function getArtifact(id: string): Promise<ArtifactDetail | null> {
-  return safeFetch<ArtifactDetail | null>(`/artifacts/${id}`, null);
+  return strictFetchOrNull<ArtifactDetail>(`/artifacts/${id}`);
 }
 
 // Builder mode endpoints
 export async function getWorkflowDefinitions(): Promise<WorkflowDefinition[]> {
-  return safeFetch<WorkflowDefinition[]>("/workflow-definitions", mockWorkflowDefinitions);
+  return strictFetch<WorkflowDefinition[]>("/workflow-definitions");
+}
+
+export async function getWorkflowDefinitionVersions(id: string): Promise<DefinitionRevisionHistory> {
+  return strictFetch<DefinitionRevisionHistory>(`/workflow-definitions/${id}/versions`);
 }
 
 export async function getWorkflowDefinition(id: string): Promise<WorkflowDefinition | null> {
   // single-definition fetch includes graph_json (the list endpoint excludes it)
-  return safeFetch<WorkflowDefinition | null>(`/workflow-definitions/${id}`, null);
+  return strictFetchOrNull<WorkflowDefinition>(`/workflow-definitions/${id}`);
 }
 
 export async function saveWorkflowDefinition(payload: Json): Promise<{ ok: boolean }> {
@@ -1162,20 +1457,48 @@ export async function publishWorkflowDefinition(id: string): Promise<{ ok: boole
   return strictFetch<{ ok: boolean }>(`/workflow-definitions/${id}/publish`, { method: "POST" });
 }
 
+export async function unpublishWorkflowDefinition(id: string): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>(`/workflow-definitions/${id}/unpublish`, { method: "POST" });
+}
+
 export async function archiveWorkflowDefinition(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/workflow-definitions/${id}/archive`, { ok: true }, { method: "POST" });
+  return strictFetch<{ ok: boolean }>(`/workflow-definitions/${id}/archive`, { method: "POST" });
 }
 
 export async function deleteWorkflowDefinition(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/workflow-definitions/${id}`, { ok: true }, { method: "DELETE" });
+  return strictFetch<{ ok: boolean }>(`/workflow-definitions/${id}`, { method: "DELETE" });
+}
+
+export async function rollbackWorkflowDefinition(
+  id: string,
+  payload: { revision_id?: string; revision?: number; version?: number },
+): Promise<{ ok: boolean; id: string; version: number; status: string; restored_from: DefinitionRevisionSummary; revision: DefinitionRevisionSummary }> {
+  return strictFetch(`/workflow-definitions/${id}/rollback`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function activateWorkflowDefinition(
+  id: string,
+  payload: { revision_id?: string; revision?: number; version?: number } = {},
+): Promise<{ ok: boolean; id: string; active_revision: DefinitionRevisionSummary; activation_revision: DefinitionRevisionSummary }> {
+  return strictFetch(`/workflow-definitions/${id}/activate`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getAgentDefinitions(): Promise<AgentDefinition[]> {
-  return safeFetch<AgentDefinition[]>("/agent-definitions", mockAgentDefinitions);
+  return strictFetch<AgentDefinition[]>("/agent-definitions");
 }
 
 export async function getAgentDefinition(id: string): Promise<AgentDefinition | null> {
-  return safeFetch<AgentDefinition | null>(`/agent-definitions/${id}`, null);
+  return strictFetchOrNull<AgentDefinition>(`/agent-definitions/${id}`);
+}
+
+export async function getAgentDefinitionVersions(id: string): Promise<DefinitionRevisionHistory> {
+  return strictFetch<DefinitionRevisionHistory>(`/agent-definitions/${id}/versions`);
 }
 
 export async function saveAgentDefinition(payload: Json): Promise<{ ok: boolean }> {
@@ -1189,8 +1512,36 @@ export async function publishAgentDefinition(id: string): Promise<{ ok: boolean 
   return strictFetch<{ ok: boolean }>(`/agent-definitions/${id}/publish`, { method: "POST" });
 }
 
+export async function unpublishAgentDefinition(id: string): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>(`/agent-definitions/${id}/unpublish`, { method: "POST" });
+}
+
+export async function archiveAgentDefinition(id: string): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>(`/agent-definitions/${id}/archive`, { method: "POST" });
+}
+
 export async function deleteAgentDefinition(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/agent-definitions/${id}`, { ok: true }, { method: "DELETE" });
+  return strictFetch<{ ok: boolean }>(`/agent-definitions/${id}`, { method: "DELETE" });
+}
+
+export async function rollbackAgentDefinition(
+  id: string,
+  payload: { revision_id?: string; revision?: number; version?: number },
+): Promise<{ ok: boolean; id: string; version: number; status: string; restored_from: DefinitionRevisionSummary; revision: DefinitionRevisionSummary }> {
+  return strictFetch(`/agent-definitions/${id}/rollback`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function activateAgentDefinition(
+  id: string,
+  payload: { revision_id?: string; revision?: number; version?: number } = {},
+): Promise<{ ok: boolean; id: string; active_revision: DefinitionRevisionSummary; activation_revision: DefinitionRevisionSummary }> {
+  return strictFetch(`/agent-definitions/${id}/activate`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export type NodeFieldSpec = {
@@ -1220,224 +1571,182 @@ export type NodeDefinitionResponse = {
 
 export async function getNodeDefinitions(options?: { includeInternal?: boolean }): Promise<NodeDefinitionResponse[]> {
   const suffix = options?.includeInternal ? "?include_internal=true" : "";
-  return safeFetch(`/node-definitions${suffix}`, [
-    { type_key: "frontier/trigger", title: "Trigger", description: "Workflow trigger/intake node", category: "Core", color: "#6ca0ff" },
-    { type_key: "frontier/agent", title: "Agent", description: "Delegates to a selected agent definition", category: "Agent", color: "#1f7f53" },
-    { type_key: "frontier/prompt", title: "Prompt", description: "Compose reusable system prompt instructions and pass them to agent nodes", category: "Agent", color: "#5f4bb6" },
-    { type_key: "frontier/tool-call", title: "Tool / API Call", description: "Invokes external API or tool", category: "Integration", color: "#6fd3ff" },
-    { type_key: "frontier/retrieval", title: "Retrieval", description: "Retrieves ranked context", category: "Knowledge", color: "#8a6717" },
-    { type_key: "frontier/guardrail", title: "Guardrail", description: "Checks content against guardrail rules", category: "Control", color: "#9f3550" },
-    { type_key: "frontier/human-review", title: "Human Review", description: "Requires human approval before next step", category: "Control", color: "#8d5c1a" },
-    { type_key: "frontier/manifold", title: "Manifold", description: "Consolidates multiple inbound flows via AND/OR logic", category: "Logic", color: "#7863d3" },
-    { type_key: "frontier/output", title: "Output", description: "Final output emission", category: "Core", color: "#69a3ff" },
-  ]);
+  return strictFetch<NodeDefinitionResponse[]>(`/node-definitions${suffix}`);
 }
 
 export async function getGuardrailRulesets(): Promise<GuardrailRuleSet[]> {
-  return safeFetch<GuardrailRuleSet[]>("/guardrail-rulesets", mockGuardrailRulesets);
+  return strictFetch<GuardrailRuleSet[]>("/guardrail-rulesets");
+}
+
+export async function getGuardrailRulesetVersions(id: string): Promise<DefinitionRevisionHistory> {
+  return strictFetch<DefinitionRevisionHistory>(`/guardrail-rulesets/${id}/versions`);
 }
 
 export async function getWorkflowSecurityPolicy(workflowId: string): Promise<SecurityPolicyResponse> {
-  return safeFetch<SecurityPolicyResponse>(`/workflows/${workflowId}/security-policy`, {
-    immutable_baseline: {} as SecurityPolicyResponse["immutable_baseline"],
-    platform_defaults: {} as SecurityPolicyResponse["platform_defaults"],
-    workflow_overrides: {},
-    agent_overrides: {},
-    effective: {} as SecurityPolicyResponse["effective"],
-  });
+  return strictFetch<SecurityPolicyResponse>(`/workflows/${workflowId}/security-policy`);
 }
 
 export async function getAgentSecurityPolicy(agentId: string): Promise<SecurityPolicyResponse> {
-  return safeFetch<SecurityPolicyResponse>(`/agents/${agentId}/security-policy`, {
-    immutable_baseline: {} as SecurityPolicyResponse["immutable_baseline"],
-    platform_defaults: {} as SecurityPolicyResponse["platform_defaults"],
-    workflow_overrides: {},
-    agent_overrides: {},
-    effective: {} as SecurityPolicyResponse["effective"],
-  });
+  return strictFetch<SecurityPolicyResponse>(`/agents/${agentId}/security-policy`);
 }
 
-export async function saveGuardrailRuleset(payload: Json): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>("/guardrail-rulesets", { ok: true }, {
+export async function saveGuardrailRuleset(payload: Json): Promise<{ ok: boolean; id: string }> {
+  return strictFetch<{ ok: boolean; id: string }>("/guardrail-rulesets", {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
 export async function publishGuardrailRuleset(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/guardrail-rulesets/${id}/publish`, { ok: true }, { method: "POST" });
+  return strictFetch<{ ok: boolean }>(`/guardrail-rulesets/${id}/publish`, { method: "POST" });
 }
 
 export async function deleteGuardrailRuleset(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/guardrail-rulesets/${id}`, { ok: true }, { method: "DELETE" });
+  return strictFetch<{ ok: boolean }>(`/guardrail-rulesets/${id}`, { method: "DELETE" });
 }
 
 export async function deleteNodeDefinition(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/node-definitions/${id}`, { ok: true }, { method: "DELETE" });
+  return strictFetch<{ ok: boolean }>(`/node-definitions/${id}`, { method: "DELETE" });
+}
+
+export async function rollbackGuardrailRuleset(
+  id: string,
+  payload: { revision_id?: string; revision?: number; version?: number },
+): Promise<{ ok: boolean; id: string; version: number; status: string; restored_from: DefinitionRevisionSummary; revision: DefinitionRevisionSummary }> {
+  return strictFetch(`/guardrail-rulesets/${id}/rollback`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function activateGuardrailRuleset(
+  id: string,
+  payload: { revision_id?: string; revision?: number; version?: number } = {},
+): Promise<{ ok: boolean; id: string; active_revision: DefinitionRevisionSummary; activation_revision: DefinitionRevisionSummary }> {
+  return strictFetch(`/guardrail-rulesets/${id}/activate`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function validateGraph(payload: GraphCanvasPayload): Promise<GraphValidationResponse> {
-  return safeFetch<GraphValidationResponse>(
-    "/graph/validate",
-    { valid: true, issues: [] },
-    {
+  return strictFetch<GraphValidationResponse>("/graph/validate", {
       method: "POST",
       body: JSON.stringify(withGraphSchemaVersion(payload)),
-    },
-  );
+    });
 }
 
 export async function runGraph(payload: GraphCanvasPayload): Promise<GraphRunResponse> {
-  return safeFetch<GraphRunResponse>(
-    "/graph/runs",
+  return strictFetch<GraphRunResponse>("/graph/runs", {
+    method: "POST",
+    body: JSON.stringify(withGraphSchemaVersion(payload)),
+  });
+}
+
+export async function getRuntimeProviders(): Promise<RuntimeProvidersResponse> {
+  return strictFetch<RuntimeProvidersResponse>("/runtime/providers");
+}
+
+export async function getUserRuntimeProviders(): Promise<UserRuntimeProviderConfig[]> {
+  const response = await strictFetch<UserRuntimeProvidersResponse>("/runtime/user-providers");
+  return response.providers ?? [];
+}
+
+export async function getUserSkills(): Promise<UserSkillsResponse> {
+  return strictFetch<UserSkillsResponse>("/skills/user");
+}
+
+export async function saveUserSkills(payload: { skills: string[] }): Promise<UserSkillsResponse> {
+  return strictFetch<UserSkillsResponse>("/skills/user", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function saveUserRuntimeProvider(
+  provider: string,
+  payload: { api_key?: string; model?: string; available_models?: string[]; base_url?: string; preferred?: boolean },
+): Promise<UserRuntimeProviderConfig> {
+  return strictFetch<UserRuntimeProviderConfig>(
+    `/runtime/user-providers/${encodeURIComponent(provider)}`,
     {
-      run_id: "local-fallback-run",
-      status: "completed",
-      execution_order: payload.nodes.map((node) => node.id),
-      node_results: {},
-      events: [],
-      validation: { valid: true, issues: [] },
-      runtime: {
-        requested_engine: "native",
-        selected_engine: "native",
-        executed_engine: "native",
-        mode: "native",
-        allow_override: false,
-        allowed_engines: ["native"],
-      },
-    },
-    {
-      method: "POST",
-      body: JSON.stringify(withGraphSchemaVersion(payload)),
+      method: "PUT",
+      body: JSON.stringify(payload),
     },
   );
 }
 
-export async function getRuntimeProviders(): Promise<RuntimeProvidersResponse> {
-  return safeFetch<RuntimeProvidersResponse>("/runtime/providers", {
-    providers: [
-      {
-        provider: "openai",
-        configured: false,
-        model: "gpt-5.2",
-        mode: "simulated",
-      },
-    ],
-    framework_adapters: {
-      langgraph: { engine: "langgraph", available: false, missing_modules: ["langgraph", "langchain_openai"] },
-      langchain: { engine: "langchain", available: false, missing_modules: ["langchain_core", "langchain_openai"] },
-      "semantic-kernel": { engine: "semantic-kernel", available: false, missing_modules: ["semantic_kernel"] },
-      autogen: { engine: "autogen", available: false, missing_modules: ["autogen_agentchat|autogen"] },
-    },
+export async function deleteUserRuntimeProvider(provider: string): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>(`/runtime/user-providers/${encodeURIComponent(provider)}`, {
+    method: "DELETE",
   });
 }
 
 export async function getMemorySession(sessionId: string): Promise<MemorySessionResponse> {
-  return safeFetch<MemorySessionResponse>(`/memory/${encodeURIComponent(sessionId)}`, {
-    session_id: sessionId,
-    count: 0,
-    entries: [],
-  });
+  return strictFetch<MemorySessionResponse>(`/memory/${encodeURIComponent(sessionId)}`);
 }
 
 export async function clearMemorySession(sessionId: string): Promise<{ ok: boolean; session_id: string }> {
-  return safeFetch<{ ok: boolean; session_id: string }>(
+  return strictFetch<{ ok: boolean; session_id: string }>(
     `/memory/${encodeURIComponent(sessionId)}`,
-    { ok: true, session_id: sessionId },
     { method: "DELETE" },
   );
 }
 
 export async function getPlatformSettings(): Promise<PlatformSettings> {
-  return safeFetch<PlatformSettings>("/platform/settings", {
-    org_name: "Lattix xFrontier",
-    org_slug: "lattix-frontier",
-    support_email: "support@lattix.io",
-    website: "https://lattix.io",
-    default_kickoff_workflow: "Auto-select from intent",
-    preferred_review_depth: "Standard",
-    idle_timeout: "30 minutes",
-    local_only_mode: true,
-    mask_secrets_in_events: true,
-    require_human_approval: false,
-    require_human_approval_for_high_risk_tools: true,
-    emergency_read_only_mode: false,
-    block_new_runs: false,
-    block_graph_runs: false,
-    block_tool_calls: false,
-    block_retrieval_calls: false,
-    require_authenticated_requests: false,
-    require_a2a_runtime_headers: false,
-    a2a_require_signed_messages: true,
-    a2a_replay_protection: true,
-    default_guardrail_ruleset_id: null,
-    global_blocked_keywords: [],
-    collaboration_max_agents: 8,
-    max_tool_calls_per_run: 8,
-    max_retrieval_items: 8,
-    default_runtime_engine: "native",
-    default_runtime_strategy: "single",
-    default_hybrid_runtime_routing: {
-      default: "native",
-      orchestration: "native",
-      retrieval: "native",
-      tooling: "native",
-      collaboration: "native",
-    },
-    allowed_runtime_engines: ["native"],
-    allow_runtime_engine_override: false,
-    enforce_runtime_engine_allowlist: true,
-    enforce_egress_allowlist: false,
-    allowed_egress_hosts: [],
-    enforce_local_network_only: true,
-    allow_local_network_hostnames: ["localhost", ".local"],
-    allowed_retrieval_sources: [],
-    retrieval_require_local_source_url: true,
-    allowed_mcp_server_urls: [],
-    mcp_require_local_server: true,
-    high_risk_tool_patterns: [],
-    enable_foss_guardrail_signals: true,
-    foss_guardrail_signal_enforcement: "block_high",
-  });
+  const cached = readCachedValue<PlatformSettings>("platform-settings");
+  if (cached) {
+    return cached;
+  }
+  const value = await strictFetch<PlatformSettings>("/platform/settings");
+  return writeCachedValue("platform-settings", value, 30000);
 }
 
 export async function getOperatorSession(): Promise<OperatorSession> {
-  return safeFetch<OperatorSession>("/auth/session", {
-    authenticated: false,
-    actor: "anonymous",
-    principal_id: "anonymous",
-    principal_type: "user",
-    display_name: "Anonymous",
-    subject: "",
-    email: "",
-    preferred_username: "",
-    auth_mode: "shared-token",
-    provider: "",
-    roles: [],
-    capabilities: {
-      can_admin: false,
-      can_builder: false,
-    },
-    allowed_modes: ["user"],
-    default_mode: "user",
-    oidc: {
-      configured: false,
-      issuer: "",
-      audience: "",
-      provider: "",
-      validation_error: "",
-    },
-  });
+  const cached = readCachedValue<OperatorSession>("operator-session");
+  if (cached) {
+    return cached;
+  }
+  let value: OperatorSession;
+  try {
+    value = await strictFetch<OperatorSession>("/auth/session");
+  } catch (error) {
+    // 401 is an answer ("not signed in"), not a failure. Anything else
+    // (backend down, 5xx) throws so the shell can say so instead of
+    // pretending the operator signed out.
+    if (error instanceof Error && error.message.startsWith("Request failed (401)")) {
+      return ANONYMOUS_SESSION;
+    }
+    throw error;
+  }
+  return writeCachedValue("operator-session", value, 15000);
 }
+
+const ANONYMOUS_SESSION: OperatorSession = {
+  authenticated: false,
+  actor: "anonymous",
+  principal_id: "anonymous",
+  principal_type: "user",
+  display_name: "Anonymous",
+  subject: "",
+  auth_mode: "shared-token",
+  roles: [],
+  capabilities: { can_admin: false, can_builder: false },
+  allowed_modes: ["user"],
+  default_mode: "user",
+  oidc: { configured: false, issuer: "", audience: "", provider: "" },
+};
 
 export async function loginWithLocalPassword(payload: {
   username: string;
   password: string;
 }): Promise<{ ok: boolean; authenticated: boolean; provider: string; mode: string }> {
-  return strictFetch<{ ok: boolean; authenticated: boolean; provider: string; mode: string }>("/auth/login", {
+  const response = await strictFetch<{ ok: boolean; authenticated: boolean; provider: string; mode: string }>("/auth/login", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+  invalidateOperatorSessionCache();
+  return response;
 }
 
 export async function registerWithLocalPassword(payload: {
@@ -1446,104 +1755,127 @@ export async function registerWithLocalPassword(payload: {
   display_name: string;
   password: string;
 }): Promise<{ ok: boolean; authenticated: boolean; provider: string; mode: string; created: boolean }> {
-  return strictFetch<{ ok: boolean; authenticated: boolean; provider: string; mode: string; created: boolean }>("/auth/register", {
+  const response = await strictFetch<{ ok: boolean; authenticated: boolean; provider: string; mode: string; created: boolean }>("/auth/register", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+  invalidateOperatorSessionCache();
+  return response;
 }
 
 export async function logoutOperator(): Promise<{ ok: boolean }> {
-  return strictFetch<{ ok: boolean }>("/auth/logout", {
+  const response = await strictFetch<{ ok: boolean }>("/auth/logout", {
     method: "POST",
     body: JSON.stringify({}),
   });
+  invalidateOperatorSessionCache();
+  return response;
 }
 
 export async function getPlatformVersionStatus(): Promise<PlatformVersionStatus> {
-  return safeFetch<PlatformVersionStatus>("/platform/version", {
-    current_version: "0.0.0",
-    latest_version: "0.0.0",
-    update_available: false,
-    status: "unknown",
-    install_mode: "wheel",
-    update_command: "lattix update",
-    release_notes_url: "",
-    checked_at: new Date().toISOString(),
-    source: "",
-    summary: "Version metadata is unavailable right now.",
-  });
+  const cached = readCachedValue<PlatformVersionStatus>("platform-version");
+  if (cached) {
+    return cached;
+  }
+  const value = await strictFetch<PlatformVersionStatus>("/platform/version");
+  return writeCachedValue("platform-version", value, 30000);
+}
+
+export async function getPlatformHealthDetails(): Promise<PlatformHealthDetails | null> {
+  const cached = readCachedValue<PlatformHealthDetails>("platform-health-details");
+  if (cached) {
+    return cached;
+  }
+
+  const value = await strictFetchOrNull<PlatformHealthDetails>("/healthz/details");
+  if (!value) {
+    return null;
+  }
+
+  return writeCachedValue("platform-health-details", value, 30000);
 }
 
 export async function getPlatformSecurityPolicy(): Promise<SecurityPolicyResponse> {
-  return safeFetch<SecurityPolicyResponse>("/platform/security-policy", {
-    immutable_baseline: {
-      enforce_capability_filter: true,
-      enforce_policy_gate: true,
-      fail_closed_policy_decisions: true,
-      enforce_signed_a2a_messages: true,
-      enforce_a2a_replay_protection: true,
-      require_readonly_rootfs_for_sandbox: true,
-      require_non_root_sandbox_user: true,
-      require_egress_mediation_when_network_enabled: true,
-      allow_filter_chain_reordering: false,
-      allow_custom_policy_code: false,
-    },
-    platform_defaults: {
-      classification: "internal",
-      guardrail_ruleset_id: null,
-      blocked_keywords: [],
-      allowed_egress_hosts: [],
-      allowed_retrieval_sources: [],
-      allowed_mcp_server_urls: [],
-      allowed_runtime_engines: ["native"],
-      allowed_memory_scopes: ["run", "session", "user", "tenant", "agent", "workflow", "global"],
-      max_tool_calls_per_run: 8,
-      max_retrieval_items: 8,
-      max_collaboration_agents: 8,
-      require_human_approval: false,
-      require_human_approval_for_high_risk_tools: true,
-      allow_runtime_override: false,
-      enable_platform_signals: true,
-      platform_signal_enforcement: "block_high",
-    },
-    workflow_overrides: {},
-    agent_overrides: {},
-    effective: {
-      classification: "internal",
-      guardrail_ruleset_id: null,
-      blocked_keywords: [],
-      allowed_egress_hosts: [],
-      allowed_retrieval_sources: [],
-      allowed_mcp_server_urls: [],
-      allowed_runtime_engines: ["native"],
-      allowed_memory_scopes: ["run", "session", "user", "tenant", "agent", "workflow", "global"],
-      max_tool_calls_per_run: 8,
-      max_retrieval_items: 8,
-      max_collaboration_agents: 8,
-      require_human_approval: false,
-      require_human_approval_for_high_risk_tools: true,
-      allow_runtime_override: false,
-      enable_platform_signals: true,
-      platform_signal_enforcement: "block_high",
-    },
-    backend_enforced_controls: [],
-    configurable_controls: [],
-  });
+  return strictFetch<SecurityPolicyResponse>("/platform/security-policy");
 }
 
-export async function savePlatformSettings(payload: Json): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>("/platform/settings", { ok: true }, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
+/**
+ * The backend refused a platform-settings save because it changes sensitive
+ * security settings (`changed_sensitive_keys`) and the request did not carry
+ * `confirm_security_change: true`. The UI shows the keys, asks, and resends
+ * with `{ confirmSecurityChange: true }` (which on the desktop then goes
+ * through the shell's confirmation when it widens, LOCUS-357).
+ */
+export class SecurityChangeConfirmationRequired extends Error {
+  readonly keys: string[];
+
+  constructor(keys: string[], message = "Sensitive platform security changes need your confirmation.") {
+    super(message);
+    this.name = "SecurityChangeConfirmationRequired";
+    this.keys = keys;
+  }
+}
+
+/** The sensitive keys of a "confirm_security_change" refusal, else null. */
+export function sensitiveKeysFromError(error: unknown): string[] | null {
+  if (!(error instanceof ApiRequestError) || error.status !== 400) {
+    return null;
+  }
+  const detail = apiErrorDetail(error);
+  if (detail === null || typeof detail !== "object") {
+    return null;
+  }
+  const keys = (detail as { changed_sensitive_keys?: unknown }).changed_sensitive_keys;
+  if (!Array.isArray(keys) || keys.length === 0) {
+    return null;
+  }
+  return keys.filter((key): key is string => typeof key === "string");
+}
+
+export async function savePlatformSettings(
+  payload: Json,
+  options: { confirmSecurityChange?: boolean } = {},
+): Promise<{ ok: boolean }> {
+  const body = isJsonRecord(payload) && options.confirmSecurityChange ? { ...payload, confirm_security_change: true } : payload;
+  let result: { ok: boolean };
+  try {
+    result = await strictFetch<{ ok: boolean }>("/platform/settings", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    const keys = sensitiveKeysFromError(error);
+    if (keys) {
+      const detail = apiErrorDetail(error) as { message?: unknown };
+      throw new SecurityChangeConfirmationRequired(keys, typeof detail.message === "string" ? detail.message : undefined);
+    }
+    throw error;
+  }
+
+  if (isJsonRecord(payload)) {
+    const cached = readCachedValue<PlatformSettings>("platform-settings");
+    const nextSettings = writeCachedValue(
+      "platform-settings",
+      {
+        ...(cached ?? {}),
+        ...payload,
+      } as PlatformSettings,
+      30000,
+    );
+    publishPlatformSettingsUpdate(nextSettings);
+  } else {
+    deleteCachedValue("platform-settings");
+  }
+
+  return result;
 }
 
 export async function getAgentTemplates(): Promise<AgentTemplate[]> {
-  return safeFetch<AgentTemplate[]>("/templates/agents", []);
+  return strictFetch<AgentTemplate[]>("/templates/agents");
 }
 
 export async function getTemplateCatalog(): Promise<TemplateCatalogItem[]> {
-  return safeFetch<TemplateCatalogItem[]>("/templates/catalog", []);
+  return strictFetch<TemplateCatalogItem[]>("/templates/catalog");
 }
 
 export async function instantiateAgentTemplate(templateId: string, payload: Json): Promise<{ ok: boolean; id: string }> {
@@ -1561,11 +1893,30 @@ export async function instantiateWorkflowTemplate(workflowId: string, payload: J
 }
 
 export async function getPlaybooks(): Promise<PlaybookDefinition[]> {
-  return safeFetch<PlaybookDefinition[]>("/playbooks", []);
+  return strictFetch<PlaybookDefinition[]>("/playbooks");
 }
 
 export async function getPlaybook(id: string): Promise<PlaybookDefinition | null> {
-  return safeFetch<PlaybookDefinition | null>(`/playbooks/${id}`, null);
+  return strictFetchOrNull<PlaybookDefinition>(`/playbooks/${id}`);
+}
+
+export async function savePlaybook(payload: Json): Promise<{ ok: boolean; id: string }> {
+  return strictFetch<{ ok: boolean; id: string }>("/playbooks", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function publishPlaybook(id: string): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>(`/playbooks/${id}/publish`, { method: "POST" });
+}
+
+export async function unpublishPlaybook(id: string): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>(`/playbooks/${id}/unpublish`, { method: "POST" });
+}
+
+export async function archivePlaybook(id: string): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>(`/playbooks/${id}/archive`, { method: "POST" });
 }
 
 export async function instantiatePlaybook(playbookId: string, payload: Json): Promise<{ ok: boolean; id: string }> {
@@ -1652,7 +2003,7 @@ export async function importDefinitionFile(
 }
 
 export async function getObservabilityRunTrace(runId: string): Promise<ObservabilityRunTrace | null> {
-  return safeFetch<ObservabilityRunTrace | null>(`/observability/runs/${runId}/trace`, null);
+  return strictFetchOrNull<ObservabilityRunTrace>(`/observability/runs/${runId}/trace`);
 }
 
 export async function getObservabilityDashboard(): Promise<ObservabilityDashboardResponse> {
@@ -1664,39 +2015,15 @@ export async function getObservabilityDashboard(): Promise<ObservabilityDashboar
 
 export async function getAuditEvents(limit = 200): Promise<{ count: number; events: AuditEvent[] }> {
   const bounded = Math.max(1, Math.min(1000, Math.trunc(limit)));
-  return safeFetch<{ count: number; events: AuditEvent[] }>(`/audit/events?limit=${bounded}`, {
-    count: 0,
-    events: [],
-  });
+  return strictFetch<{ count: number; events: AuditEvent[] }>(`/audit/events?limit=${bounded}`);
 }
 
 export async function getAtfAlignmentReport(): Promise<AtfAlignmentReport> {
-  return safeFetch<AtfAlignmentReport>("/audit/atf-alignment-report", {
-    generated_at: new Date().toISOString(),
-    framework: "CSA Agentic Trust Framework",
-    coverage_percent: 0,
-    maturity_estimate: "intern",
-    pillars: {
-      identity: { status: "partial", controls: {}, gaps: [] },
-      behavior_monitoring: { status: "partial", controls: {}, gaps: [] },
-      data_governance: { status: "partial", controls: {}, gaps: [] },
-      segmentation: { status: "partial", controls: {}, gaps: [] },
-      incident_response: { status: "partial", controls: {}, gaps: [] },
-    },
-    evidence: {
-      audit_window_hours: 24,
-      audit_event_count_24h: 0,
-      audit_allowed_24h: 0,
-      audit_blocked_24h: 0,
-      audit_error_24h: 0,
-      total_audit_events: 0,
-      run_count_total: 0,
-    },
-  });
+  return strictFetch<AtfAlignmentReport>("/audit/atf-alignment-report");
 }
 
 export async function joinCollaborationSession(payload: {
-  entity_type: "agent" | "workflow";
+  entity_type: "agent" | "workflow" | "playbook";
   entity_id: string;
   user_id?: string;
   principal_id?: string;
@@ -1712,7 +2039,7 @@ export async function joinCollaborationSession(payload: {
 }
 
 export async function getCollaborationSession(sessionId: string): Promise<CollaborationSession | null> {
-  return safeFetch<CollaborationSession | null>(`/collab/sessions/${encodeURIComponent(sessionId)}`, null);
+  return strictFetchOrNull<CollaborationSession>(`/collab/sessions/${encodeURIComponent(sessionId)}`);
 }
 
 export async function syncCollaborationSession(
@@ -1748,26 +2075,350 @@ export async function updateCollaborationPermissions(
 }
 
 export async function getIntegrations(): Promise<IntegrationDefinition[]> {
-  return safeFetch<IntegrationDefinition[]>("/integrations", []);
+  return strictFetch<IntegrationDefinition[]>("/integrations");
+}
+
+export async function getIntegrationStarterTemplates(): Promise<IntegrationStarterTemplate[]> {
+  return strictFetch<IntegrationStarterTemplate[]>("/integrations/starters");
+}
+
+export async function getMcpConnections(): Promise<MCPConnectionDefinition[]> {
+  return strictFetch<MCPConnectionDefinition[]>("/integrations/mcp");
+}
+
+export async function getMcpStarterTemplates(): Promise<MCPStarterTemplate[]> {
+  return strictFetch<MCPStarterTemplate[]>("/integrations/mcp/starters");
+}
+
+export async function saveMcpConnection(payload: Json): Promise<{ ok: boolean; id: string; status: MCPConnectionDefinition["status"] }> {
+  return strictFetch<{ ok: boolean; id: string; status: MCPConnectionDefinition["status"] }>("/integrations/mcp", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function validateMcpConnection(id: string): Promise<MCPConnectionValidationResponse> {
+  return strictFetch<MCPConnectionValidationResponse>(`/integrations/mcp/${id}/validate`, {
+    method: "POST",
+  });
+}
+
+export async function approveMcpConnection(id: string): Promise<{ ok: boolean; id: string; status: MCPConnectionDefinition["status"] }> {
+  return strictFetch<{ ok: boolean; id: string; status: MCPConnectionDefinition["status"] }>(`/integrations/mcp/${id}/approve`, {
+    method: "POST",
+  });
 }
 
 export async function saveIntegration(payload: Json): Promise<{ ok: boolean; id: string }> {
-  return safeFetch<{ ok: boolean; id: string }>("/integrations", { ok: true, id: "" }, {
+  return strictFetch<{ ok: boolean; id: string }>("/integrations", {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
 export async function testIntegration(id: string): Promise<IntegrationTestResponse> {
-  return safeFetch<IntegrationTestResponse>(
-    `/integrations/${id}/test`,
-    { ok: false, id, status: "error", message: "Unable to test integration", diagnostics: { warnings: ["Backend unavailable"] } },
-    { method: "POST" },
-  );
+  return strictFetch<IntegrationTestResponse>(`/integrations/${id}/test`, { method: "POST" });
 }
 
 export async function deleteIntegration(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/integrations/${id}`, { ok: true }, { method: "DELETE" });
+  return strictFetch<{ ok: boolean }>(`/integrations/${id}`, { method: "DELETE" });
+}
+
+export async function getIntegrationOAuthStatus(id: string): Promise<IntegrationOAuthStatus> {
+  return strictFetch<IntegrationOAuthStatus>(`/integrations/${id}/oauth/status`);
+}
+
+export async function connectIntegrationOAuth(
+  id: string,
+  payload?: { return_to?: string },
+): Promise<IntegrationOAuthConnectResponse> {
+  return strictFetch<IntegrationOAuthConnectResponse>(`/integrations/${id}/oauth/connect`, {
+    method: "POST",
+    body: JSON.stringify(payload ?? {}),
+  });
+}
+
+export async function refreshIntegrationOAuth(
+  id: string,
+): Promise<{ ok: boolean; status: IntegrationOAuthStatus }> {
+  return strictFetch<{ ok: boolean; status: IntegrationOAuthStatus }>(`/integrations/${id}/oauth/refresh`, {
+    method: "POST",
+  });
+}
+
+export async function disconnectIntegrationOAuth(
+  id: string,
+): Promise<{ ok: boolean; status: IntegrationOAuthStatus }> {
+  return strictFetch<{ ok: boolean; status: IntegrationOAuthStatus }>(`/integrations/${id}/oauth/disconnect`, {
+    method: "POST",
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/*  Unified Settings (LOCUS-353)                                       */
+/* ------------------------------------------------------------------ */
+
+/** Store a provider API key in the OS keychain. Widening: the desktop shell
+ * confirms it (models.provider.key.set). The key is never returned. */
+export async function setProviderKey(providerId: string, apiKey: string): Promise<Record<string, unknown>> {
+  return strictFetch(`/models/providers/${encodeURIComponent(providerId)}/key`, {
+    method: "PUT",
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+}
+
+export async function clearProviderKey(providerId: string): Promise<Record<string, unknown>> {
+  return strictFetch(`/models/providers/${encodeURIComponent(providerId)}/key`, { method: "DELETE" });
+}
+
+export type ComputerUseStatus = {
+  mode: string;
+  panicked: boolean;
+  panic_source: string;
+  inflight_actions: number;
+  installed?: boolean;
+};
+
+export async function getComputerUseStatus(): Promise<ComputerUseStatus> {
+  return strictFetch<ComputerUseStatus>("/computer-use/status");
+}
+
+/** Stop every computer-use action now (narrowing; never needs a confirmation). */
+export async function triggerComputerUsePanic(): Promise<Record<string, unknown>> {
+  return strictFetch("/computer-use/panic", { method: "POST", body: JSON.stringify({}) });
+}
+
+/** Clear the panic stop. Widening: confirmed in the desktop shell (computer_use.reset). */
+export async function resetComputerUse(): Promise<ComputerUseStatus> {
+  return strictFetch<ComputerUseStatus>("/computer-use/reset", { method: "POST", body: JSON.stringify({}) });
+}
+
+export const BROWSER_TIERS = ["strict", "assisted", "trusted", "open"] as const;
+export type BrowserTier = (typeof BROWSER_TIERS)[number];
+
+export type UserBrowserTierSettings = {
+  tier: BrowserTier;
+  effective_tier: BrowserTier;
+  allowlisted_sites: string[];
+  granted_sites: string[];
+  consent: { tier: string; recorded_at_iso?: string; risk_acknowledged?: string } | null;
+  tier_risks?: Partial<Record<BrowserTier, string>>;
+};
+
+export type BrowserTierChange = {
+  tier: BrowserTier;
+  allowlisted_sites: string[];
+  granted_sites: string[];
+};
+
+export async function getUserBrowserTier(): Promise<UserBrowserTierSettings> {
+  return strictFetch<UserBrowserTierSettings>("/user-browser/tier");
+}
+
+/** Mirrors TierStore.update: a higher tier than the effective one, or any new
+ * site, widens. Moving down with no new sites narrows. The backend decides. */
+export function isBrowserTierWidening(current: UserBrowserTierSettings, next: BrowserTierChange): boolean {
+  if (next.tier === "strict") {
+    return false;
+  }
+  const rank = (tier: string) => BROWSER_TIERS.indexOf(tier as BrowserTier);
+  const isSubset = (items: string[], of: string[]) => items.every((item) => of.includes(item));
+  return (
+    rank(next.tier) > rank(current.effective_tier ?? current.tier) ||
+    !isSubset(next.allowlisted_sites, current.allowlisted_sites) ||
+    !isSubset(next.granted_sites, current.granted_sites)
+  );
+}
+
+const TIER_CONFIRMATION_REFUSAL = "needs confirmation in the Locus desktop app";
+
+/** Run one of the shell's own confirmation commands (confirm_browser_tier,
+ * confirm_browser_pairing): the shell shows its native dialog, signs and sends
+ * the request itself, then relays the backend's JSON response. */
+async function invokeShellConfirmation<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const invoke = getDesktopInvoke();
+  if (!invoke) {
+    throw new DesktopConfirmationError("the desktop shell is not available");
+  }
+  let relayed: unknown;
+  try {
+    relayed = await invoke(command, args);
+  } catch (error) {
+    const reason = typeof error === "string" ? error : error instanceof Error ? error.message : String(error);
+    if (reason === "cancelled") {
+      throw new DesktopConfirmationCancelledError();
+    }
+    throw new DesktopConfirmationError(reason);
+  }
+  const text = typeof relayed === "string" ? relayed : "";
+  setApiConnected(true);
+  return (text.trim() ? JSON.parse(text) : {}) as T;
+}
+
+async function confirmBrowserTierInShell(next: BrowserTierChange): Promise<UserBrowserTierSettings> {
+  // Tauri passes command arguments in camelCase (confirm_browser_tier, LOCUS-350).
+  return invokeShellConfirmation<UserBrowserTierSettings>("confirm_browser_tier", {
+    tier: next.tier,
+    allowlistedSites: next.allowlisted_sites,
+    grantedSites: next.granted_sites,
+  });
+}
+
+/**
+ * Change the user-browser tier (LOCUS-350). Widening goes through the desktop
+ * shell's native dialog (`confirm_browser_tier`), which signs and sends the
+ * request itself; the webview never sends a widening change as a plain request
+ * on the desktop. On the web profile widening needs `acknowledgeRisk` (the UI
+ * shows the risk text first). Narrowing is a plain request.
+ */
+export async function setUserBrowserTier(
+  current: UserBrowserTierSettings,
+  next: BrowserTierChange,
+  options: { acknowledgeRisk?: boolean } = {},
+): Promise<UserBrowserTierSettings> {
+  const widening = isBrowserTierWidening(current, next);
+  const desktop = getDesktopInvoke() !== null;
+  if (widening && desktop) {
+    return confirmBrowserTierInShell(next);
+  }
+  if (widening && !options.acknowledgeRisk) {
+    throw new Error("Widening the browser tier needs you to acknowledge its risk first.");
+  }
+  try {
+    return await strictFetch<UserBrowserTierSettings>("/user-browser/tier", {
+      method: "PUT",
+      body: JSON.stringify({ ...next, ...(widening ? { acknowledge_risk: true } : {}) }),
+    });
+  } catch (error) {
+    // The backend is the authority: if it still sees a widening (stale state),
+    // confirm it in the shell instead of retrying silently.
+    if (desktop && error instanceof Error && error.message.includes(TIER_CONFIRMATION_REFUSAL)) {
+      return confirmBrowserTierInShell(next);
+    }
+    throw error;
+  }
+}
+
+/**
+ * "Always allow on <site>": add one site to the current tier's list (the
+ * Assisted allowlist or the Trusted grant list). The backend takes the full
+ * lists (PUT /user-browser/tier); adding a site widens, so on the desktop it is
+ * confirmed in the shell's dialog with the new list (confirm_browser_tier). On
+ * the web profile the caller must have shown the risk (`acknowledgeRisk`).
+ */
+export async function allowSiteInBrowserTier(
+  site: string,
+  list: BrowserSiteList,
+  options: { acknowledgeRisk?: boolean } = {},
+): Promise<UserBrowserTierSettings> {
+  const current = await getUserBrowserTier();
+  if (current[list].includes(site)) {
+    return current;
+  }
+  const next: BrowserTierChange = {
+    tier: current.tier,
+    allowlisted_sites: [...current.allowlisted_sites],
+    granted_sites: [...current.granted_sites],
+  };
+  next[list] = [...current[list], site];
+  return setUserBrowserTier(current, next, options);
+}
+
+export type UserBrowserStatus = {
+  paired: boolean;
+  connected: boolean;
+  clients?: unknown[];
+  native_host?: string;
+  extension_ids?: { chromium?: string; firefox?: string };
+  tier?: UserBrowserTierSettings;
+  rotated?: boolean;
+};
+
+export async function getUserBrowserStatus(): Promise<UserBrowserStatus> {
+  return strictFetch<UserBrowserStatus>("/user-browser/status");
+}
+
+/**
+ * Pair (or re-pair) the principal's browser (LOCUS-350). Widening: on the
+ * desktop the shell's native dialog confirms it (`confirm_browser_pairing`) and
+ * the shell sends the signed request; the web profile sends it directly.
+ */
+export async function pairUserBrowser(): Promise<UserBrowserStatus> {
+  if (getDesktopInvoke() !== null) {
+    return invokeShellConfirmation<UserBrowserStatus>("confirm_browser_pairing");
+  }
+  return strictFetch<UserBrowserStatus>("/user-browser/pairing", { method: "POST", body: JSON.stringify({}) });
+}
+
+/** Remove the pairing (narrowing: a plain request). */
+export async function unpairUserBrowser(): Promise<UserBrowserStatus> {
+  return strictFetch<UserBrowserStatus>("/user-browser/pairing", { method: "DELETE" });
+}
+
+export type SystemUpdateStatus = {
+  active_runs?: number;
+  may_install?: boolean;
+  loop?: { lock_owner?: string | null; held?: boolean } | null;
+  handshake?: Record<string, unknown>;
+};
+
+export async function getSystemUpdateStatus(): Promise<SystemUpdateStatus> {
+  return strictFetch<SystemUpdateStatus>("/system/update/status");
+}
+
+export type TelemetrySummary = {
+  since_ns: number;
+  until_ns: number;
+  runs: number;
+  empty?: boolean;
+  [key: string]: unknown;
+};
+
+export async function getTelemetrySummary(windowHours = 24): Promise<TelemetrySummary> {
+  return strictFetch<TelemetrySummary>(`/telemetry/summary?window_hours=${encodeURIComponent(String(windowHours))}`);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Self-improvement loop (LOCUS-338/349) and its Linear intake        */
+/* ------------------------------------------------------------------ */
+
+export type LoopStatus = {
+  enabled: boolean;
+  disabled_reason: string;
+  /** True when LOCUS_LOOP_DISABLED pins the loop off (the UI cannot clear it). */
+  disabled_by_environment: boolean;
+  runs_today: number;
+  max_runs_per_day: number;
+  active_run: Record<string, unknown> | null;
+  last_run: { run_id?: string; issue?: string; outcome?: string; finished_at?: string } | null;
+  open_prs: unknown[];
+  autostart: { enabled: boolean; repo_path: string };
+  /** Whether LINEAR_API_KEY resolves (env or OS keychain). Never the value. */
+  linear: { api_key_configured: boolean };
+};
+
+export async function getLoopStatus(): Promise<LoopStatus> {
+  return strictFetch<LoopStatus>("/loop/status");
+}
+
+/** Clear the file kill switch. Widening: confirmed in the desktop shell (loop.enable). */
+export async function enableLoop(): Promise<LoopStatus> {
+  return strictFetch<LoopStatus>("/loop/enable", { method: "POST", body: JSON.stringify({}) });
+}
+
+/** Set the file kill switch (the loop stops before its next step). */
+export async function disableLoop(): Promise<LoopStatus> {
+  return strictFetch<LoopStatus>("/loop/disable", { method: "POST", body: JSON.stringify({}) });
+}
+
+/** Start the loop with the desktop app on this checkout (needs WORKFLOW.md).
+ * Widening: confirmed in the desktop shell (loop.autostart.enable). */
+export async function enableLoopAutostart(repoPath: string): Promise<LoopStatus> {
+  return strictFetch<LoopStatus>("/loop/autostart", { method: "POST", body: JSON.stringify({ repo_path: repoPath }) });
+}
+
+export async function disableLoopAutostart(): Promise<LoopStatus> {
+  return strictFetch<LoopStatus>("/loop/autostart", { method: "DELETE" });
 }
 
 export async function oauthAuthorize(integrationId: string): Promise<{ authorize_url: string; state: string }> {

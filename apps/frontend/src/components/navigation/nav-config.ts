@@ -1,84 +1,69 @@
-export type NavMode = "user" | "builder";
+import {
+  ActivityIcon,
+  BrainIcon,
+  HomeIcon,
+  LibraryIcon,
+  SettingsIcon,
+  type LucideIcon,
+} from "lucide-react";
 
-export type NavIconName =
-  | "inbox"
-  | "workflow"
-  | "artifact"
-  | "studio"
-  | "agent"
-  | "nodes"
-  | "guardrails"
-  | "integrations"
-  | "releases"
-  | "settings"
-  | "templates"
-  | "playbooks"
-  | "observability"
-  | "admin";
-
-export type NavItem = {
+/**
+ * One navigation for the person who opened the app (LOCUS-353): no user /
+ * builder modes and no role gating. The backend still authorizes every call;
+ * the UI only decides where things live.
+ */
+export type NavLink = {
   href: string;
   label: string;
-  icon: NavIconName;
+  /** Extra path prefixes that also mark this entry active. */
+  matches?: string[];
 };
 
-export type NavGroup = {
-  title: string;
-  items: NavItem[];
+export type NavItem = NavLink & {
+  icon: LucideIcon;
+  /** Shown under the item while it is the active area. */
+  children?: NavLink[];
 };
 
-const userNavGroups: NavGroup[] = [
-  {
-    title: "Work",
-    items: [
-      { href: "/inbox", label: "Inbox", icon: "inbox" },
-      { href: "/artifacts", label: "Artifacts", icon: "artifact" },
-    ],
-  },
+export const LIBRARY_LINKS: NavLink[] = [
+  { href: "/library/skills", label: "Skills" },
+  { href: "/library/playbooks", label: "Playbooks" },
+  { href: "/library/workflows", label: "Workflows", matches: ["/workflows"] },
+  { href: "/library/agents", label: "Agents" },
+  { href: "/library/connections", label: "Connections" },
+  { href: "/library/knowledge", label: "Knowledge" },
+  { href: "/library/templates", label: "Templates" },
+  { href: "/library/guardrails", label: "Guardrails" },
+  { href: "/library/nodes", label: "Node library" },
+  { href: "/library/releases", label: "Releases" },
 ];
 
-const builderNavGroups: NavGroup[] = [
-  {
-    title: "Build",
-    items: [
-      { href: "/builder/templates", label: "Templates", icon: "templates" },
-      { href: "/builder/agents", label: "Agent Studio", icon: "agent" },
-      { href: "/builder/workflows", label: "Workflow Studio", icon: "studio" },
-      { href: "/builder/playbooks", label: "Playbooks", icon: "playbooks" },
-    ],
-  },
-  {
-    title: "Configure",
-    items: [
-      { href: "/builder/skills", label: "Skills", icon: "templates" },
-      { href: "/builder/knowledge", label: "Knowledge", icon: "artifact" },
-      { href: "/builder/models", label: "Models", icon: "nodes" },
-      { href: "/builder/observability", label: "Observability", icon: "observability" },
-      { href: "/builder/integrations", label: "Integrations", icon: "integrations" },
-      { href: "/builder/nodes", label: "Node Library", icon: "nodes" },
-      { href: "/builder/guardrails", label: "Guardrails", icon: "guardrails" },
-      { href: "/builder/releases", label: "Releases", icon: "releases" },
-    ],
-  },
+export const ACTIVITY_LINKS: NavLink[] = [
+  { href: "/activity", label: "Runs" },
+  { href: "/activity/traces", label: "Traces" },
+  { href: "/artifacts", label: "Artifacts" },
 ];
 
-const adminNavGroup: NavGroup = {
-  title: "Admin",
-  items: [{ href: "/settings", label: "Administration", icon: "admin" }],
-};
+export const PRIMARY_NAV: NavItem[] = [
+  { href: "/home", label: "Home", icon: HomeIcon },
+  { href: "/activity", label: "Activity", icon: ActivityIcon, matches: ["/artifacts"], children: ACTIVITY_LINKS },
+  { href: "/memory", label: "Memory", icon: BrainIcon },
+  { href: "/library", label: "Library", icon: LibraryIcon, matches: ["/workflows"], children: LIBRARY_LINKS },
+  { href: "/settings", label: "Settings", icon: SettingsIcon },
+];
 
-export function getPrimaryNavGroups(mode: NavMode, inAdmin: boolean) {
-  const groups = mode === "builder" ? [...builderNavGroups] : [...userNavGroups];
-
-  if (inAdmin) {
-    groups.push(adminNavGroup);
-  }
-
-  return groups;
+function pathMatches(pathname: string, prefix: string): boolean {
+  return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
-export function getPreferenceNavItem(mode: NavMode): NavItem {
-  return mode === "builder"
-    ? { href: "/builder/settings", label: "Settings", icon: "settings" }
-    : { href: "/settings", label: "Settings", icon: "settings" };
+/** Whether a nav entry is the current location. Child links match their own
+ * page and its sub-pages; `/activity` (Runs) matches only itself. */
+export function isNavLinkActive(pathname: string, link: NavLink, { exact = false }: { exact?: boolean } = {}): boolean {
+  const ownMatch = exact ? pathname === link.href : pathMatches(pathname, link.href);
+  return ownMatch || (link.matches ?? []).some((prefix) => pathMatches(pathname, prefix));
+}
+
+/** The primary area that owns `pathname`, if any. */
+export function activeNavItem(pathname: string): NavItem | null {
+  return PRIMARY_NAV.find((item) => isNavLinkActive(pathname, item)) ?? null;
 }

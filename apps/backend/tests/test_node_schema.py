@@ -12,13 +12,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 if not str(os.environ.get("A2A_JWT_SECRET") or "").strip():
     os.environ["A2A_JWT_SECRET"] = "unit-test-super-secret-value-32bytes"
-if not str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").strip():
-    os.environ["FRONTIER_API_BEARER_TOKEN"] = "unit-test-bearer"
+if not str(os.environ.get("LOCUS_API_BEARER_TOKEN") or "").strip():
+    os.environ["LOCUS_API_BEARER_TOKEN"] = "unit-test-bearer"
 
 from app.main import app
 
 client = TestClient(app)
-ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "frontier-admin"}
+ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-locus-actor": "locus-admin"}
 
 
 def test_node_definitions_carry_typed_input_schemas() -> None:
@@ -26,7 +26,7 @@ def test_node_definitions_carry_typed_input_schemas() -> None:
     assert response.status_code == 200
     by_key = {node["type_key"]: node for node in response.json()}
 
-    agent = by_key["frontier/agent"]
+    agent = by_key["locus/agent"]
     fields = {field["name"]: field for field in agent["inputs"]}
     assert "agent_id" in fields
     assert fields["agent_id"]["field_type"] == "dropdown"
@@ -50,6 +50,6 @@ def test_field_types_are_within_the_supported_set() -> None:
 def test_tool_call_node_references_integrations_source() -> None:
     response = client.get("/node-definitions", headers=ADMIN_HEADERS)
     by_key = {node["type_key"]: node for node in response.json()}
-    tool_node = by_key["frontier/tool-call"]
+    tool_node = by_key["locus/tool-call"]
     sources = {field.get("options_source") for field in tool_node["inputs"]}
     assert "integrations" in sources

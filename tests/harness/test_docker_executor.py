@@ -13,7 +13,7 @@ import subprocess
 
 import pytest
 
-from frontier_runtime.harness.executor import DockerContainerExecutor
+from locus_runtime.harness.executor import DockerContainerExecutor
 
 _IMAGE = "python:3.12-slim"
 
@@ -35,7 +35,10 @@ def container():
     subprocess.run(["docker", "pull", "-q", _IMAGE], check=True, capture_output=True, timeout=300)
     cid = subprocess.run(
         ["docker", "run", "-d", "--rm", _IMAGE, "sleep", "180"],
-        capture_output=True, text=True, check=True, timeout=60,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
     ).stdout.strip()
     try:
         yield cid
@@ -57,7 +60,9 @@ def test_docker_executor_full_contract(container):
     assert ex.exists("missing.py") is False
 
     # run code inside the container that imports the file we wrote
-    r2 = ex.run_shell("cd /tmp && python3 -c 'import mathlib; print(mathlib.add(2, 3))'", timeout=30)
+    r2 = ex.run_shell(
+        "cd /tmp && python3 -c 'import mathlib; print(mathlib.add(2, 3))'", timeout=30
+    )
     assert r2.exit_code == 0
     assert r2.stdout.strip() == "5"
 

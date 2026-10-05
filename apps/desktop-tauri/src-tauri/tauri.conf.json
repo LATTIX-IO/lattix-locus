@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Lattix xFrontier",
-  "version": "0.1.0",
-  "identifier": "com.lattix.xfrontier",
+  "productName": "Lattix Locus",
+  "version": "0.2.0",
+  "identifier": "com.lattix.locus",
   "build": {
     "frontendDist": "loading",
     "devUrl": "http://127.0.0.1:3000"
@@ -11,7 +11,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Lattix xFrontier",
+        "title": "Lattix Locus",
         "width": 1440,
         "height": 920,
         "minWidth": 1024,
@@ -26,11 +26,11 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "msi", "app", "dmg", "deb", "appimage"],
+    "targets": ["nsis", "app", "dmg", "deb", "appimage"],
     "category": "DeveloperTool",
     "shortDescription": "Secure, local-first multi-agent orchestration.",
-    "longDescription": "Lattix xFrontier desktop shell — runs the backend, sidecars (Postgres+pgvector, Neo4j world models, NATS, Ollama) and confined agents locally, with no Docker.",
-    "externalBin": ["bin/frontier-backend"],
+    "longDescription": "Lattix Locus desktop shell — runs the backend, sidecars (Postgres+pgvector, Neo4j world models, NATS, Ollama) and confined agents locally, with no Docker.",
+    "externalBin": ["bin/locus-backend", "sidecars/locus-opa"],
     "resources": ["bin/*", "resources/frontend/**/*"],
     "icon": [
       "icons/32x32.png",
@@ -55,9 +55,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEIxODJDNDQ4NzlFRTFCMjcKUldRbkcrNTVTTVNDc1pHWFFEcGFwWjB0TmVRZUU1eFlPSDBVVkhTM3VOYUdPT2pCR2Vva2M4ZWcK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZCMDdDQTNDQTJBRUFBRTEKUldUaHFxNmlQTW9IKyswamZ4MzF0ZDJ3aEZ4VmtZcmdURzNKb1lqdmNqUTRGVFluU01LNlhGb2kK",
       "endpoints": [
-        "https://github.com/LATTIX-IO/lattix-xfrontier/releases/latest/download/latest.json"
+        "https://github.com/LATTIX-IO/lattix-locus/releases/download/channel-stable/latest.json"
       ]
     }
   }
