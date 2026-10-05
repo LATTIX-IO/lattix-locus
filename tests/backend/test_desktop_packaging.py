@@ -158,6 +158,18 @@ def test_tauri_conf_is_valid_and_complete():
     # macOS hardened runtime + Windows timestamp server are configured for signing.
     assert conf["bundle"]["macOS"]["hardenedRuntime"] is True
     assert conf["bundle"]["windows"]["timestampUrl"]
+    nsis = conf["bundle"]["windows"]["nsis"]
+    assert nsis["installerHooks"] == "./windows/installer-hooks.nsh"
+    hook = (_TAURI_DIR / nsis["installerHooks"]).read_text(encoding="utf-8")
+    for image_name in (
+        "lattix-locus-desktop.exe",
+        "locus-backend.exe",
+        "locus-opa.exe",
+    ):
+        assert image_name in hook
+    assert "NSIS_HOOK_PREINSTALL" in hook
+    assert "Quit" in hook
+    assert "taskkill" not in hook.lower()
 
 
 def test_tauri_capabilities_allow_sidecar_spawn():
