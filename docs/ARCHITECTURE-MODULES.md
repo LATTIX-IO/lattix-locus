@@ -53,6 +53,8 @@ The loop improves Locus one module at a time. It proposes a new implementation o
 
 Third-party implementations run **out of process** as MCP servers (or A2A agents) inside the OS sandbox, go through quarantine → trust, and reach Locus only through the gateway. First-party implementations run in process. This takes the composability of plugin-style harnesses without their in-process trust model (see the 2026-10-03 review of DeepSeek Harness and OpenClaw).
 
+Every candidate third-party repository has a recorded integrate / fork / clone / skip decision in [third-party-assessment.md](third-party-assessment.md) (LOCUS-406).
+
 ## 6. Code layout (target)
 
 ```
