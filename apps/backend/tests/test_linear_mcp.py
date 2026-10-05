@@ -55,12 +55,21 @@ class FakeLinearMcp:
             return json.dumps(self.issues[args["id"]])
         if name == "list_issue_statuses":
             return json.dumps(
-                {"states": [{"id": "state-progress", "name": "In Progress", "type": "started"}]}
+                {
+                    "states": [
+                        {"id": "state-triage", "name": "Triage", "type": "triage"},
+                        {"id": "state-progress", "name": "In Progress", "type": "started"},
+                    ]
+                }
             )
         if name == "update_issue":
             issue = self.issues[args["id"]]
             if args.get("stateId"):
-                issue["state"] = {"id": args["stateId"], "name": "In Progress"}
+                state_name = {
+                    "state-triage": "Triage",
+                    "state-progress": "In Progress",
+                }[args["stateId"]]
+                issue["state"] = {"id": args["stateId"], "name": state_name}
             if args.get("priority") is not None:
                 issue["priority"] = args["priority"]
             return "Issue updated successfully"
@@ -179,6 +188,23 @@ def test_create_issue_can_skip_status_and_eligibility_label() -> None:
     )
 
     assert not any(call[0] in {"list_issue_statuses", "add_issue_label"} for call in server.calls)
+
+
+def test_create_issue_can_be_explicitly_routed_to_linear_triage() -> None:
+    server = FakeLinearMcp()
+    adapter = LinearMcpAdapter(server, lambda _name, _args: "gateway-allow")
+
+    adapter.create_issue(
+        team_id="team-1",
+        title="Product feedback for review",
+        description="Review before adding to the agent queue",
+        project_slug="locus",
+        state_name="Triage",
+        label_name="",
+    )
+
+    assert server.issues["issue-new"]["state"]["name"] == "Triage"
+    assert not any(call[0] == "add_issue_label" for call in server.calls)
 
 
 def test_create_issue_uses_linear_save_issue_alias_when_create_issue_is_removed() -> None:

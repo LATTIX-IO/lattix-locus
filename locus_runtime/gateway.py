@@ -1739,6 +1739,14 @@ class Gateway:
         # Approvals outlive the session: a run continued later (same run id) may
         # retry the approved action once. The ledger is bounded.
 
+    def close(self) -> None:
+        """Revoke live sessions and close owned policy-engine resources."""
+        with self._lock:
+            self._sessions.clear()
+        close_engine = getattr(self._engine, "close", None)
+        if callable(close_engine):
+            close_engine()
+
     def report_budget(
         self, session: GatewaySession, figures: BudgetFigures
     ) -> BudgetFigures | None:
@@ -2325,6 +2333,24 @@ def install_gateway(gateway: Authorizer | None) -> None:
 
 def installed_gateway() -> Authorizer | None:
     return _PROCESS_GATEWAY
+
+
+def close_installed_gateway() -> None:
+    """Uninstall and close the process gateway during an orderly shutdown.
+
+    Desktop shutdown may call ``os._exit`` after returning its HTTP response,
+    which bypasses ``atexit`` handlers. Close the owned OPA child explicitly so
+    an installer never races a policy process left behind by the runtime.
+    """
+    global _PROCESS_GATEWAY
+    with _PROCESS_LOCK:
+        gateway = _PROCESS_GATEWAY
+        if isinstance(gateway, Gateway):
+            # Keep the instance installed if close fails so shutdown can report
+            # the failure and a later attempt can retry the owned child cleanup.
+            gateway.close()
+        if _PROCESS_GATEWAY is gateway:
+            _PROCESS_GATEWAY = None
 
 
 def gateway_enforcing() -> bool:

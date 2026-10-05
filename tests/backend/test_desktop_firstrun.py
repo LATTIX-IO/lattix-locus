@@ -149,6 +149,7 @@ def test_desktop_supervisor_turns_long_term_memory_on(tmp_path, monkeypatch):
         "LOCUS_MEMORY_SQLITE_PATH",
         "LOCUS_SQLITE_STATE_PATH",
         "LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED",
+        "LOCUS_WORLD_GRAPH_DSN",
         "PLAYWRIGHT_BROWSERS_PATH",
         "POSTGRES_DSN",
     ):
@@ -167,9 +168,19 @@ def test_desktop_supervisor_turns_long_term_memory_on(tmp_path, monkeypatch):
     served: dict[str, str] = {}
 
     def _serve(*_args, **_kwargs):
-        served.update({k: v for k, v in os.environ.items() if k.startswith("LOCUS_MEMORY")})
+        served.update(
+            {
+                k: v
+                for k, v in os.environ.items()
+                if k.startswith("LOCUS_MEMORY") or k in {"LOCUS_WORLD_GRAPH_DSN", "POSTGRES_DSN"}
+            }
+        )
 
-    monkeypatch.setattr(desktop, "build_native_plan", lambda cfg: nl.NativePlan([], {}, []))
+    monkeypatch.setattr(
+        desktop,
+        "build_native_plan",
+        lambda cfg: nl.NativePlan([], {"POSTGRES_DSN": "postgresql://locus@127.0.0.1/locus"}, []),
+    )
     monkeypatch.setattr(desktop, "NativeSupervisor", _Supervisor)
     monkeypatch.setattr(desktop, "_install_shutdown_hooks", lambda: None)
     monkeypatch.setattr(desktop, "_safe", lambda *a, **k: None)
@@ -186,6 +197,9 @@ def test_desktop_supervisor_turns_long_term_memory_on(tmp_path, monkeypatch):
     assert served["LOCUS_MEMORY_ENABLE_LONG_TERM"] == "true"
     assert served["LOCUS_MEMORY_STORE"] == "sqlite"
     assert served["LOCUS_MEMORY_SQLITE_PATH"] == str(db)
+    assert served["LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED"] == "true"
+    assert served["LOCUS_WORLD_GRAPH_DSN"] == "postgresql://locus@127.0.0.1/locus"
+    assert "POSTGRES_DSN" not in served
     assert db.is_file()
     assert "memory: created the Personal collection" in log
 

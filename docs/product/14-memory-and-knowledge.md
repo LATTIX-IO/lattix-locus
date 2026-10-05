@@ -46,10 +46,10 @@ Columns are the "thousand brains" layer on top of the store.
 
 ## 5. Storage and retrieval
 
-- **Store:** on the desktop, an embedded SQLite file (FTS5 full-text index + vector search; sqlite-vec is opt-in until its provenance attestation is re-signed for this use, pure-Python vectors otherwise) behind the memory port, on by default with no setup and a default **Personal** collection (LOCUS-387); PostgreSQL + pgvector on the full stack. Memory items are rows with JSON attributes; embeddings per chunk; full-text index.
+- **Store:** on the desktop, an embedded SQLite file (FTS5 full-text index + vector search; sqlite-vec is opt-in until its provenance attestation is re-signed for this use, pure-Python vectors otherwise) behind the memory port, on by default with no setup and a default **Personal** collection (LOCUS-387); PostgreSQL + pgvector on the full stack. Short-term memory is enabled by default and uses a process-local cache, with optional Redis for shared or multi-worker deployments. The cache is ephemeral across restarts; long-term memories persist in SQLite. Memory items are rows with JSON attributes; embeddings per chunk; full-text index.
 - **Retrieval:** hybrid lexical + vector shortlist → Laya rerank (score) → top-k with citations. Graph hops along relationships (task ↔ memory ↔ board ↔ source) for "what's related" queries.
 - **Embeddings:** a local embedding model by default (provenance-filtered); hosted embeddings only where area policy allows.
-- **World graph:** the earlier world-graph and consolidation features (behind ~40 flags, mostly off) are consolidated into this model: one store, relationship tables, a deterministic consolidation job. Flags that never ship are removed.
+- **World graph:** enabled by default when the desktop's managed PostgreSQL sidecar is available. The desktop keeps operational state and long-term memories in SQLite, while the graph projection uses separate local PostgreSQL connection settings. In a degraded first run the graph becomes available after PostgreSQL is provisioned; if PostgreSQL cannot be installed or started, graph retrieval stays unavailable and reports that state rather than silently claiming it is on.
 
 ## 6. Knowledge sources
 

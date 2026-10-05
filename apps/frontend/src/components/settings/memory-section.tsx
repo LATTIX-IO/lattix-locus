@@ -15,17 +15,13 @@ import {
 import { useIsDesktopShell } from "@/lib/desktop-shell";
 import type { PlatformHealthDetails } from "@/types/locus";
 
-/** On the desktop app the backend and its databases are managed by the app. */
-const DESKTOP_SETUP =
-  "The desktop app runs its own memory databases and attaches them when they are ready; the reason shown says what is missing. Restart Locus after an update or once the database finished setting up.";
-
 /** How each memory layer is turned on. The backend reads this at startup; it
  * is not a setting the UI can change, so the text says what to set. */
 const LAYER_SETUP: Record<string, string> = {
-  short_term: "Needs a Redis server: set REDIS_URL for the Locus backend and restart Locus.",
+  short_term: "Short-term memory uses a process-local session cache. Redis is optional for shared or multi-worker deployments.",
   long_term:
     "Needs Postgres with the pgvector extension and an embedding model: set POSTGRES_DSN and LOCUS_MEMORY_ENABLE_LONG_TERM=true for the Locus backend, then restart Locus.",
-  world_graph: "Needs Neo4j and long-term memory: configure the Neo4j connection for the backend, then restart Locus.",
+  world_graph: "Uses PostgreSQL from LOCUS_WORLD_GRAPH_DSN or POSTGRES_DSN. Restart Locus after configuring the connection.",
   knowledge: "Runs on long-term memory: set that up first, then knowledge collections can index and search documents.",
 };
 
@@ -92,7 +88,13 @@ function LayerBadge({ layer }: { layer: MemoryLayer }) {
 export function MemorySection() {
   const isDesktop = useIsDesktopShell();
   const { snapshot, error, reload } = useMemorySnapshot();
-  const setupText = (layerId: string) => (isDesktop ? DESKTOP_SETUP : LAYER_SETUP[layerId] ?? "See the backend configuration.");
+  const setupText = (layerId: string) => {
+    if (!isDesktop) return LAYER_SETUP[layerId] ?? "See the backend configuration.";
+    if (layerId === "short_term") return "Short-term memory is on by default and uses a process-local session cache.";
+    if (layerId === "long_term") return "Long-term memory is on by default and uses the local embedded store.";
+    if (layerId === "world_graph") return "The local PostgreSQL graph turns on when its managed database is ready.";
+    return "The desktop app manages this memory layer.";
+  };
 
   const header = (
     <SectionHeader
@@ -188,7 +190,7 @@ export function MemorySection() {
         <p className="text-xs text-muted-foreground">
           External vector stores are added as connections of type vector in{" "}
           <Link href="/library/connections" className="underline underline-offset-2">
-            Library → Connections
+            Library → Connectors
           </Link>
           .
         </p>

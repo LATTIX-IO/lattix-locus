@@ -43,7 +43,7 @@ type Inventory = { mcp: MCPConnectionDefinition[]; integrations: IntegrationDefi
 
 /**
  * The rules for connections. The connections themselves (MCP servers and
- * integrations, with OAuth and approval) are managed in Library → Connections.
+ * integrations, with OAuth and approval) are managed in Library → Connectors.
  */
 export function ConnectionsSection() {
   const platform = usePlatformResource();
@@ -73,11 +73,11 @@ export function ConnectionsSection() {
   return (
     <div className="flex flex-col gap-4">
       <SectionHeader
-        title="Connections"
-        description="Which MCP servers and integrations the agents may use."
+        title="Connector rules"
+        description="Set the security rules that control which connected services agents may use."
         actions={
           <Button asChild variant="secondary" size="sm">
-            <Link href="/library/connections">Manage connections</Link>
+            <Link href="/library/connections">Manage connectors</Link>
           </Button>
         }
       />

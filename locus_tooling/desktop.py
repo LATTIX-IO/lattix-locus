@@ -1,10 +1,10 @@
 """Desktop (Tauri) integration for the native install.
 
 The Tauri shell spawns ONE backend sidecar — the packaged supervisor — which
-brings up every native service (Postgres+pgvector, Neo4j world models, NATS,
-Ollama, the agents, the backend, and the frontend) via :mod:`native_launcher`,
-then blocks. Tauri waits for the backend ``/healthz`` and opens its webview at
-the local UI.
+brings up every native service (Postgres with pgvector and the world graph,
+NATS, Ollama, the agents, the backend, and the frontend) via
+:mod:`native_launcher`, then blocks. Tauri waits for the backend ``/healthz``
+and opens its webview at the local UI.
 
 This module is the seam between "running from a git checkout" and "running as a
 PyInstaller/Nuitka-frozen binary inside a Tauri bundle": it resolves the bundled
@@ -47,15 +47,36 @@ def shutdown_supervisors() -> None:
             pass
 
 
+def shutdown_runtime() -> None:
+    """Close the gateway-owned OPA process, then stop supervised services."""
+    from locus_runtime.gateway import close_installed_gateway
+
+    close_installed_gateway()
+    shutdown_supervisors()
+
+
+def _shutdown_at_exit() -> None:
+    try:
+        shutdown_runtime()
+    except Exception as exc:  # noqa: BLE001 - interpreter shutdown is best effort
+        print(f"[shutdown] owned runtime cleanup failed ({type(exc).__name__})", file=sys.stderr)
+
+
 def _install_shutdown_hooks() -> None:
     global _SHUTDOWN_HOOKS_INSTALLED  # noqa: PLW0603
     if _SHUTDOWN_HOOKS_INSTALLED:
         return
     _SHUTDOWN_HOOKS_INSTALLED = True
-    atexit.register(shutdown_supervisors)
+    atexit.register(_shutdown_at_exit)
 
     def _handler(signum, _frame):  # noqa: ANN001
-        shutdown_supervisors()
+        try:
+            shutdown_runtime()
+        except Exception as exc:  # noqa: BLE001 - keep the owner alive to retry cleanup
+            print(
+                f"[shutdown] owned runtime cleanup failed ({type(exc).__name__})", file=sys.stderr
+            )
+            return
         os._exit(0)
 
     for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None)):
@@ -239,13 +260,20 @@ def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
 
     # The backend hard-fails startup if its STATE store can't connect, but
     # Postgres comes up asynchronously in the background and isn't ready yet.
-    # Pin state to SQLite (no startup DB dependency) so the app boots fast and
-    # reliably. The world graph (Postgres-backed) stays off on the desktop.
+    # Pin state and long-term memory to their embedded SQLite stores so startup
+    # does not depend on Postgres. Keep its DSN separately for the local world
+    # graph, which becomes available as soon as the managed service is healthy.
     sqlite_state = Path(cfg.app_home) / "data" / "state" / "locus-state.db"
     sqlite_state.parent.mkdir(parents=True, exist_ok=True)
     os.environ["LOCUS_SQLITE_STATE_PATH"] = str(sqlite_state)
+    world_graph_dsn = str(plan.env.get("POSTGRES_DSN") or "").strip()
+    if world_graph_dsn:
+        os.environ["LOCUS_WORLD_GRAPH_DSN"] = world_graph_dsn
+        os.environ["LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED"] = "true"
+    else:
+        os.environ.pop("LOCUS_WORLD_GRAPH_DSN", None)
+        os.environ["LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED"] = "false"
     os.environ.pop("POSTGRES_DSN", None)
-    os.environ["LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED"] = "false"
     # Long-term memory is ON by default (LOCUS-387): the embedded SQLite store
     # (FTS5 + sqlite-vec) under the app home, with no server to start. First run
     # creates it (owner-only) and its Personal collection before the backend is
@@ -291,11 +319,23 @@ def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
         ensure_agent_toolchain(desktop_app_home(), progress=log)
         ensure_playwright_chromium(desktop_app_home(), progress=log)
         plan2 = build_native_plan(desktop_config(**overrides))
+        graph_dsn = str(plan2.env.get("POSTGRES_DSN") or "").strip()
+        if graph_dsn:
+            os.environ["LOCUS_WORLD_GRAPH_DSN"] = graph_dsn
+            os.environ["LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED"] = "true"
         deferred = NativePlan([s for s in plan2.services if s.name != "frontend"], plan2.env, [])
         sup = NativeSupervisor(deferred, log=log)
         deferred_supervisors.append(sup)
         _LIVE_SUPERVISORS.append(sup)
         sup.start_all()
+        if graph_dsn:
+            # The backend can import before first-run provisioning fetches the
+            # Postgres sidecar. Recompose this adapter after the managed DB is
+            # healthy so the default world graph becomes available this run.
+            backend_module = sys.modules.get("app.main")
+            rebuild_graph = getattr(backend_module, "_build_world_graph", None)
+            if callable(rebuild_graph):
+                backend_module._NEO4J_GRAPH = rebuild_graph()
         log("[firstrun] background services ready")
 
     threading.Thread(target=lambda: _safe(_bring_up_infra, log=log), daemon=True).start()

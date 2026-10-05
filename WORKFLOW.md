@@ -56,7 +56,7 @@ symphony:
   path: "."
   remote: "https://github.com/LATTIX-IO/lattix-locus.git"
   default_branch: "main"
-  linear_team_key: "FRONT"
+  linear_team_key: "LOCUS"
   technologies:
     - python
     - typescript

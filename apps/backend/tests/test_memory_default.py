@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -81,6 +82,37 @@ def test_store_choice_follows_the_profile(tmp_path: Path, monkeypatch: pytest.Mo
         assert built.embedder is main_module._MEMORY_EMBEDDER
     finally:
         built.close()
+
+
+def test_desktop_world_graph_uses_its_separate_postgres_dsn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NEO4J_URI", raising=False)
+    monkeypatch.setenv("POSTGRES_DSN", "postgresql://state-store/locus")
+    monkeypatch.setenv("LOCUS_WORLD_GRAPH_DSN", "postgresql://world-graph/locus")
+    monkeypatch.setenv("LOCUS_MEMORY_GRAPH_PROJECTION_ENABLED", "true")
+
+    graph = main_module._build_world_graph()
+
+    assert graph.dsn == "postgresql://world-graph/locus"
+    assert graph.enabled is True
+
+
+def test_short_term_memory_uses_the_builtin_cache_without_redis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "_REDIS_MEMORY",
+        SimpleNamespace(enabled=False, healthcheck=lambda: False),
+    )
+
+    layers = {layer["id"]: layer for layer in main_module._knowledge_memory_layers()}
+
+    assert layers["short_term"]["enabled"] is True
+    assert layers["short_term"]["healthy"] is True
+    assert layers["short_term"]["backend"] == "Process-local session cache"
+    assert layers["world_graph"]["backend"] == "PostgreSQL"
 
 
 def test_personal_collection_is_bootstrapped_once(sqlite_memory) -> None:

@@ -749,7 +749,7 @@ def windows_appcontainer_supported() -> bool:
     try:
         import ctypes
 
-        userenv = ctypes.WinDLL("userenv")  # type: ignore[attr-defined]
+        userenv = ctypes.WinDLL("userenv")
         return all(
             hasattr(userenv, name)
             for name in ("CreateAppContainerProfile", "DeriveAppContainerSidFromAppContainerName")

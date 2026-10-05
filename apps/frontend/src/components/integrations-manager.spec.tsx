@@ -314,13 +314,27 @@ describe("IntegrationsManager", () => {
     await waitFor(() => expect(advanced.open).toBe(true));
   });
 
-  it("shows saved connections before the service catalog", async () => {
+  it("keeps the service catalog visible before connected services", async () => {
+    getIntegrationsMock.mockResolvedValue([
+      {
+        id: "linear-connection",
+        name: "Linear MCP",
+        type: "custom",
+        status: "configured",
+        base_url: "https://mcp.linear.app/mcp",
+        auth_type: "none",
+        secret_ref: "",
+        capabilities: ["issues"],
+        metadata_json: {},
+      },
+    ]);
     render(<IntegrationsManager />);
 
-    const saved = (await screen.findByRole("heading", { name: "Your connections" })).parentElement?.parentElement;
-    const catalog = screen.getByText("Connect a service").parentElement?.parentElement;
-    expect(saved?.className).toContain("order-3");
-    expect(catalog?.className).toContain("order-5");
+    const saved = (await screen.findByRole("heading", { name: "Connected services" })).parentElement?.parentElement;
+    const catalog = screen.getByRole("heading", { name: "Connect a service" }).parentElement?.parentElement;
+    expect(catalog).toBeVisible();
+    expect(catalog?.className).toContain("order-3");
+    expect(saved?.className).toContain("order-4");
   });
 
   it("saves integrations and refreshes the list", async () => {

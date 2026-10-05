@@ -718,9 +718,9 @@ class LoopRunner:
     def _research_backlog(self, gateway: Gateway) -> TickResult:
         """Use a local-only model to add a few prioritized, testable issues.
 
-        The issues are marked ``agent:eligible`` and ``Todo`` so the next tick
-        can run the ordinary harness and its required checks. Their hypotheses
-        are considered validated only by that normal code/eval/RSI gate path.
+        The issues are created through Linear MCP without overriding the state,
+        so the enabled team Triage inbox receives them. No ``agent:eligible``
+        label is applied; they cannot run until review accepts and promotes them.
         """
         list_issues = getattr(self.tracker, "list_project_issues", None)
         create_issue = getattr(self.tracker, "create_issue", None)
@@ -805,8 +805,8 @@ class LoopRunner:
                     description=issue_description(proposal),
                     project_slug=self.config.project_slug,
                     priority=proposal.priority,
-                    state_name=self.config.todo_state,
-                    label_name=self.config.required_label,
+                    state_name="Triage",
+                    label_name="",
                 )
                 or ""
             )
@@ -827,7 +827,7 @@ class LoopRunner:
         logger.info("loop.research_issues_created", extra={"count": len(created)})
         return TickResult(
             "research_created",
-            f"created {len(created)} prioritized hypothesis issue(s); the next tick will run them through the standard gates",
+            f"created {len(created)} prioritized hypothesis issue(s) in Linear Triage; review and promote them before the loop can run them",
             issue=", ".join(created),
         )
 
@@ -2234,7 +2234,7 @@ class LoopRunner:
                     title=title,
                     description=body,
                     project_slug=self.config.project_slug,
-                    state_name="",
+                    state_name="Triage",
                     label_name="",
                 )
                 # Persist each filing at once: a later error must not lead to a re-file.

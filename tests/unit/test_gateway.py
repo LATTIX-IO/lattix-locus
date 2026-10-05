@@ -200,6 +200,37 @@ def test_closed_session_denies() -> None:
     assert session.authorize(kind="file_read", tool="view", target=f"{ROOT}/a").outcome == "deny"
 
 
+def test_close_installed_gateway_stops_owned_engine_and_revokes_sessions() -> None:
+    class ClosableEngine(FakeEngine):
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    engine = ClosableEngine()
+    gateway, _ = _gateway(engine)
+    session = _session(gateway)
+
+    with installed(gateway):
+        gw.close_installed_gateway()
+        assert gw.installed_gateway() is None
+
+    assert engine.closed is True
+    assert session.authorize(kind="file_read", tool="view", target=f"{ROOT}/a").outcome == "deny"
+
+
+def test_close_installed_gateway_keeps_gateway_when_engine_shutdown_fails() -> None:
+    class BrokenCloseEngine(FakeEngine):
+        def close(self) -> None:
+            raise OSError("sidecar did not stop")
+
+    gateway, _ = _gateway(BrokenCloseEngine())
+    with installed(gateway):
+        with pytest.raises(OSError, match="sidecar did not stop"):
+            gw.close_installed_gateway()
+        assert gw.installed_gateway() is gateway
+
+
 def test_no_installed_gateway_denies_unbound_callers() -> None:
     with installed(None):
         decision = gw.authorize_action(None, kind="file_read", tool="view", target="/x")

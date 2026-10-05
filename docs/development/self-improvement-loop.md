@@ -30,8 +30,8 @@ suite, held-out split and promotion rule) is in [rsi-scorecard.md](rsi-scorecard
 
 ## Setup
 
-1. **Linear MCP**: in Locus Settings → Connections, connect the official Linear
-   MCP integration with OAuth. First connect uses Linear's OAuth 2.1 dynamic
+1. **Linear MCP**: in Library → Connectors, connect the official Linear MCP
+   integration with OAuth. Connector security rules are in Settings → Connector rules. First connect uses Linear's OAuth 2.1 dynamic
    client registration and PKCE; no client secret or API key needs manual
    configuration. The desktop stores its OAuth tokens and the board and native
    runner use the same connection through the authenticated local API and policy
@@ -61,8 +61,12 @@ suite, held-out split and promotion rule) is in [rsi-scorecard.md](rsi-scorecard
    installed backend fails preflight with HTTP 404 and needs the updated build.
 7. **Linear labels and states** in the project from `WORKFLOW.md`
    (`tracker.provider.project_slug`): labels `agent:eligible`,
-   `agent:ineligible`, `agent:human-review-required`; states `Todo`,
-   `In Progress`, `In Review` (and optionally `Blocked`).
+   `agent:ineligible`, `agent:human-review-required`; states `Triage`, `Backlog`,
+   `Todo`, `In Progress`, `In Review` (and optionally `Blocked`). Enable Linear
+   Triage for the destination team. Empty-queue research and failure-feedback
+   issues are created by the authenticated Linear MCP connection in Triage and
+   without `agent:eligible`. Accept and promote an issue to Todo with the
+   eligibility label before the coding loop can claim it.
 
 ## Running
 
