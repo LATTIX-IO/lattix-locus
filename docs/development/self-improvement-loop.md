@@ -31,9 +31,11 @@ suite, held-out split and promotion rule) is in [rsi-scorecard.md](rsi-scorecard
 ## Setup
 
 1. **Linear MCP**: in Locus Settings → Connections, connect the official Linear
-   MCP integration with OAuth. The desktop stores its OAuth tokens and the board
-   and native runner use the same connection through the authenticated local API
-   and policy gateway; do not configure a second Linear API key for the loop.
+   MCP integration with OAuth. First connect uses Linear's OAuth 2.1 dynamic
+   client registration and PKCE; no client secret or API key needs manual
+   configuration. The desktop stores its OAuth tokens and the board and native
+   runner use the same connection through the authenticated local API and policy
+   gateway; do not configure a second Linear API key for the loop.
    Hosted model access is optional; the native model chain can use local Ollama.
 2. **GitHub**: the `gh` CLI must be logged in (`gh auth login`) with permission to
    push branches and open PRs on the repository's `origin`. The loop never reads
@@ -409,7 +411,9 @@ The update never sets or clears the kill switch (`DISABLED` / `LOCUS_LOOP_DISABL
 
 * Linear issue reads and writes use the official MCP server. Each MCP tool call
   is authorized by a gateway session scoped to that exact tool, arguments, and
-  `mcp.linear.app` egress. The OAuth token stays in the desktop integration store.
+  `mcp.linear.app` egress. Project issues and issue comments are cursor-paginated
+  so queue selection and claim checks do not silently stop at the first page.
+  The OAuth token stays encrypted in the desktop integration store.
 * Empty-queue research reads bounded project/workflow context, asks local Ollama
   for small independent hypotheses, deduplicates and prioritizes them, and files
   at most the configured number as Todo issues. Each issue includes a test case
@@ -424,6 +428,6 @@ The update never sets or clears the kill switch (`DISABLED` / `LOCUS_LOOP_DISABL
   `locus_runtime/loop_runner/`, so a PR that edits the measurement is never
   auto-merged. The suite still executes the PR's code, so its numbers are
   evidence, not proof.
-* `issueCreate` is retried on transient Linear errors like every other call; a
+* `save_issue` is retried on transient Linear errors like every other call; a
   retry after a lost response can create a duplicate issue (the fingerprint
   line makes it easy to spot and the registry stops further filings).

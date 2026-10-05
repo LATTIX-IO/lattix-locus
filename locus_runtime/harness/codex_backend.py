@@ -612,6 +612,7 @@ def run_codex_with_locus_tools(
                     if last:
                         result.answer = redact_text(last, limit=80_000)
                 except OSError:
+                    # The JSONL agent-message stream remains available if this optional file was not written.
                     pass
                 stderr_file.flush()
                 result.duration_seconds = max(0.0, time.monotonic() - started)
@@ -625,6 +626,7 @@ def run_codex_with_locus_tools(
                 try:
                     process.kill()
                 except OSError:
+                    # The process may have exited between poll() and kill().
                     pass
                 try:
                     process.communicate(timeout=5)
@@ -632,12 +634,15 @@ def run_codex_with_locus_tools(
                     try:
                         process.kill()
                     except OSError:
+                        # Preserve the original timeout result if the child already exited.
                         pass
                     try:
                         process.communicate()
                     except (OSError, subprocess.SubprocessError):
+                        # Cleanup is best-effort after the bounded timeout has already fired.
                         pass
                 except (OSError, subprocess.SubprocessError):
+                    # Do not replace the backend outcome with a secondary drain failure.
                     pass
 
     result.duration_seconds = max(result.duration_seconds, elapsed)

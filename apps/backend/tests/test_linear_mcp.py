@@ -12,8 +12,15 @@ class FakeLinearMcp:
     def __init__(self, *, list_issues: list[dict[str, Any]] | None = None) -> None:
         self.tools = [
             {"name": "list_projects", "input_schema": {"properties": {"query": {}, "limit": {}}}},
-            {"name": "list_issues", "input_schema": {"properties": {"projectId": {}, "limit": {}}}},
+            {
+                "name": "list_issues",
+                "input_schema": {"properties": {"projectId": {}, "limit": {}, "cursor": {}}},
+            },
             {"name": "get_issue", "input_schema": {"properties": {"id": {}}}},
+            {
+                "name": "list_comments",
+                "input_schema": {"properties": {"issueId": {}, "limit": {}, "cursor": {}}},
+            },
             {"name": "list_issue_statuses", "input_schema": {"properties": {"teamId": {}}}},
             {
                 "name": "update_issue",
@@ -57,7 +64,7 @@ class FakeLinearMcp:
             if args.get("priority") is not None:
                 issue["priority"] = args["priority"]
             return "Issue updated successfully"
-        if name == "create_issue":
+        if name in {"create_issue", "save_issue"}:
             issue = {
                 "id": "issue-new",
                 "identifier": "LOCUS-10",
@@ -68,6 +75,9 @@ class FakeLinearMcp:
             }
             self.issues[issue["id"]] = issue
             return json.dumps({"issue": issue})
+        if name == "list_comments":
+            issue = self.issues[args["issueId"]]
+            return json.dumps({"comments": issue.get("comments", [])})
         if name == "add_issue_label":
             issue = self.issues[args["id"]]
             issue["labels"] = {"nodes": [{"name": str(label)} for label in args["labelIds"]]}
@@ -139,6 +149,92 @@ def test_create_issue_stays_in_project_and_sets_priority_state_and_label() -> No
 
     adapter.set_priority("issue-new", 0)
     assert server.issues["issue-new"]["priority"] == 0
+
+
+def test_create_issue_uses_linear_save_issue_alias_when_create_issue_is_removed() -> None:
+    server = FakeLinearMcp()
+    server.tools = [tool for tool in server.tools if tool["name"] != "create_issue"]
+    server.tools.append(
+        {
+            "name": "save_issue",
+            "input_schema": {
+                "properties": {
+                    "teamId": {},
+                    "projectId": {},
+                    "title": {},
+                    "description": {},
+                }
+            },
+        }
+    )
+    adapter = LinearMcpAdapter(server, lambda _name, _args: "gateway-allow")
+
+    identifier = adapter.create_issue(
+        team_id="team-1",
+        title="A focused research experiment",
+        description="Test it",
+        project_slug="locus",
+    )
+
+    assert identifier == "LOCUS-10"
+    assert any(call[0] == "save_issue" for call in server.calls)
+
+
+def test_issue_reads_claim_comments_through_paginated_list_comments() -> None:
+    class PaginatedCommentsServer(FakeLinearMcp):
+        def call_tool(
+            self, name: str, arguments: dict[str, Any] | None = None, *, decision: Any = None
+        ) -> str:
+            args = arguments or {}
+            if name == "list_comments":
+                self.calls.append((name, args, decision))
+                cursor = args.get("cursor")
+                if cursor:
+                    return json.dumps({"comments": [{"body": "RSI claim token"}]})
+                return json.dumps(
+                    {
+                        "comments": [{"body": "Older comment"}],
+                        "pageInfo": {"hasNextPage": True, "endCursor": "next-page"},
+                    }
+                )
+            return super().call_tool(name, arguments, decision=decision)
+
+    server = PaginatedCommentsServer(list_issues=[_issue()])
+    adapter = LinearMcpAdapter(server, lambda _name, _args: "gateway-allow")
+
+    issue = adapter.issue("issue-1", include_comments=True)
+
+    assert issue["comments"] == ["Older comment", "RSI claim token"]
+    comment_calls = [call for call in server.calls if call[0] == "list_comments"]
+    assert [call[1].get("cursor") for call in comment_calls] == [None, "next-page"]
+
+
+def test_issues_follow_cursor_until_candidate_outside_first_page_is_loaded() -> None:
+    class PaginatedIssuesServer(FakeLinearMcp):
+        def call_tool(
+            self, name: str, arguments: dict[str, Any] | None = None, *, decision: Any = None
+        ) -> str:
+            args = arguments or {}
+            if name == "list_issues":
+                self.calls.append((name, args, decision))
+                if args.get("cursor"):
+                    return json.dumps({"issues": [{**_issue(), "id": "issue-2"}]})
+                return json.dumps(
+                    {
+                        "issues": [{**_issue(), "id": "issue-1"}],
+                        "pageInfo": {"hasNextPage": True, "endCursor": "next-page"},
+                    }
+                )
+            return super().call_tool(name, arguments, decision=decision)
+
+    server = PaginatedIssuesServer()
+    adapter = LinearMcpAdapter(server, lambda _name, _args: "gateway-allow")
+
+    issues = adapter.issues("locus")
+
+    assert [issue["id"] for issue in issues] == ["issue-1", "issue-2"]
+    issue_calls = [call for call in server.calls if call[0] == "list_issues"]
+    assert [call[1].get("cursor") for call in issue_calls] == [None, "next-page"]
 
 
 def test_reads_fail_closed_when_the_server_returns_unstructured_text() -> None:

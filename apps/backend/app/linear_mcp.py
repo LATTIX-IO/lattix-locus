@@ -18,11 +18,13 @@ class LinearMcpError(RuntimeError):
 
 
 class McpServer(Protocol):
-    def list_tools(self) -> list[dict[str, Any]]: ...
+    def list_tools(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
 
     def call_tool(
         self, name: str, arguments: dict[str, Any] | None = None, *, decision: Any = None
-    ) -> str: ...
+    ) -> str:
+        raise NotImplementedError
 
 
 AuthorizeCall = Callable[[str, dict[str, Any]], Any]
@@ -33,10 +35,11 @@ _TOOL_NAMES: dict[str, tuple[str, ...]] = {
     "list_projects": ("list_projects", "projects_list"),
     "list_statuses": ("list_issue_statuses", "list_workflow_states", "list_statuses"),
     "update_issue": ("update_issue", "save_issue", "issue_update"),
+    "list_comments": ("list_comments", "issue_comments"),
     "create_comment": ("create_comment", "add_comment", "comment_create"),
     "add_label": ("add_issue_label", "add_label", "issue_add_label"),
     "attach_link": ("create_attachment", "attach_link", "create_link"),
-    "create_issue": ("create_issue", "issue_create"),
+    "create_issue": ("create_issue", "save_issue", "issue_create"),
 }
 
 _ARGUMENTS: dict[str, tuple[str, ...]] = {
@@ -64,6 +67,7 @@ _ARGUMENTS: dict[str, tuple[str, ...]] = {
     "description": ("description", "body", "content"),
     "url": ("url", "link"),
     "limit": ("limit", "first", "pageSize", "page_size"),
+    "cursor": ("cursor", "after", "pageCursor", "page_cursor"),
     "query": ("query", "search", "text"),
     "priority": ("priority",),
 }
@@ -71,6 +75,7 @@ _ARGUMENTS: dict[str, tuple[str, ...]] = {
 _REQUIRED_ARGUMENT_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
     "list_issues": (("project_id", "project_slug"),),
     "get_issue": (("id",),),
+    "list_comments": (("id",),),
     "list_statuses": (("team_id",),),
     "update_issue": (("id",),),
     "create_comment": (("id",), ("body",)),
@@ -117,14 +122,63 @@ def _as_items(value: Any, *keys: str) -> list[dict[str, Any]]:
         if isinstance(nested, list):
             return [item for item in nested if isinstance(item, dict)]
         if isinstance(nested, dict):
-            found = _as_items(nested, "nodes", "issues", "projects", "statuses", "states", "items")
+            found = _as_items(
+                nested,
+                "nodes",
+                "issues",
+                "projects",
+                "statuses",
+                "states",
+                "comments",
+                "items",
+                "data",
+            )
             if found:
                 return found
-    for key in ("nodes", "issues", "projects", "statuses", "states", "items", "results"):
+    for key in (
+        "nodes",
+        "issues",
+        "projects",
+        "statuses",
+        "states",
+        "comments",
+        "items",
+        "results",
+        "data",
+    ):
         nested = value.get(key)
         if isinstance(nested, list):
             return [item for item in nested if isinstance(item, dict)]
     return []
+
+
+def _page_cursor(value: Any) -> tuple[str, bool, bool]:
+    """Return the next opaque page cursor without assuming a provider response shape."""
+    if not isinstance(value, dict):
+        return "", False, False
+    metadata: list[dict[str, Any]] = [value]
+    for key in ("pagination", "pageInfo", "page_info", "meta", "metadata", "data"):
+        nested = value.get(key)
+        if isinstance(nested, dict):
+            metadata.append(nested)
+            for nested_key in ("pagination", "pageInfo", "page_info"):
+                page = nested.get(nested_key)
+                if isinstance(page, dict):
+                    metadata.append(page)
+    for item in metadata:
+        for key in ("nextCursor", "next_cursor", "nextPageCursor", "next_page_cursor"):
+            cursor = str(item.get(key) or "").strip()
+            if cursor:
+                return cursor, True, True
+        more_keys = ("hasNextPage", "has_next_page", "hasMore", "has_more")
+        known = any(key in item and isinstance(item.get(key), bool) for key in more_keys)
+        has_more = any(item.get(key) is True for key in more_keys)
+        if has_more:
+            cursor = str(item.get("endCursor") or item.get("end_cursor") or "").strip()
+            return cursor, True, True
+        if known:
+            return "", False, True
+    return "", False, False
 
 
 def normalize_issue(node: Mapping[str, Any]) -> dict[str, Any]:
@@ -137,15 +191,13 @@ def normalize_issue(node: Mapping[str, Any]) -> dict[str, Any]:
     labels_value = node.get("labels") or []
     if isinstance(labels_value, dict):
         labels_value = labels_value.get("nodes") or labels_value.get("items") or []
-    labels = (
-        [
-            str(item.get("name") or item.get("label") or item)
-            for item in labels_value
-            if isinstance(item, (dict, str))
-        ]
-        if isinstance(labels_value, list)
-        else []
-    )
+    labels: list[str] = []
+    if isinstance(labels_value, list):
+        for item in labels_value:
+            if isinstance(item, dict):
+                labels.append(str(item.get("name") or item.get("label") or item))
+            elif isinstance(item, str):
+                labels.append(item)
     team = node.get("team") or {}
     comments = node.get("comments") or []
     if isinstance(comments, dict):
@@ -204,10 +256,19 @@ class LinearMcpAdapter:
                 return str(tool["name"]), schema if isinstance(schema, dict) else {}
         raise LinearMcpError(f"Linear MCP does not expose the required '{operation}' tool")
 
+    def _supports_argument(self, operation: str, semantic: str) -> bool:
+        _name, schema = self._tool(operation)
+        raw_properties = schema.get("properties")
+        properties: dict[str, Any] = raw_properties if isinstance(raw_properties, dict) else {}
+        aliases = _ARGUMENTS.get(semantic, (semantic,))
+        return any(_key(alias) in {_key(str(prop)) for prop in properties} for alias in aliases)
+
     def _call(self, operation: str, values: Mapping[str, Any]) -> Any:
         name, schema = self._tool(operation)
-        properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
-        required = schema.get("required") if isinstance(schema.get("required"), list) else []
+        raw_properties = schema.get("properties")
+        properties: dict[str, Any] = raw_properties if isinstance(raw_properties, dict) else {}
+        raw_required = schema.get("required")
+        required: list[Any] = raw_required if isinstance(raw_required, list) else []
         normalized_props = {_key(str(prop)): str(prop) for prop in properties}
         args: dict[str, Any] = {}
         for semantic, value in values.items():
@@ -266,27 +327,86 @@ class LinearMcpAdapter:
             raise LinearMcpError(f"Linear MCP tool '{name}' returned no structured data")
         return parsed
 
-    def issues(self, project_slug: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    def _list_pages(
+        self,
+        operation: str,
+        values: Mapping[str, Any],
+        *,
+        result_key: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        max_items = min(5000, max(1, int(limit)))
+        rows: list[dict[str, Any]] = []
+        cursor = ""
+        seen_cursors: set[str] = set()
+        for _page in range(51):
+            page_limit = min(100, max_items - len(rows))
+            if page_limit <= 0:
+                raise LinearMcpError(f"Linear MCP {operation} exceeded the bounded result limit")
+            page_values = {**values, "limit": page_limit, "cursor": cursor or None}
+            result = self._call(operation, page_values)
+            page_items = _as_items(result, result_key)
+            rows.extend(page_items)
+            if len(rows) > max_items:
+                raise LinearMcpError(f"Linear MCP {operation} exceeded the bounded result limit")
+            next_cursor, has_more, pagination_known = _page_cursor(result)
+            if not has_more:
+                if (
+                    not pagination_known
+                    and len(page_items) >= page_limit
+                    and self._supports_argument(operation, "cursor")
+                ):
+                    raise LinearMcpError(
+                        f"Linear MCP {operation} returned a full page without completion metadata"
+                    )
+                return rows
+            if not next_cursor or not self._supports_argument(operation, "cursor"):
+                raise LinearMcpError(
+                    f"Linear MCP {operation} reports another page without a usable cursor"
+                )
+            if next_cursor in seen_cursors:
+                raise LinearMcpError(f"Linear MCP {operation} did not advance its page cursor")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        raise LinearMcpError(f"Linear MCP {operation} exceeded the page limit")
+
+    def issues(self, project_slug: str, *, limit: int = 1000) -> list[dict[str, Any]]:
         project_id = self._resolve_project(project_slug)
-        result = self._call(
+        items = self._list_pages(
             "list_issues",
             {
                 "project_id": project_id or None,
                 "project_slug": project_slug,
                 "query": "",
-                "limit": min(100, max(1, limit)),
             },
+            result_key="issues",
+            limit=limit,
         )
-        items = _as_items(result, "issues", "results")
         normalized = [normalize_issue(item) for item in items]
         return [item for item in normalized if item["id"]]
 
-    def issue(self, issue_id: str) -> dict[str, Any]:
+    def comments(self, issue_id: str, *, limit: int = 5000) -> list[str]:
+        items = self._list_pages(
+            "list_comments",
+            {"id": issue_id},
+            result_key="comments",
+            limit=limit,
+        )
+        return [
+            str(item.get("body") or item.get("text") or "")
+            for item in items
+            if str(item.get("body") or item.get("text") or "")
+        ]
+
+    def issue(self, issue_id: str, *, include_comments: bool = False) -> dict[str, Any]:
         result = self._call("get_issue", {"id": issue_id})
         if isinstance(result, dict):
-            node = result.get("issue") if isinstance(result.get("issue"), dict) else result
+            candidate = result.get("issue")
+            node: Mapping[str, Any] = candidate if isinstance(candidate, dict) else result
             normalized = normalize_issue(node)
             if normalized["id"]:
+                if include_comments:
+                    normalized["comments"] = self.comments(issue_id)
                 return normalized
         raise LinearMcpError("Linear MCP did not return the requested issue")
 

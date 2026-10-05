@@ -170,7 +170,7 @@ def test_board_uses_the_configured_linear_mcp_project(
     class FakeAdapter:
         def issues(self, project_slug: str, *, limit: int = 100) -> list[dict[str, Any]]:
             assert project_slug == "locus"
-            assert limit == 100
+            assert limit == 5000
             return [board_issue]
 
         def statuses(self, team_id: str) -> list[dict[str, str]]:
@@ -193,7 +193,7 @@ def test_empty_board_still_loads_project_workflow_columns(
 ) -> None:
     class EmptyProjectAdapter:
         def issues(self, _project_slug: str, *, limit: int = 100) -> list[dict[str, Any]]:
-            assert limit == 100
+            assert limit == 5000
             return []
 
         def project_team_id(self, project_slug: str) -> str:

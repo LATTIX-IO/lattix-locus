@@ -8888,6 +8888,72 @@ def _integration_oauth_session(integration: IntegrationDefinition) -> dict[str, 
     return dict(session) if isinstance(session, dict) else {}
 
 
+_LINEAR_MCP_OAUTH_REGISTRATION_LOCK = Lock()
+
+
+def _ensure_linear_mcp_oauth_auth(
+    integration: IntegrationDefinition, redirect_uri: str
+) -> dict[str, Any]:
+    """Use Linear's remote-MCP OAuth discovery and public-client registration."""
+    auth = _integration_oauth_auth(integration)
+    if auth.get("client_id") and auth.get("authorize_url") and auth.get("token_url"):
+        if not auth.get("dynamic_client") or auth.get("registered_redirect_uri") == redirect_uri:
+            return auth
+
+    metadata_json = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+    catalog_id = str(metadata_json.get("catalog_id") or "").strip().lower()
+    if (
+        catalog_id != "mcp-linear"
+        or integration.base_url.rstrip("/") != "https://mcp.linear.app/mcp"
+    ):
+        raise HTTPException(status_code=400, detail="Linear MCP OAuth catalog metadata is invalid")
+
+    with _LINEAR_MCP_OAUTH_REGISTRATION_LOCK:
+        auth = _integration_oauth_auth(integration)
+        if (
+            auth.get("client_id")
+            and auth.get("authorize_url")
+            and auth.get("token_url")
+            and (
+                not auth.get("dynamic_client")
+                or auth.get("registered_redirect_uri") == redirect_uri
+            )
+        ):
+            return auth
+        try:
+            from app.linear_mcp_oauth import register_public_client
+
+            registered = register_public_client(redirect_uri)
+        except Exception as exc:  # noqa: BLE001 - provider failures return a stable setup error
+            LOGGER.warning("linear_mcp.oauth_registration_failed: %s", type(exc).__name__)
+            raise HTTPException(
+                status_code=502,
+                detail="Linear MCP OAuth client registration failed. Check the local service network and retry.",
+            ) from exc
+
+        auth = {
+            "method": "oauth2",
+            "provider": "custom",
+            "grant_type": "authorization_code",
+            "authorize_url": registered["authorize_url"],
+            "token_url": registered["token_url"],
+            "client_id": registered["client_id"],
+            "client_auth_method": "none",
+            "dynamic_client": True,
+            "pkce_required": True,
+            "registered_redirect_uri": redirect_uri,
+            "scopes": ["read", "write"],
+            "resource": registered["resource"],
+            "redirect_path": "/builder/integrations",
+        }
+        metadata = dict(integration.metadata_json or {})
+        metadata["auth"] = auth
+        integration.metadata_json = metadata
+        store.integrations[integration.id] = integration
+        _persist_store_state()
+        return auth
+
+
 def _masked_integration_auth_metadata(integration: IntegrationDefinition) -> dict[str, Any]:
     metadata = (
         dict(integration.metadata_json) if isinstance(integration.metadata_json, dict) else {}
@@ -9021,6 +9087,7 @@ def _exchange_integration_oauth_token(
     grant_type: Literal["authorization_code", "client_credentials", "refresh_token"],
     code: str = "",
     redirect_uri: str = "",
+    code_verifier: str = "",
 ) -> dict[str, Any]:
     auth = _integration_oauth_auth(integration)
     client_secret_ref = str(auth.get("client_secret_ref") or integration.secret_ref or "").strip()
@@ -9043,6 +9110,8 @@ def _exchange_integration_oauth_token(
     if grant_type == "authorization_code":
         payload["code"] = code
         payload["redirect_uri"] = redirect_uri
+        if code_verifier:
+            payload["code_verifier"] = code_verifier
     elif grant_type == "refresh_token":
         session = _integration_oauth_session(integration)
         refresh_token = ""
@@ -9112,6 +9181,7 @@ def _persist_integration_oauth_tokens(
             "last_error": "",
             "pending_state": "" if not pending else str(session.get("pending_state") or ""),
             "pending_return_to": "" if not pending else str(session.get("pending_return_to") or ""),
+            "pkce_verifier_encrypted": "",
         }
     )
     if refresh_token:
@@ -19342,7 +19412,7 @@ def loop_linear_board(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="Set tracker.provider.project_slug in WORKFLOW.md.")
     try:
         adapter = _linear_mcp_adapter(actor)
-        issues = adapter.issues(project_slug, limit=100)
+        issues = adapter.issues(project_slug, limit=5000)
         team_id = next((str(item.get("team_id") or "") for item in issues if item.get("team_id")), "")
         if not team_id:
             team_id = adapter.project_team_id(project_slug)
@@ -19379,18 +19449,18 @@ def loop_tracker_bridge(request: Request, payload: dict[str, Any] = Body(default
         if operation == "list_candidate_issues":
             states = {str(item).strip().lower() for item in payload.get("active_states") or []}
             label = str(payload.get("label") or "agent:eligible").strip().lower()
-            issues = adapter.issues(project_slug, limit=100)
+            issues = adapter.issues(project_slug, limit=5000)
             result = [
                 item for item in issues
                 if str(item.get("state") or "").strip().lower() in states
                 and label in {str(value).strip().lower() for value in item.get("labels") or []}
             ]
         elif operation == "list_project_issues":
-            result = adapter.issues(project_slug, limit=100)
+            result = adapter.issues(project_slug, limit=5000)
         elif operation == "project_team_id":
             result = adapter.project_team_id(project_slug)
         elif operation == "get_issue":
-            result = adapter.issue(str(payload.get("issue_id") or "")[:120])
+            result = adapter.issue(str(payload.get("issue_id") or "")[:120], include_comments=True)
         elif operation == "has_state":
             issue = adapter.issue(str(payload.get("issue_id") or "")[:120])
             statuses = adapter.statuses(str(issue.get("team_id") or "")) if issue.get("team_id") else []
@@ -19417,7 +19487,7 @@ def loop_tracker_bridge(request: Request, payload: dict[str, Any] = Body(default
             result = {"ok": True}
         elif operation == "find_issue_with_text":
             text = str(payload.get("text") or "")[:200]
-            result = next((str(item.get("identifier") or "") for item in adapter.issues(project_slug) if text and text in str(item.get("description") or "")), None)
+            result = next((str(item.get("identifier") or "") for item in adapter.issues(project_slug, limit=5000) if text and text in str(item.get("description") or "")), None)
         elif operation == "create_issue":
             result = adapter.create_issue(
                 team_id=str(payload.get("team_id") or "")[:120],
@@ -26514,6 +26584,12 @@ def connect_integration_oauth(
         raise HTTPException(status_code=409, detail="integration is not configured for oauth2")
 
     auth = _integration_oauth_auth(integration)
+    metadata_json = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+    catalog_id = str(metadata_json.get("catalog_id") or "").strip().lower()
+    if catalog_id == "mcp-linear":
+        auth = _ensure_linear_mcp_oauth_auth(
+            integration, _integration_oauth_callback_url(request, integration_id)
+        )
     if not auth:
         raise HTTPException(status_code=400, detail="oauth2 auth metadata is missing")
 
@@ -26542,6 +26618,18 @@ def connect_integration_oauth(
 
     state = str(uuid4())
     redirect_uri = _integration_oauth_callback_url(request, integration_id)
+    code_verifier = ""
+    connect_query = {
+        "response_type": "code",
+        "client_id": str(auth.get("client_id") or ""),
+        "redirect_uri": redirect_uri,
+        "state": state,
+    }
+    if auth.get("pkce_required"):
+        code_verifier = secrets_module.token_urlsafe(64)
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode("ascii")).digest())
+        connect_query["code_challenge"] = challenge.decode("ascii").rstrip("=")
+        connect_query["code_challenge_method"] = "S256"
     return_to = _safe_post_auth_redirect_path(
         payload.return_to or str(auth.get("redirect_path") or "/builder/integrations")
     )
@@ -26552,14 +26640,11 @@ def connect_integration_oauth(
             "pending_return_to": return_to,
             "pending_started_at": _now_iso(),
             "last_error": "",
+            "pkce_verifier_encrypted": (
+                _encrypt_provider_secret(code_verifier) if code_verifier else ""
+            ),
         },
     )
-    connect_query = {
-        "response_type": "code",
-        "client_id": str(auth.get("client_id") or ""),
-        "redirect_uri": redirect_uri,
-        "state": state,
-    }
     scopes = [str(item).strip() for item in auth.get("scopes") or [] if str(item).strip()]
     if scopes:
         connect_query["scope"] = " ".join(scopes)
@@ -26616,6 +26701,7 @@ def integration_oauth_callback(integration_id: str, request: Request) -> Redirec
             session_update={
                 "pending_state": "",
                 "pending_return_to": "",
+                "pkce_verifier_encrypted": "",
                 "last_error": error,
             },
         )
@@ -26635,11 +26721,21 @@ def integration_oauth_callback(integration_id: str, request: Request) -> Redirec
     if not code:
         raise HTTPException(status_code=400, detail="OAuth callback missing authorization code")
 
+    code_verifier = ""
+    if auth.get("pkce_required"):
+        encrypted_verifier = str(session.get("pkce_verifier_encrypted") or "").strip()
+        if not encrypted_verifier:
+            raise HTTPException(
+                status_code=400, detail="OAuth callback is missing its PKCE verifier"
+            )
+        code_verifier = _decrypt_provider_secret(encrypted_verifier)
+
     token_payload = _exchange_integration_oauth_token(
         integration,
         grant_type="authorization_code",
         code=code,
         redirect_uri=_integration_oauth_callback_url(request, integration_id),
+        code_verifier=code_verifier,
     )
     _persist_integration_oauth_tokens(integration, token_payload)
     _persist_store_state()
@@ -26706,6 +26802,7 @@ def disconnect_integration_oauth(integration_id: str, request: Request) -> dict[
             "expires_at": "",
             "pending_state": "",
             "pending_return_to": "",
+            "pkce_verifier_encrypted": "",
             "last_error": "",
             "account_label": "",
         },
