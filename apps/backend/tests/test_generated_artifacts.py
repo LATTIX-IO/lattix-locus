@@ -3014,6 +3014,19 @@ def test_oauth_authorization_code_connect_and_callback_persists_session(monkeypa
                 main_module.parse_qsl(main_module.urlsplit(connect_body["connect_url"]).query)
             )
             assert connect_query["client_id"] == "google-client-id"
+            assert connect_query["code_challenge_method"] == "S256"
+            session = store.integrations[integration_id].metadata_json["oauth_session"]
+            code_verifier = main_module._decrypt_provider_secret(
+                session["pending_code_verifier_encrypted"]
+            )
+            expected_challenge = main_module.base64.urlsafe_b64encode(
+                main_module.hashlib.sha256(code_verifier.encode("ascii")).digest()
+            ).rstrip(b"=").decode("ascii")
+            assert connect_query["code_challenge"] == expected_challenge
+            assert 43 <= len(code_verifier) <= 128
+            integrations_response = local_client.get("/integrations", headers=ADMIN_HEADERS)
+            assert integrations_response.status_code == 200
+            assert "pending_code_verifier_encrypted" not in integrations_response.text
             assert connect_query["access_type"] == "offline"
             assert connect_query["prompt"] == "consent"
             state = connect_query["state"]
@@ -3025,6 +3038,11 @@ def test_oauth_authorization_code_connect_and_callback_persists_session(monkeypa
 
             assert callback.status_code == 302
             assert callback.headers["location"].startswith("/builder/integrations?oauth=connected")
+            replay = local_client.get(
+                f"/integrations/{integration_id}/oauth/callback?code=auth-code&state={state}",
+                follow_redirects=False,
+            )
+            assert replay.status_code == 400
 
             stored = store.integrations[integration_id]
             session = stored.metadata_json["oauth_session"]
@@ -3050,6 +3068,10 @@ def test_oauth_authorization_code_connect_and_callback_persists_session(monkeypa
             assert token_request["grant_type"] == "authorization_code"
             assert token_request["code"] == "auth-code"
             assert token_request["client_id"] == "google-client-id"
+            assert token_request["code_verifier"] == code_verifier
+            assert store.integrations[integration_id].metadata_json["oauth_session"][
+                "pending_code_verifier_encrypted"
+            ] == ""
             assert captured["url"] == "https://oauth2.googleapis.com/token"
     finally:
         store.integrations.pop(integration_id, None)
