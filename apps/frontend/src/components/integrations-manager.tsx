@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { TypedDeleteButton } from "@/components/typed-delete-button";
@@ -25,6 +25,7 @@ import type {
 type LastTestMetadata = {
   at?: string;
   ok?: boolean;
+  message?: string;
   warnings?: string[];
   checks?: Record<string, boolean>;
 };
@@ -392,21 +393,27 @@ export function integrationHealth(
         : item.secret_configured
           ? "Credential saved"
           : "Credential needed";
-  const check = lastTest ? (lastTest.ok ? "Passed" : "Failed") : item.status === "error" ? "Needs review" : "Not checked yet";
+  const check = lastTest
+    ? lastTest.ok
+      ? "Passed"
+      : "Needs another check"
+    : item.status === "error"
+      ? "Needs review"
+      : "Not checked yet";
 
   if (item.status === "error" || lastTest?.ok === false) {
     const description =
       lastTest?.ok === false
         ? oauthStatus?.connected
-          ? "Your account is signed in, but the last service check failed. Review the connection details or run the check again."
-          : "The last service check failed. Review the setup, then run the check again."
+          ? `Your account is signed in, but Locus could not verify the service. ${lastTest.message || "Check the service, then try again."}`
+          : `Locus could not verify the service. ${lastTest.message || "Review the setup, then try again."}`
         : lastTest?.ok === true
           ? "The last check passed, but Locus still reports a setup issue. Review the connection details."
           : "Locus reports a setup issue. Review the connection details, then run a check.";
     return {
-      label: "Needs attention",
+      label: oauthStatus?.connected ? "Service check needed" : "Needs attention",
       description,
-      variant: "destructive",
+      variant: oauthStatus?.connected ? "warning" : "destructive",
       signIn,
       check,
     };
@@ -602,7 +609,7 @@ export function IntegrationsManager() {
     setSecretRef((current) => (current.trim() ? current : preset.clientSecretPlaceholder));
   }
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     setLoading(true);
     try {
       const integrations = await getIntegrations();
@@ -613,26 +620,17 @@ export function IntegrationsManager() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
-  async function loadOauthStatus(integrationId: string): Promise<IntegrationOAuthStatus> {
+  const loadOauthStatus = useCallback(async (integrationId: string): Promise<IntegrationOAuthStatus> => {
     const status = await getIntegrationOAuthStatus(integrationId);
     setOauthStatuses((current) => ({ ...current, [integrationId]: status }));
     return status;
-  }
+  }, []);
 
   useEffect(() => {
     void refresh();
-  }, []);
-
-  useEffect(() => {
-    const initialState = readWindowOauthPanelState();
-    if (initialState.integrationId) {
-      setOauthPanelIntegrationId(initialState.integrationId);
-      setOauthPanelOutcome(initialState.outcome);
-      void loadOauthStatus(initialState.integrationId).catch(() => undefined);
-    }
-  }, []);
+  }, [refresh]);
 
   useEffect(() => {
     let cancelled = false;
@@ -857,7 +855,7 @@ export function IntegrationsManager() {
     }
   }
 
-  async function handleTest(id: string) {
+  const handleTest = useCallback(async (id: string) => {
     setTestingId(id);
     try {
       const result = await testIntegration(id);
@@ -870,7 +868,22 @@ export function IntegrationsManager() {
     } finally {
       setTestingId(null);
     }
-  }
+  }, [refresh]);
+
+  useEffect(() => {
+    const initialState = readWindowOauthPanelState();
+    if (initialState.integrationId) {
+      setOauthPanelIntegrationId(initialState.integrationId);
+      setOauthPanelOutcome(initialState.outcome);
+      void loadOauthStatus(initialState.integrationId)
+        .then((status) => {
+          if (initialState.outcome === "connected" && status.connected) {
+            void handleTest(initialState.integrationId as string);
+          }
+        })
+        .catch(() => undefined);
+    }
+  }, [handleTest, loadOauthStatus]);
 
   async function openOauthPanel(item: IntegrationDefinition, outcome = ""): Promise<void> {
     setOauthPanelIntegrationId(item.id);
@@ -943,8 +956,8 @@ export function IntegrationsManager() {
   }
 
   return (
-    <section className="space-y-4">
-      <header className="flex flex-wrap items-start justify-between gap-3">
+    <section className="flex flex-col gap-4">
+      <header className="order-1 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Connections</h1>
           <p className="fx-muted">Connect services Locus can use, then check sign-in and service health here.</p>
@@ -963,21 +976,21 @@ export function IntegrationsManager() {
       </header>
 
       {statusMessage ? (
-        <p role="status" className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.84)] px-3 py-2 text-xs text-[var(--foreground)]">
+        <p role="status" className="order-2 rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.84)] px-3 py-2 text-xs text-[var(--foreground)]">
           {statusMessage}
         </p>
       ) : null}
 
-      <div className="fx-panel p-4">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold uppercase tracking-wide">Find a connection</h2>
-          <span className="fx-muted text-xs">Choose a recommended service, review access, then add it.</span>
-        </div>
-        <ConnectionCatalog integrations={items} onChanged={() => void refresh()} />
+      <div className="order-5 fx-panel p-4">
+        <details open={!loading && items.length === 0}>
+          <summary className="cursor-pointer text-sm font-semibold">Connect a service</summary>
+          <p className="mb-3 mt-1 text-sm text-[var(--fx-muted)]">Choose a service and review what Locus can access before you sign in.</p>
+          <ConnectionCatalog integrations={items} onChanged={() => void refresh()} />
+        </details>
       </div>
 
       {oauthPanelItem && oauthPanelStatus ? (
-        <div className="fx-panel rounded-[1.6rem] p-5 shadow-[0_20px_48px_rgba(15,23,42,0.05)]">
+        <div className="order-4 fx-panel rounded-[1.6rem] p-5 shadow-[0_20px_48px_rgba(15,23,42,0.05)]">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Sign-in and access</p>
@@ -1075,7 +1088,7 @@ export function IntegrationsManager() {
         id="advanced-connections"
         open={advancedOpen}
         onToggle={(event) => setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open)}
-        className="fx-panel rounded-[1.6rem] p-4"
+        className="order-6 fx-panel rounded-[1.6rem] p-4"
       >
         <summary className="cursor-pointer text-sm font-semibold">
           Advanced: custom integrations and MCP servers (raw URLs, API keys, tokens, headers)
@@ -1590,7 +1603,7 @@ export function IntegrationsManager() {
         </div>
       </details>
 
-      <section aria-labelledby="saved-connections-heading" className="space-y-3">
+      <section aria-labelledby="saved-connections-heading" className="order-3 space-y-3">
         <div>
           <h2 id="saved-connections-heading" className="text-lg font-semibold text-[var(--foreground)]">Your connections</h2>
           <p className="mt-1 text-sm text-[var(--fx-muted)]">See whether each service is signed in and whether Locus can reach it.</p>
@@ -1605,7 +1618,7 @@ export function IntegrationsManager() {
         ) : items.length === 0 ? (
           <div className="fx-panel rounded-[1rem] p-5">
             <p className="font-medium text-[var(--foreground)]">No connections yet</p>
-            <p className="mt-1 text-sm text-[var(--fx-muted)]">Choose a service from the catalog above. Custom services are available in Advanced setup.</p>
+            <p className="mt-1 text-sm text-[var(--fx-muted)]">Choose a service from the catalog below. Custom services are available in Advanced setup.</p>
           </div>
         ) : (
           <ul className="space-y-3">
@@ -1615,7 +1628,7 @@ export function IntegrationsManager() {
               const health = integrationHealth(item, oauthStatus, lastTest);
               const protocol = String(readAuthConfig(item.metadata_json).protocol ?? item.metadata_json?.protocol ?? "") === "mcp";
               const connectionKind = protocol
-                ? "MCP server"
+                ? "Connected service"
                 : item.type === "database"
                   ? "Database"
                   : item.type === "queue"
@@ -1683,7 +1696,7 @@ export function IntegrationsManager() {
                       </Button>
                     ) : null}
                     <Button variant="secondary" size="sm" onClick={() => void handleTest(item.id)} disabled={testingId === item.id}>
-                      {testingId === item.id ? "Checking…" : lastTest?.ok === false || item.status === "error" ? "Check again" : "Check connection"}
+                      {testingId === item.id ? "Checking…" : "Check connection"}
                     </Button>
                     <Button variant="outline" size="sm" onClick={() => handleEdit(item)}>Edit setup</Button>
                   </div>
@@ -1714,7 +1727,7 @@ export function IntegrationsManager() {
         )}
       </section>
 
-      <details className="fx-panel rounded-[1.6rem] p-4">
+      <details className="order-7 fx-panel rounded-[1.6rem] p-4">
         <summary className="cursor-pointer text-sm font-semibold text-[var(--foreground)]">Advanced connection diagnostics</summary>
         <div className="mt-4 overflow-x-auto">
       <div className="overflow-hidden rounded-[1rem]">

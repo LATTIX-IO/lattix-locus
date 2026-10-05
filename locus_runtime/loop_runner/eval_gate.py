@@ -113,10 +113,25 @@ class EvalHistory:
         self.path = Path(home) / "eval-history.jsonl"
 
     def append(
-        self, result: EvalGateResult, *, run_id: str, issue: str, now: datetime | None = None
+        self,
+        result: EvalGateResult,
+        *,
+        run_id: str,
+        issue: str,
+        app_version: str = "",
+        now: datetime | None = None,
     ) -> None:
         stamp = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        append_jsonl(self.path, {"at": stamp, "run_id": run_id, "issue": issue, **result.to_dict()})
+        append_jsonl(
+            self.path,
+            {
+                "at": stamp,
+                "run_id": run_id,
+                "issue": issue,
+                "app_version": app_version,
+                **result.to_dict(),
+            },
+        )
 
     def load(self, limit: int = 2000) -> list[dict[str, Any]]:
         return read_jsonl(self.path, limit)

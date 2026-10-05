@@ -98,18 +98,17 @@ is missing anyway, chat shows "Policy engine missing: reinstall Lattix Locus".
 
 ## Auto-update: Dev and Stable channels (LOCUS-349, D-26)
 
-Code: `src-tauri/src/updates.rs` (channel setting, background checks, Dev
-auto-install, version handshake) and the sidebar panel
+Code: `src-tauri/src/updates.rs` (channel setting, background checks, manual
+deployment, version handshake) and the sidebar panel
 `apps/frontend/src/components/navigation/platform-update-panel.tsx`. Commands:
 `get_update_status`, `set_update_channel` (`"dev"` or `"stable"` only),
 `check_for_update`, `install_update_and_restart`; events `update-status`,
 `update-available`, `backend-version-mismatch`.
 
-* **Stable** (default): a banner "Update available: Update & Restart"; installs
-  on click.
-* **Dev**: downloads by itself, waits until the backend reports no active run
-  and holds the loop (`POST /system/update/prepare`), stops the sidecar,
-  installs, restarts.
+* **Stable** (default) and **Dev**: background checks report when an update is
+  available. The app never downloads or installs during a background check.
+  The user chooses **Update & Restart** to deploy; the app then prepares and
+  stops its sidecar, installs the signed update, and restarts.
 
 The updater only ever uses the two compiled-in URLs
 (`releases/download/channel-{dev,stable}/latest.json`) and verifies every update

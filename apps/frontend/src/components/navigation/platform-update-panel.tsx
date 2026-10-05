@@ -22,10 +22,10 @@ import type { PlatformVersionStatus } from "@/types/locus";
  * Platform version, update channel and update control (LOCUS-349, D-26).
  *
  * In the **desktop shell** the Tauri updater is the source of truth. Two
- * channels, persisted by the shell: **Stable** (default; the shell checks in the
- * background and installs only on click) and **Dev** (every merge to main; the
- * shell installs on its own once no agent run is active and the loop is held).
- * The channel maps to the shell's compiled-in feeds, never a URL from here.
+ * channels, persisted by the shell: **Stable** (default) and **Dev** (updates
+ * published from main). Both channels only check in the background; deployment
+ * always starts with the user's click. The channel maps to the shell's
+ * compiled-in feeds, never a URL from here.
  *
  * In the **web / hosted** context the backend version manifest applies
  * (`lattix update` guidance).
@@ -41,7 +41,7 @@ const STATE_LABEL: Record<DesktopUpdateState, string> = {
   error: "Update check failed",
 };
 
-/** A warning line for the confirm dialog when runs would be interrupted. */
+/** Explain that a confirmed install waits for active work to finish. */
 async function activeRunWarning(): Promise<string> {
   try {
     const data = await getSystemUpdateStatus();
@@ -49,9 +49,11 @@ async function activeRunWarning(): Promise<string> {
     const parts: string[] = [];
     if (runs > 0) parts.push(`${runs} agent run${runs === 1 ? "" : "s"} in progress`);
     if (data?.loop?.lock_owner) parts.push("a self-improvement loop run in progress");
-    return parts.length ? `\n\nWarning: ${parts.join(" and ")}. Restarting now interrupts them.` : "";
+    return parts.length
+      ? `\n\n${parts.join(" and ")} will finish before the update installs. If the app cannot become idle within 30 minutes, the update will stop.`
+      : "";
   } catch {
-    return "\n\nCould not check for runs in progress.";
+    return "\n\nLocus will wait for current work to finish before installing. If the app cannot become idle within 30 minutes, the update will stop.";
   }
 }
 
@@ -120,7 +122,7 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
         confirm &&
         next === "dev" &&
         !window.confirm(
-          "Switch to the Dev channel?\n\nDev builds are published on every merge to main and install automatically: the app waits until no agent run is active, then restarts.",
+          "Switch to the Dev channel?\n\nDev builds are published from main. Locus will let you know when one is available; it will only install after you choose Update & Restart.",
         )
       ) {
         return;
@@ -172,18 +174,20 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
       ? `v${platformVersion.current_version}`
       : "Version unavailable";
   const backendUpdate = !isDesktop && platformVersion?.status === "update_available" ? platformVersion : null;
-  let stableUpdate: string | null = null;
-  if (isDesktop && channel === "stable") {
-    if (status?.state === "available" && status.version) stableUpdate = status.version;
-    else if (typeof checkedUpdate === "string") stableUpdate = checkedUpdate;
-  }
+  const availableUpdate = isDesktop
+    ? status?.state === "available" && status.version
+      ? status.version
+      : typeof checkedUpdate === "string"
+        ? checkedUpdate
+        : null
+    : null;
 
   return {
     isDesktop,
     status,
     channel,
     checkedUpdate,
-    stableUpdate,
+    availableUpdate,
     backendUpdate,
     currentLabel,
     busy,
@@ -198,8 +202,8 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
 export function PlatformUpdatePanel({ platformVersion }: { platformVersion?: PlatformVersionStatus | null }) {
   const updates = usePlatformUpdates(platformVersion);
 
-  if (updates.stableUpdate) {
-    const version = updates.stableUpdate;
+  if (updates.availableUpdate) {
+    const version = updates.availableUpdate;
     return (
       <button
         type="button"
@@ -274,8 +278,8 @@ export function UpdatesPanel({ platformVersion }: { platformVersion?: PlatformVe
         <legend className="mb-1 text-[13px] font-medium">Channel</legend>
         {(
           [
-            { value: "stable", label: "Stable", hint: "Checked in the background; installs when you click Update & Restart. Recommended." },
-            { value: "dev", label: "Dev", hint: "Every merge to main. Installs on its own once no agent run is active." },
+            { value: "stable", label: "Stable", hint: "Recommended releases. Locus checks in the background and waits for you to deploy." },
+            { value: "dev", label: "Dev", hint: "Previews from main. Locus checks in the background and waits for you to deploy." },
           ] as const
         ).map((option) => (
           <label
@@ -300,9 +304,9 @@ export function UpdatesPanel({ platformVersion }: { platformVersion?: PlatformVe
       <div className="flex flex-wrap items-center justify-between gap-2 text-[13px]">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono">{updates.currentLabel}</span>
-          <Badge variant={updates.stableUpdate ? "warning" : "secondary"}>
-            {updates.stableUpdate
-              ? `v${updates.stableUpdate} available`
+          <Badge variant={updates.availableUpdate ? "warning" : "secondary"}>
+            {updates.availableUpdate
+              ? `v${updates.availableUpdate} available`
               : updates.status
                 ? STATE_LABEL[updates.status.state]
                 : updates.checkedUpdate === null
@@ -315,8 +319,8 @@ export function UpdatesPanel({ platformVersion }: { platformVersion?: PlatformVe
           <Button variant="secondary" size="sm" onClick={() => void updates.checkNow()}>
             Check now
           </Button>
-          {updates.stableUpdate ? (
-            <Button size="sm" disabled={updates.busy} onClick={() => void updates.updateNow(updates.stableUpdate as string)}>
+          {updates.availableUpdate ? (
+            <Button size="sm" disabled={updates.busy} onClick={() => void updates.updateNow(updates.availableUpdate as string)}>
               {updates.busy ? "Updating…" : "Update & Restart"}
             </Button>
           ) : null}

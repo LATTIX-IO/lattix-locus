@@ -40,8 +40,30 @@ const AUTH_EXPLANATION: Record<string, string> = {
   basic: "Needs a user name and password secret. Set them up in Advanced.",
 };
 
-function protocolOf(entry: IntegrationCatalogEntry): "MCP" | "API" {
-  return String(entry.metadata_json?.protocol ?? "http") === "mcp" ? "MCP" : "API";
+function connectionName(name: string): string {
+  return name.replace(/^MCP\s*\(([^)]+)\)/i, "$1").replace(/\s+MCP$/i, "");
+}
+
+function connectionType(entry: IntegrationCatalogEntry): string {
+  const capabilities = new Set(entry.capabilities.map((item) => item.toLowerCase()));
+  if (capabilities.has("issues")) return "Issue tracking";
+  if (capabilities.has("messages") || capabilities.has("channels")) return "Messaging";
+  if (capabilities.has("pages") || capabilities.has("databases")) return "Knowledge";
+  return "Service";
+}
+
+function capabilitySummary(entry: IntegrationCatalogEntry): string {
+  const labels = entry.capabilities.map((item) => item.replace(/[_-]+/g, " "));
+  return labels.length ? labels.join(", ") : "No actions listed";
+}
+
+function serviceAddress(entry: IntegrationCatalogEntry): string {
+  if (entry.egress_allowlist.length) return entry.egress_allowlist.join(", ");
+  try {
+    return entry.base_url ? new URL(entry.base_url).hostname : "Managed by Locus";
+  } catch {
+    return "Managed by Locus";
+  }
 }
 
 function installedFor(entry: IntegrationCatalogEntry, integrations: IntegrationDefinition[]): IntegrationDefinition | null {
@@ -59,8 +81,14 @@ export function catalogConnectionState(entry: IntegrationCatalogEntry, installed
   if (!installed) {
     return { label: "Added", variant: "secondary", glyph: "●" };
   }
+  const lastTest = (installed.metadata_json as { last_test?: { ok?: unknown } } | undefined)?.last_test;
+  if (lastTest?.ok === true) {
+    return { label: "Ready", variant: "success", glyph: "●" };
+  }
   if (installed.status === "error") {
-    return { label: "Needs attention", variant: "destructive", glyph: "!" };
+    return installed.auth_type === "oauth2" && installed.oauth_status?.connected
+      ? { label: "Check needed", variant: "warning", glyph: "!" }
+      : { label: "Needs attention", variant: "destructive", glyph: "!" };
   }
   if (installed.auth_type === "oauth2") {
     const oauth = installed.oauth_status;
@@ -202,18 +230,18 @@ export function ConnectionCatalog({
             return (
               <li key={item.catalog_id} className="flex flex-col gap-2 rounded-[10px] border border-border bg-card p-3 text-xs">
                 <div className="flex items-start justify-between gap-2">
-                  <p className="text-[13px] font-medium">{item.name}</p>
-                  <Badge variant="outline">{protocolOf(item)}</Badge>
+                  <p className="text-[13px] font-medium">{connectionName(item.name)}</p>
+                  <Badge variant="outline">{connectionType(item)}</Badge>
                 </div>
-                <p className="truncate text-muted-foreground">{item.capabilities.join(", ")}</p>
+                <p className="text-muted-foreground">{item.summary?.trim() || capabilitySummary(item)}</p>
                 <div className="mt-auto flex items-center justify-between gap-2">
-                  <Badge variant={state.variant} aria-label={`${item.name}: ${state.label}`}>
+                  <Badge variant={state.variant} aria-label={`${connectionName(item.name)}: ${state.label}`}>
                     <span aria-hidden="true">{state.glyph}</span>
                     {state.label}
                   </Badge>
                   {installed || item.installed ? null : (
                     <Button size="sm" variant="secondary" onClick={() => setFlow({ entry: item, step: "review", message: null })}>
-                      Add
+                      Connect
                     </Button>
                   )}
                 </div>
@@ -228,24 +256,20 @@ export function ConnectionCatalog({
           {entry ? (
             <>
               <DialogHeader>
-                <DialogTitle>Add {entry.name}?</DialogTitle>
+                <DialogTitle>Connect {connectionName(entry.name)}?</DialogTitle>
                 <DialogDescription>
-                  {protocolOf(entry) === "MCP" ? "An MCP server" : "An API"} from {entry.publisher === "first_party" ? "Lattix" : "a third party"}. Review what it may do before you add it.
+                  {connectionType(entry)} from {entry.publisher === "first_party" ? "Lattix" : "a third party"}. Review the access before continuing.
                 </DialogDescription>
               </DialogHeader>
               <dl className="grid gap-2 text-[13px]">
                 <div>
-                  <dt className="font-medium">What it will access</dt>
-                  <dd className="text-muted-foreground">{entry.capabilities.length ? entry.capabilities.join(", ") : "Nothing declared."}</dd>
+                  <dt className="font-medium">What Locus can do</dt>
+                  <dd className="text-muted-foreground">{capabilitySummary(entry)}</dd>
                 </div>
                 <div>
-                  <dt className="font-medium">Network</dt>
+                  <dt className="font-medium">Service address</dt>
                   <dd className="text-muted-foreground">
-                    {entry.egress_allowlist.length
-                      ? `Reaches ${entry.egress_allowlist.join(", ")}.`
-                      : entry.base_url
-                        ? `Reaches ${entry.base_url}.`
-                        : "Runs on this machine; reaches only what the platform allowlist permits."}
+                    {serviceAddress(entry)}
                   </dd>
                 </div>
                 <div>
@@ -274,7 +298,7 @@ export function ConnectionCatalog({
                       Cancel
                     </Button>
                     <Button onClick={() => void add(entry)}>
-                      {entry.auth_type === "oauth2" ? `Add and sign in${isDesktop ? "…" : ""}` : `Add ${entry.name}${isDesktop ? "…" : ""}`}
+                      {entry.auth_type === "oauth2" ? `Connect and sign in${isDesktop ? "…" : ""}` : `Connect ${connectionName(entry.name)}${isDesktop ? "…" : ""}`}
                     </Button>
                   </>
                 ) : (

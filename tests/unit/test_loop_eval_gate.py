@@ -70,11 +70,29 @@ def test_eval_only_holds_the_merge_when_required(
 
 def test_history_appends_and_loads(tmp_path: Path) -> None:
     history = EvalHistory(tmp_path)
-    history.append(EvalGateResult("fail", resolve_rate=0.0), run_id="r1", issue="LOC-1")
+    history.append(
+        EvalGateResult("fail", resolve_rate=0.0),
+        run_id="r1",
+        issue="LOC-1",
+        app_version="0.3.4",
+    )
     history.append(EvalGateResult.skipped("down"), run_id="r2", issue="LOC-2")
     rows = history.load()
     assert [r["status"] for r in rows] == ["fail", "skipped"]
     assert rows[1]["resolve_rate"] is None and rows[0]["issue"] == "LOC-1"
+    assert rows[0]["app_version"] == "0.3.4"
+
+
+def test_runtime_app_version_uses_shell_version_then_build_stamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from locus_runtime.loop_runner import state
+
+    monkeypatch.setenv("LOCUS_APP_VERSION", "0.3.4")
+    assert state.runtime_app_version() == "0.3.4"
+    monkeypatch.delenv("LOCUS_APP_VERSION")
+    monkeypatch.setattr("locus_tooling.build_info.backend_build_version", lambda: "0.3.5")
+    assert state.runtime_app_version() == "0.3.5"
 
 
 def _request(tmp_path: Path, factory: Any, **kw: Any) -> EvalRequest:

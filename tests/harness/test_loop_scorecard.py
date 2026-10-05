@@ -127,6 +127,8 @@ def test_advisory_scorecard_on_the_commit_is_attached_archived_and_reported(
     # Scored before the commit (the same tree); archived under the commit sha.
     assert request.git_sha == "" and request.branch.startswith("loop/")
     assert request.gate_failures == [] and request.splits == ("dev", "heldout")
+    assert request.runtime == ""
+    assert request.app_version == "source"
     assert request.output_dir == home / "scorecards" / result.run_id
     pushed = _git(tmp_path / "origin.git", "rev-parse", request.branch).strip()
 
@@ -141,6 +143,7 @@ def test_advisory_scorecard_on_the_commit_is_attached_archived_and_reported(
         for line in (home / "scorecard-history.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert history[0]["status"] == "promote" and history[0]["issue"] == "LOC-1"
+    assert history[0]["app_version"] == run["app_version"]
     entries = VariantArchive(home).entries()
     assert [e["branch"] for e in entries] == ["main", request.branch]
     # The variant is the pushed commit: what was scored is what was pushed.

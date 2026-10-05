@@ -2631,6 +2631,133 @@ def test_integration_mutations_require_auth_and_emit_audit_events() -> None:
         store.audit_events = original_audit_events
 
 
+def test_mcp_integration_test_uses_protocol_handshake_and_lists_actions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    integration_id = str(uuid4())
+    integration = main_module.IntegrationDefinition(
+        id=integration_id,
+        name="Linear MCP",
+        type="custom",
+        base_url="https://mcp.linear.app/mcp",
+        capabilities=["issues", "projects"],
+        auth_type="oauth2",
+        secret_ref="",
+        status="configured",
+        metadata_json={
+            "protocol": "mcp",
+            "catalog_id": "mcp-linear",
+            "auth": {
+                "method": "oauth2",
+                "provider": "linear",
+                "client_id": "linear-client",
+                "authorize_url": "https://mcp.linear.app/authorize",
+                "token_url": "https://mcp.linear.app/token",
+                "scopes": ["read", "write"],
+            },
+            "oauth_session": {"access_token_encrypted": "encrypted-access-token"},
+        },
+    )
+    store.integrations[integration_id] = integration
+    seen: dict[str, object] = {}
+
+    class _McpProbe:
+        def __init__(self, base_url: str, **kwargs: object) -> None:
+            seen["base_url"] = base_url
+            seen.update(kwargs)
+
+        def list_tools(self) -> list[dict[str, str]]:
+            seen["listed_actions"] = True
+            return [{"name": "issues_list"}]
+
+    monkeypatch.setattr(main_module.mcp_client, "McpHttpClient", _McpProbe)
+    monkeypatch.setattr(
+        main_module,
+        "_integration_auth_headers",
+        lambda _integration: {"Authorization": "Bearer test-access-token"},
+    )
+    try:
+        response = client.post(
+            f"/integrations/{integration_id}/test", headers=ADMIN_HEADERS
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["ok"] is True
+        assert response.json()["message"] == "MCP check succeeded (1 actions available)"
+        assert response.json()["status"] == "configured"
+        assert response.json()["diagnostics"]["checks"]["secret_required"] is False
+        assert seen["base_url"] == "https://mcp.linear.app/mcp"
+        assert seen["headers"] == {"Authorization": "Bearer test-access-token"}
+        assert seen["listed_actions"] is True
+        assert integration.metadata_json["last_test"]["ok"] is True
+    finally:
+        store.integrations.pop(integration_id, None)
+
+
+def test_linear_mcp_connection_check_renews_expired_access_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    integration_id = str(uuid4())
+    integration = main_module.IntegrationDefinition(
+        id=integration_id,
+        name="Linear",
+        type="custom",
+        status="error",
+        base_url="https://mcp.linear.app/mcp",
+        auth_type="oauth2",
+        metadata_json={
+            "catalog_id": "mcp-linear",
+            "protocol": "mcp",
+            "auth": {"provider": "linear", "client_id": "linear-client"},
+            "oauth_session": {
+                "access_token_encrypted": "old-access",
+                "refresh_token_encrypted": "refresh-cipher",
+                "token_type": "Bearer",
+                "expires_at": "2000-01-01T00:00:00+00:00",
+            },
+        },
+    )
+    store.integrations[integration_id] = integration
+    exchanged: list[tuple[main_module.IntegrationDefinition, str]] = []
+
+    monkeypatch.setattr(
+        main_module,
+        "_decrypt_provider_secret",
+        lambda value: {"old-access": "expired-access", "refresh-cipher": "refresh-token"}.get(
+            value, value.removeprefix("encrypted:")
+        ),
+    )
+    monkeypatch.setattr(main_module, "_encrypt_provider_secret", lambda value: f"encrypted:{value}")
+
+    def _refresh(
+        item: main_module.IntegrationDefinition,
+        *,
+        grant_type: str,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        assert grant_type == "refresh_token"
+        exchanged.append((item, grant_type))
+        return {
+            "access_token": "renewed-access",
+            "refresh_token": "renewed-refresh",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        }
+
+    monkeypatch.setattr(main_module, "_exchange_integration_oauth_token", _refresh)
+    monkeypatch.setattr(main_module, "_persist_store_state", lambda: None)
+
+    try:
+        assert main_module._integration_auth_headers(integration) == {
+            "Authorization": "Bearer renewed-access"
+        }
+        assert exchanged == [(integration, "refresh_token")]
+        assert integration.metadata_json["oauth_session"]["refresh_token_encrypted"] == (
+            "encrypted:renewed-refresh"
+        )
+    finally:
+        store.integrations.pop(integration_id, None)
+
+
 def test_save_integration_persists_valid_routing_and_policy_lists() -> None:
     integration_id = str(uuid4())
     store.integrations.pop(integration_id, None)
@@ -3158,7 +3285,7 @@ def test_linear_mcp_catalog_connect_registers_public_client_and_uses_pkce(monkey
                 "method": "oauth2",
                 "provider": "linear",
                 "grant_type": "authorization_code",
-                "scopes": ["read", "write", "issues:create", "comments:create"],
+                "scopes": ["read", "write"],
             },
         },
     )
@@ -3220,22 +3347,17 @@ def test_linear_mcp_catalog_connect_registers_public_client_and_uses_pkce(monkey
         with TestClient(app, base_url="https://console.example.com") as local_client:
             connect = local_client.post(
                 f"/integrations/{integration_id}/oauth/connect",
-                json={"return_to": "/library/connections?oauth_panel=1"},
+                json={},
                 headers=ADMIN_HEADERS,
             )
 
             assert connect.status_code == 200, connect.text
             body = connect.json()
             assert body["status"]["provider"] == "linear"
-            assert body["status"]["scopes"] == [
-                "read",
-                "write",
-                "issues:create",
-                "comments:create",
-            ]
+            assert body["status"]["scopes"] == ["read", "write"]
             query = dict(main_module.parse_qsl(main_module.urlsplit(body["connect_url"]).query))
             assert query["client_id"] == "linear-client-id"
-            assert query["scope"] == "read,write,issues:create,comments:create"
+            assert query["scope"] == "read,write"
             assert query["resource"] == EXPECTED_RESOURCE
             assert query["code_challenge_method"] == "S256"
             assert query["code_challenge"]
@@ -3268,7 +3390,7 @@ def test_linear_mcp_catalog_connect_registers_public_client_and_uses_pkce(monkey
             assert token_request["client_id"] == "linear-client-id"
             assert token_request["redirect_uri"] == body["redirect_uri"]
             assert token_request["code_verifier"] == code_verifier
-            assert token_request["scope"] == "read,write,issues:create,comments:create"
+            assert token_request["scope"] == "read,write"
             assert "client_secret" not in token_request
 
             session = store.integrations[integration_id].metadata_json["oauth_session"]
@@ -3281,6 +3403,45 @@ def test_linear_mcp_catalog_connect_registers_public_client_and_uses_pkce(monkey
                 )["Authorization"]
                 == "Bearer linear-access-token"
             )
+    finally:
+        store.integrations.pop(integration_id, None)
+
+
+def test_linear_mcp_existing_oauth_refreshes_legacy_scopes_and_return_path(monkeypatch) -> None:
+    integration_id = str(uuid4())
+    callback_url = f"http://127.0.0.1:8000/integrations/{integration_id}/oauth/callback"
+    integration = main_module.IntegrationDefinition(
+        id=integration_id,
+        name="Linear MCP",
+        type="custom",
+        status="configured",
+        base_url="https://mcp.linear.app/mcp",
+        auth_type="oauth2",
+        metadata_json={
+            "catalog_id": "mcp-linear",
+            "auth": {
+                "method": "oauth2",
+                "provider": "linear",
+                "grant_type": "authorization_code",
+                "authorize_url": "https://mcp.linear.app/authorize",
+                "token_url": "https://mcp.linear.app/token",
+                "client_id": "linear-client-id",
+                "dynamic_client": True,
+                "registered_redirect_uri": callback_url,
+                "scopes": ["read", "write", "issues:create", "comments:create"],
+                "redirect_path": "/builder/integrations",
+            },
+        },
+    )
+    store.integrations[integration_id] = integration
+    monkeypatch.setattr(main_module, "_persist_store_state", lambda: None)
+
+    try:
+        auth = main_module._ensure_linear_mcp_oauth_auth(integration, callback_url)
+
+        assert auth["scopes"] == ["read", "write"]
+        assert auth["redirect_path"] == "/library/connections?oauth_panel=1"
+        assert integration.metadata_json["auth"] == auth
     finally:
         store.integrations.pop(integration_id, None)
 
@@ -3302,7 +3463,7 @@ def test_linear_oauth_connect_uses_comma_separated_scopes() -> None:
                 "authorize_url": "https://linear.app/oauth/authorize",
                 "token_url": "https://api.linear.app/oauth/token",
                 "client_id": "linear-client-id",
-                "scopes": ["read", "write", "issues:create", "comments:create"],
+                "scopes": ["read", "write"],
             }
         },
     )
@@ -3321,7 +3482,7 @@ def test_linear_oauth_connect_uses_comma_separated_scopes() -> None:
                 main_module.urlsplit(response.json()["connect_url"]).query
             )
         )
-        assert connect_query["scope"] == "read,write,issues:create,comments:create"
+        assert connect_query["scope"] == "read,write"
     finally:
         store.integrations.pop(integration_id, None)
 

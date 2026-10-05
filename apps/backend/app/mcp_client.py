@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
+from collections.abc import Mapping
 from typing import Any
 
 from locus_runtime.gateway import GatewayDecision, args_digest, verify_decision
@@ -54,12 +55,21 @@ class McpHttpClient:
         base_url: str,
         *,
         bearer_token: str = "",
+        headers: Mapping[str, str] | None = None,
         timeout_seconds: float = 20.0,
     ) -> None:
         self.base_url = str(base_url or "").strip()
         if not self.base_url.lower().startswith(("http://", "https://")):
             raise McpError("MCP server URL must be an absolute http(s) URL")
         self.bearer_token = str(bearer_token or "").strip()
+        reserved_headers = {"accept", "content-type", "mcp-protocol-version", "mcp-session-id"}
+        self.extra_headers = {
+            str(name).strip(): str(value).strip()
+            for name, value in (headers or {}).items()
+            if str(name).strip()
+            and str(name).strip().lower() not in reserved_headers
+            and str(value).strip()
+        }
         self.timeout_seconds = max(1.0, float(timeout_seconds))
         self.session_id = ""
         self._request_counter = 0
@@ -75,6 +85,7 @@ class McpHttpClient:
         }
         if self.bearer_token:
             headers["Authorization"] = f"Bearer {self.bearer_token}"
+        headers.update(self.extra_headers)
         if self.session_id:
             headers["Mcp-Session-Id"] = self.session_id
         return headers

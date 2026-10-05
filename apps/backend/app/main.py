@@ -768,7 +768,7 @@ class MCPConnectionDefinition(BaseModel):
 
 
 class IntegrationOAuthConnectPayload(BaseModel):
-    return_to: str = "/builder/integrations"
+    return_to: str = "/library/connections?oauth_panel=1"
 
 
 class IntegrationOAuthStatus(BaseModel):
@@ -4708,7 +4708,13 @@ def _integration_auth_headers(integration: IntegrationDefinition) -> dict[str, s
         encrypted_access_token = str(session.get("access_token_encrypted") or "").strip()
         if encrypted_access_token:
             token_type = str(session.get("token_type") or "Bearer").strip() or "Bearer"
-            access_token = _decrypt_provider_secret(encrypted_access_token)
+            metadata = (
+                integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+            )
+            if str(metadata.get("catalog_id") or "").strip().lower() == "mcp-linear":
+                access_token = _linear_mcp_access_token(integration)
+            else:
+                access_token = _decrypt_provider_secret(encrypted_access_token)
             return {"Authorization": f"{token_type} {access_token}"}
     return {}
 
@@ -8900,11 +8906,33 @@ def _ensure_linear_mcp_oauth_auth(
 ) -> dict[str, Any]:
     """Use Linear's remote-MCP OAuth discovery and public-client registration."""
     auth = _integration_oauth_auth(integration)
+    metadata_json = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+    catalog = skills_catalog.catalog_entry("mcp-linear") or {}
+    catalog_metadata = catalog.get("metadata_json")
+    catalog_auth = catalog_metadata.get("auth") if isinstance(catalog_metadata, dict) else None
+    configured_scopes = (
+        _normalize_string_list(catalog_auth.get("scopes"))
+        if isinstance(catalog_auth, dict)
+        else []
+    ) or ["read", "write"]
+    redirect_path = "/library/connections?oauth_panel=1"
     if auth.get("client_id") and auth.get("authorize_url") and auth.get("token_url"):
         if not auth.get("dynamic_client") or auth.get("registered_redirect_uri") == redirect_uri:
+            changed = False
+            if auth.get("scopes") != configured_scopes:
+                auth["scopes"] = configured_scopes
+                changed = True
+            if auth.get("redirect_path") != redirect_path:
+                auth["redirect_path"] = redirect_path
+                changed = True
+            if changed:
+                metadata = dict(integration.metadata_json or {})
+                metadata["auth"] = auth
+                integration.metadata_json = metadata
+                store.integrations[integration.id] = integration
+                _persist_store_state()
             return auth
 
-    metadata_json = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
     catalog_id = str(metadata_json.get("catalog_id") or "").strip().lower()
     if (
         catalog_id != "mcp-linear"
@@ -8935,12 +8963,6 @@ def _ensure_linear_mcp_oauth_auth(
                 detail="Linear MCP OAuth client registration failed. Check the local service network and retry.",
             ) from exc
 
-        catalog_auth = metadata_json.get("auth")
-        configured_scopes = (
-            _normalize_string_list(catalog_auth.get("scopes"))
-            if isinstance(catalog_auth, dict)
-            else []
-        )
         auth = {
             "method": "oauth2",
             "provider": "linear",
@@ -8951,9 +8973,9 @@ def _ensure_linear_mcp_oauth_auth(
             "client_auth_method": "none",
             "dynamic_client": True,
             "registered_redirect_uri": redirect_uri,
-            "scopes": configured_scopes or ["read", "write"],
+            "scopes": configured_scopes,
             "resource": registered["resource"],
-            "redirect_path": "/builder/integrations",
+            "redirect_path": redirect_path,
         }
         metadata = dict(integration.metadata_json or {})
         metadata["auth"] = auth
@@ -9420,7 +9442,9 @@ def _build_integration_diagnostics(integration: IntegrationDefinition) -> dict[s
         str(oauth_auth.get("token_secret_ref") or "").strip(),
         str(oauth_auth.get("refresh_token_secret_ref") or "").strip(),
     ]
-    secret_required = integration.auth_type != "none"
+    # Public OAuth/PKCE connections keep credentials in the encrypted OAuth
+    # session; they do not need a separately configured secret reference.
+    secret_required = integration.auth_type not in {"none", "oauth2"}
     has_secret_ref = bool(integration.secret_ref.strip()) or any(oauth_secret_refs)
     has_secret_path = (
         integration.secret_ref.startswith("secret/") if integration.secret_ref.strip() else False
@@ -27086,16 +27110,29 @@ def test_integration(integration_id: str, request: Request) -> dict[str, Any]:
     if is_valid and integration.base_url.strip():
         try:
             headers = _integration_auth_headers(integration)
-            with httpx.Client(
-                timeout=httpx.Timeout(10.0, connect=5.0), follow_redirects=True
-            ) as client:
-                response = client.request("GET", integration.base_url, headers=headers)
-            if response.is_success:
-                connectivity_message = f"Connectivity check succeeded ({response.status_code})"
+            metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+            is_mcp = str(metadata.get("protocol") or "").strip().lower() == "mcp"
+            if is_mcp:
+                tools = mcp_client.McpHttpClient(
+                    integration.base_url, headers=headers, timeout_seconds=10.0
+                ).list_tools()
+                if tools:
+                    connectivity_message = f"MCP check succeeded ({len(tools)} actions available)"
+                else:
+                    is_valid = False
+                    connectivity_message = "MCP server responded but returned no available actions"
+                    connectivity_warnings.append("MCP server returned no tools")
             else:
-                is_valid = False
-                connectivity_message = f"Connectivity check failed (HTTP {response.status_code})"
-                connectivity_warnings.append("Remote endpoint probe failed")
+                with httpx.Client(
+                    timeout=httpx.Timeout(10.0, connect=5.0), follow_redirects=True
+                ) as client:
+                    response = client.request("GET", integration.base_url, headers=headers)
+                if response.is_success:
+                    connectivity_message = f"Connectivity check succeeded ({response.status_code})"
+                else:
+                    is_valid = False
+                    connectivity_message = f"Connectivity check failed (HTTP {response.status_code})"
+                    connectivity_warnings.append("Remote endpoint probe failed")
         except Exception as exc:  # noqa: BLE001
             is_valid = False
             LOGGER.warning(
@@ -27104,8 +27141,24 @@ def test_integration(integration_id: str, request: Request) -> dict[str, Any]:
                 type(exc).__name__,
                 exc_info=True,
             )
-            connectivity_message = _integration_probe_failure_message(exc)
-            connectivity_warnings.append("Remote endpoint probe failed")
+            if str(
+                (integration.metadata_json if isinstance(integration.metadata_json, dict) else {}).get(
+                    "protocol", ""
+                )
+            ).strip().lower() == "mcp":
+                status_code = getattr(exc, "code", None)
+                if status_code == 401:
+                    connectivity_message = "MCP sign-in was rejected. Reconnect the account, then check again."
+                elif status_code:
+                    connectivity_message = f"MCP check failed (HTTP {status_code}). Check the service address and sign-in."
+                elif isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+                    connectivity_message = "MCP check timed out. Check the service, then try again."
+                else:
+                    connectivity_message = "MCP handshake failed. Check sign-in and try again."
+                connectivity_warnings.append("MCP handshake failed")
+            else:
+                connectivity_message = _integration_probe_failure_message(exc)
+                connectivity_warnings.append("Remote endpoint probe failed")
     if store.platform_settings.enforce_integration_policies and not bool(policy.get("ok", True)):
         is_valid = False
 
@@ -27113,6 +27166,7 @@ def test_integration(integration_id: str, request: Request) -> dict[str, Any]:
     metadata["last_test"] = {
         "at": _now_iso(),
         "ok": is_valid,
+        "message": connectivity_message,
         "warnings": connectivity_warnings,
         "checks": checks,
     }
