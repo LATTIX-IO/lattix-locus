@@ -38,7 +38,7 @@ Effort is S (days), M (1–3 weeks) or L (more than 3 weeks).
 |---|---|---|---|---|---|---|---|
 | 1 | [langchain-ai/deepagents](https://github.com/langchain-ai/deepagents) | **Integrate as-is** + Locus extension package (fork only if forced) | P1 | M | Agent runtime (`AgentRuntime`) | LOCUS-363 | Decided D-27; default since 2026-10-04 |
 | 2 | [openai/symphony](https://github.com/openai/symphony) | **Custom clone** (continue) | P1 | S–M | Intake / loop runner (`Tracker`, `Trigger`) | LOCUS-407 | Linear intake; worktree isolation |
-| 3 | [CopilotKit/CopilotKit](https://github.com/CopilotKit/CopilotKit) (AG-UI) | **Integrate as-is**: `@ag-ui/core`, `@ag-ui/client` and `ag-ui-langgraph` only. Chat UI library (assistant-ui vs CopilotKit React) **decided by bake-off** | P1 | M | Surfaces (`SurfaceAdapter`) | LOCUS-369 | Gateway emits AG-UI events; HITL → native confirmation; bake-off result |
+| 3 | [CopilotKit/CopilotKit](https://github.com/CopilotKit/CopilotKit) (AG-UI) | **Integrate as-is**: `@ag-ui/core`, `@ag-ui/client` and `ag-ui-langgraph` only. Chat UI: **assistant-ui** (bake-off winner, 86 vs 62) | P1 | M | Surfaces (`SurfaceAdapter`) | LOCUS-369 | Gateway emits AG-UI 1.0 events, coalesces deltas, signed HITL resume |
 | 4 | Laya (convaiinnovations/laya) | **Integrate as-is**: local `/v1/systemone` sidecar, the **offline fallback** (D-32) | P1 | S | Judge (`DecisionModel`) | LOCUS-367 | Pin and hash; egress check; validate on Locus cases |
 | 5 | [TypeSafe Jev](https://typesafe.ai) | **Integrate as-is**, optional hosted tier for reasoning-heavy judgments | P3 | S | Judge (`DecisionModel`) | LOCUS-367 | Area-policy opt-in; no sensitive state sent |
 | 6 | [Cloudflare/clef](https://huggingface.co/Cloudflare/clef) on Cloudflare Workers AI | **Integrate as-is, hosted**: the **primary** judge (D-32, principal exception to D-29's hosted rule). Running it locally stays blocked (format rule) | P1 | S | Judge (`DecisionModel`) | LOCUS-367 | Cloudflare token in the keychain; redaction; judges advisory only; Laya offline fallback |
@@ -216,7 +216,7 @@ Laya and Clef share the `/v1/systemone` schema, so falling back is an endpoint s
 - **Decision:**
   - **Integrate as-is, protocol only:** `@ag-ui/core` and `@ag-ui/client` pinned to 1.0.x, plus `ag-ui-langgraph`, emitted from FastAPI behind the gateway.
   - **Do not adopt `@copilotkit/runtime`.** It adds a Node hop, duplicates the gateway, and carries the telemetry.
-  - For the chat and run surfaces, **prefer [assistant-ui](https://github.com/assistant-ui/assistant-ui)**: MIT, shadcn-native, with AG-UI and LangGraph adapters. `@copilotkit/react-core` is a pinned fallback.
+  - For the chat and run surfaces, **adopt [assistant-ui](https://github.com/assistant-ui/assistant-ui)**. It is MIT and shadcn-native, and it won the [bake-off](development/chat-ui-bakeoff-2026-10.md) 86 to 62. `@copilotkit/react-core` is reference only.
   - Client-side "frontend tools" must never bypass the gateway (LOCUS-369).
 
 **OpenBot, OpenDots, openmuse.** All MIT. All need **CopilotKit Intelligence** to chat or persist, so they count as hosted. All are young: OpenDots is one week old.
@@ -370,7 +370,9 @@ Answered 2026-10-05:
 
 1. **Canvas engine: diagram-js** (D-08 confirmed). This unblocks LOCUS-397 and LOCUS-364.
 2. **Judge tier:** Clef on Cloudflare Workers AI is the primary judge, and Laya runs locally as the offline fallback. If no fallback is possible, offline judging is delayed and steps escalate. Recorded as D-32, see §3.3.
-3. **Chat UI library: decided by a measured bake-off** of assistant-ui vs CopilotKit React against the Locus requirements (`docs/development/chat-ui-bakeoff-2026-10.md`, LOCUS-369). The protocol is AG-UI either way.
+3. **Chat UI library: assistant-ui**, chosen by a measured bake-off. It scored 86/100 to CopilotKit React's 62, and the ranking held under every alternative weighting ([chat-ui-bakeoff-2026-10](development/chat-ui-bakeoff-2026-10.md), LOCUS-369).
+   - CopilotKit's React packages are now **reference only**. Their first-load JS ships vendor telemetry and licence hosts, a Scarf postinstall reports by default, their CSS tokens collide with ours, and their first-load JS is 2× the size.
+   - AG-UI stays as the protocol either way.
 4. **Savant:** designed from the local Savant codebase. The connector design and any token the Savant side needs are in LOCUS-388.
 5. **Deep Agents process boundary: keep it in process for now** (principal, 2026-10-05, provisional). Re-assess after the Cedar cutover (LOCUS-393).
    - *In process (today):* fastest, simplest, and how the bake-off measured it. The risk is that a flaw or a malicious update in the library runs with the backend's own access. The gateway middleware, the bypass scan and version pins reduce that risk but do not remove it.
