@@ -3,7 +3,9 @@ Pure/unit (no codex binary, no stack)."""
 
 from __future__ import annotations
 
+import os
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from locus_runtime.harness import codex_backend as cb  # noqa: E402
+from locus_runtime.gateway import Capabilities  # noqa: E402
 
 
 # --- ThreadEvent → normalized step mapping ----------------------------------
@@ -28,7 +31,18 @@ def test_map_reasoning():
     m = cb.map_thread_event(
         {"type": "item.completed", "item": {"id": "2", "type": "reasoning", "text": "thinking…"}}
     )
-    assert m["kind"] == "reasoning" and m["text"] == "thinking…"
+    assert m is None
+
+
+def test_local_model_metadata_fallback_is_recorded_as_warning():
+    event = {
+        "type": "item.completed",
+        "item": {
+            "type": "error",
+            "message": "Model metadata for gpt-oss:20b not found. Defaulting to fallback metadata; this can degrade performance and cause issues.",
+        },
+    }
+    assert cb.map_thread_event(event)["kind"] == "warning"
 
 
 def test_map_command_execution():
@@ -110,6 +124,105 @@ def test_build_command_shape(tmp_path):
     assert cmd[:3] == ["codex", "exec", "--json"]
     assert "--oss" in cmd and "-m" in cmd and "gpt-oss:20b" in cmd
     assert "--cd" in cmd and "--sandbox" in cmd and cmd[-1] == "-"
+
+
+def test_build_gateway_command_exposes_only_locus_mcp_tools(tmp_path):
+    cmd = cb._build_gateway_command(
+        codex_bin=["node.exe", "codex.js"],
+        cwd=str(tmp_path),
+        model="gpt-oss:20b",
+        last_message_file=str(tmp_path / "answer.txt"),
+        python_bin="python.exe",
+        mcp_config_file=str(tmp_path / "mcp.json"),
+        ollama_base_url="http://127.0.0.1:11434/v1",
+    )
+    assert cmd[:3] == ["node.exe", "codex.js", "exec"]
+    assert "--local-provider" in cmd and "ollama" in cmd
+    assert "--sandbox" in cmd and cmd[cmd.index("--sandbox") + 1] == "read-only"
+    assert cmd[cmd.index("--disable") + 1] == "shell_tool"
+    assert "mcp_servers.locus" in " ".join(cmd)
+    assert "analytics.enabled=false" in cmd
+    assert 'model_providers.oss.name="Local Ollama"' in cmd
+    assert cmd[-1] == "-"
+
+
+def test_codex_npm_shim_resolves_to_node_entrypoint(tmp_path, monkeypatch):
+    shim_dir = tmp_path / "npm"
+    node = shim_dir / ("node.exe" if os.name == "nt" else "node")
+    entry = shim_dir / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+    shim = shim_dir / "codex.cmd"
+    node.parent.mkdir(parents=True)
+    entry.parent.mkdir(parents=True)
+    node.touch()
+    entry.touch()
+    shim.touch()
+    assert cb._codex_command(str(shim)) == [str(node.resolve()), str(entry.resolve())]
+
+
+def test_codex_local_endpoint_returns_resolved_loopback_model():
+    endpoint = cb._validate_local_endpoint("http://127.0.0.1:11434/v1", "gpt-oss:20b")
+    assert endpoint.provider == "ollama"
+    assert endpoint.model == "gpt-oss:20b"
+    assert endpoint.base_url == "http://127.0.0.1:11434/v1"
+    assert endpoint.egress_host == "127.0.0.1"
+
+
+def test_codex_capabilities_forward_zero_action_budget() -> None:
+    payload = cb._capabilities_payload(SimpleNamespace(capabilities=Capabilities()), max_actions=0)
+    assert payload["max_actions"] == 0
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    ["https://example.com/v1", "http://user:pass@127.0.0.1:11434/v1"],
+)
+def test_codex_local_endpoint_rejects_non_loopback_and_url_credentials(base_url):
+    with pytest.raises(ValueError, match="credential-free loopback"):
+        cb._validate_local_endpoint(base_url, "gpt-oss:20b")
+
+
+@pytest.mark.parametrize("setup_failure", ["missing_workspace", "nested_runtime", "missing_codex"])
+def test_codex_setup_failure_returns_result_before_gateway_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setup_failure: str
+) -> None:
+    authorized = False
+
+    class UnexpectedGate:
+        def __init__(self, **_kwargs):
+            nonlocal authorized
+            authorized = True
+            raise AssertionError("setup must complete before gateway authorization")
+
+    monkeypatch.setattr(cb, "GatewayModelGate", UnexpectedGate)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    cwd = workspace / "missing" if setup_failure == "missing_workspace" else workspace
+    runtime_dir = (
+        workspace / "runtime" if setup_failure == "nested_runtime" else tmp_path / "runtime"
+    )
+    if setup_failure == "missing_codex":
+
+        def missing_codex(_value: str | None) -> list[str]:
+            raise FileNotFoundError("Codex runtime is unavailable")
+
+        monkeypatch.setattr(cb, "_codex_command", missing_codex)
+
+    result = cb.run_codex_with_locus_tools(
+        prompt="run",
+        cwd=str(cwd),
+        runtime_dir=str(runtime_dir),
+        audit_path=str(tmp_path / "audit.jsonl"),
+        kill_switch_path=str(tmp_path / "DISABLED"),
+        run_id="run-1",
+        isolation_strategy="kernel-bwrap",
+        gateway_session=None,  # type: ignore[arg-type]
+        ollama_base_url="http://127.0.0.1:11434/v1",
+    )
+
+    assert result.outcome == (
+        "unavailable" if setup_failure in {"missing_workspace", "missing_codex"} else "failed"
+    )
+    assert not authorized
 
 
 # --- compiler routing: harness_backend == codex -----------------------------

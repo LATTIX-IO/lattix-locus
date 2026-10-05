@@ -163,6 +163,11 @@ INTEGRATION_CATALOG: list[dict[str, Any]] = [
             "protocol": "mcp",
             "transport": "http",
             "docs": "https://linear.app/docs/mcp",
+            "oauth": {
+                "authorization_server_metadata_url": "https://mcp.linear.app/.well-known/oauth-authorization-server",
+                "dynamic_registration": True,
+                "scopes": ["read", "write"],
+            },
             "auth": {
                 "method": "oauth2",
                 "provider": "linear",

@@ -397,5 +397,12 @@ class FailureTracker(Protocol):
 
     def find_issue_with_text(self, text: str) -> str | None: ...
     def create_issue(
-        self, *, team_id: str, title: str, description: str, project_slug: str = ""
+        self,
+        *,
+        team_id: str,
+        title: str,
+        description: str,
+        project_slug: str = "",
+        state_name: str = "",
+        label_name: str = "",
     ) -> str: ...

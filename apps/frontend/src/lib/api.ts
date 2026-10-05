@@ -2393,12 +2393,52 @@ export type LoopStatus = {
   last_run: { run_id?: string; issue?: string; outcome?: string; finished_at?: string } | null;
   open_prs: unknown[];
   autostart: { enabled: boolean; repo_path: string };
-  /** Whether LINEAR_API_KEY resolves (env or OS keychain). Never the value. */
-  linear: { api_key_configured: boolean };
+  /** Connected Linear MCP OAuth status. Tokens are never returned to the UI. */
+  linear: { connected: boolean; integration_name: string };
+  project_slug: string;
+  research: { enabled: boolean; issues_per_day: number; model: string };
+};
+
+export type LinearBoardIssue = {
+  id: string;
+  identifier: string;
+  title: string;
+  description: string;
+  priority: number;
+  url: string;
+  state: string;
+  state_id: string;
+  labels: string[];
+  team_id: string;
+  created_at: string;
+};
+
+export type LinearBoard = {
+  project_slug: string;
+  states: Array<{ id: string; name: string; type: string }>;
+  issues: LinearBoardIssue[];
 };
 
 export async function getLoopStatus(): Promise<LoopStatus> {
   return strictFetch<LoopStatus>("/loop/status");
+}
+
+export async function getLoopBoard(): Promise<LinearBoard> {
+  return strictFetch<LinearBoard>("/loop/linear/board");
+}
+
+export async function updateLoopIssueStatus(issueId: string, stateName: string): Promise<void> {
+  await strictFetch<{ result: { ok: boolean } }>("/loop/tracker", {
+    method: "POST",
+    body: JSON.stringify({ operation: "transition", issue_id: issueId, state_name: stateName }),
+  });
+}
+
+export async function updateLoopIssuePriority(issueId: string, priority: number): Promise<void> {
+  await strictFetch<{ result: { ok: boolean } }>("/loop/tracker", {
+    method: "POST",
+    body: JSON.stringify({ operation: "set_priority", issue_id: issueId, priority }),
+  });
 }
 
 /** Clear the file kill switch. Widening: confirmed in the desktop shell (loop.enable). */

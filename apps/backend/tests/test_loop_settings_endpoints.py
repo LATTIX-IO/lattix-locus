@@ -1,8 +1,8 @@
-"""LOCUS-353: the loop controls behind Settings → Loop & Linear.
+"""LOCUS-353: the self-improvement controls behind Settings.
 
 Turning the loop on and autostarting it widen what runs unattended, so on the
 desktop profile they need the shell's request-bound proof; turning either off
-only narrows. The Linear key is reported as present or absent, never returned.
+only narrows. Linear OAuth tokens are never returned to the UI.
 """
 
 from __future__ import annotations
@@ -30,7 +30,6 @@ import app.main as main_module
 from app.main import app, store
 from app.request_security import CapabilityEffect, classify_route_access, classify_shell_proof
 
-from locus_runtime.loop_runner import linear as loop_linear
 from locus_runtime.loop_runner.state import KILL_FILE
 from locus_tooling import shell_confirmation as sc
 
@@ -44,7 +43,6 @@ def loop_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home.mkdir()
     monkeypatch.setenv("LOCUS_LOOP_HOME", str(home))
     monkeypatch.delenv("LOCUS_LOOP_DISABLED", raising=False)
-    monkeypatch.setattr(loop_linear, "resolve_linear_key", lambda: "lin_api_secret_value")
     return home
 
 
@@ -96,27 +94,220 @@ def test_routes_are_classified() -> None:
     assert classify_shell_proof("POST", "/loop/disable").effect == CapabilityEffect.NARROWING
     assert classify_shell_proof("DELETE", "/loop/autostart").effect == CapabilityEffect.NARROWING
     assert classify_route_access("GET", "/loop/status") is not None
+    assert classify_route_access("GET", "/loop/linear/board") is not None
+    assert classify_route_access("POST", "/loop/tracker") is not None
+    assert classify_shell_proof("POST", "/loop/tracker").effect == CapabilityEffect.NEUTRAL
 
 
-def test_status_reports_the_linear_key_without_its_value(desktop: None, loop_home: Path) -> None:
+def test_status_reports_linear_mcp_connection_without_credentials(
+    desktop: None, loop_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "_linear_mcp_status",
+        lambda: {"connected": True, "integration_name": "Linear MCP"},
+    )
     response = _call("GET", "/loop/status")
     assert response.status_code == 200, response.text
     data = response.json()
     assert data["enabled"] is True
-    assert data["linear"] == {"api_key_configured": True}
+    assert data["linear"] == {"connected": True, "integration_name": "Linear MCP"}
     assert data["autostart"] == {"enabled": False, "repo_path": ""}
     assert "home" not in data
     assert "lin_api_secret_value" not in response.text
 
 
-def test_status_says_when_the_linear_key_is_missing(
+def test_status_says_when_linear_mcp_is_not_connected(
     desktop: None, loop_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def missing() -> str:
-        raise loop_linear.LinearNotConfigured("LINEAR_API_KEY is not configured")
+    monkeypatch.setattr(
+        main_module,
+        "_linear_mcp_status",
+        lambda: {"connected": False, "integration_name": ""},
+    )
+    assert _call("GET", "/loop/status").json()["linear"] == {
+        "connected": False,
+        "integration_name": "",
+    }
 
-    monkeypatch.setattr(loop_linear, "resolve_linear_key", missing)
-    assert _call("GET", "/loop/status").json()["linear"] == {"api_key_configured": False}
+
+def test_oauth_linear_mcp_connection_is_ready_before_an_integration_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    integration = main_module.IntegrationDefinition(
+        id="linear-mcp",
+        name="Linear MCP",
+        type="http",
+        status="draft",
+        base_url="https://mcp.linear.app/mcp",
+        auth_type="oauth2",
+        metadata_json={"catalog_id": "mcp-linear"},
+    )
+    monkeypatch.setattr(store, "integrations", {integration.id: integration})
+    monkeypatch.setattr(
+        main_module,
+        "_integration_oauth_session",
+        lambda _integration: {"access_token_encrypted": "encrypted-access-token"},
+    )
+
+    assert main_module._linear_mcp_status() == {
+        "connected": True,
+        "integration_name": "Linear MCP",
+    }
+
+
+def test_board_uses_the_configured_linear_mcp_project(
+    desktop: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board_issue = {
+        "id": "issue-1",
+        "identifier": "LOCUS-1",
+        "title": "A tracked issue",
+        "state": "Todo",
+        "team_id": "team-1",
+    }
+
+    class FakeAdapter:
+        def issues(self, project_slug: str, *, limit: int = 100) -> list[dict[str, Any]]:
+            assert project_slug == "locus"
+            assert limit == 5000
+            return [board_issue]
+
+        def statuses(self, team_id: str) -> list[dict[str, str]]:
+            assert team_id == "team-1"
+            return [{"id": "todo", "name": "Todo", "type": "unstarted"}]
+
+    monkeypatch.setattr(main_module, "_loop_project_slug", lambda: "locus")
+    monkeypatch.setattr(main_module, "_linear_mcp_adapter", lambda _actor: FakeAdapter())
+    response = _call("GET", "/loop/linear/board")
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "project_slug": "locus",
+        "states": [{"id": "todo", "name": "Todo", "type": "unstarted"}],
+        "issues": [board_issue],
+    }
+
+
+def test_empty_board_still_loads_project_workflow_columns(
+    desktop: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class EmptyProjectAdapter:
+        def issues(self, _project_slug: str, *, limit: int = 100) -> list[dict[str, Any]]:
+            assert limit == 5000
+            return []
+
+        def project_team_id(self, project_slug: str) -> str:
+            assert project_slug == "locus"
+            return "team-1"
+
+        def statuses(self, team_id: str) -> list[dict[str, str]]:
+            assert team_id == "team-1"
+            return [{"id": "todo", "name": "Todo", "type": "unstarted"}]
+
+    monkeypatch.setattr(main_module, "_loop_project_slug", lambda: "locus")
+    monkeypatch.setattr(main_module, "_linear_mcp_adapter", lambda _actor: EmptyProjectAdapter())
+    response = _call("GET", "/loop/linear/board")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "project_slug": "locus",
+        "states": [{"id": "todo", "name": "Todo", "type": "unstarted"}],
+        "issues": [],
+    }
+
+
+def test_runner_tracker_transition_uses_the_linear_mcp_adapter(
+    desktop: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class FakeAdapter:
+        def transition(self, issue_id: str, state_name: str) -> None:
+            calls.append((issue_id, state_name))
+
+    monkeypatch.setattr(main_module, "_linear_mcp_adapter", lambda _actor: FakeAdapter())
+    response = _call(
+        "POST",
+        "/loop/tracker",
+        {"operation": "transition", "issue_id": "issue-1", "state_name": "In Progress"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {"result": {"ok": True}}
+    assert calls == [("issue-1", "In Progress")]
+
+
+def test_runner_tracker_can_clear_linear_priority(
+    desktop: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, int]] = []
+
+    class FakeAdapter:
+        def set_priority(self, issue_id: str, priority: int) -> None:
+            calls.append((issue_id, priority))
+
+    monkeypatch.setattr(main_module, "_linear_mcp_adapter", lambda _actor: FakeAdapter())
+    response = _call(
+        "POST",
+        "/loop/tracker",
+        {"operation": "set_priority", "issue_id": "issue-1", "priority": 0},
+    )
+
+    assert response.status_code == 200, response.text
+    assert calls == [("issue-1", 0)]
+
+
+def test_runner_tracker_create_issue_preserves_empty_state_and_priority_zero(
+    desktop: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakeAdapter:
+        def create_issue(self, **values: Any) -> str:
+            calls.append(values)
+            return "LOCUS-999"
+
+    monkeypatch.setattr(main_module, "_linear_mcp_adapter", lambda _actor: FakeAdapter())
+    response = _call(
+        "POST",
+        "/loop/tracker",
+        {
+            "operation": "create_issue",
+            "team_id": "team-1",
+            "title": "Research hypothesis",
+            "description": "Test",
+            "priority": 0,
+            "state_name": "",
+            "label_name": "",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert calls[0]["priority"] == 0
+    assert calls[0]["state_name"] == ""
+    assert calls[0]["label_name"] == ""
+
+
+@pytest.mark.parametrize("priority", ["not-a-number", -1, 5, True])
+def test_runner_tracker_rejects_invalid_create_issue_priority(
+    desktop: None, monkeypatch: pytest.MonkeyPatch, priority: Any
+) -> None:
+    class FakeAdapter:
+        def create_issue(self, **_values: Any) -> str:
+            pytest.fail("invalid priority must be rejected before issue creation")
+
+    monkeypatch.setattr(main_module, "_linear_mcp_adapter", lambda _actor: FakeAdapter())
+    response = _call(
+        "POST",
+        "/loop/tracker",
+        {
+            "operation": "create_issue",
+            "team_id": "team-1",
+            "title": "Research hypothesis",
+            "description": "Test",
+            "priority": priority,
+        },
+    )
+    assert response.status_code == 422, response.text
 
 
 def test_disable_needs_no_proof_and_enable_needs_one(desktop: None, loop_home: Path) -> None:

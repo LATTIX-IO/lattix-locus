@@ -1,38 +1,65 @@
-# Self-improvement loop (native Linear runner)
+# Self-improvement loop
 
-Locus runs its own Linear → code → PR loop natively (LOCUS-338). It is the
-"Symphony generalized" configuration from [11 §8](../product/11-agentic-model.md):
-a tracker trigger (Linear issues labelled `agent:eligible`), the verified run
-loop (LOCUS-337), the gated model client with the NIM → Ollama chain (D-21,
-LOCUS-336) and a delivery step with an auto-merge guard (D-22).
+Locus owns the issue queue, run lifecycle, eval/RSI gates, and delivery policy.
+The Locus runner is the only queue poller. It uses the authenticated Linear MCP
+connection and owns the run lifecycle, verification, eval/RSI gates, and delivery.
+It can execute with the native harness or use Codex as an inner coding harness;
+other harness adapters can follow the same contract. In Codex mode, Codex gets
+only the run's Locus MCP coding tools, while Locus keeps the delivery controls.
+Do not run OpenAI Symphony or another queue poller against this same project at
+the same time: duplicate pollers can claim the same issue. Auto-merge remains
+disabled by default (D-22).
 
-Code: `locus_runtime/loop_runner/` (`linear.py`, `runner.py`, `merge_guard.py`,
-`delivery.py`, `state.py`; LOCUS-339 adds `quality_gates.py`, `perf_budget.py`,
-`eval_gate.py`, `feedback.py`, `report.py`; LOCUS-351 adds `scorecard_gate.py`).
+There are two distinct improvement paths. **Local alignment** learns from how
+one person uses Locus and may propose reversible settings or harness adjustments
+within the features already installed. Its evidence and changes stay in that
+installation, with explicit controls for capture, review, and reset. **Product
+RSI** works on repository issues and proposes shared code changes through the
+Linear queue, isolated worktrees, checks, evals, and a human-reviewed pull
+request. Local run trajectories are currently operational evidence for product
+RSI; they do not automatically tune personal settings or leave the machine.
+The local-alignment path still needs its own implementation and tests.
+
+Code: `locus_runtime/loop_runner/` (`linear_mcp.py`, `runner.py`,
+`merge_guard.py`, `delivery.py`, `state.py`) and
+`locus_runtime/harness/` (`codex_backend.py`, `codex_mcp_server.py`). LOCUS-339
+adds `quality_gates.py`, `perf_budget.py`, `eval_gate.py`, `feedback.py`,
+`report.py`; LOCUS-351 adds `scorecard_gate.py`.
 CLI: `lattix loop …`. What "better" means for the loop (the RSI scorecard, its
 suite, held-out split and promotion rule) is in [rsi-scorecard.md](rsi-scorecard.md).
 
 ## Setup
 
-1. **Secrets** (stored in the OS keychain, Windows DPAPI as a fallback; never
-   echoed, never logged):
-
-   ```powershell
-   lattix secrets set LINEAR_API_KEY   # Linear personal API key (read + write issues/comments)
-   lattix secrets set NVIDIA_API_KEY   # NVIDIA API catalog key for hosted NIM (D-21)
-   ```
-
-   The NVIDIA key can also be set from Settings → Models (the settings API stores
-   it in the same keychain entry). An environment variable of the same name
-   takes precedence.
+1. **Linear MCP**: in Locus Settings → Connections, connect the official Linear
+   MCP integration with OAuth. First connect uses Linear's OAuth 2.1 dynamic
+   client registration and PKCE; no client secret or API key needs manual
+   configuration. The desktop stores its OAuth tokens and the board and native
+   runner use the same connection through the authenticated local API and policy
+   gateway; do not configure a second Linear API key for the loop.
+   Hosted model access is optional; the native model chain can use local Ollama.
 2. **GitHub**: the `gh` CLI must be logged in (`gh auth login`) with permission to
    push branches and open PRs on the repository's `origin`. The loop never reads
    that credential; `git push` and `gh` use their own.
 3. **Policy engine**: OPA must be available (`LOCUS_OPA_BIN` or `.tools/opa/`).
    Without a running engine the loop refuses to run.
-4. **Local fallback model** (optional): a running Ollama with `OLLAMA_MODEL`
-   pulled. Override the chain with `LOCUS_AGENT_MODEL_CHAIN`.
-5. **Linear labels and states** in the project from `WORKFLOW.md`
+4. **Local models**: install Ollama and pull the model to use, for example
+   `ollama pull gpt-oss:20b`. Codex mode rejects non-loopback or credential-bearing
+   Ollama endpoints.
+5. **Python environment**: use Python 3.12+ and install the project and developer
+   dependencies in `.venv`:
+
+   ```powershell
+   uv venv .venv --python 3.12
+   uv pip install --python .venv\Scripts\python.exe -e ".[dev]"
+   ```
+6. **Codex meta-harness** (optional): install Codex CLI and run
+   `scripts/Start-Local-Product-RSI.ps1` for a read-only preflight. Use `-Once`
+   to start one issue tick, or `-Serve` to start the polling loop. The launcher
+   applies configuration to that PowerShell process only. Use `-Harness native`
+   to select Locus's native coding loop. The running local backend must be from
+   a build that includes `/loop/tracker` and the Linear MCP OAuth bridge; an older
+   installed backend fails preflight with HTTP 404 and needs the updated build.
+7. **Linear labels and states** in the project from `WORKFLOW.md`
    (`tracker.provider.project_slug`): labels `agent:eligible`,
    `agent:ineligible`, `agent:human-review-required`; states `Todo`,
    `In Progress`, `In Review` (and optionally `Blocked`).
@@ -53,10 +80,14 @@ Useful settings (environment):
 | Variable | Default | Meaning |
 |---|---|---|
 | `LOCUS_LOOP_HOME` | `~/.locus/loop` | ledger, lock, kill-switch file, run dirs, working copies |
+| `LOCUS_LOOP_CODING_HARNESS` | `native` | `native` or `codex`; Codex is an opt-in inner coding harness |
+| `LOCUS_LOOP_CODEX_MODEL` | `gpt-oss:20b` | Ollama model used by Codex mode |
+| `CODEX_OLLAMA_BASE_URL` | `OLLAMA_BASE_URL` or loopback Ollama default | Codex endpoint; must be credential-free loopback |
 | `LOCUS_LOOP_DISABLED` | unset | `1` disables the loop (checked before every step) |
 | `LOCUS_LOOP_MAX_RUNS_PER_DAY` | `5` | runs started per UTC day |
 | `LOCUS_LOOP_MAX_FAILURES` | `2` | failed runs before `agent:human-review-required` |
 | `LOCUS_LOOP_LOCK_TTL_SECONDS` | `7200` | single-run lock and claim lifetime |
+| `LOCUS_AGENT_MODEL_CHAIN` | NIM → Ollama | comma-separated provider/model tiers; set `ollama/<model>` to keep native loop work and research local |
 | `LOCUS_LOOP_TEST_COMMAND` / `_LINT_COMMAND` / `_TYPECHECK_COMMAND` | detected | replace the command of a detected done check (never removes one) |
 | `LOCUS_LOOP_AUTO_MERGE` | off | `1` lets the D-22 guard merge loop PRs |
 | `LOCUS_LOOP_REQUIRED_CHECKS` | none | comma-separated CI check names that must pass |
@@ -72,6 +103,8 @@ Useful settings (environment):
 | `LOCUS_LOOP_EVAL_THRESHOLD` / `_EVAL_MAX_STEPS` | `0.30` / `20` | eval pass threshold; agent steps per eval task |
 | `LOCUS_LOOP_PROPOSE_SKILLS` | `1` | propose a quarantined `SKILL.md` after a done run |
 | `LOCUS_LOOP_FILE_FAILURE_ISSUES` | `1` | file Linear issues for recurring failure patterns |
+| `LOCUS_LOOP_RESEARCH_MODE` | `1` | when no eligible issue remains, use local Ollama to propose bounded, testable backlog work; set `0` to disable |
+| `LOCUS_LOOP_RESEARCH_ISSUES_PER_DAY` | `3` | maximum prioritized research issues created per UTC day (1–5) |
 | `LOCUS_LOOP_FAILURE_ISSUE_MIN_OCCURRENCES` / `_MAX_FAILURE_ISSUES_PER_DAY` | `2` / `3` | how often a pattern must recur; filings per UTC day |
 | `LOCUS_LOOP_SCORECARD` | `advisory` where the candidate can be jailed, else `off` | RSI scorecard (LOCUS-351): `off`, `advisory` (run, archive, report) or `required` (the D-22 auto-merge also needs `promote`). The default follows the host (LOCUS-379): `advisory` when the candidate instance runs in an OS jail here (AppContainer, seatbelt, bubblewrap), `off` otherwise; `lattix loop status` shows which and why |
 | `LOCUS_RSI_CANDIDATE_UNJAILED` | unset | `1` runs the candidate without an OS jail (loud warning; the scorecard records `isolation: none` and never promotes) |
@@ -100,7 +133,20 @@ targeted `LOCUS_LOOP_TEST_COMMAND`.
 5. A working copy of `origin/main` is cloned under `LOCUS_LOOP_HOME/worktrees/`.
    The envelope comes from the issue text plus the repository's checks
    (plan mode required); a gateway session with the envelope's capabilities is
-   opened; the model client is `GatedChatClient` over the NIM → Ollama chain.
+   opened. Native mode uses `GatedChatClient` over the configured chain. Codex
+   mode authorizes a local Ollama run and disables Codex shell, browser,
+   computer-use, apps, plugins, and code-mode features. Codex receives only a
+   Locus stdio MCP server exposing four coding tools; each tool dispatch uses a
+   Locus gateway session and the configured OS sandbox with networking disabled.
+   Codex runs with an ephemeral user configuration directory and a sanitized
+   environment; provider credentials are not inherited. Locus authorizes the
+   local Ollama run and records aggregate Codex usage. Codex sends its individual
+   inference requests directly to the credential-free loopback Ollama endpoint;
+   those requests are not individually proxied through the Locus gateway today.
+   This remains local-only by endpoint validation, while each coding tool call
+   is separately enforced and audited by Locus. Token budgets are checked when a
+   Codex turn completes, so one in-flight generation can exceed the configured
+   token ceiling; the process time limit is enforced continuously.
 6. End states:
 
 | Run end | Linear | Git/GitHub |
@@ -322,7 +368,7 @@ The update never sets or clears the kill switch (`DISABLED` / `LOCUS_LOOP_DISABL
 
 ## Safety model
 
-* **Fail closed.** No gateway with a running engine → no run. No Linear key →
+* **Fail closed.** No gateway with a running engine → no run. No authorized Linear MCP connection →
   refused. The kill switch is checked before each tick and each model step.
 * **Bounded.** One run at a time on a machine (lock with TTL), a daily run cap,
   per-run envelope budgets, retries with backoff for Linear and push/PR calls,
@@ -330,8 +376,11 @@ The update never sets or clears the kill switch (`DISABLED` / `LOCUS_LOOP_DISABL
 * **Untrusted issue text (P8).** The issue sets the goal and done criteria only.
   Capabilities (workspace root, tools, executables, egress hosts = the model
   tiers) come from the runner.
-* **One gateway (P6).** Agent tool calls and model calls go through the run's
-  gateway session. Git, `gh` and Linear write-back are the runner's own delivery
+* **Gateway boundary (P6).** Native agent tool and model calls go through the
+  run's gateway session. In Codex mode, Locus authorizes and records the local
+  model run once, while Codex's individual inference requests go directly to the
+  validated loopback Ollama endpoint; coding tool calls go through the Locus
+  gateway and sandbox. Git, `gh` and Linear write-back are runner-owned delivery
   steps (argv only, no shell) and are not reachable by the agent.
 * **Host git never trusts the working copy's `.git`.** The working copy's `.git`
   is inside the agent's write root, so a run could plant hooks or config
@@ -360,11 +409,17 @@ The update never sets or clears the kill switch (`DISABLED` / `LOCUS_LOOP_DISABL
 
 ## Known limits
 
-* Linear write-back is not yet routed through the gateway as an R2 action under
-  a standing grant (16 §7). It is runner code, not agent-reachable.
-* The GraphQL documents follow Linear's public schema but were exercised only
-  against a mock transport in CI. Run `lattix loop run --once` against a test
-  issue first.
+* Linear issue reads and writes use the official MCP server. Each MCP tool call
+  is authorized by a gateway session scoped to that exact tool, arguments, and
+  `mcp.linear.app` egress. Project issues and issue comments are cursor-paginated
+  so queue selection and claim checks do not silently stop at the first page.
+  The OAuth token stays encrypted in the desktop integration store.
+* Empty-queue research reads bounded project/workflow context, asks local Ollama
+  for small independent hypotheses, deduplicates and prioritizes them, and files
+  at most the configured number as Todo issues. Each issue includes a test case
+  and falsification criterion. The next normal loop tick runs the repository's
+  checks, eval gate, and RSI scorecard; planning alone never validates a
+  hypothesis or merges its change.
 * On Windows the agent runs in the AppContainer jail. The verify gate needs
   `git` inside that jail to compute the diff.
 * A failing pre-PR gate ends the run; the agent does not get another attempt
@@ -373,6 +428,6 @@ The update never sets or clears the kill switch (`DISABLED` / `LOCUS_LOOP_DISABL
   `locus_runtime/loop_runner/`, so a PR that edits the measurement is never
   auto-merged. The suite still executes the PR's code, so its numbers are
   evidence, not proof.
-* `issueCreate` is retried on transient Linear errors like every other call; a
+* `save_issue` is retried on transient Linear errors like every other call; a
   retry after a lost response can create a duplicate issue (the fingerprint
   line makes it easy to spot and the registry stops further filings).

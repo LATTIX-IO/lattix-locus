@@ -52,10 +52,24 @@ class FilingTracker(FakeTracker):
         return None
 
     def create_issue(
-        self, *, team_id: str, title: str, description: str, project_slug: str = ""
+        self,
+        *,
+        team_id: str,
+        title: str,
+        description: str,
+        project_slug: str = "",
+        state_name: str = "",
+        label_name: str = "",
     ) -> str:
         self.created.append(
-            {"team_id": team_id, "title": title, "description": description, "slug": project_slug}
+            {
+                "team_id": team_id,
+                "title": title,
+                "description": description,
+                "slug": project_slug,
+                "state_name": state_name,
+                "label_name": label_name,
+            }
         )
         return f"LOC-{100 + len(self.created) - 1}"
 
@@ -384,6 +398,7 @@ def test_repeated_failure_files_exactly_one_issue(
     assert len(tracker.created) == 1
     created = tracker.created[0]
     assert created["team_id"] == "team-1" and created["slug"] == "slug"
+    assert created["state_name"] == "" and created["label_name"] == ""
     assert "stopped/budget" in created["title"]
     assert f"{FAILURE_MARKER}: " in created["description"]
     assert "3 time(s)" not in created["description"]  # filed at the 2nd occurrence
