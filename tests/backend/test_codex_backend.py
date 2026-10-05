@@ -3,6 +3,7 @@ Pure/unit (no codex binary, no stack)."""
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -145,7 +146,7 @@ def test_build_gateway_command_exposes_only_locus_mcp_tools(tmp_path):
 
 def test_codex_npm_shim_resolves_to_node_entrypoint(tmp_path, monkeypatch):
     shim_dir = tmp_path / "npm"
-    node = shim_dir / "node.exe"
+    node = shim_dir / ("node.exe" if os.name == "nt" else "node")
     entry = shim_dir / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
     shim = shim_dir / "codex.cmd"
     node.parent.mkdir(parents=True)
