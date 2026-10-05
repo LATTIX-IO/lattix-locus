@@ -125,7 +125,7 @@ The desktop app (Tauri) updates itself from one of two channels. The setting sit
 | Published by | `desktop-promote.yml` (manual, a tested Dev version) | `desktop-dev.yml` (every merge to `main`, docs-only changes skipped) |
 | Version | the promoted Dev version, unchanged | `<MAJOR>.<MINOR>.<PATCH>`: `MAJOR.MINOR` from the repo-root `VERSION`, PATCH the next build number ([VERSIONING.md](VERSIONING.md), D-31) |
 | Update metadata | `releases/download/channel-stable/latest.json` | `releases/download/channel-dev/latest.json` |
-| In the app | background check on start and every 4 hours; an "Update available: Update & Restart" banner; installs only on click | background check, automatic download, then waits until no agent run is in progress and the self-improvement loop is held, then installs and restarts |
+| In the app | background check on start and every 4 hours; an "Update available" notice; installs only after the user clicks Update & Restart | background check; installs only after the user clicks Update & Restart |
 
 The app only ever uses those two GitHub URLs; the setting selects one of them and never accepts a URL. Every update is verified against the minisign public key in `tauri.conf.json` before it is installed; an unsigned or foreign update is refused. Switching channel never downgrades: Stable is offered only once it is newer than the installed Dev build.
 
@@ -135,7 +135,7 @@ The app only ever uses those two GitHub URLs; the setting selects one of them an
 
 **Version numbers (D-31).** Every build is a plain `MAJOR.MINOR.PATCH`; PATCH counts builds across the Dev, Stable and manual release tags of that `MAJOR.MINOR` and is capped at 99999 (past it a build fails until `VERSION` gets a MINOR bump). Builds from before D-31 (`0.1.0-dev.N`, the June `0.1.1`) rank below `0.2.0`, so they update forward. Windows ships the NSIS installer only: Windows Installer (MSI) cannot carry a third version field above 65535. Rules for the first two digits: [VERSIONING.md](VERSIONING.md).
 
-**Dev install sequence.** Download → `POST /system/update/prepare` every minute until it reports `ready` (no agent run in progress, and the update holds the loop's single-run lock, so no loop run is running or can start; a running loop run is never stopped) → stop the backend through its normal teardown (`/system/shutdown`, then the process-tree kill as a backstop) → install → restart. If the install fails, the old backend is started again and the loop hold is released on that start.
+**Install sequence.** The app checks for updates in the background but never downloads or installs them as part of a check. The user chooses **Update & Restart** to deploy. After confirmation, Locus downloads the signed update, prepares the backend, closes the app and restarts into the installed version. If no update is available or verification fails, the running app stays in place.
 
 **Stale backend check (tauri#15134).** On Windows an NSIS update can leave the previous `locus-backend` sidecar in place. CI stamps the app version into the sidecar (`python -m locus_tooling.build_info <version>` before PyInstaller), and after every start the app compares `build_version` from `GET /system/update/status` with its own version. On a mismatch, or when the backend predates the check, the app stops that backend and shows an error on the loading screen instead of running stale code: quit from the tray and reinstall the latest release. Local builds carry no stamp and are not checked (a warning is logged).
 

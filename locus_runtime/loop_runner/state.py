@@ -88,6 +88,19 @@ def default_loop_home() -> Path:
     return Path(raw).expanduser() if raw else Path.home() / ".locus" / "loop"
 
 
+def runtime_app_version() -> str:
+    """The installed desktop version that produced a loop run, if stamped."""
+    configured = str(os.getenv("LOCUS_APP_VERSION") or "").strip()
+    if configured:
+        return configured
+    try:
+        from locus_tooling.build_info import backend_build_version
+
+        return backend_build_version() or "source"
+    except ImportError:
+        return "source"
+
+
 def read_workflow_front_matter(path: Path) -> dict[str, Any]:
     """The YAML front matter of ``WORKFLOW.md`` ({} if absent/unparseable)."""
     try:

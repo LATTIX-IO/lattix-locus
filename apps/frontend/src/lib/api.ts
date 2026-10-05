@@ -1054,6 +1054,7 @@ export async function deleteSkill(id: string): Promise<{ ok: boolean }> {
 export type IntegrationCatalogEntry = {
   catalog_id: string;
   name: string;
+  summary?: string;
   type: string;
   auth_type: string;
   base_url: string;

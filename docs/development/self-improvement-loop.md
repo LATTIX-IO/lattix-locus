@@ -316,13 +316,16 @@ channel; details and the signing-key setup are in
    publishes installers only and no metadata. A loop PR declares its
    `Release-Impact`; it may bump MINOR, never MAJOR (the D-22 guard holds that
    for the principal).
-3. **Auto-update.** Apps on the Dev channel check on start and every 4 hours,
-   download the update, then poll `POST /system/update/prepare` until no agent
-   run is in progress and the update holds the loop's single-run lock
-   (`loop.lock`, owner `desktop-update-…`). Holding the lock means a running loop
-   run finishes first and no new one starts; `lattix loop serve` ticks return
-   `busy` meanwhile. The app then stops the backend through its normal teardown,
-   installs (signature verified by the updater) and restarts.
+3. **Update available.** Apps on either channel check on start and every 4
+   hours. A check only reports the signed version; it never downloads or
+   installs it. The loop keeps running on the installed version. Each run,
+   evaluation, and scorecard history record includes the installed app version,
+   so local evidence remains attributable across upgrades. Deploying the new
+   version requires the user to choose **Update & Restart**. That explicit
+   action waits for active agent runs to finish, holds the loop, stops the
+   backend through its normal teardown, installs the signed update, and
+   restarts. A stalled run leaves the update pending and releases the loop hold
+   after 30 minutes.
 4. **Version check.** After the restart the app compares the backend's stamped
    `build_version` with its own version and refuses to load a stale backend
    (tauri#15134).
@@ -334,7 +337,7 @@ channel; details and the signing-key setup are in
 6. **Stable promotion.** After testing a Dev build, run `desktop-promote` with its
    version. The same files become `stable-v<version>` (GitHub "latest") and
    `channel-stable/latest.json` moves to it; Stable apps show an "Update
-   available" banner and install on click.
+   available" notice and wait for the user's click to deploy.
 
 Loop autostart (persisted in `LOCUS_LOOP_HOME/desktop-autostart.json`):
 

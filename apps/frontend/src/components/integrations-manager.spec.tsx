@@ -314,6 +314,15 @@ describe("IntegrationsManager", () => {
     await waitFor(() => expect(advanced.open).toBe(true));
   });
 
+  it("shows saved connections before the service catalog", async () => {
+    render(<IntegrationsManager />);
+
+    const saved = (await screen.findByRole("heading", { name: "Your connections" })).parentElement?.parentElement;
+    const catalog = screen.getByText("Connect a service").parentElement?.parentElement;
+    expect(saved?.className).toContain("order-3");
+    expect(catalog?.className).toContain("order-5");
+  });
+
   it("saves integrations and refreshes the list", async () => {
     getIntegrationsMock
       .mockResolvedValueOnce([])
@@ -910,7 +919,13 @@ describe("IntegrationsManager", () => {
         auth_type: "oauth2",
         secret_ref: "",
         capabilities: ["issues", "projects", "comments"],
-        metadata_json: { last_test: { ok: false, warnings: ["Service check failed"] } },
+        metadata_json: {
+          last_test: {
+            ok: false,
+            message: "MCP sign-in was rejected. Reconnect the account, then check again.",
+            warnings: ["MCP handshake failed"],
+          },
+        },
         oauth_status: {
           id: "linear-connection",
           provider: "linear",
@@ -936,9 +951,11 @@ describe("IntegrationsManager", () => {
 
     const card = (await screen.findByRole("heading", { name: "Linear MCP" })).closest("li");
     expect(card).not.toBeNull();
-    expect(card).toHaveTextContent("Needs attention");
+    expect(card).toHaveTextContent("Service check needed");
     expect(card).toHaveTextContent("Signed in");
-    expect(card).toHaveTextContent("Failed");
+    expect(card).toHaveTextContent("Needs another check");
+    expect(card).toHaveTextContent(/could not verify the service/i);
+    expect(card).toHaveTextContent(/reconnect the account, then check again/i);
     expect(screen.getByText("https://mcp.linear.app/mcp")).not.toBeVisible();
 
     fireEvent.click(within(card as HTMLElement).getByRole("button", { name: "Remove connection" }));
@@ -1020,6 +1037,24 @@ describe("IntegrationsManager", () => {
 
   it("reopens the dedicated OAuth status panel from callback query params", async () => {
     window.history.replaceState({}, "", "/library/connections?oauth_panel=1&oauth=connected&integration_id=integration-1");
+    getIntegrationOAuthStatusMock.mockResolvedValue({
+      id: "integration-1",
+      provider: "microsoft",
+      grant_type: "authorization_code",
+      connected: true,
+      pending: false,
+      scopes: ["User.Read"],
+      authorize_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+      token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+      client_id: "locus-microsoft-client",
+      redirect_uri: "https://locus.local/integrations/integration-1/oauth/callback",
+      account_label: "Shared mailbox",
+      expires_at: null,
+      has_client_secret: true,
+      has_refresh_token: true,
+      has_access_token: true,
+      last_error: "",
+    });
     getIntegrationsMock.mockResolvedValue([
       {
         id: "integration-1",
@@ -1065,5 +1100,6 @@ describe("IntegrationsManager", () => {
 
     expect(await screen.findByText(/your account is connected/i)).toBeInTheDocument();
     expect(getIntegrationOAuthStatusMock).toHaveBeenCalledWith("integration-1");
+    await waitFor(() => expect(testIntegrationMock).toHaveBeenCalledWith("integration-1"));
   });
 });

@@ -157,6 +157,7 @@ class ScorecardRequest:
     output_dir: Path
     git_sha: str
     branch: str
+    app_version: str = ""
     #: Failing quality-gate checks (``None`` = the gates were not consulted).
     gate_failures: list[str] | None = None
     trials: int = 1
@@ -311,10 +312,20 @@ class ScorecardHistory:
         *,
         run_id: str,
         issue: str,
+        app_version: str = "",
         now: datetime | None = None,
     ) -> None:
         stamp = (now or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        append_jsonl(self.path, {"at": stamp, "run_id": run_id, "issue": issue, **result.summary()})
+        append_jsonl(
+            self.path,
+            {
+                "at": stamp,
+                "run_id": run_id,
+                "issue": issue,
+                "app_version": app_version,
+                **result.summary(),
+            },
+        )
 
     def load(self, limit: int = 2000) -> list[dict[str, Any]]:
         return read_jsonl(self.path, limit)

@@ -153,6 +153,7 @@ INTEGRATION_CATALOG: list[dict[str, Any]] = [
     {
         "catalog_id": "mcp-linear",
         "name": "Linear MCP",
+        "summary": "Plan and update issues, projects, and comments in your Linear workspace.",
         "type": "custom",
         "auth_type": "oauth2",
         "base_url": "https://mcp.linear.app/mcp",
@@ -174,7 +175,7 @@ INTEGRATION_CATALOG: list[dict[str, Any]] = [
                 "grant_type": "authorization_code",
                 "authorize_url": "https://linear.app/oauth/authorize",
                 "token_url": "https://api.linear.app/oauth/token",
-                "scopes": ["read", "write", "issues:create", "comments:create"],
+                "scopes": ["read", "write"],
                 "redirect_path": "/library/connections?oauth_panel=1",
             },
         },

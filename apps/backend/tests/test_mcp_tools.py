@@ -37,6 +37,65 @@ def test_mcp_client_rejects_non_http_url() -> None:
         raise AssertionError("expected McpError for non-http URL")
 
 
+def test_mcp_client_sends_oauth_headers_and_protects_protocol_headers(monkeypatch) -> None:
+    import json
+
+    from app.mcp_client import McpHttpClient
+
+    requests: list[tuple[dict[str, object], dict[str, str]]] = []
+
+    class _Response:
+        headers = {"Mcp-Session-Id": "server-session"}
+
+        def __init__(self, body: str) -> None:
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return self.body.encode("utf-8")
+
+    def _urlopen(request, *, timeout):
+        payload = json.loads(request.data.decode("utf-8"))
+        headers = {key.lower(): value for key, value in request.header_items()}
+        requests.append((payload, headers))
+        if payload.get("method") == "initialize":
+            body = json.dumps({"jsonrpc": "2.0", "id": payload["id"], "result": {}})
+        elif payload.get("method") == "tools/list":
+            body = json.dumps(
+                {"jsonrpc": "2.0", "id": payload["id"], "result": {"tools": []}}
+            )
+        else:
+            body = ""
+        return _Response(body)
+
+    monkeypatch.setattr("app.mcp_client.urllib.request.urlopen", _urlopen)
+    client = McpHttpClient(
+        "https://mcp.linear.app/mcp",
+        headers={
+            "Authorization": "Bearer linear-test-token",
+            "X-Request-Id": "probe-1",
+            "Accept": "text/plain",
+            "Content-Type": "text/plain",
+            "MCP-Protocol-Version": "attacker-version",
+            "Mcp-Session-Id": "attacker-session",
+        },
+    )
+
+    assert client.list_tools() == []
+    headers = requests[-1][1]
+    assert headers["authorization"] == "Bearer linear-test-token"
+    assert headers["x-request-id"] == "probe-1"
+    assert headers["accept"] == "application/json, text/event-stream"
+    assert headers["content-type"] == "application/json"
+    assert headers["mcp-protocol-version"] == "2025-03-26"
+    assert headers["mcp-session-id"] == "server-session"
+
+
 def _make_configured_mcp_integration(**overrides) -> str:
     integration_id = "mcp-test-integration"
     integration = IntegrationDefinition(

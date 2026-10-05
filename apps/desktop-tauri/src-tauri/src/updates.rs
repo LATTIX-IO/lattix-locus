@@ -4,13 +4,9 @@
 //   (`update-settings.json`, default stable). It selects one of exactly two
 //   compiled-in GitHub URLs via `updater_builder().endpoints(...)`; a URL is
 //   never read from the settings file, the UI or the environment.
-// * Stable: background check on start and every few hours; an available update
-//   only emits `update-available` / `update-status` so the UI shows a banner.
-//   Installing is the user's click (`install_update_and_restart`).
-// * Dev: background check, auto-download, then wait until the backend reports
-//   no agent run in progress and holds the self-improvement loop
-//   (POST /system/update/prepare takes the loop's single-run lock, so a loop
-//   run is never killed), then stop the sidecar, install and restart.
+// * Stable and Dev: background checks only report an available update. The
+//   user starts installation with `install_update_and_restart` from the UI.
+//   Checking for an update must never interrupt work or replace running files.
 // * tauri#15134 (an NSIS update can keep a stale, locked sidecar): the sidecar
 //   is stopped through the normal teardown before installing, and after every
 //   start the shell checks the backend's stamped build version
@@ -47,7 +43,8 @@ const CANCEL_PATH: &str = "/system/update/cancel";
 const SHUTDOWN_PATH: &str = "/system/shutdown";
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(120);
 const CHECK_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
-const IDLE_POLL: Duration = Duration::from_secs(60);
+const INSTALL_READINESS_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const INSTALL_READINESS_POLL: Duration = Duration::from_secs(1);
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(20);
 const HANDSHAKE_ATTEMPTS: u32 = 10;
 
@@ -219,10 +216,6 @@ fn backend_prepare() -> Result<Readiness, String> {
     }
 }
 
-fn backend_cancel() {
-    let _ = computer_use::request("POST", CANCEL_PATH);
-}
-
 /// Stop the sidecar through the normal teardown (the supervisor stops its
 /// children, the loop included, then exits), then the PID-tree kill as a
 /// backstop, so no file in the install dir is locked when the installer runs.
@@ -245,6 +238,7 @@ fn install_and_restart(app: &AppHandle, update: &Update, bytes: Vec<u8>) -> Resu
     match update.install(&bytes) {
         Ok(()) => app.restart(),
         Err(e) => {
+            let _ = computer_use::request("POST", CANCEL_PATH);
             if let Err(start_err) = crate::start_backend(app) {
                 eprintln!("[update] could not restart the backend: {start_err}");
             }
@@ -264,34 +258,6 @@ impl Drop for BusyGuard {
     }
 }
 
-fn dev_install(app: &AppHandle, update: Update) {
-    let version = update.version.clone();
-    set_status(app, "downloading", Some(version.clone()), "");
-    let bytes = match tauri::async_runtime::block_on(update.download(|_, _| {}, || {})) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            set_status(app, "error", Some(version), format!("download failed: {e}"));
-            return;
-        }
-    };
-    loop {
-        if current_channel(app) != Channel::Dev {
-            backend_cancel();
-            set_status(app, "idle", None, "channel changed; the downloaded Dev update was dropped");
-            return;
-        }
-        match backend_prepare() {
-            Ok(readiness) if readiness.ready => break,
-            Ok(readiness) => set_status(app, "waiting_for_idle", Some(version.clone()), readiness.reason),
-            Err(e) => set_status(app, "waiting_for_idle", Some(version.clone()), e),
-        }
-        std::thread::sleep(IDLE_POLL);
-    }
-    if let Err(e) = install_and_restart(app, &update, bytes) {
-        set_status(app, "error", Some(version), e);
-    }
-}
-
 fn run_cycle(app: &AppHandle) {
     if app.state::<UpdateState>().busy.swap(true, Ordering::SeqCst) {
         return; // a check, download or wait is already in progress
@@ -303,17 +269,41 @@ fn run_cycle(app: &AppHandle) {
         .and_then(|updater| tauri::async_runtime::block_on(updater.check()).map_err(|e| e.to_string()));
     match checked {
         Ok(None) => set_status(app, "up_to_date", None, ""),
-        Ok(Some(update)) => match channel {
-            Channel::Stable => {
-                let version = update.version.clone();
-                set_status(app, "available", Some(version.clone()), "");
-                let _ = app.emit(AVAILABLE_EVENT, version);
-            }
-            Channel::Dev => dev_install(app, update),
-        },
+        Ok(Some(update)) => {
+            let version = update.version;
+            set_status(app, "available", Some(version.clone()), "Ready when you are");
+            let _ = app.emit(AVAILABLE_EVENT, version);
+        }
         // No signed metadata published yet, offline, or rate limited: report it
         // in the status; the UI stays quiet.
         Err(e) => set_status(app, "error", None, e),
+    }
+}
+
+/// A user-confirmed update waits until current agent work completes and the
+/// loop lock can be held. Failed or abandoned installs release that hold.
+fn wait_for_update_readiness(
+    app: &AppHandle,
+    channel: Channel,
+    version: &str,
+) -> Result<(), String> {
+    let deadline = Instant::now() + INSTALL_READINESS_TIMEOUT;
+    loop {
+        let detail = match backend_prepare() {
+            Ok(readiness) if readiness.ready => return Ok(()),
+            Ok(readiness) => readiness.reason,
+            Err(error) => format!("Waiting for the local service: {error}"),
+        };
+        set_status(app, "waiting_for_idle", Some(version.to_string()), detail);
+        if Instant::now() >= deadline {
+            let _ = computer_use::request("POST", CANCEL_PATH);
+            return Err("Update paused because current work did not finish within 30 minutes. Try again when it is idle.".to_string());
+        }
+        if current_channel(app) != channel {
+            let _ = computer_use::request("POST", CANCEL_PATH);
+            return Err("Update stopped because the update channel changed.".to_string());
+        }
+        std::thread::sleep(INSTALL_READINESS_POLL);
     }
 }
 
@@ -416,11 +406,16 @@ pub fn get_update_status(app: AppHandle) -> UpdateStatus {
 pub fn set_update_channel(app: AppHandle, channel: String) -> Result<UpdateStatus, String> {
     let channel = Channel::parse(&channel)
         .ok_or_else(|| "unknown update channel (expected \"dev\" or \"stable\")".to_string())?;
+    if app.state::<UpdateState>().busy.swap(true, Ordering::SeqCst) {
+        return Err("An update check or deployment is already in progress.".to_string());
+    }
+    let guard = BusyGuard(app.clone());
     save_channel(&app, channel)?;
     if let Ok(mut slot) = app.state::<UpdateState>().channel.lock() {
         *slot = channel;
     }
     set_status(&app, "idle", None, format!("channel set to {}", channel.as_str()));
+    drop(guard);
     trigger(&app);
     Ok(status_snapshot(&app))
 }
@@ -440,7 +435,12 @@ pub async fn check_for_update(app: AppHandle) -> Result<Option<String>, String> 
 /// confirms first and shows any agent runs in progress.
 #[tauri::command]
 pub async fn install_update_and_restart(app: AppHandle) -> Result<(), String> {
-    let updater = updater_for(&app, current_channel(&app))?;
+    if app.state::<UpdateState>().busy.swap(true, Ordering::SeqCst) {
+        return Err("An update check or deployment is already in progress.".to_string());
+    }
+    let guard = BusyGuard(app.clone());
+    let channel = current_channel(&app);
+    let updater = updater_for(&app, channel)?;
     let update = updater
         .check()
         .await
@@ -453,8 +453,8 @@ pub async fn install_update_and_restart(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        // Best effort: hold the loop so no new loop run starts during the install.
-        let _ = backend_prepare();
+        let _guard = guard;
+        wait_for_update_readiness(&handle, channel, &update.version)?;
         install_and_restart(&handle, &update, bytes)
     })
     .await

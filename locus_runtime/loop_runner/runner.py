@@ -175,6 +175,7 @@ from locus_runtime.loop_runner.state import (
     append_run_history,
     kill_switch_reason,
     read_run_history,
+    runtime_app_version,
     today_utc,
     write_json_atomic,
 )
@@ -698,6 +699,7 @@ class LoopRunner:
         branch = branch_name(issue.identifier, issue.title)
         record = {
             "run_id": run_id,
+            "app_version": runtime_app_version(),
             "issue_id": issue.id,
             "issue_key": issue.identifier,
             "title": issue.title,
@@ -1717,6 +1719,7 @@ class LoopRunner:
         ledger.set_active(None)
         last = {
             "run_id": record["run_id"],
+            "app_version": record.get("app_version") or runtime_app_version(),
             "issue": record["issue_key"],
             "outcome": outcome,
             "detail": _safe(detail, 300),
@@ -2038,7 +2041,11 @@ class LoopRunner:
         }
         try:
             EvalHistory(self.config.home).append(
-                result, run_id=run_id, issue=issue.identifier, now=self.clock()
+                result,
+                run_id=run_id,
+                issue=issue.identifier,
+                app_version=runtime_app_version(),
+                now=self.clock(),
             )
         except OSError:
             logger.exception("loop.eval_history_write_error", extra={"run_id": run_id})
@@ -2071,6 +2078,7 @@ class LoopRunner:
                 if self.config.coding_harness == "codex"
                 else SCORECARD_DEFAULT_MODEL
             ),
+            app_version=runtime_app_version(),
             python=self.config.scorecard_python,
             run_kwargs=dict(self.scorecard_run_kwargs),
         )
@@ -2124,7 +2132,11 @@ class LoopRunner:
         record["scorecard"] = result.summary()
         try:
             ScorecardHistory(self.config.home).append(
-                result, run_id=run_id, issue=issue.identifier, now=self.clock()
+                result,
+                run_id=run_id,
+                issue=issue.identifier,
+                app_version=runtime_app_version(),
+                now=self.clock(),
             )
         except OSError:
             logger.exception("loop.scorecard_history_write_error", extra={"run_id": run_id})
