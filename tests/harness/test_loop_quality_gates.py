@@ -398,7 +398,7 @@ def test_repeated_failure_files_exactly_one_issue(
     assert len(tracker.created) == 1
     created = tracker.created[0]
     assert created["team_id"] == "team-1" and created["slug"] == "slug"
-    assert created["state_name"] == "" and created["label_name"] == ""
+    assert created["state_name"] == "Triage" and created["label_name"] == ""
     assert "stopped/budget" in created["title"]
     assert f"{FAILURE_MARKER}: " in created["description"]
     assert "3 time(s)" not in created["description"]  # filed at the 2nd occurrence
