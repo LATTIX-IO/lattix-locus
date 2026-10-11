@@ -53,3 +53,17 @@ values produce distinct durable digests; raw output values are not persisted.
 An unserializable or oversized result becomes **uncertain**, because its
 external side effect may already have happened. A digest alone is not a
 provider-signed result receipt and must not substitute for later verification.
+
+## Independent security review follow-up
+
+Supervisor identity is bound to the original registered parent session token
+digest, not merely the publicly known run ID. The intent fingerprint is
+restart-stable (derived from signed decision action facts and argument digest,
+not the process-local Gateway approval HMAC). A shared-DB recovery scan is
+**read-only**: it must not rewrite an active dispatch being executed by a
+second broker. Such records are non-replayable even before an exclusive
+process-liveness/fencing mechanism can safely establish orphan status.
+Unexpected failures *returned by the callback* are explicitly stored
+`uncertain` and may be recorded with a trusted supervisor evidence reference.
+A genuine process-crash dispatch requires a subsequent exclusive/fenced
+reconciliation workflow; this incremental module does not claim one.

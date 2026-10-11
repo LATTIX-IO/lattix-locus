@@ -18,7 +18,7 @@ def setup(tmp_path):
     ledger, plan, parent, clock = build(tmp_path)
     reserved = ledger.reserve(plan, parent, request())
     lease = ledger.admit(plan, parent, reserved.reservation_id, engine="receipt-test")
-    receipts = PodActionReceipts(ledger)
+    receipts = PodActionReceipts(ledger, supervisor=parent)
     return ledger, receipts, parent, lease, clock
 
 
@@ -98,7 +98,7 @@ def test_crash_after_write_ahead_dispatch_is_uncertain_and_not_replayable(tmp_pa
     receipts.begin_dispatch(lease, action.action_id)
     restarted = PodActionReceipts(PodReservationLedger(tmp_path / "pods.db", clock=clock))
     assert restarted.recover_ambiguous() == (action.action_id,)
-    assert restarted.get(action.action_id).state == "uncertain"
+    assert restarted.get(action.action_id).state == "dispatching"
     with pytest.raises(ActionReplayDenied):
         restarted.begin_dispatch(lease, action.action_id)
     with pytest.raises(ActionReplayDenied):
@@ -167,11 +167,15 @@ def test_cross_pod_or_forged_lease_is_rejected(tmp_path):
 def test_ambiguous_reconciliation_requires_exact_registered_supervisor(tmp_path):
     _, receipts, parent, lease, _ = setup(tmp_path)
     rec = receipts.prepare(lease, idempotency_key="reconcile", authorization=_ACTION)
-    receipts.begin_dispatch(lease, rec.action_id)
-    receipts.recover_ambiguous()
+    def timed_out():
+        raise TimeoutError("external result ambiguous")
+    with pytest.raises(TimeoutError):
+        receipts.execute_once(lease, idempotency_key="reconcile",
+                              authorization=_ACTION, invoke=timed_out)
+    assert receipts.get(rec.action_id).state == "uncertain"
     foreign = Gateway(FakeEngine(), lambda _: None)
     foreign_session = foreign.open_session(
-        run_id="unrelated", principal="attacker", engine="harness",
+        run_id=parent.caller.run_id, principal=parent.caller.principal, engine="harness",
         allow_child_delegation=True, capabilities=Capabilities()
     )
     with pytest.raises(AdmissionDenied):
@@ -231,3 +235,25 @@ def test_successful_action_receipt_binds_actual_result_not_merely_its_type(tmp_p
     assert len(values) == 2
     assert all(len(v) == 64 for v in values)
     assert "secret@example.org" not in repr(values)
+
+
+
+def test_recovery_scan_must_not_clobber_still_live_dispatch(tmp_path):
+    _, receipts, _, lease, _ = setup(tmp_path)
+    rec = receipts.prepare(lease, idempotency_key="live", authorization=_ACTION)
+    receipts.begin_dispatch(lease, rec.action_id)
+    assert receipts.recover_ambiguous() == (rec.action_id,)
+    # The original owner may still be executing: it can finish normally.
+    completed = receipts._complete(rec.action_id, "succeeded", evidence="broker-ok")
+    assert completed.state == "succeeded"
+    assert receipts.recover_ambiguous() == ()
+
+
+def test_durable_action_fingerprint_excludes_process_ephemeral_hmac(tmp_path):
+    _, receipts, _, lease, _ = setup(tmp_path)
+    first = receipts.prepare(lease, idempotency_key="stable", authorization=_ACTION)
+    # A different signed GatewayDecision is issued for the same logical
+    # action; idempotency must still resolve the same durable record.
+    second = receipts.prepare(lease, idempotency_key="stable", authorization=_ACTION)
+    assert first.action_id == second.action_id
+    assert first.fingerprint == second.fingerprint

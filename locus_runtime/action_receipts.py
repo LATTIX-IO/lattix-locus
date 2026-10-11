@@ -67,8 +67,12 @@ class PodActionReceipts:
     worker code. Only the trusted tool broker may pass execution callbacks.
     """
 
-    def __init__(self, reservations: PodReservationLedger) -> None:
+    def __init__(self, reservations: PodReservationLedger,
+                 *, supervisor: GatewaySession | None = None) -> None:
         self.reservations = reservations
+        # Only a trusted supervisor may authorize *new* action intents.
+        # Read/recovery APIs can reopen the database without this handle.
+        self._supervisor = supervisor
         self._initialize()
 
     def _initialize(self) -> None:
@@ -89,6 +93,7 @@ class PodActionReceipts:
                 idempotency_key TEXT NOT NULL,
                 fingerprint TEXT NOT NULL,
                 gateway_audit_id TEXT NOT NULL,
+                supervisor_token_digest TEXT NOT NULL,
                 action_kind TEXT NOT NULL,
                 child_run_id TEXT NOT NULL,
                 state TEXT NOT NULL,
@@ -154,13 +159,24 @@ class PodActionReceipts:
             raise AdmissionDenied("action was not allowed by Zero Trust gateway")
         if not decision.audit_id or not decision.fingerprint:
             raise AdmissionDenied("missing signed action provenance")
-        digest = _sha("|".join((
-            decision.action_kind, decision.tool, decision.fingerprint,
+        # GatewayDecision is freshly process-signed, but its fingerprint
+        # includes an ephemeral HMAC key. The durable action identity is
+        # independent of that per-process key and recomputable after restart.
+        digest = _sha(json.dumps([
+            decision.action_kind, decision.tool, decision.target,
             decision.args_digest, lease.run_id,
-        )))
+        ], separators=(",", ":"), ensure_ascii=True))
         with self.reservations._connect() as db:
             self.reservations._tx(db)
             pod = self._active_locked(db, lease)
+            supervisor = self._supervisor
+            if supervisor is None or supervisor.gateway is not lease._session.gateway:
+                raise AdmissionDenied("missing bound trusted supervisor identity")
+            trusted = supervisor.gateway._authenticate(supervisor.caller)
+            if (trusted is None or not trusted.can_delegate
+                or pod["parent_id"] != supervisor.caller.run_id):
+                raise AdmissionDenied("unregistered or foreign supervising authority")
+            supervisor_digest = _sha(supervisor.caller.token)
             old = db.execute("""SELECT * FROM pod_action_receipt
                 WHERE reservation_id=? AND idempotency_key=?""",
                 (lease.reservation_id, idempotency_key)).fetchone()
@@ -187,9 +203,11 @@ class PodActionReceipts:
             action_id = secrets.token_urlsafe(24)
             db.execute("""INSERT INTO pod_action_receipt
                 (id,reservation_id,idempotency_key,fingerprint,gateway_audit_id,
-                 action_kind,child_run_id,state) VALUES(?,?,?,?,?,?,?,?)""",
+                 supervisor_token_digest,action_kind,child_run_id,state)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
                 (action_id, lease.reservation_id, idempotency_key, digest,
-                 decision.audit_id, decision.action_kind, lease.run_id, "prepared"))
+                 decision.audit_id, supervisor_digest, decision.action_kind,
+                 lease.run_id, "prepared"))
             db.execute("""INSERT INTO pod_action_audit(action_id,event)
                 VALUES (?,?)""", (action_id, "prepared"))
             return self._record(self._row(db, action_id))
@@ -247,16 +265,15 @@ class PodActionReceipts:
             return self._record(self._row(db, action_id))
 
     def recover_ambiguous(self) -> tuple[str, ...]:
-        """On restart, mark all interrupted dispatches uncertain, never replay."""
+        """Report possibly orphaned dispatches; NEVER alter a live callback.
+
+        A broker opening the shared DB cannot distinguish a crashed worker
+        from another live worker. Retain 'dispatching' and the replay block;
+        a later exclusive recovery controller must prove liveness/fencing.
+        """
         with self.reservations._connect() as db:
-            self.reservations._tx(db)
             rows = db.execute("""SELECT id FROM pod_action_receipt
-                WHERE state='dispatching'""").fetchall()
-            for row in rows:
-                db.execute("UPDATE pod_action_receipt SET state='uncertain' WHERE id=?",
-                           (row["id"],))
-                db.execute("""INSERT INTO pod_action_audit(action_id,event)
-                    VALUES (?,?)""", (row["id"], "uncertain"))
+                WHERE state='dispatching' ORDER BY id""").fetchall()
             return tuple(row["id"] for row in rows)
 
     def reconcile(self, parent: GatewaySession, action_id: str,
@@ -276,8 +293,9 @@ class PodActionReceipts:
             row = self._row(db, action_id)
             pod = db.execute("SELECT parent_id FROM pod_attempt WHERE id=?",
                              (row["reservation_id"],)).fetchone()
-            if pod is None or pod["parent_id"] != parent.caller.run_id:
-                raise AdmissionDenied("supervisor does not own action")
+            if (pod is None or pod["parent_id"] != parent.caller.run_id
+                or row["supervisor_token_digest"] != _sha(parent.caller.token)):
+                raise AdmissionDenied("supervisor token is not the recorded parent authority")
             if row["state"] != "uncertain":
                 raise ActionReplayDenied("only uncertain actions can be reconciled")
             digest = _sha(external_receipt)
