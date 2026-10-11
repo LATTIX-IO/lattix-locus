@@ -40,8 +40,6 @@ class ResourceBudget:
     def __post_init__(self) -> None:
         if any(type(getattr(self, k)) is not int or getattr(self, k) < 0 for k in _FIELDS):
             raise ValueError("resource budgets require nonnegative integer units")
-        if self.wall_seconds == 0:
-            raise ValueError("wall_seconds must be positive")
         if self.tool_calls > self.actions:
             raise ValueError("tool calls cannot exceed action reservation")
 
@@ -100,6 +98,8 @@ class ReservationRequest:
             raise ValueError("node, attempt and pod revision must be bounded and nonblank")
         if type(self.lease_seconds) is not int or not 1 <= self.lease_seconds <= 86400:
             raise ValueError("lease_seconds must be in 1..86400")
+        if self.requested.wall_seconds == 0:
+            raise ValueError("requested wall_seconds must be positive")
         if self.requested.wall_seconds > self.lease_seconds:
             raise ValueError("requested execution duration exceeds lease")
 
@@ -203,7 +203,8 @@ class PodReservationLedger:
             db.execute("""CREATE TABLE IF NOT EXISTS pod_attempt (
                 id TEXT PRIMARY KEY, parent_id TEXT NOT NULL REFERENCES parent_budget(run_id),
                 node_id TEXT NOT NULL, attempt_key TEXT NOT NULL, revision TEXT NOT NULL,
-                fingerprint TEXT NOT NULL, requested TEXT NOT NULL, used TEXT NOT NULL,
+                fingerprint TEXT NOT NULL, plan_digest TEXT NOT NULL,
+                requested TEXT NOT NULL, used TEXT NOT NULL,
                 state TEXT NOT NULL, expires_at INTEGER NOT NULL, child_run_id TEXT,
                 evidence TEXT, UNIQUE(parent_id, attempt_key)
             )""")
@@ -236,9 +237,13 @@ class PodReservationLedger:
     def register_parent(self, compiled: CompiledTaskPlan, parent: GatewaySession,
                         *, max_tool_calls: int) -> LedgerSnapshot:
         self._authenticate(parent)
+        registered = parent.gateway._authenticate(parent.caller)
+        if registered is None or not registered.can_delegate:
+            raise AdmissionDenied("parent gateway session cannot delegate")
+        trusted_caps = registered.capabilities
         if type(max_tool_calls) is not int or max_tool_calls <= 0:
             raise AdmissionDenied("parent tool-call limit must be finite")
-        if parent.capabilities.max_tool_calls > 0 and max_tool_calls > parent.capabilities.max_tool_calls:
+        if trusted_caps.max_tool_calls > 0 and max_tool_calls > trusted_caps.max_tool_calls:
             raise AdmissionDenied("parent tool-call reservation exceeds gateway limit")
         validate_task_plan(compiled.plan)
         if compiled.plan.intent.requester_id != parent.caller.principal:
@@ -250,6 +255,19 @@ class PodReservationLedger:
                                 budget.wall_seconds, budget.spend_microunits)
         if limits.actions <= 0 or limits.tokens <= 0:
             raise AdmissionDenied("parent must have finite positive action and token limits")
+        if trusted_caps.max_actions is not None and limits.actions > trusted_caps.max_actions:
+            raise AdmissionDenied("parent plan widens gateway action limit")
+        if trusted_caps.budget is not None:
+            parent_budget = trusted_caps.budget
+            if (parent_budget.max_tokens is not None
+                and limits.tokens > parent_budget.max_tokens):
+                raise AdmissionDenied("parent plan widens gateway token limit")
+            if (parent_budget.max_duration_seconds is not None
+                and limits.wall_seconds > parent_budget.max_duration_seconds):
+                raise AdmissionDenied("parent plan widens gateway duration limit")
+            if (parent_budget.max_cost_usd is not None
+                and limits.spend_microunits / 1_000_000 > parent_budget.max_cost_usd):
+                raise AdmissionDenied("parent plan widens gateway spend limit")
         with self._connect() as db:
             self._tx(db)
             existing = db.execute("SELECT * FROM parent_budget WHERE run_id=?",
@@ -288,7 +306,9 @@ class PodReservationLedger:
 
     def snapshot(self, run_id: str) -> LedgerSnapshot:
         with self._connect() as db:
-            parent = self._parent(db, run_id)
+            parent = db.execute("SELECT * FROM parent_budget WHERE run_id=?", (run_id,)).fetchone()
+            if parent is None:
+                raise AdmissionDenied("unknown parent")
             limit = _decode_budget(parent["limits"])
             used, held = self._totals(db, run_id)
             return LedgerSnapshot(limit, used, held, limit.subtract(used.plus(held)),
@@ -303,7 +323,7 @@ class PodReservationLedger:
     @staticmethod
     def _as_reservation(row: sqlite3.Row) -> ResourceReservation:
         return ResourceReservation(row["id"], row["parent_id"], row["node_id"],
-            row["attempt_key"], row["fingerprint"], row["state"],
+            row["attempt_key"], row["plan_digest"], row["state"],
             _decode_budget(row["requested"]), _decode_budget(row["used"]),
             row["expires_at"], row["child_run_id"])
 
@@ -359,11 +379,11 @@ class PodReservationLedger:
                 raise AdmissionDenied("parent's available budget is exhausted")
             rid = secrets.token_urlsafe(24)
             db.execute("""INSERT INTO pod_attempt
-                (id,parent_id,node_id,attempt_key,revision,fingerprint,requested,used,state,expires_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (id,parent_id,node_id,attempt_key,revision,fingerprint,plan_digest,requested,used,state,expires_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (rid, run_id, request.node_id, request.attempt_key, request.pod_revision,
-                 digest, _encode_budget(request.requested), _encode_budget(ResourceBudget.zero()),
-                 "reserved", self._now() + request.lease_seconds))
+                 digest, compiled.digest, _encode_budget(request.requested),
+                 _encode_budget(ResourceBudget.zero()), "reserved", self._now() + request.lease_seconds))
             db.execute("UPDATE parent_budget SET version=version+1 WHERE run_id=?", (run_id,))
             self._event(db, run_id, rid, "reserved")
             return self._as_reservation(self._row(db, rid))
