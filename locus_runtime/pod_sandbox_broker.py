@@ -162,8 +162,22 @@ class PodSandboxBroker:
             requested_hosts=[],
         )
         plan = SandboxManager(force_strategy=strategy).plan(spec, policy)
-        if plan.strategy != strategy or not plan.command or plan.backend.startswith("k8s-"):
+        if (plan.strategy != strategy or plan.backend != strategy.value
+            or not isinstance(plan.command, list) or not plan.command
+            or any(not isinstance(arg, str) or not arg or "\x00" in arg
+                   for arg in plan.command)):
             raise AdmissionDenied("sandbox planning failed closed")
+        # Never allow a planner to silently degrade to the allowlisted host
+        # executable. A policy decision is not itself a process boundary.
+        if plan.command[0] == command.argv[0] or plan.command == list(command.argv):
+            raise AdmissionDenied("direct host execution is prohibited")
+        launcher_cwd = plan.metadata.get("launcher_cwd")
+        if launcher_cwd is not None and (
+            not isinstance(launcher_cwd, str) or not launcher_cwd
+            or not (Path(launcher_cwd).is_absolute()
+                    or PureWindowsPath(launcher_cwd).is_absolute())
+        ):
+            raise AdmissionDenied("sandbox launcher directory is invalid")
         audit_command = shlex.join(command.argv)
         facts = _jail_facts(strategy)
         # Do not let a second runner reclassify the jail based on metadata
@@ -184,7 +198,7 @@ class PodSandboxBroker:
                 plan.command, shell=False, check=False,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 timeout=command.timeout_seconds,
-                env=env, cwd=plan.metadata.get("launcher_cwd") or None,
+                env=env, cwd=launcher_cwd,
             )
             return {
                 "exit_code": result.returncode,
