@@ -90,12 +90,20 @@ class SandboxedPodToolBroker:
         plan = self._manager.plan(spec, policy)
         if plan.strategy not in CONFINING_STRATEGIES or not plan.command:
             raise AdmissionDenied("sandbox is not sufficiently confining")
-        if plan.strategy.value == "restricted_process":
-            raise AdmissionDenied("restricted process is not a security sandbox")
+        # An isolation plan must invoke a distinct sandbox launcher, never
+        # hand back the tool command for unconfined direct host execution.
+        if list(plan.command) == list(descriptor.argv):
+            raise AdmissionDenied("sandbox plan cannot directly invoke tool")
+        if any(not isinstance(arg, str) or not arg or "\x00" in arg
+               for arg in plan.command):
+            raise AdmissionDenied("malformed sandbox launcher command")
+        launcher_cwd = plan.metadata.get("launcher_cwd", descriptor.cwd)
+        if not isinstance(launcher_cwd, str) or not Path(launcher_cwd).is_absolute():
+            raise AdmissionDenied("invalid sandbox launcher working directory")
         def invoke() -> BrokerResult:
             try:
                 result = self._run(list(plan.command), shell=False,
-                    cwd=descriptor.cwd, env={"PATH": os.defpath},
+                    cwd=launcher_cwd, env={"PATH": os.defpath},
                     capture_output=True, timeout=descriptor.max_seconds, check=False)
             except (subprocess.TimeoutExpired, OSError):
                 # Receipt layer quarantines ambiguous callbacks and forbids replay.
