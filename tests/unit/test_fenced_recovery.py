@@ -123,10 +123,9 @@ def test_recovery_is_bound_to_original_supervisor_token_not_claimed_run_id(tmp_p
         capabilities=Capabilities(max_actions=10),
     )
     controller = FencedActionRecovery(receipts)
-    with pytest.raises(AdmissionDenied):
-        controller.inspect(intruder)
-        # If the identity matches, inspect returns empty rather than throwing;
-        # recover is still required to enforce the stronger per-action token.
+    # A forged run ID gets no matching records and cannot recover an
+    # explicitly named action owned by the original token.
+    assert controller.inspect(intruder) == ()
     with pytest.raises(AdmissionDenied):
         controller.recover(intruder, action_ids=[rec.action_id])
     assert receipts.get(rec.action_id).state == "dispatching"
