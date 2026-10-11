@@ -13,6 +13,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Mapping, TypeVar, cast
 
+from locus_runtime.action_fencing import action_lock
 from locus_runtime.gateway import GatewaySession
 from locus_runtime.pod_reservations import AdmissionDenied, PodLease, PodReservationLedger
 
@@ -213,7 +214,12 @@ class PodActionReceipts:
             return self._record(self._row(db, action_id))
 
     def begin_dispatch(self, lease: PodLease, action_id: str) -> ActionRecord:
-        """Write/commit dispatch intent before invoking any external effect."""
+        """Legacy/manual dispatch; never eligible for automated crash recovery."""
+        return self._begin_dispatch(lease, action_id, guarded=False)
+
+    def _begin_dispatch(self, lease: PodLease, action_id: str,
+                        *, guarded: bool) -> ActionRecord:
+        """Write dispatch intent, including OS-fence eligibility atomically."""
         with self.reservations._connect() as db:
             self.reservations._tx(db)
             self._active_locked(db, lease)
@@ -225,6 +231,11 @@ class PodActionReceipts:
             db.execute("UPDATE pod_action_receipt SET state='dispatching' WHERE id=?", (action_id,))
             db.execute("INSERT INTO pod_action_audit(action_id,event) VALUES (?,?)",
                        (action_id, "dispatching"))
+            if guarded:
+                # Only the trusted execute_once broker enters this path
+                # while holding a kernel lock for the entire callback.
+                db.execute("INSERT INTO pod_action_audit(action_id,event) VALUES (?,?)",
+                           (action_id, "fence_guarded"))
             return self._record(self._row(db, action_id))
 
     def _complete(self, action_id: str, state: Literal["succeeded", "uncertain"],
@@ -247,18 +258,23 @@ class PodActionReceipts:
         """Trusted broker only: at-most-once *invocation*, not exactly-once effect."""
         intent = self.prepare(lease, idempotency_key=idempotency_key,
                               authorization=authorization)
-        self.begin_dispatch(lease, intent.action_id)
-        try:
-            output = invoke()
-            digest = _result_digest(output)
-        except BaseException as exc:
-            # The external effect may have completed before a provider timeout
-            # or worker crash. Never replay; require out-of-band proof.
-            self._complete(intent.action_id, "uncertain",
-                           evidence=type(exc).__qualname__)
-            raise
-        receipt = self._complete(intent.action_id, "succeeded", evidence=digest)
-        return receipt, output
+        # Kernel mutex is held across both the write-ahead dispatch and the
+        # entire callback/result receipt. Another local recovery controller
+        # cannot mistake live work for a crashed process.
+        with action_lock(self.reservations.path, intent.action_id) as acquired:
+            if not acquired:
+                raise ActionReplayDenied("another live broker owns this action")
+            self._begin_dispatch(lease, intent.action_id, guarded=True)
+            try:
+                output = invoke()
+                digest = _result_digest(output)
+            except BaseException as exc:
+                # Never retry ambiguous provider results automatically.
+                self._complete(intent.action_id, "uncertain",
+                               evidence=type(exc).__qualname__)
+                raise
+            receipt = self._complete(intent.action_id, "succeeded", evidence=digest)
+            return receipt, output
 
     def get(self, action_id: str) -> ActionRecord:
         with self.reservations._connect() as db:
