@@ -138,9 +138,10 @@ class PodLease:
         self._ledger = ledger
         self._reservation_id = reservation_id
         self._session = session
-        self._gateway_budget = session.capabilities.budget
-        if self._gateway_budget is None:
+        budget = session.capabilities.budget
+        if budget is None:
             raise AdmissionDenied("bounded child gateway budget required")
+        self._gateway_budget: BudgetFigures = budget
 
     @property
     def reservation_id(self) -> str:
