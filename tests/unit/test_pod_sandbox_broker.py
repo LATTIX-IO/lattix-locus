@@ -388,4 +388,4 @@ def test_docker_launch_requires_expected_cli_prefix(tmp_path, monkeypatch):
         app.execute(lease, cmd(tmp_path))
     assert not invocations
     with receipts.reservations._connect() as db:
-        assert db.execute("SELECT state FROM pod_action_receipt").fetchone() is not None
+        assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
