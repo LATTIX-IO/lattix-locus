@@ -415,6 +415,8 @@ class PodReservationLedger:
             if node is None:
                 raise AdmissionDenied("reserved node not present in plan")
             db.execute("UPDATE pod_attempt SET state='admitting' WHERE id=?", (reservation_id,))
+            db.execute("UPDATE parent_budget SET version=version+1 WHERE run_id=?",
+                       (row["parent_id"],))
             self._event(db, row["parent_id"], reservation_id, "admitting")
         request = _decode_budget(row["requested"])
         ceiling = RiskClass[node.authority.risk_ceiling]
@@ -441,16 +443,21 @@ class PodReservationLedger:
                     raise AdmissionDenied("admission changed while creating gateway session")
                 db.execute("UPDATE pod_attempt SET state='active',child_run_id=? WHERE id=?",
                            (child.caller.run_id, reservation_id))
+                db.execute("UPDATE parent_budget SET version=version+1 WHERE run_id=?",
+                           (parent.caller.run_id,))
                 self._event(db, parent.caller.run_id, reservation_id, "active")
             return PodLease(self, reservation_id, child)
         except Exception:
             if child is not None:
                 child.close()
-            # An uncertain gateway admission remains quarantined until an
-            # operator reconciles it; do not silently reallocate its budgets.
+            # A definitively refused gateway child admission had no launched
+            # session, so its hold may be released. A child created before an
+            # ambiguous persistence failure retains its full hold for manual
+            # reconciliation; do not blindly retry potentially started work.
             try:
-                self._transition(reservation_id, frozenset({"admitting"}), "uncertain",
-                                 note="admission_failure_reconcile")
+                outcome = "canceled" if child is None else "uncertain"
+                self._transition(reservation_id, frozenset({"admitting"}), outcome,
+                                 note="gateway_refused" if child is None else "admission_failure_reconcile")
             except AdmissionDenied:
                 pass
             raise
@@ -475,6 +482,8 @@ class PodReservationLedger:
                 or cumulative.tool_calls > cumulative.actions):
                 raise AdmissionDenied("usage must be monotone and within reservation")
             db.execute("UPDATE pod_attempt SET used=? WHERE id=?", (_encode_budget(cumulative), reservation_id))
+            db.execute("UPDATE parent_budget SET version=version+1 WHERE run_id=?",
+                       (row["parent_id"],))
             self._event(db, row["parent_id"], reservation_id, "usage_settled")
             return self._as_reservation(self._row(db, reservation_id))
 
