@@ -13,7 +13,7 @@ import sqlite3
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable
 
 from locus_runtime.gateway import BudgetFigures, Capabilities, GatewaySession, RiskClass
 from locus_runtime.task_graph_contract import TaskNode, validate_task_plan
