@@ -67,3 +67,14 @@ Unexpected failures *returned by the callback* are explicitly stored
 `uncertain` and may be recorded with a trusted supervisor evidence reference.
 A genuine process-crash dispatch requires a subsequent exclusive/fenced
 reconciliation workflow; this incremental module does not claim one.
+
+## Durable authorized action identity
+
+Both `GatewayDecision.fingerprint` and `GatewayDecision.args_digest` use
+Gateway's process-local signing key. Neither is suitable as a persistent
+idempotency key. This increment instead HMACs canonically serialized
+trusted request facts with the random **child run session token**; only
+the digest is stored. Rotating the Gateway's process signing key cannot
+change the action identity. Unsupported noncanonical Python objects are
+denied rather than stringified into unstable identities. Full-process
+Gateway session rehydration remains a separate protected increment.
