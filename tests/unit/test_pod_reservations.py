@@ -283,3 +283,12 @@ def test_snapshot_version_advances_on_settlement(tmp_path):
     assert version_admitted > old_version
     lease.settle(budget(1, 1, 10, 1, 100))
     assert ledger.snapshot(parent.caller.run_id).version > version_admitted
+
+
+
+def test_sqlite_connection_is_closed_after_context_manager(tmp_path):
+    ledger = PodReservationLedger(tmp_path / "pods.db")
+    with ledger._connect() as db:
+        assert db.execute("SELECT version FROM schema_meta").fetchone()[0] == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        db.execute("SELECT version FROM schema_meta")
