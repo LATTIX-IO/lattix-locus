@@ -11,9 +11,10 @@ import json
 import secrets
 import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Callable, cast
+from typing import Callable, Iterator, cast
 
 from locus_runtime.gateway import BudgetFigures, Capabilities, GatewayDecision, GatewaySession, RiskClass
 from locus_runtime.task_graph_contract import TaskNode, validate_task_plan
@@ -176,12 +177,19 @@ class PodReservationLedger:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        # sqlite3.Connection.__exit__ commits/rolls back but does not close:
+        # a long-running supervisor must not leak descriptors per operation.
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA busy_timeout=30000")
-        db.execute("PRAGMA foreign_keys=ON")
-        return db
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA busy_timeout=30000")
+            db.execute("PRAGMA foreign_keys=ON")
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def _initialize(self) -> None:
         with self._connect() as db:
