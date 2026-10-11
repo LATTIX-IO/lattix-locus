@@ -277,3 +277,60 @@ def test_unsupported_custom_authorization_object_is_not_serialized(tmp_path, mon
         )
     with receipts.reservations._connect() as db:
         assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+def test_direct_host_launcher_plan_is_rejected(tmp_path, monkeypatch):
+    executions = docker(monkeypatch)
+    from locus_runtime.sandbox import ExecutionPlan
+    monkeypatch.setattr(
+        broker_module.SandboxManager, "plan",
+        lambda self, spec, policy: ExecutionPlan(
+            backend="hardened-docker", command=list(spec.command),
+            strategy=IsolationStrategy.HARDENED_DOCKER,
+        ),
+    )
+    app, receipts, lease, _ = fixture(tmp_path)
+    with pytest.raises(AdmissionDenied, match="direct host execution"):
+        app.execute(lease, cmd(tmp_path))
+    assert not executions
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("launcher", [
+    ["docker", "run", ""], ["docker", "run", "bad\\x00arg"],
+    ["docker", "run", 12], [],
+])
+def test_malformed_sandbox_launcher_fails_before_dispatch(tmp_path, monkeypatch, launcher):
+    executions = docker(monkeypatch)
+    from locus_runtime.sandbox import ExecutionPlan
+    monkeypatch.setattr(
+        broker_module.SandboxManager, "plan",
+        lambda self, spec, policy: ExecutionPlan(
+            backend="hardened-docker", command=launcher,
+            strategy=IsolationStrategy.HARDENED_DOCKER,
+        ),
+    )
+    app, receipts, lease, _ = fixture(tmp_path)
+    with pytest.raises(AdmissionDenied, match="sandbox planning"):
+        app.execute(lease, cmd(tmp_path))
+    assert not executions
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+def test_relative_launcher_working_directory_denied(tmp_path, monkeypatch):
+    executions = docker(monkeypatch)
+    from locus_runtime.sandbox import ExecutionPlan
+    monkeypatch.setattr(
+        broker_module.SandboxManager, "plan",
+        lambda self, spec, policy: ExecutionPlan(
+            backend="hardened-docker", command=["docker", "run", "--rm", "fixed"],
+            strategy=IsolationStrategy.HARDENED_DOCKER,
+            metadata={"launcher_cwd": "../escape"},
+        ),
+    )
+    app, _, lease, _ = fixture(tmp_path)
+    with pytest.raises(AdmissionDenied, match="launcher directory"):
+        app.execute(lease, cmd(tmp_path))
+    assert not executions
