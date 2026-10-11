@@ -81,3 +81,14 @@ These are constraints, not aspirations. A feature or screen that violates one is
 **P31 · One design system.** Every UI element is a reusable component from the Locus design system, with tokens for colour, type, spacing and motion. No screen ships a one-off implementation of something the system has, or should have. A missing component is added to the system first, then used.
 
 **P32 · Security first; debt only by informed consent.** Every change meets the security principles (P6–P12) and `SECURITY.md` as written. A shortcut that weakens security ships only if the principal has explicitly accepted it after being told the risk. It is then recorded as tech debt with an owner, a Linear issue and a removal target, and shown on the Posture page.
+
+
+## General-purpose meta-harness principles (D-32–D-35)
+
+**P33 · Domain parity over coding primacy.** Coding, research, documents, data analysis, communication, business operations and computer use share the same task intake, authorization, artifact, verification and recovery contracts. Domain-specific tools and expert strategies may differ. Claim quality only with per-domain held-out evidence, not coding benchmarks alone.
+
+**P34 · Ephemeral experts, governed continuity.** The operator may present one durable persona; execution uses disposable, task-specific, least-privilege expert pods. Work continuity lives in auditable task state and reviewable memory, never in a permanently privileged autonomous persona. Compare alternative specialist lifetimes through equal-budget evaluations before changing the default.
+
+**P35 · Evidence-gated dependencies.** The Task Orchestrator admits a validated, versioned DAG. Independent work may run concurrently; dependent work uses independently verified, versioned artifacts. Downstream repairs cannot exceed delegated permissions; uncertain irreversible actions require reconciliation before retry. Verification is independent of an agent's own confidence.
+
+**P36 · Disjoint improvement and consent.** Personal preference experiments are local, reversible and cannot widen grants. Fleet product RSI is separately opted into, data-minimized, cohort-regularized, held-out evaluated and subject to protected-path reviews and staged signed release. No default telemetry export, no global code change from one user's preference. Savant remains an optional skill source, never a Locus runtime dependency. See [ADR-0002](../adr/ADR-0002-general-purpose-meta-harness.md).

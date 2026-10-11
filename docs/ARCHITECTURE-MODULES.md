@@ -66,3 +66,21 @@ locus/composition/ # composition root and profiles
 ```
 
 Existing packages (`locus_runtime`, `apps/backend/app`) move into this layout incrementally. The `main.py` split (LOCUS-352) follows these module lines.
+
+
+## 7. General-purpose meta-harness ports and deployment boundary (D-32–D-35)
+
+Extend the **existing** D-28 composition root; do not create a second harness for noncoding tasks. Proposed ports and ownership:
+
+| Port (target) | Boundary and tests |
+|---|---|
+| `TaskIntentNormalizer` / `TaskPlanner` | Model may propose, deterministic schema/budget/taint/DAG validator admits; domain-neutral request contract (LOCUS-411) |
+| `TaskOrchestrator` / `PodScheduler` | Durable plan revisions, leases, independently verified artifact handoffs, parallel work, dependency invalidation and bounded repair (LOCUS-413, LOCUS-433) |
+| `PodComposer` | Spawn ephemeral expert roles with unique identity and attenuated context/grants, select an engine, record per-pod budget; verify role diversity and containment (LOCUS-412/437) |
+| `AgentRuntime` / `ExternalAgentEngine` | A single lifecycle port for Deep Agents and sandboxed Codex/Claude Code/OpenCode; separate from `ModelProvider` inference APIs (LOCUS-415/416) |
+| `ArtifactVerifier` | Independent rubric/evidence/uncertainty contract and versioned acceptance; no self-certified done state (LOCUS-414) |
+| `FleetFeedbackSink` (optional) | Local default-off data minimization, consent, aggregation and source trust; cannot grant an agent new authority (LOCUS-421/436) |
+| `HarnessCandidateEvaluator` | RRSI-style experiment record, anti-overfit/noise/cost/OOD guards and signed release gate (LOCUS-419/420/423) |
+| `SavantSkillSource` (optional) | Locus-native `SkillStore` retains full autonomy; external import never bypasses local trust/scan or requires Savant online (LOCUS-418) |
+
+The first checked-in contract is `locus_runtime/task_graph_contract.py` v1.0, a pure structural DAG and envelope admission helper with focused tests. It does not implement a scheduler, agent spawning, persistent store or PEP. The source of truth for desired semantics is [ADR-0002](adr/ADR-0002-general-purpose-meta-harness.md). No product readiness should be inferred from a declared port alone (P9).

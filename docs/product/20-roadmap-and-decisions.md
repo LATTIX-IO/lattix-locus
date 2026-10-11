@@ -42,6 +42,16 @@ Scope: pairing, peer cards and org attestations; shared spaces with CRDT sync fo
 
 Exit: two principals co-run a real project for 4 weeks from their own instances with no shared server; one delegated task per week across peers completes without manual file exchange.
 
+## 1A. Meta-harness acceptance additions (2026-10-10)
+
+The existing H0–H3 definitions and safety exits remain. The following **additional requirements** prevent a coding-only implementation from satisfying the general-purpose product target:
+
+- **H1:** publish a deterministic, versioned TaskIntent/TaskPlan contract, unify runtime mediation across advertised execution paths, and demonstrate multi-pod planning/dependency scheduling on at least one realistic noncoding workflow. Do not mark this as shipped until LOCUS-411–414/415 and the gateway tests pass. The existing 20-task/three-area exit is retained, but its sample must include at least three noncoding task families and independent output verification.
+- **H2:** expand release-blocking evidence to seven task domains (coding, research, documents, data, communications, business operations, computer use), with heldout/OOD and cost/security guards. Add opt-in consent-safe fleet feedback and regularized product RSI, reversible local profile alignment and signed canary/rollback. Cloud/fleet availability is not required for ordinary desktop work.
+- **H3:** P2P peer collaboration and locally sovereign instances remain; centralized multi-tenant hosted execution is **not** silently imported into H3.
+
+See [ADR-0002](../adr/ADR-0002-general-purpose-meta-harness.md), LOCUS-435, LOCUS-431, LOCUS-419–423. These are future deliverables until verified; existing red CI findings or unreviewed trust boundary bypasses still block release.
+
 ## 2. Decisions taken in these docs
 
 | ID | Decision | Rationale | Revisit when |
@@ -78,6 +88,11 @@ Exit: two principals co-run a real project for 4 weeks from their own instances 
 | D-30 | Amends D-12. The trust kernel's **authorization core moves to Cedar** (schema-validated, default-deny, `forbid` overrides `permit`). Decisions are analysed offline with Cedar's symbolic compiler, so invariants such as "no tier permits a payment without an ask" and skill-admission subset checks are proved in CI, not only tested. The migration runs behind the `PolicyEngine` port, one domain at a time, in shadow mode until parity. OPA leaves the bundle after the last domain moves. Biscuit grants stay. See `docs/adr/ADR-0001-cedar-authorization-core.md` | Analysable authorization for a self-improving agent (P6–P9); smaller desktop footprint | A domain can't reach parity, or Cedar misses the latency budget |
 | D-31 | **Versions are `MAJOR.MINOR.PATCH`, all numeric.** PATCH is a counter: every published build is +1, capped at 99999, and reaching the cap requires a MINOR bump. MAJOR.MINOR live in the repo-root `VERSION` file. Dev and Stable share the numbers, since Stable promotes a Dev build unchanged. MINOR = new capability, setting or connector type; changed default; additive port version; automatic migration; core dependency major upgrade (and, while MAJOR is 0, breaking changes). MAJOR = an incompatible public contract, manual migration or re-consent, or a dropped platform; 1.0 is the principal's call. The self-improvement loop may bump MINOR and must declare `Release-Impact`. A MAJOR bump always stops for principal review (D-22). Windows ships NSIS only, because MSI caps the third field at 65535. See `docs/VERSIONING.md` | Monotonic, readable versions the loop can reason about | The PATCH cap is reached quickly, or MSI distribution is needed |
 
+| D-32 | Expand Locus from a coding-biased personal operator to a **general-purpose Zero Trust multi-agent meta-harness**, while retaining one coherent local-first user-facing operator | Equivalent orchestration and verifiable quality must support coding and noncoding work | Cross-domain benchmarks favor a narrower scope; see ADR-0002 |
+| D-33 | Use a durable **Task Orchestrator** for validated DAG planning, ephemeral task-specific expert pods, explicit dependency/repair and independent verification; no default immortal worker personas | Task-specific bounded experts and separate durable memory/state support correct collaboration, isolation and experiments | Matched-budget heldout experiments favor persistent experts; see ADR-0002 |
+| D-34 | Separate consented **fleet product RSI** from local reversible personalization. Regularize harness search using RRSI-style noise, cost, leakage, cohort and OOD guards; protect trust kernel and ship via signed staged releases | Prevent individual-deployment overfit and private-data export while improving all domains | Audit or pilot shows privacy, bias or regression failure; see ADR-0002 |
+| D-35 | **Savant is optional**, not a Locus runtime or skill dependency. Its connector can sync organization-approved skills and, separately, consented sanitized intelligence | Native skills must function without any Savant entitlement or network connection | Organization entitlement architecture changes; see ADR-0002 |
+
 ## 3. Open questions (with recommendations)
 
 | ID | Question | Recommendation |
@@ -102,3 +117,11 @@ Exit: two principals co-run a real project for 4 weeks from their own instances 
 ## 5. How to change this document
 
 Add a decision row with rationale and a revisit trigger; never delete superseded decisions; strike them through and point to the replacement.
+
+
+## 6. October 2026 product expansion clarifications
+
+- D-03 still means **single principal per local runtime**. An optional opt-in fleet coordination service is different from a centrally shared multi-tenant runtime. Do not repurpose D-03 to mean a central agent administrator may read personal data.
+- D-09 still means **peer collaboration does not require a hub**. A fleet release/telemetry coordinator has no authority over peer task grants or shared content.
+- The historical 2 October H0 recovery description records a past incident; latest CI, feature parity and posture must be checked against code/main rather than inferred from this roadmap.
+- RRSI [google-research/rrsi](https://github.com/google-research/rrsi) is an implementation/reference for regularization mechanisms, not an automatic unrestricted self-edit loop or proven solution to population telemetry bias.

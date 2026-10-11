@@ -114,3 +114,21 @@ Risk is a property of the action, computed by code from the tool's declaration p
 ## 6. Scopes
 
 Every object has exactly one **area** (or "Unsorted" during triage) and at most one **space**. Policies, engines, egress and grants resolve area-first, then global. Cross-area context is denied by default: a run in the BairesDev area cannot read Lattix memory unless the envelope explicitly includes it and policy permits.
+
+
+## 7. Meta-harness execution objects (D-32, D-33)
+
+These extend, rather than replace, Task → Run → Envelope → Action and Principal → Domain → Area:
+
+| Object | Contract / owner |
+|---|---|
+| **TaskIntent** | Task Orchestrator-owned request: originating principal, goal, area, acceptance rubric, authorized envelope and desired artifacts |
+| **TaskPlan** | Versioned, validated DAG of nodes, dependency edges, parallel waves and iteration history |
+| **PodSpec** | Transient group of task-specific experts/reviewers: attenuated capability budget, scoped memory, selected engine(s), lease and role/quality contract |
+| **PodAttempt** | One leased execution attempt with lifecycle, checkpoint, cost and audit trace; new attempt never silently replays a side effect |
+| **ArtifactRef** | Content/version identity, producer, classification, provenance, verification status and downstream consumer edges |
+| **DependencyGate** | Deterministic readiness predicate over independently verified predecessor artifacts; detects revision invalidation and triggers repair/replan |
+| **VerificationVerdict** | Independent rubric checks, evidence and uncertainty: pass, revise, block or request approval |
+| **LearningLane** | Disjoint policy scopes: local reversible principal preference alignment vs opt-in fleet product RSI |
+
+Pod identities expire at run end; durable task memory and provenance do not. A model's proposed plan or verification claim is untrusted until validated by code/evidence. Child grants, budgets and data context are subsets of the run envelope. Contract v1.0 lives in `locus_runtime/task_graph_contract.py` and currently validates only plan structure and authority *bounds*, not actual authorization or execution. See [ADR-0002](../adr/ADR-0002-general-purpose-meta-harness.md).

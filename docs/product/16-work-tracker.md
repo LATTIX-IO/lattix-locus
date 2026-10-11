@@ -94,3 +94,10 @@ Local-first storage with optimistic UI. Budgets: list filter ≤ 50 ms, task ope
 - Resource capacity planning across people.
 - Replacing a team's shared tracker; sync instead.
 - Git-centric features beyond linking runs, branches and PRs to tasks.
+
+
+## 11. Task DAGs and pod delivery (D-33)
+
+The general-purpose Task Orchestrator is **not** another tracker. The native tracker remains a user-visible work system and can reference one or more durable runs. Each run may decompose an approved task into typed, versioned subtasks with prerequisite artifact versions, assigned ephemeral expert pods, independent verifier decisions and explicit partial/blocking states. Independent branches can run in parallel; downstream readiness is tied to accepted artifacts, not a guessed status string. Subtask repair, replan and source-system synchronization are audited and policy gated. A research task, spreadsheet analysis or office process is first-class, not an odd variant of a coding ticket.
+
+A shared external Linear/Asana/Jira issue still has one chosen source of truth and explicit conflict policy. A source task can be read and evaluated without silently granting its originating text permission to mutate external systems. See LOCUS-319/322/434 and [ADR-0002](../adr/ADR-0002-general-purpose-meta-harness.md).

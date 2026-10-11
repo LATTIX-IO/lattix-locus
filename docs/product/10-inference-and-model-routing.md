@@ -118,3 +118,15 @@ Routing decisions are recorded on the run, with the reason, so "why did it use C
 - **O-01** Claude Code billing mode when invoked by Locus (see §3).
 - **O-02** Whether Codex ChatGPT-login runs are permitted unattended (scheduled) or only while the user is present.
 - **O-03** Default local T3 model for areas that forbid hosted engines, given the provenance filter and the hardware on hand.
+
+
+## 9. Task routing versus engine routing (D-32, D-33)
+
+The existing **model/engine router** is a subordinate capability selector: it chooses an eligible inference provider or executable agent engine after policy, cost and feature filtering. The new **Task Orchestrator** owns request interpretation, dependency DAG, ephemeral expert pod composition, independent verifier assignment, workload scheduling, recovery, and final synthesis. These must not become two competing privileged routers.
+
+- **Inference provider:** OpenAI, Anthropic, Ollama, Azure OpenAI or compatible endpoint; features (tool calling, native API, streaming, reasoning, structured output, context window, multimodal, usage) must be individually negotiated and tested. OpenAI-compatible transport does **not** imply native Anthropic API parity.
+- **Agent engine:** LangChain Deep Agents, Codex CLI, Claude Code, OpenCode; each has its own lifecycle and external-process security requirements. Codex CLI has a bounded local implementation already; parity for other engines is an acceptance requirement, not an existing claim.
+- **Task routing:** model-assisted proposed expert composition is bounded by per-node data class, skills, memory projection, grants, budgets, device capability and independent output rubrics. Deterministic policy gates decide admission, not model text.
+- **Security:** vendor-CLI tool access and direct inference routes, including localhost transports, need a documented mediation inventory. Unsupported capabilities fail closed or downgrade only within an explicitly approved envelope. Official-client authentication must not be exported or repurposed.
+
+The initial executable task graph admission contract is `locus_runtime/task_graph_contract.py` v1.0. No client selection, model inference or agent process is launched by that module; see LOCUS-415/416. Existing pricing and unattended billing questions remain open.
