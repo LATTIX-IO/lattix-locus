@@ -74,3 +74,10 @@ A playbook is an envelope template plus optional plan skeleton, skills, engine p
 ## 7. Builder surfaces kept
 
 The builder studio's versioning, publish, activate and rollback carry over to skills, playbooks, policies and assemblies. The React Flow workflow canvas is retired (D-08).
+
+
+## 8. Standalone skills and optional Savant interoperability (D-35)
+
+Locus provides its own end-to-end SKILL.md capability manifest, import, scanning, evaluation, quarantine, promotion, local execution and revocation. **Savant access is optional**, not required for users, installers, skill execution or native skill lifecycle. Where an organization subscribes to Savant, a separately consented, scope-limited adapter may import signed/versioned skill packages; Locus still independently scans and authorizes every skill. Any diagnostic/quality feedback to Savant is a separate OFF-by-default sanitized export. Disconnect, revoked credentials or Savant downtime never invalidate unrelated locally trusted skills. See LOCUS-388/418.
+
+Generic MCP client requirements include sandboxed **stdio** server supervision as well as Streamable HTTP, scoped OAuth, schema identity/hash pinning and tool output taint. A Codex-specific stdio tool bridge does not satisfy generic MCP hosting. Every remote/server-mediated tool action is independently gateway-authorized; an MCP tool's description or output is not a grant. See LOCUS-417 and [ADR-0002](../adr/ADR-0002-general-purpose-meta-harness.md).

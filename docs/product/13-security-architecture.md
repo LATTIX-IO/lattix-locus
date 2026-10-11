@@ -128,3 +128,19 @@ Rules:
 | Vault | Client only | Optional secret-broker backend; keychain is the default |
 | Presidio | Optional | Keep as an optional DLP analyzer in the gateway for model calls |
 | Squid | Full-stack only | Replaced by the per-run egress proxy |
+
+
+## 13. Transient pod, orchestration and fleet threat additions (D-32–D-35)
+
+The task orchestrator is an **untrusted-planning supervisor**, not a new policy decision point. An LLM-proposed pod, dependency repair, expert role or plan revision must not authorize its own actions.
+
+| Threat | Mandatory boundary and test |
+|---|---|
+| Pod/sibling confused deputy | Fresh run/pod identity and attenuated grant; every delegated action checked against parent envelope, current policy and data area. Negative tests deny sibling cross-scope reads. |
+| Fabricated verification/artifact | Versioned producer/artifact hash, independent verifier evidence and deterministic dependency readiness. A claim that a pod is 'done' is not acceptance. |
+| Circular or explosively parallel plan | Pure admission validator rejects malformed/missing/cyclic nodes, R4 risk and reserved budget escalation; dispatcher enforces live leases/concurrency and recovers after crash. |
+| External engine/inference bypass | Inventory actual Deep Agents, Codex/Ollama, Claude Code/OpenCode, MCP, embedding and CUA network/tool routes. Contain all supported paths or publish reviewed exception; don't claim full PEP coverage without enforcement tests. |
+| Prompt, skill, MCP or memory escalation | Treat tool/screen/memory content and expert advice as tainted evidence; maintain gateway mediation, schema pinning, local skill quarantine, provenance and secrets by reference. |
+| Fleet collection or update compromise | Telemetry OFF by default, independently consented redacted release/quality events, org/device identity, isolation from local secrets, replay protection, minimum cohort samples, signed rollout/rollback and release-only protected trust-kernel review. |
+
+**Consent boundary:** fleet status and product RSI are not central tenancy, not P2P task authority and not license to export prompts/documents/memory/screenshots. One principal per local instance (D-03), and P2P task collaboration (D-09), remain unchanged. Savant access is an optional trusted-source integration subject to the same local admission controls. These are **target controls** pending implementation, penetration testing and release evidence; see LOCUS-432 and [ADR-0002](../adr/ADR-0002-general-purpose-meta-harness.md).

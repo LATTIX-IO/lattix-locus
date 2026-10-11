@@ -67,3 +67,12 @@ Columns are the "thousand brains" layer on top of the store.
 - **Review:** grouped proposals (by area and type) with keyboard accept/edit/reject and merge suggestions.
 - **In context:** answers cite memory items; any citation opens the item in the inspector for correction.
 - **Explain recall:** each run's Evidence tab lists the memory items that each column retrieved.
+
+
+## 8. Ephemeral expert memory and personal alignment (D-33, D-34)
+
+A pod receives only a **task-scoped, least-privilege projection** of approved evidence: source IDs, provenance, classification, valid time, role-relevant procedural memory, and explicitly shared artifacts. Pods are disposable; their process context is not the memory system. Durable execution checkpoints, artifact state and memory proposals are distinct stores/contracts so approximate retrieval cannot mutate execution truth.
+
+Memory lifecycle additions: contradiction and supersession, source-to-derived-index provenance (including embeddings/graph), source version expiry, taint, delete/forget cascade, and cross-area/space access checks. Recalled content informs reasoning but grants no new authority. Semantic index outages must preserve bounded lexical recall and explicitly report degradation, not silently broaden scope.
+
+**Personal profile learning** proposes reversible, evidence-backed tone, brevity, format, workflow and quality preferences. Approval and evaluation stay local unless a principal separately consents to a sanitized export. Personal feedback is **never** a direct input to population-wide policy/code auto-promotions and cannot widen capabilities. See LOCUS-424/422 and [ADR-0002](../adr/ADR-0002-general-purpose-meta-harness.md).
