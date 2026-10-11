@@ -1,196 +1,238 @@
-"""LOCUS-433 bounded sandbox broker security and regression tests."""
+"""LOCUS-433: deny-first administrator tool registry and single-sink regression."""
 from __future__ import annotations
+
 import subprocess
-import sys
-from unittest.mock import Mock
+from dataclasses import FrozenInstanceError
+from pathlib import Path
+
 import pytest
 
-from locus_runtime.pod_tool_broker import BrokerTool, SandboxedPodToolBroker, _run_bounded
-from locus_runtime.pod_reservations import AdmissionDenied
-from locus_runtime.action_receipts import ActionReplayDenied
-from locus_runtime.sandbox import (
-    ExecutionPlan, HostPlatform, IsolationStrategy,
+from locus_runtime import pod_sandbox_broker as broker_module
+from locus_runtime.action_receipts import ActionReplayDenied, PodActionReceipts
+from locus_runtime.gateway import BudgetFigures, Capabilities, Gateway, RiskClass
+from locus_runtime.pod_reservations import (
+    AdmissionDenied, PodReservationLedger, ReservationRequest, ResourceBudget,
 )
-from tests.unit.test_action_receipts import setup
+from locus_runtime.pod_tool_broker import BrokerTool, SandboxedPodToolBroker
+from locus_runtime.sandbox import (
+    ConfinementSelection, ExecutionPlan, HostPlatform, IsolationStrategy,
+)
+from locus_runtime.task_graph_contract import TaskAuthority, TaskBudget, TaskIntent
+from locus_runtime.task_plan_compiler import compile_task_plan
+from tests.gateway_support import FakeEngine
 
 
-def fixture(tmp_path, *, strategy=IsolationStrategy.KERNEL_BWRAP, runner=None):
-    ledger, receipts, parent, lease, clock = setup(tmp_path)
-    exe = tmp_path / "trusted_tool"
-    exe.write_text("fixed tool descriptor only", encoding="utf-8")
-    descriptor = BrokerTool("list_issues", (str(exe), "--fixed"), str(tmp_path))
-    manager = Mock()
-    manager.plan.return_value = ExecutionPlan(
-        backend=strategy.value, command=["/usr/bin/bwrap", "--", str(exe)],
-        strategy=strategy
+def setup(tmp_path: Path, monkeypatch, *, engine=None, exec_path=None):
+    exe = exec_path or tmp_path / "approved_tool"
+    if not exe.exists():
+        exe.write_text("fixed-test-tool\n", encoding="utf-8")
+    ledger = PodReservationLedger(tmp_path / "pods.db")
+    gateway = Gateway(engine or FakeEngine(), lambda _: None)
+    parent = gateway.open_session(
+        run_id="catalog-supervisor", principal="alice", engine="supervisor",
+        allow_child_delegation=True,
+        capabilities=Capabilities(
+            allowed_tools=frozenset({"fixed_tool"}),
+            read_roots=(str(tmp_path),), write_roots=(str(tmp_path),),
+            allowed_executables=(str(exe),),
+            max_risk_class=RiskClass.R2,
+            max_actions=12, max_tool_calls=12,
+            budget=BudgetFigures(
+                tokens_used=0, max_tokens=1200, duration_used_seconds=0,
+                max_duration_seconds=120, cost_used_usd=0, max_cost_usd=2,
+            ),
+        ),
     )
-    run = runner or Mock(return_value=subprocess.CompletedProcess(
-        args=[],returncode=0,stdout=b"ok",stderr=b""
-    ))
-    broker = SandboxedPodToolBroker(
-        receipts, {"list_issues":descriptor},manager=manager,
-        run=run,platform=HostPlatform.LINUX
+    plan = compile_task_plan(
+        {"contract_version": "1.0", "nodes": [{
+            "node_id": "analysis", "depends_on": [], "capabilities": ["fixed_tool"],
+            "risk_ceiling": "R2",
+            "budget": {
+                "actions": 5, "tokens": 500, "wall_seconds": 60,
+                "spend_microunits": 1_000_000,
+            },
+            "deliverables": ["analysis"], "acceptance_criteria": ["bounded tool"],
+        }]},
+        intent=TaskIntent("run an administrator-registered tool", "professional",
+                          "alice", ("fixed tool only",)),
+        parent_authority=TaskAuthority(
+            frozenset({"fixed_tool"}), "R2",
+            TaskBudget(12, 1200, 120, 2_000_000),
+        ),
     )
-    return broker, lease, run, manager
+    ledger.register_parent(plan, parent, max_tool_calls=12)
+    reservation = ledger.reserve(
+        plan, parent, ReservationRequest(
+            "analysis", "attempt-fixed-tool", "v1",
+            ResourceBudget(5, 4, 400, 45, 700_000), 70,
+        ),
+    )
+    lease = ledger.admit(plan, parent, reservation.reservation_id, engine="worker")
+    receipts = PodActionReceipts(ledger, supervisor=parent)
+    monkeypatch.setattr(
+        broker_module, "select_confining_strategy",
+        lambda: ConfinementSelection(
+            IsolationStrategy.HARDENED_DOCKER, HostPlatform.LINUX, "trusted-docker",
+        ),
+    )
+    monkeypatch.setattr(broker_module, "detect_host_platform", lambda: HostPlatform.LINUX)
+    invocations: list[tuple[list[str], dict]] = []
+
+    def fake_subprocess(argv, **kwargs):
+        invocations.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(broker_module.subprocess, "run", fake_subprocess)
+    tool = BrokerTool("fixed_tool", (str(exe), "--fixed"), str(tmp_path), 10)
+    configured = {"fixed_tool": tool}
+    broker = SandboxedPodToolBroker(receipts, configured)
+    return broker, receipts, lease, parent, configured, invocations
 
 
-def test_registered_allowed_tool_executes_only_inside_confining_plan(tmp_path):
-    broker, lease, run, manager = fixture(tmp_path)
-    receipt, result = broker.execute(lease,tool_name="list_issues",
-                                     action_idempotency_key="fixed-1")
-    assert receipt.state == "succeeded"
-    assert result.stdout == "ok"
-    call = run.call_args
-    assert call.kwargs["shell"] is False
-    assert call.kwargs["timeout"] == 30
-    assert "SECRET" not in call.kwargs["env"]
-    plan = manager.plan.call_args
-    assert plan.args[1].allow_network is False
-    assert plan.args[0].requested_hosts == []
+def test_authorized_tool_uses_single_broker_and_fenced_receipt(tmp_path, monkeypatch):
+    app, receipts, lease, _, _, invokes = setup(tmp_path, monkeypatch)
+    result = app.execute(lease, tool_name="fixed_tool", action_idempotency_key="fixed-1")
+    assert result.receipt.state == "succeeded"
+    assert result.exit_code == 0
+    assert result.backend == IsolationStrategy.HARDENED_DOCKER.value
+    assert len(invokes) == 1
+    argv, options = invokes[0]
+    assert argv[:3] == ["docker", "run", "--rm"]
+    assert "--network=none" in argv
+    assert "--read-only" in argv
+    assert options["shell"] is False
+    assert options["stdout"] is subprocess.DEVNULL
+    assert options["stderr"] is subprocess.DEVNULL
+    assert [event for event, _ in receipts.audit(result.receipt.action_id)] == [
+        "prepared", "dispatching", "fence_guarded", "succeeded",
+    ]
 
 
-def test_replay_never_invokes_runner_twice(tmp_path):
-    broker, lease, run, _ = fixture(tmp_path)
-    broker.execute(lease,tool_name="list_issues",action_idempotency_key="same")
-    with pytest.raises(ActionReplayDenied):
-        broker.execute(lease,tool_name="list_issues",action_idempotency_key="same")
-    assert run.call_count == 1
+def test_registry_is_copied_readonly_and_descriptors_are_frozen(tmp_path, monkeypatch):
+    app, _, lease, _, mapping, invokes = setup(tmp_path, monkeypatch)
+    descriptor = mapping["fixed_tool"]
+    mapping.clear()
+    with pytest.raises(TypeError):
+        app._tools["fixed_tool"] = descriptor
+    with pytest.raises(FrozenInstanceError):
+        descriptor.name = "tampered"
+    app.execute(lease, tool_name="fixed_tool", action_idempotency_key="catalog-immutable")
+    assert len(invokes) == 1
 
 
-def test_unknown_tool_fails_before_plan_or_callback(tmp_path):
-    broker, lease, run, manager = fixture(tmp_path)
+def test_no_unknown_tool_or_dynamic_command_is_accepted(tmp_path, monkeypatch):
+    app, receipts, lease, _, _, invokes = setup(tmp_path, monkeypatch)
+    with pytest.raises(AdmissionDenied, match="not registered"):
+        app.execute(lease, tool_name="unregistered", action_idempotency_key="unknown")
+    with pytest.raises(AdmissionDenied, match="trusted admitted pod"):
+        app.execute(object(), tool_name="fixed_tool", action_idempotency_key="forged")
+    with pytest.raises(AdmissionDenied, match="string"):
+        app.execute(lease, tool_name=123, action_idempotency_key="nonstring")
+    assert not invokes
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("descriptor", [
+    ("", ("/bin/true",), "/tmp", 10),
+    ("bad name", ("/bin/true",), "/tmp", 10),
+    ("fixed_tool", ("relative",), "/tmp", 10),
+    ("fixed_tool", ("/bin/true",), "relative", 10),
+    ("fixed_tool", (), "/tmp", 10),
+    ("fixed_tool", ("/bin/sh", "-c", "cat /etc/shadow"), "/tmp", 10),
+    ("fixed_tool", ("/bin/true", "bad\x00value"), "/tmp", 10),
+    ("fixed_tool", ("/bin/true",), "/tmp", 300),
+])
+def test_invalid_registered_descriptors_are_rejected(descriptor):
+    with pytest.raises(ValueError):
+        BrokerTool(*descriptor)
+
+
+def test_unapproved_child_capability_blocks_dispatch(tmp_path, monkeypatch):
+    app, receipts, lease, _, _, invokes = setup(tmp_path, monkeypatch)
+    other = tmp_path / "other_tool"
+    other.write_text("other\n", encoding="utf-8")
+    app._tools = {"fixed_tool": BrokerTool(
+        "fixed_tool", (str(other), "--fixed"), str(tmp_path), 10,
+    )}
+    with pytest.raises(AdmissionDenied, match="executable outside"):
+        app.execute(lease, tool_name="fixed_tool", action_idempotency_key="unapproved")
+    assert not invokes
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+def test_gateway_denial_never_invokes_runner(tmp_path, monkeypatch):
+    app, receipts, lease, _, _, invokes = setup(
+        tmp_path, monkeypatch, engine=FakeEngine(allow={"agent_policy": False}),
+    )
     with pytest.raises(AdmissionDenied):
-        broker.execute(lease,tool_name="send_email",action_idempotency_key="forbidden")
-    manager.plan.assert_not_called()
-    run.assert_not_called()
+        app.execute(lease, tool_name="fixed_tool", action_idempotency_key="policy-deny")
+    assert not invokes
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("strategy", [
-    IsolationStrategy.RESTRICTED_PROCESS,
-    IsolationStrategy.K8S_GVISOR, IsolationStrategy.K8S_KATA,
-])
-def test_nonlocal_or_weak_sandbox_never_executes(tmp_path,strategy):
-    broker, lease, run, _ = fixture(tmp_path,strategy=strategy)
-    with pytest.raises(AdmissionDenied,match="confining"):
-        broker.execute(lease,tool_name="list_issues",action_idempotency_key="weak")
-    run.assert_not_called()
-
-
-def test_provider_timeout_is_uncertain_and_replay_denied(tmp_path):
-    run = Mock(side_effect=subprocess.TimeoutExpired(cmd=["tool"],timeout=1))
-    broker, lease, _, _ = fixture(tmp_path,runner=run)
-    with pytest.raises(subprocess.TimeoutExpired):
-        broker.execute(lease,tool_name="list_issues",action_idempotency_key="timeout")
+def test_one_effect_per_idempotency_key(tmp_path, monkeypatch):
+    app, _, lease, _, _, invokes = setup(tmp_path, monkeypatch)
+    app.execute(lease, tool_name="fixed_tool", action_idempotency_key="once")
     with pytest.raises(ActionReplayDenied):
-        broker.execute(lease,tool_name="list_issues",action_idempotency_key="timeout")
-    assert run.call_count == 1
+        app.execute(lease, tool_name="fixed_tool", action_idempotency_key="once")
+    assert len(invokes) == 1
 
 
-def test_bounded_output_does_not_store_raw_secret_in_receipt(tmp_path):
-    result = subprocess.CompletedProcess(args=[],returncode=0,
-        stdout=b"Bearer secret_token " + b"x"*70000,stderr=b"")
-    broker, lease, run, _ = fixture(tmp_path,
-        runner=Mock(return_value=result))
-    rec, output = broker.execute(lease,tool_name="list_issues",
-                                 action_idempotency_key="private")
-    assert len(output.stdout) <= 65536
-    assert rec.state == "succeeded"
-    assert "Bearer" not in repr(broker.receipts.get(rec.action_id))
-
-
-@pytest.mark.parametrize("tool",[
-    ("",("/bin/true",),"/tmp"),
-    ("ok",("relative",),"/tmp"),
-    ("ok",("/bin/true",),"relative"),
-    ("ok",(),"/tmp"),
-])
-def test_invalid_registered_tool_is_rejected(tool):
-    with pytest.raises(ValueError):
-        BrokerTool(*tool)
-
-
-def test_registry_name_mismatch_rejected(tmp_path):
-    exe = tmp_path / "trusted"
-    exe.write_text("")
-    t=BrokerTool("one",(str(exe),),str(tmp_path))
-    with pytest.raises(ValueError):
-        SandboxedPodToolBroker(Mock(),{"two":t})
-
-
-def test_unregistered_child_capability_fails_closed(tmp_path):
-    broker, lease, run, manager=fixture(tmp_path)
-    broker._tools["not_granted"]=BrokerTool(
-        "not_granted",broker._tools["list_issues"].argv,str(tmp_path))
-    with pytest.raises(AdmissionDenied,match="capabilities"):
-        broker.execute(lease,tool_name="not_granted",
-                       action_idempotency_key="no-grant")
-    run.assert_not_called()
-
-
-
-def test_sandbox_plan_must_not_be_raw_tool_command(tmp_path):
-    broker, lease, run, manager = fixture(tmp_path)
-    manager.plan.return_value = ExecutionPlan(
-        backend="kernel-bwrap",
-        command=list(broker._tools["list_issues"].argv),
-        strategy=IsolationStrategy.KERNEL_BWRAP,
-    )
-    with pytest.raises(AdmissionDenied, match="directly invoke"):
-        broker.execute(lease, tool_name="list_issues",
-                       action_idempotency_key="raw-tool")
-    run.assert_not_called()
-
-
-def test_windows_launcher_cwd_from_confining_plan_is_obeyed(tmp_path):
-    broker, lease, run, manager = fixture(tmp_path)
-    manager.plan.return_value = ExecutionPlan(
-        backend="windows-appcontainer", command=["C:/Windows/isolated-launcher.exe",
-                                                    "C:/Temp/trusted_tool"],
-        strategy=IsolationStrategy.WINDOWS_APPCONTAINER,
-        metadata={"launcher_cwd": str(tmp_path)},
-    )
-    receipt, _ = broker.execute(lease, tool_name="list_issues",
-                                 action_idempotency_key="windows-launch")
-    assert receipt.state == "succeeded"
-    assert run.call_args.kwargs["cwd"] == str(tmp_path)
-
-
-def test_invalid_launcher_cwd_denies_before_invocation(tmp_path):
-    broker, lease, run, manager = fixture(tmp_path)
-    manager.plan.return_value = ExecutionPlan(
-        backend="kernel-bwrap", command=["/usr/bin/bwrap", "--", "fixed"],
-        strategy=IsolationStrategy.KERNEL_BWRAP,
-        metadata={"launcher_cwd": "relative"},
-    )
-    with pytest.raises(AdmissionDenied, match="launcher working directory"):
-        broker.execute(lease, tool_name="list_issues",
-                       action_idempotency_key="bad-cwd")
-    run.assert_not_called()
-
-
-
-def test_production_runner_drains_large_stdout_and_stderr_with_hard_cap(tmp_path):
-    command = [sys.executable, "-c",
-        "import sys; sys.stdout.buffer.write(b'A'*1000000); "
-        "sys.stderr.buffer.write(b'B'*1000000)"]
-    result = _run_bounded(command, cwd=str(tmp_path),
-                          env={"PATH": ""}, timeout=10)
-    assert result.returncode == 0
-    assert result.stdout == b"A" * 65536
-    assert result.stderr == b"B" * 65536
-
-
-def test_production_runner_kills_process_on_timeout(tmp_path):
-    command = [sys.executable, "-c", "import time; time.sleep(30)"]
+def test_timeout_stays_uncertain_when_docker_cleanup_fails(tmp_path, monkeypatch):
+    app, receipts, lease, _, _, invokes = setup(tmp_path, monkeypatch)
+    def runner(argv, **kwargs):
+        invokes.append((argv, kwargs))
+        if argv[:2] == ["docker", "kill"]:
+            raise OSError("daemon disappeared")
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+    monkeypatch.setattr(broker_module.subprocess, "run", runner)
     with pytest.raises(subprocess.TimeoutExpired):
-        _run_bounded(command, cwd=str(tmp_path),
-                     env={"PATH": ""}, timeout=1)
+        app.execute(lease, tool_name="fixed_tool", action_idempotency_key="timeout")
+    with pytest.raises(ActionReplayDenied):
+        app.execute(lease, tool_name="fixed_tool", action_idempotency_key="timeout")
+    assert len(invokes) == 2
+    assert invokes[1][0][0:2] == ["docker", "kill"]
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT state FROM pod_action_receipt").fetchone()[0] == "uncertain"
 
 
-def test_production_runner_preserves_nonzero_exit_and_bounded_errors(tmp_path):
-    command = [sys.executable, "-c",
-        "import sys; sys.stderr.write('failure'); sys.exit(17)"]
-    result = _run_bounded(command, cwd=str(tmp_path),
-                          env={"PATH": ""}, timeout=10)
-    assert result.returncode == 17
-    assert result.stderr == b"failure"
+def test_symlinked_registered_executable_fails_closed(tmp_path, monkeypatch):
+    executable = tmp_path / "actual_tool"
+    executable.write_text("actual\n", encoding="utf-8")
+    alias = tmp_path / "tool_alias"
+    alias.symlink_to(executable)
+    app, receipts, lease, _, _, invokes = setup(
+        tmp_path, monkeypatch, exec_path=alias,
+    )
+    with pytest.raises(AdmissionDenied, match="linked"):
+        app.execute(lease, tool_name="fixed_tool", action_idempotency_key="symlink")
+    assert not invokes
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+def test_unconfined_planner_cannot_bypass_existing_broker(tmp_path, monkeypatch):
+    app, receipts, lease, _, _, invokes = setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        broker_module.SandboxManager, "plan",
+        lambda self, spec, policy: ExecutionPlan(
+            backend="hardened-docker", command=spec.command,
+            strategy=IsolationStrategy.HARDENED_DOCKER,
+        ),
+    )
+    with pytest.raises(AdmissionDenied, match="direct host execution"):
+        app.execute(lease, tool_name="fixed_tool", action_idempotency_key="raw-host")
+    assert not invokes
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+def test_revoked_parent_cannot_dispatch_registered_tool(tmp_path, monkeypatch):
+    app, receipts, lease, parent, _, invokes = setup(tmp_path, monkeypatch)
+    receipts.reservations.revoke_parent(parent)
+    with pytest.raises(AdmissionDenied):
+        app.execute(lease, tool_name="fixed_tool", action_idempotency_key="revoked")
+    assert not invokes
