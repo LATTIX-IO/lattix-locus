@@ -1678,9 +1678,16 @@ def _validate_child_capabilities(parent: Capabilities, child: Capabilities) -> N
         raise PermissionError("child cannot expand tools")
     for key in ("read_roots", "write_roots"):
         parent_roots = getattr(parent, key)
+        child_roots = getattr(child, key)
+        if (
+            not isinstance(parent_roots, tuple)
+            or not isinstance(child_roots, tuple)
+            or any(not isinstance(path, str) or not path.strip() for path in (*parent_roots, *child_roots))
+        ):
+            raise PermissionError(f"invalid {key}: roots must be tuples of nonempty paths")
         if any(
             not any(path_within(root, allowed) for allowed in parent_roots)
-            for root in getattr(child, key)
+            for root in child_roots
         ):
             raise PermissionError(f"child cannot expand {key}")
     for key in ("allowed_executables", "allowed_egress_hosts", "allowed_apps"):

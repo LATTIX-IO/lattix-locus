@@ -39,7 +39,7 @@ def make(*, parent_tier="tiered", parent_budget="default"):
     child_caps = dataclasses.replace(
         caps,
         allowed_tools=frozenset({"list_issues"}),
-        read_roots=("/work/reports"),
+        read_roots=("/work/reports",),
         max_actions=3,
         max_tool_calls=5,
         max_risk_class=RiskClass.R0,
@@ -60,6 +60,8 @@ def test_child_uses_parent_principal_and_scopes_action_authorization():
 @pytest.mark.parametrize("change", [
     {"allowed_tools": frozenset({"list_issues", "send_email", "admin"})},
     {"read_roots": ("/",)},
+    {"read_roots": "/work/reports"},
+    {"write_roots": "/work"},
     {"write_roots": ("/other",)},
     {"allowed_egress_hosts": ("evil.test",)},
     {"allowed_executables": ("bash", "powershell")},
@@ -317,3 +319,17 @@ def test_top_level_eviction_cleans_child_parent_links():
         assert len(gateway._session_parents) <= len(gateway._sessions) <= 2
     assert child.authorize(kind="tool_call", tool="list_issues").outcome == "deny"
     assert len(gateway._session_parents) == 0
+
+
+def test_child_root_subset_is_segment_aware():
+    gateway, parent, caps = make()
+    child = gateway.open_child_session(
+        parent, run_id="run-1:valid-subdir", engine="worker",
+        capabilities=caps
+    )
+    assert child.capabilities.read_roots == ("/work/reports",)
+    with pytest.raises(PermissionError, match="read_roots"):
+        gateway.open_child_session(
+            parent, run_id="run-1:lookalike", engine="worker",
+            capabilities=dataclasses.replace(caps, read_roots=("/workspace",))
+        )
