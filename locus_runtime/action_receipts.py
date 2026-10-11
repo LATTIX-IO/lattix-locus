@@ -11,7 +11,7 @@ import hmac
 import json
 import secrets
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any, Callable, Literal, Mapping, TypeVar, cast
 
 from locus_runtime.action_fencing import action_lock
@@ -52,6 +52,17 @@ def _result_digest(value: object) -> str:
     if len(encoded.encode("utf-8")) > 1_048_576:
         raise AdmissionDenied("action outcome exceeds fingerprint size limit")
     return _sha(encoded)
+
+
+def _canonical_action_value(value: object) -> object:
+    """Only known structural dataclasses (e.g. JailFacts) are JSON material.
+
+    Never stringify arbitrary objects or persist their repr: that would make
+    action identities unstable and risk leaking secrets.
+    """
+    if is_dataclass(value) and not isinstance(value, type):
+        return asdict(value)
+    raise TypeError("unsupported action authorization payload")
 
 
 def _valid_key(key: str) -> str:
@@ -174,7 +185,7 @@ class PodActionReceipts:
                 "target": decision.target,
                 "authorization": dict(authorization),
             }, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-               allow_nan=False)
+               allow_nan=False, default=_canonical_action_value)
         except (TypeError, ValueError, OverflowError, RecursionError) as exc:
             raise AdmissionDenied("action authorization is not canonically serializable") from exc
         digest = hmac.new(lease._session.caller.token.encode("utf-8"),
