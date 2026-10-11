@@ -138,6 +138,9 @@ class PodLease:
         self._ledger = ledger
         self._reservation_id = reservation_id
         self._session = session
+        self._gateway_budget = session.capabilities.budget
+        if self._gateway_budget is None:
+            raise AdmissionDenied("bounded child gateway budget required")
 
     @property
     def reservation_id(self) -> str:
@@ -153,12 +156,17 @@ class PodLease:
 
     def settle(self, total: ResourceBudget) -> ResourceReservation:
         record = self._ledger.settle(self._reservation_id, total)
+        # Gateway validation uses inherited absolute counters; the durable
+        # reservation ledger uses pod-relative counters. Never send a smaller
+        # counter than the one inherited from the parent gateway session.
+        origin = self._gateway_budget
         self._session.report_budget(BudgetFigures(
-            tokens_used=total.tokens, max_tokens=record.requested.tokens,
-            duration_used_seconds=total.wall_seconds,
-            max_duration_seconds=record.requested.wall_seconds,
-            cost_used_usd=total.spend_microunits / 1_000_000,
-            max_cost_usd=record.requested.spend_microunits / 1_000_000,
+            tokens_used=origin.tokens_used + total.tokens,
+            max_tokens=origin.max_tokens,
+            duration_used_seconds=(origin.duration_used_seconds or 0) + total.wall_seconds,
+            max_duration_seconds=origin.max_duration_seconds,
+            cost_used_usd=(origin.cost_used_usd or 0) + total.spend_microunits / 1_000_000,
+            max_cost_usd=origin.max_cost_usd,
         ))
         return record
 
@@ -434,14 +442,29 @@ class PodReservationLedger:
         ceiling = RiskClass[node.authority.risk_ceiling]
         # Trusted code derives every child limit; the model does not supply an
         # authorization session, executable or unrestricted capability set.
-        caps: Capabilities = replace(parent.capabilities,
+        registered = parent.gateway._authenticate(parent.caller)
+        if registered is None:
+            raise AdmissionDenied("parent gateway identity revoked during admission")
+        base_caps = registered.capabilities
+        base_budget = base_caps.budget
+        # The existing gateway requires child absolute usage >= parent usage
+        # and child absolute max <= parent max. Preserve the parent baseline
+        # while granting only this pod's bounded *incremental* allowance.
+        spent_tokens = base_budget.tokens_used if base_budget is not None else 0
+        spent_seconds = (base_budget.duration_used_seconds or 0) if base_budget else 0
+        spent_usd = (base_budget.cost_used_usd or 0) if base_budget else 0
+        caps: Capabilities = replace(base_caps,
             allowed_tools=frozenset(node.authority.capabilities),
             max_risk_class=ceiling,
             max_actions=request.actions,
             max_tool_calls=request.tool_calls,
-            budget=BudgetFigures(tokens_used=0, max_tokens=request.tokens,
-                duration_used_seconds=0, max_duration_seconds=request.wall_seconds,
-                cost_used_usd=0, max_cost_usd=request.spend_microunits / 1_000_000))
+            budget=BudgetFigures(
+                tokens_used=spent_tokens, max_tokens=spent_tokens + request.tokens,
+                duration_used_seconds=spent_seconds,
+                max_duration_seconds=spent_seconds + request.wall_seconds,
+                cost_used_usd=spent_usd,
+                max_cost_usd=spent_usd + request.spend_microunits / 1_000_000,
+            ))
         child: GatewaySession | None = None
         try:
             child = parent.gateway.open_child_session(parent,
@@ -513,11 +536,16 @@ class PodReservationLedger:
             if (not old.leq(total) or not total.leq(requested)
                 or total.tool_calls > total.actions):
                 raise AdmissionDenied("invalid final usage or double spending")
+            # Store a deterministic digest only. Caller-provided evidence
+            # might contain secrets or PII, and even a truncated audit note
+            # is not an acceptable raw evidence sink.
+            evidence_digest = hashlib.sha256(evidence.encode("utf-8")).hexdigest()
             db.execute("UPDATE pod_attempt SET state='closed',used=?,evidence=? WHERE id=?",
-                       (_encode_budget(total), evidence, reservation_id))
+                       (_encode_budget(total), evidence_digest, reservation_id))
             db.execute("UPDATE parent_budget SET version=version+1 WHERE run_id=?",
                        (row["parent_id"],))
-            self._event(db, row["parent_id"], reservation_id, "closed", evidence)
+            self._event(db, row["parent_id"], reservation_id, "closed",
+                        "evidence_sha256:" + evidence_digest)
             return self._as_reservation(self._row(db, reservation_id))
 
     def cancel_reserved(self, reservation_id: str) -> ResourceReservation:

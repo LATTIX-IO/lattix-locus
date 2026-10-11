@@ -292,3 +292,58 @@ def test_sqlite_connection_is_closed_after_context_manager(tmp_path):
         assert db.execute("SELECT version FROM schema_meta").fetchone()[0] == 1
     with pytest.raises(sqlite3.ProgrammingError):
         db.execute("SELECT version FROM schema_meta")
+
+
+
+def test_parent_nonzero_usage_does_not_block_bounded_child(tmp_path):
+    ledger, plan, parent, _ = build(tmp_path)
+    # Gateway independently tracks parent inference/action usage. A child
+    # receives only its remaining delta, not a reset of inherited counters.
+    parent.report_budget(BudgetFigures(
+        tokens_used=200, max_tokens=1800,
+        duration_used_seconds=8, max_duration_seconds=120,
+        cost_used_usd=0.4, max_cost_usd=8,
+    ))
+    reserved = ledger.reserve(plan, parent, request())
+    lease = ledger.admit(plan, parent, reserved.reservation_id, engine="worker")
+    b = lease._session.capabilities.budget
+    assert b is not None
+    assert b.tokens_used == 200 and b.max_tokens == 700
+    assert b.duration_used_seconds == 8 and b.max_duration_seconds == 68
+    assert b.cost_used_usd == 0.4
+    lease.settle(ResourceBudget(2, 1, 80, 10, 100000))
+    updated = lease._session.capabilities.budget
+    assert updated is not None
+    assert updated.tokens_used == 280
+    assert updated.duration_used_seconds == 18
+    assert abs((updated.cost_used_usd or 0) - 0.5) < 1e-9
+
+
+def test_parent_used_budget_cannot_be_overallocated_during_admission(tmp_path):
+    ledger, plan, parent, _ = build(tmp_path)
+    parent.report_budget(BudgetFigures(
+        tokens_used=1600, max_tokens=1800,
+        duration_used_seconds=20, max_duration_seconds=120,
+        cost_used_usd=1.0, max_cost_usd=8,
+    ))
+    reservation = ledger.reserve(plan, parent, request())
+    with pytest.raises(PermissionError, match="max_tokens"):
+        ledger.admit(plan, parent, reservation.reservation_id, engine="worker")
+    assert ledger.get(reservation.reservation_id).state == "canceled"
+
+
+def test_reconciliation_evidence_never_saved_as_plaintext(tmp_path):
+    ledger, plan, parent, _ = build(tmp_path)
+    reservation = ledger.reserve(plan, parent, request())
+    lease = ledger.admit(plan, parent, reservation.reservation_id, engine="worker")
+    secret = "Authorization: Bearer super-secret-token user=jane@example.com"
+    lease.close(total=zero(), evidence=secret)
+    with sqlite3.connect(tmp_path / "pods.db") as db:
+        row = db.execute(
+            "SELECT evidence FROM pod_attempt WHERE id=?", (reservation.reservation_id,)
+        ).fetchone()
+        audit = db.execute("SELECT note FROM pod_audit").fetchall()
+    assert row is not None
+    assert len(row[0]) == 64 and row[0] != secret
+    assert all(secret not in note[0] for note in audit)
+    assert all("super-secret-token" not in note[0] for note in audit)

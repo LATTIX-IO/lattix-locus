@@ -77,3 +77,13 @@ the platform's local application data ACL. All policies remain fail-closed.
 - all affected tests, build and CI gates pass and security review complete;
 - documented recovery and rollback (disable admission, retain ledger until
   uncertain side-effects are reconciled; do not truncate records).
+
+## Security review hardening
+
+A running supervisor may already have consumed tokens, time or cost. A child
+inherits these gateway absolute-used baselines and receives only its requested
+increment as headroom; its **durable** usage remains relative to its own
+reservation. If a parent cannot accommodate that increment, gateway admission
+fails closed and releases the unlaunched hold. Evidence is committed as a
+SHA-256 fingerprint in both the attempt and audit records: **no raw evidence,
+authorization headers or PII** are written by the reconciliation path.
