@@ -155,9 +155,11 @@ class PodActionReceipts:
                     raise ActionReplayDenied("same idempotency key has different action")
                 return self._record(old)
             max_actions = self.reservations._as_reservation(pod).requested.actions
-            count = db.execute("""SELECT COUNT(*) FROM pod_action_receipt
-                WHERE reservation_id=?""", (lease.reservation_id,)).fetchone()[0]
-            if count >= max_actions:
+            count_row = db.execute("""SELECT COUNT(*) FROM pod_action_receipt
+                WHERE reservation_id=?""", (lease.reservation_id,)).fetchone()
+            if count_row is None:
+                raise AdmissionDenied("missing action count for reservation")
+            if int(count_row[0]) >= max_actions:
                 raise AdmissionDenied("action intent ceiling exhausted")
             action_id = secrets.token_urlsafe(24)
             db.execute("""INSERT INTO pod_action_receipt

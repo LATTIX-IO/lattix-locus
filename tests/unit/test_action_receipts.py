@@ -140,7 +140,7 @@ def test_action_idempotency_collision_with_changed_action_is_denied(tmp_path):
     receipts.prepare(lease, idempotency_key="same", authorization=_ACTION)
     with pytest.raises(ActionReplayDenied):
         receipts.prepare(lease, idempotency_key="same",
-                         authorization={"kind": "tool_call", "tool": "read_file"})
+                         authorization={"kind": "tool_call", "tool": "list_issues", "target": "different"})
 
 
 def test_stale_parent_or_finished_pod_does_not_prepare_or_dispatch(tmp_path):
