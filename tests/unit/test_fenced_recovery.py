@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -10,10 +11,10 @@ import threading
 import pytest
 
 from locus_runtime.action_fencing import action_lock
-from locus_runtime.action_receipts import ActionReplayDenied, PodActionReceipts
+from locus_runtime.action_receipts import ActionReplayDenied
 from locus_runtime.fenced_recovery import FencedActionRecovery
 from locus_runtime.gateway import Capabilities, Gateway
-from locus_runtime.pod_reservations import AdmissionDenied, PodReservationLedger
+from locus_runtime.pod_reservations import AdmissionDenied
 from tests.gateway_support import FakeEngine
 from tests.unit.test_action_receipts import _ACTION, setup
 
@@ -236,3 +237,57 @@ with action_lock(sys.argv[1], sys.argv[2]) as held:
             proc.stdout.close()
         if proc.stderr is not None:
             proc.stderr.close()
+
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires a POSIX fork")
+def test_real_guarded_broker_dies_mid_callback_and_is_fenced(tmp_path):
+    _, receipts, parent, lease, _ = setup(tmp_path)
+    intent = receipts.prepare(lease, idempotency_key="hard-crash", authorization=_ACTION)
+    ctx = multiprocessing.get_context("fork")
+    started = ctx.Event()
+
+    def crash_callback() -> None:
+        started.set()
+        os._exit(88)
+
+    def run_broker() -> None:
+        receipts.execute_once(
+            lease, idempotency_key="hard-crash", authorization=_ACTION,
+            invoke=crash_callback,
+        )
+
+    worker = ctx.Process(target=run_broker)
+    worker.start()
+    try:
+        assert started.wait(timeout=12), "worker did not enter guarded callback"
+        worker.join(timeout=12)
+        assert worker.exitcode == 88
+        assert receipts.get(intent.action_id).state == "dispatching"
+        outcome = FencedActionRecovery(receipts).recover(
+            parent, action_ids=[intent.action_id]
+        )
+        assert outcome[0].verdict == "uncertain"
+        with pytest.raises(ActionReplayDenied):
+            receipts.execute_once(
+                lease, idempotency_key="hard-crash", authorization=_ACTION,
+                invoke=lambda: pytest.fail("hard-crashed side effect was reissued"),
+            )
+    finally:
+        if worker.is_alive():
+            worker.kill()
+            worker.join(timeout=12)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires symlink support")
+def test_symlinked_lock_directory_refused_before_side_effect(tmp_path):
+    _, receipts, _, lease, _ = setup(tmp_path)
+    redirected = tmp_path / "attacker"
+    redirected.mkdir()
+    lock_dir = tmp_path / "pods.db.action-locks"
+    lock_dir.symlink_to(redirected, target_is_directory=True)
+    with pytest.raises(AdmissionDenied, match="symlink"):
+        receipts.execute_once(
+            lease, idempotency_key="symlink", authorization=_ACTION,
+            invoke=lambda: pytest.fail("symlink bypassed fencing"),
+        )

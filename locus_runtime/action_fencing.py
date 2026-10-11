@@ -72,14 +72,16 @@ def action_lock(database: str, action_id: str) -> Iterator[bool]:
                 held = True
         yield held
     finally:
-        if held:
-            if os.name == "nt":
-                import msvcrt
+        try:
+            if held:
+                if os.name == "nt":
+                    import msvcrt
 
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
 
-                fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)

@@ -8,7 +8,6 @@ completion. This never replays, approves, or completes any external effect.
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 from dataclasses import dataclass
 from typing import Iterable
 
