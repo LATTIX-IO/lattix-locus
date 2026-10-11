@@ -223,6 +223,8 @@ def test_timeout_is_uncertain_and_never_repeated(tmp_path, monkeypatch):
     invocations = docker(monkeypatch)
     def timeout(argv, **kwargs):
         invocations.append((argv, kwargs))
+        if argv[:2] == ["docker", "kill"]:
+            return subprocess.CompletedProcess(argv, 0)
         raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
     monkeypatch.setattr(broker_module.subprocess, "run", timeout)
     app, receipts, lease, _ = fixture(tmp_path)
@@ -230,7 +232,13 @@ def test_timeout_is_uncertain_and_never_repeated(tmp_path, monkeypatch):
         app.execute(lease, cmd(tmp_path))
     with pytest.raises(ActionReplayDenied):
         app.execute(lease, cmd(tmp_path))
-    assert len(invocations) == 1
+    assert len(invocations) == 2
+    launch, cleanup = invocations
+    name = launch[0][launch[0].index("--name") + 1]
+    assert name.startswith("locus-pod-")
+    assert cleanup[0] == ["docker", "kill", name]
+    assert cleanup[1]["timeout"] == 5
+    assert cleanup[1]["env"] == launch[1]["env"]
     with receipts.reservations._connect() as db:
         status = db.execute("SELECT state FROM pod_action_receipt").fetchone()[0]
     assert status == "uncertain"
@@ -334,3 +342,50 @@ def test_relative_launcher_working_directory_denied(tmp_path, monkeypatch):
     with pytest.raises(AdmissionDenied, match="launcher directory"):
         app.execute(lease, cmd(tmp_path))
     assert not executions
+
+
+def test_docker_mounts_deduplicated_when_scopes_overlap(tmp_path, monkeypatch):
+    invocations = docker(monkeypatch)
+    app, _, lease, _ = fixture(tmp_path)
+    app.execute(lease, cmd(tmp_path))
+    args = invocations[0][0]
+    mounts = [args[index + 1] for index, value in enumerate(args[:-1]) if value == "-v"]
+    root = str(tmp_path.resolve())
+    assert mounts.count(f"{root}:{root}:rw") == 1
+    assert f"{root}:{root}:ro" not in mounts
+
+
+def test_failed_docker_cleanup_retains_timeout_and_nonreplayability(tmp_path, monkeypatch):
+    invocations = docker(monkeypatch)
+    def runner(argv, **kwargs):
+        invocations.append((argv, kwargs))
+        if argv[:2] == ["docker", "kill"]:
+            raise OSError("docker daemon unavailable")
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+    monkeypatch.setattr(broker_module.subprocess, "run", runner)
+    app, receipts, lease, _ = fixture(tmp_path)
+    with pytest.raises(subprocess.TimeoutExpired):
+        app.execute(lease, cmd(tmp_path, key="timed-out"))
+    with pytest.raises(ActionReplayDenied):
+        app.execute(lease, cmd(tmp_path, key="timed-out"))
+    assert len(invocations) == 2
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT state FROM pod_action_receipt").fetchone()[0] == "uncertain"
+
+
+def test_docker_launch_requires_expected_cli_prefix(tmp_path, monkeypatch):
+    invocations = docker(monkeypatch)
+    from locus_runtime.sandbox import ExecutionPlan
+    monkeypatch.setattr(
+        broker_module.SandboxManager, "plan",
+        lambda self, spec, policy: ExecutionPlan(
+            backend="hardened-docker", command=["docker", "exec", "untrusted", "echo"],
+            strategy=IsolationStrategy.HARDENED_DOCKER,
+        ),
+    )
+    app, receipts, lease, _ = fixture(tmp_path)
+    with pytest.raises(AdmissionDenied, match="Docker sandbox launcher"):
+        app.execute(lease, cmd(tmp_path))
+    assert not invocations
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT state FROM pod_action_receipt").fetchone() is not None
