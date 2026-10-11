@@ -7,6 +7,7 @@ Ambiguous starts never replay without explicit supervisor reconciliation.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import secrets
 import sqlite3
@@ -159,13 +160,24 @@ class PodActionReceipts:
             raise AdmissionDenied("action was not allowed by Zero Trust gateway")
         if not decision.audit_id or not decision.fingerprint:
             raise AdmissionDenied("missing signed action provenance")
-        # GatewayDecision is freshly process-signed, but its fingerprint
-        # includes an ephemeral HMAC key. The durable action identity is
-        # independent of that per-process key and recomputable after restart.
-        digest = _sha(json.dumps([
-            decision.action_kind, decision.tool, decision.target,
-            decision.args_digest, lease.run_id,
-        ], separators=(",", ":"), ensure_ascii=True))
+        # GatewayDecision is freshly process-signed. BOTH its fingerprint
+        # and args_digest use gateway._PROCESS_KEY, so neither can be part
+        # of a durable idempotency identity. Bind canonical raw request facts
+        # using the random run-scoped child token as an HMAC key. Never store
+        # arguments or raw token. Unsupported non-JSON arguments fail closed.
+        try:
+            material = json.dumps({
+                "run_id": lease.run_id,
+                "kind": decision.action_kind,
+                "tool": decision.tool,
+                "target": decision.target,
+                "authorization": dict(authorization),
+            }, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+               allow_nan=False)
+        except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+            raise AdmissionDenied("action authorization is not canonically serializable") from exc
+        digest = hmac.new(lease._session.caller.token.encode("utf-8"),
+                          material.encode("utf-8"), hashlib.sha256).hexdigest()
         with self.reservations._connect() as db:
             self.reservations._tx(db)
             pod = self._active_locked(db, lease)
