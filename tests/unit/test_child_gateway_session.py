@@ -188,3 +188,36 @@ def test_zero_cost_budget_is_valid_for_offline_pod():
         capabilities=dataclasses.replace(caps, budget=_budget(tokens=200, cost=0)),
     )
     assert child.capabilities.budget.max_cost_usd == 0
+
+
+def test_parent_taint_removes_standing_grant_for_child():
+    class AllGrants:
+        def covers(self, action, capabilities):
+            return True
+
+    gateway = Gateway(FakeEngine(), lambda _: None, grants=AllGrants())
+    parent_caps = Capabilities(
+        allowed_tools=frozenset({"send_email"}),
+        max_actions=5,
+        max_tool_calls=5,
+        max_risk_class=RiskClass.R3,
+        budget=_budget(),
+    )
+    parent = gateway.open_session(
+        run_id="parent", principal="alice", engine="orchestrator", capabilities=parent_caps
+    )
+    child_caps = dataclasses.replace(
+        parent_caps, max_actions=3, max_tool_calls=3,
+        budget=_budget(tokens=200, duration=20, cost=1.0)
+    )
+    child = gateway.open_child_session(
+        parent, run_id="parent:email", engine="worker", capabilities=child_caps
+    )
+    assert child.authorize(kind="tool_call", tool="send_email", target="mail").outcome == "allow"
+    with gateway._lock:
+        for record in gateway._sessions.values():
+            if record.caller.run_id == parent.caller.run_id:
+                record.tainted = True
+    denied = child.authorize(kind="tool_call", tool="send_email", target="mail")
+    assert denied.outcome == "ask"
+    assert "gateway.taint_gate_grant_not_applicable" in denied.reasons
