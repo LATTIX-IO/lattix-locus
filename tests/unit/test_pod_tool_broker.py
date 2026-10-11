@@ -141,6 +141,7 @@ def test_no_unknown_tool_or_dynamic_command_is_accepted(tmp_path, monkeypatch):
     ("fixed_tool", (), "/tmp", 10),
     ("fixed_tool", ("/bin/sh", "-c", "cat /etc/shadow"), "/tmp", 10),
     ("fixed_tool", ("/bin/true", "bad\x00value"), "/tmp", 10),
+    ("fixed_tool", ("/bin/true", 5), "/tmp", 10),
     ("fixed_tool", ("/bin/true",), "/tmp", 300),
 ])
 def test_invalid_registered_descriptors_are_rejected(descriptor):
