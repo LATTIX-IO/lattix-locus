@@ -109,7 +109,7 @@ def decode_tool_result(
             parse_float=_reject_non_integer,
             parse_constant=_reject_non_integer,
         )
-    except (UnicodeError, ValueError, TypeError, OverflowError, RecursionError) as exc:
+    except (UnicodeError, ValueError, TypeError, OverflowError, RecursionError):
         raise ToolResultRejected("malformed structured tool result") from None
     if type(root) is not dict or root.get("schema") != policy.schema:
         raise ToolResultRejected("result schema is not authorized")
