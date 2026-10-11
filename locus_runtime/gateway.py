@@ -252,6 +252,8 @@ REASON_INVALID_ACTION = "gateway.invalid_action"
 REASON_ENGINE_ERROR = "gateway.engine_error"
 REASON_AUDIT_UNAVAILABLE = "gateway.audit_unavailable"
 REASON_R4_PROHIBITED = "gateway.risk_r4_prohibited"
+# A trusted session's maximum risk is a *hard denial*, never an approval gate.
+REASON_RISK_CEILING = "gateway.pod_risk_ceiling_exceeded"
 REASON_APPROVAL_REQUIRED = "gateway.approval_required"
 REASON_APPROVED = "gateway.approved_by_human"
 REASON_GRANT = "gateway.grant_covers_action"
@@ -1334,6 +1336,10 @@ class Capabilities:
     max_tool_calls: int = 0
     max_actions: int | None = None
     budget: BudgetFigures | None = None
+    # Optional hard action-risk ceiling for a bounded pod/run (LOCUS-432).
+    # None retains the existing top-level run behavior; R4 is always prohibited.
+    # Set only by trusted gateway-session admission, never model or tool metadata.
+    max_risk_class: RiskClass | None = None
     # Run profile registered with the session. ``"evals"`` is accepted only by a
     # gateway built with ``allow_eval_sessions=True`` (apps/evals); see open_session.
     runtime_profile: str = ""
@@ -1725,6 +1731,11 @@ class Gateway:
             and not self._allow_eval_sessions
         ):
             raise ValueError("this gateway does not accept evals sessions")
+        # Fail closed on strings/integers masquerading as risk classes. R4 is
+        # forbidden platform-wide, not a capability that a child can request.
+        ceiling = capabilities.max_risk_class
+        if ceiling is not None and (type(ceiling) is not RiskClass or ceiling == RiskClass.R4):
+            raise ValueError("max_risk_class must be R0, R1, R2 or R3")
         token = secrets.token_urlsafe(32)
         caller = GatewayCaller(run_id=run_id, principal=principal, engine=engine, token=token)
         with self._lock:
@@ -1870,6 +1881,14 @@ class Gateway:
                 reasons.extend(result.reasons or [f"{policy}.allow"])
         policy_version = ",".join(sorted(versions)) or "unknown"
         if denied:
+            return self._finish(action, record, "deny", tuple(reasons), policy_version, audit_id)
+
+        # The final risk is the maximum of the observed action, recomputed
+        # classification and all policy risk floors. A pod ceiling denies
+        # *before* intent gates, human approvals, standing grants or browser
+        # tier consent can authorize the operation. Never convert to "ask".
+        if caps.max_risk_class is not None and action.risk > caps.max_risk_class:
+            reasons.append(REASON_RISK_CEILING)
             return self._finish(action, record, "deny", tuple(reasons), policy_version, audit_id)
 
         # Step 5 seam.
