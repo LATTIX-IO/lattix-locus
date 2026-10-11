@@ -7,7 +7,7 @@
 
 This folder defines **what Locus is, who it is for, and how it should behave**. It is the product layer above the engineering and status records at the repo root (`AGENTS.md`, `DESIGN.md`, `SECURITY.md`, `THREAT-MODEL.md`, `QUALITY_SCORE.md`, `PLANS.md`) and in [`docs/`](../).
 
-> **Direction change (Oct 2026).** Locus was framed as a *multi-agent orchestration platform* centred on a workflow builder. It is now a **local-first personal AI operator**: one always-on assistant that you chat with, hand tasks to, and let take over your computer, contained by a zero trust core. The builder, cognitive columns and governance work carry forward. They now serve the operator rather than being the product. See [01](01-vision-and-positioning.md) and [20](20-roadmap-and-decisions.md) D-01.
+> **Direction confirmed (10 Oct 2026).** Locus remains a local-first personal operator at the interface, but is a **general-purpose Zero Trust multi-agent meta-harness** underneath it. A durable Task Orchestrator plans and supervises ephemeral expert pods across coding, research, documents, data, communication, operations and computer use, while all actions remain gateway-mediated. User-visible continuity does not require long-lived worker personas. D-32–D-35 and [ADR-0002](../adr/ADR-0002-general-purpose-meta-harness.md) record the decision; the original personal-operator D-01 is retained as the UX scope, not a restriction on task domains.
 
 ## Precedence
 
@@ -50,7 +50,7 @@ If you change the product direction, change it here first, then implement.
 - For UI work, read 03, 05, 09 and the relevant section of 06 and 08 before touching code.
 - For runtime work, read 04, 11 and 13 first. Nothing that executes may bypass the gateway described in 13 §4.
 - For provider or engine work, read 10. For anything touching another person's instance, read 18.
-- The feature catalog (08) states *intent and horizon*, not build status. Build status lives in a dated status record (the latest is the 2 Oct 2026 System State Review). **origin/main is regressed** (PR #18 deleted 218 files; the fullest state is `ae4d703`), so check status before assuming a capability exists. See [20](20-roadmap-and-decisions.md) §1, H0.
+- The feature catalog (08) states *intent and horizon*, not build status. Build status lives in a dated status record (the latest is the 2 Oct 2026 System State Review). main was recovered after the 2 Oct 2026 state review; check live code and CI before assuming any feature or gate has shipped. See [20](20-roadmap-and-decisions.md) §1, H0.
 
 ## Terms used throughout
 
@@ -70,3 +70,8 @@ If you change the product direction, change it here first, then implement.
 | **Column** | An independent reasoning and memory unit that keeps its own model of a subject and votes in an assembly |
 | **Commitment** | An assembly's fused decision with confidence, dissent, blockers and next actions |
 | **Gateway** | The single policy enforcement point every tool call, model call and egress passes through |
+
+
+## Meta-harness architecture contract (10 October 2026)
+
+[ADR-0002](../adr/ADR-0002-general-purpose-meta-harness.md) is the accepted execution architecture. [04](04-concept-model.md) defines task/pod/artifact vocabulary, [11](11-agentic-model.md) describes ephemeral expert pod orchestration, [10](10-inference-and-model-routing.md) separates model providers from agent engines and [20](20-roadmap-and-decisions.md) contains the release gates. Optional fleet RSI and Savant interoperability never replace local-first operation or Zero Trust admission.

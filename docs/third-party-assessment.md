@@ -39,9 +39,9 @@ Effort is S (days), M (1–3 weeks) or L (more than 3 weeks).
 | 1 | [langchain-ai/deepagents](https://github.com/langchain-ai/deepagents) | **Integrate as-is** + Locus extension package (fork only if forced) | P1 | M | Agent runtime (`AgentRuntime`) | LOCUS-363 | Decided D-27; default since 2026-10-04 |
 | 2 | [openai/symphony](https://github.com/openai/symphony) | **Custom clone** (continue) | P1 | S–M | Intake / loop runner (`Tracker`, `Trigger`) | LOCUS-407 | Linear intake; worktree isolation |
 | 3 | [CopilotKit/CopilotKit](https://github.com/CopilotKit/CopilotKit) (AG-UI) | **Integrate as-is**: `@ag-ui/core`, `@ag-ui/client` and `ag-ui-langgraph` only. Chat UI: **assistant-ui** (bake-off winner, 86 vs 62) | P1 | M | Surfaces (`SurfaceAdapter`) | LOCUS-369 | Gateway emits AG-UI 1.0 events, coalesces deltas, signed HITL resume |
-| 4 | Laya (convaiinnovations/laya) | **Integrate as-is**: local `/v1/systemone` sidecar, the **offline fallback** (D-32) | P1 | S | Judge (`DecisionModel`) | LOCUS-367 | Pin and hash; egress check; validate on Locus cases |
+| 4 | Laya (convaiinnovations/laya) | **Integrate as-is**: local `/v1/systemone` sidecar, **current default**; future offline fallback only if D-36 is separately authorized | P1 | S | Judge (`DecisionModel`) | LOCUS-367 | Pin and hash; egress check; calibrate on Locus cases |
 | 5 | [TypeSafe Jev](https://typesafe.ai) | **Integrate as-is**, optional hosted tier for reasoning-heavy judgments | P3 | S | Judge (`DecisionModel`) | LOCUS-367 | Area-policy opt-in; no sensitive state sent |
-| 6 | [Cloudflare/clef](https://huggingface.co/Cloudflare/clef) on Cloudflare Workers AI | **Integrate as-is, hosted**: the **primary** judge (D-32, principal exception to D-29's hosted rule). Running it locally stays blocked (format rule) | P1 | S | Judge (`DecisionModel`) | LOCUS-367 | Cloudflare token in the keychain; redaction; judges advisory only; Laya offline fallback |
+| 6 | [Cloudflare/clef](https://huggingface.co/Cloudflare/clef) on Cloudflare Workers AI | **Proposed, blocked** as hosted Qwen-derived inference by D-29 and the model-client gate. Principal preference recorded in D-36; **not approved for execution**. Local weights also blocked by the custom-loader rule | P3 | — | Judge (`DecisionModel`) | LOCUS-367 | Needs separately principal-reviewed security exception, policy/contract tests, consent and rollback; do not route to it now |
 | 7 | [CopilotKit/OpenBot](https://github.com/CopilotKit/OpenBot) | **Custom clone** | P2 | L | Always-on, computer use | LOCUS-370 | LOCUS-354; OS sandbox; browser tiers |
 | 8 | [CopilotKit/OpenDots](https://github.com/CopilotKit/OpenDots) | **Custom clone** | P2 | M | Always-on agent | LOCUS-370 | LOCUS-354; durable runs |
 | 9 | [CopilotKit/openmuse](https://github.com/CopilotKit/openmuse) | **Custom clone** | P2 | M | Always-on, computer use | LOCUS-370 | Durable runs; browser control |
@@ -78,7 +78,7 @@ Effort is S (days), M (1–3 weeks) or L (more than 3 weeks).
 | 40 | LATTIX-IO/savant (first party) | **Integrate as-is** (skills source connector) | P2 | M | Skills (`SkillStore`) | LOCUS-388 | Connector design from the local Savant codebase; a headless token on the Savant side if none exists |
 
 **Net result:**
-- 8 items are integrated as-is: Deep Agents, AG-UI, Clef (hosted), Laya, Jev, channels-sdk, Inspect AI, Cedar. Savant is a first-party connector on top of these.
+- 7 items are selected as integrations: Deep Agents, AG-UI, Laya, Jev, channels-sdk, Inspect AI and Cedar. Hosted Clef is a **blocked proposal**, not an integration; Savant is an **optional** first-party connector.
 - **Zero forks.**
 - 21 items are custom clones.
 - The rest are reference only or skipped.
@@ -183,30 +183,28 @@ There are no forks because extension points and out-of-process services cover ev
 
 ### 3.3 Judge and decision tier
 
-These items decide the D-11 defaults, now recorded as **D-32** (2026-10-05). **Standardise the `DecisionModel` port on the Jev-compatible `/v1/systemone` schema**, so the providers can be swapped (LOCUS-367).
+The `DecisionModel` port uses the Jev-compatible `/v1/systemone` request/response shape, so a *separately authorized* provider may eventually be swapped (LOCUS-367). **D-11 remains the operational security-compliant default: Laya, running locally.** D-36 records the principal's 2026-10-05 preference for hosted Clef, but the implementation is **blocked**, not granted an implicit exception.
 
-**D-32 routing:**
-1. **Primary: Clef on Cloudflare Workers AI** (hosted). The principal accepts it as an exception to D-29's hosted rule: Cloudflare (US) hosts it, the weights are Qwen-derived, and the tokens leave the machine.
-2. **Offline fallback: Laya, local.** Used when there is no network, Cloudflare is unreachable or over budget, or the area policy says local only.
-3. **If Laya isn't available, or fails calibration on Locus cases:** steps that need a judgment escalate to the principal. Offline judging is then delayed rather than guessed.
+**Current routing (enforce now):**
+1. **Primary: local Laya**, after per-task calibration and bounded inputs. Do not call a hosted Qwen-derived model.
+2. **Permitted hosted options:** only models/providers passing existing data policy, provenance and explicit consent checks (for example separately eligible Jev, if enabled); no automatic vendor fallback from restricted data.
+3. **No eligible calibrated judge:** escalate to the principal. Do not treat an unavailable judge as permit, fabricate acceptance or downgrade policy.
 
-**Conditions:**
-- Judges stay **advisory**: they can deny or escalate, never allow, and no gateway decision depends on a judge being reachable.
-- Inputs are minimised and redacted (Presidio) before they leave.
-- The Cloudflare token lives in the keychain, and the Workers AI host is on the egress allowlist.
-- Every call is metered and audited.
+**Future conditional D-36 preference (not enabled):** Clef hosted on Cloudflare Workers AI could become primary with local Laya fallback **only after** a separate principal-reviewed D-29 exception expressly addressing Qwen lineage, Cloudflare hosting, per-area opt-in, egress/authentication, redaction limits, auditing, compatibility and adversarial tests. Current `SECURITY.md`, P28, `docs/product/03-product-principles.md` and `locus_runtime/model_client.py:provenance_denial()` all refuse such hosted lineage. A US cloud serving a model does not change its model lineage. Do not modify that gate as part of this docs-only PR.
 
-Laya and Clef share the `/v1/systemone` schema, so falling back is an endpoint switch.
+**Common controls:** judges remain advisory (may deny/escalate, **never authorize**); request content is minimized and redacted, credentials stay in the OS keychain, all permitted provider calls are metered, audited and rechecked by the gateway. Offline operation is supported by local Laya. If Laya fails calibration, escalate rather than guess.
+
+
 
 | Option | Facts | Decision |
 |---|---|---|
-| **Clef / Clef-flash on Workers AI** | Hosted by Cloudflare at $0.24 (Clef) / $0.09 (Clef-flash) per million input tokens. Strong on intent classification (BANKING77 94.2), weak on reasoning (GPQA 48 vs Jev 78.3). Jev SystemOne API-compatible | **Integrate as-is, hosted: primary judge (D-32, P1)** |
-| **Laya** (Convai Innovations) | Apache-2.0. 421M ModernBERT-large (non-China lineage), small enough for CPU. `laya-serve` exposes `/v1/systemone`. Self-reported 0.766 vs Jev 0.727 on typed decisions; ~33 ms per question on a T4; up to ~20 options | **Integrate as-is, local: offline fallback (D-32, P1)** |
+| **Clef / Clef-flash on Workers AI** | Hosted by Cloudflare at $0.24 (Clef) / $0.09 (Clef-flash) per million input tokens. Strong on intent classification (BANKING77 94.2), weak on reasoning (GPQA 48 vs Jev 78.3). Jev SystemOne API-compatible | **Blocked proposed primary (D-36, P3): cannot route until explicit security exception and changed fail-closed policy** |
+| **Laya** (Convai Innovations) | Apache-2.0. 421M ModernBERT-large (non-China lineage), small enough for CPU. `laya-serve` exposes `/v1/systemone`. Self-reported 0.766 vs Jev 0.727 on typed decisions; ~33 ms per question on a T4; up to ~20 options | **Integrate as-is, local: current default (D-11); would become offline fallback only after D-36 approval** |
 | **Clef weights run locally** (9B / 27B) | Apache-2.0; post-trained from **Qwen** (Alibaba lineage), with a joint schema head that needs `trust_remote_code`. 27B BF16 ≈ 55 GB | **Local use: reference only (P3), blocked.** The D-29 model check refuses configs that request custom code (`trust_remote_code`, `auto_map`) and any loader code ([PROVENANCE §4](PROVENANCE.md)), so the published artifact cannot pass inspection. Revisit only if a weights-only safetensors or GGUF artifact appears whose joint head loads without custom code; inspect that exact artifact. Skip the 27B locally either way |
 | **Jev** (TypeSafe) | Hosted only (waitlist); $0.042 per million input tokens; leads on reasoning-heavy judgments | Optional hosted tier for reasoning-heavy acceptance judging (P3). Never sends sensitive state |
 | Ollama structured output | No new dependency; no calibrated per-option probabilities | Fallback for open-ended questions or more than 20 options |
 
-**Resolved 2026-10-05:** the principal allows Clef on Cloudflare Workers AI (D-32) and requires offline operation through the local Laya fallback.
+**Preference recorded 2026-10-05; execution blocked pending security review:** the principal selected hosted Clef with local Laya fallback, but D-29/P28 and the model gate still refuse it. The deployable route is Laya; see D-36.
 
 ### 3.4 Desktop UI, surfaces and generative UI
 
@@ -354,12 +352,13 @@ P1  LOCUS-363 Deep Agents extension package ──► LOCUS-373 TrueForge contex
 P1  LOCUS-407 Symphony SPEC alignment ───────► LOCUS-398 Multica/Orca orchestration UX (P2)
 P1  LOCUS-369 AG-UI protocol + assistant-ui ─► LOCUS-409 generative-UI surface (P2)
                                            └──► LOCUS-408 channels (P3)
-P1  LOCUS-367 Laya judge sidecar ────────────► Jev opt-in (P2) · Clef only if a weights-only artifact appears (P3)
+P1  LOCUS-367 local Laya default ────────────► Jev opt-in (where policy allows)
+P3  LOCUS-367 Clef hosted preference (D-36) ─► BLOCKED by D-29; independent security exception required
 P1  LOCUS-375 observability (OTel/SQLite) ───► LOCUS-399 RSI provenance (P2) · LOCUS-400 LangWatch patterns (P3)
 P1  LOCUS-390 Cedar epic (D-30)
 P2  LOCUS-354 always-on agent ◄── LOCUS-370 OpenBot / OpenDots / openmuse patterns
 P2  LOCUS-351/382 scorecard + held-out ──────► LOCUS-365 Raven curator gate · LOCUS-399 experiment tree
-P2  D-08 canvas decision (principal) ────────► LOCUS-397 canvas · LOCUS-364 Sim-style pipeline schema
+P2  diagram-js confirmed (D-08) ────────────► LOCUS-397 canvas · LOCUS-364 Sim-style pipeline schema
 P2  LOCUS-371 octop-browser / octop-memory clean-room patterns (needs LOCUS-387 SQLite store: done)
 P3  LOCUS-401 diagram skill · LOCUS-366 colibri · LOCUS-368 univer core · LOCUS-372 ax · LOCUS-388 Savant (blocked on access)
 ```
@@ -369,12 +368,12 @@ P3  LOCUS-401 diagram skill · LOCUS-366 colibri · LOCUS-368 univer core · LOC
 Answered 2026-10-05:
 
 1. **Canvas engine: diagram-js** (D-08 confirmed). This unblocks LOCUS-397 and LOCUS-364.
-2. **Judge tier:** Clef on Cloudflare Workers AI is the primary judge, and Laya runs locally as the offline fallback. If no fallback is possible, offline judging is delayed and steps escalate. Recorded as D-32, see §3.3.
+2. **Judge tier:** the 2026-10-05 preference is Clef on Cloudflare Workers AI as a future primary with local Laya fallback (D-36). **Not active:** hosted Clef is still prohibited by D-29/P28 and `provenance_denial()`; a separate protected security decision and implementation PR are required. **Today** Laya remains the default; if unavailable, escalate rather than guess.
 3. **Chat UI library: assistant-ui**, chosen by a measured bake-off. It scored 86/100 to CopilotKit React's 62, and the ranking held under every alternative weighting ([chat-ui-bakeoff-2026-10](development/chat-ui-bakeoff-2026-10.md), LOCUS-369).
    - CopilotKit's React packages are now **reference only**. Their first-load JS ships vendor telemetry and licence hosts, a Scarf postinstall reports by default, their CSS tokens collide with ours, and their first-load JS is 2× the size.
    - AG-UI stays as the protocol either way.
-4. **Savant:** designed from the local Savant codebase. The connector design and any token the Savant side needs are in LOCUS-388.
-5. **Deep Agents process boundary: keep it in process for now** (principal, 2026-10-05, provisional). Re-assess after the Cedar cutover (LOCUS-393).
+4. **Savant:** strictly **optional** enterprise skill source, never a Locus prerequisite (D-35). Adapter design from Savant remains in LOCUS-388/418. It must preserve independent Locus quarantine, scanning, admission, offline operation and opt-in sanitized feedback.
+5. **Deep Agents process boundary: in-process only as a narrowly documented existing runtime exception** (D-37, principal 2026-10-05, provisional), not a general reversal of third-party isolation D-28. Reassess after Cedar or on a dependency/network exposure finding (LOCUS-393, LOCUS-415).
    - *In process (today):* fastest, simplest, and how the bake-off measured it. The risk is that a flaw or a malicious update in the library runs with the backend's own access. The gateway middleware, the bypass scan and version pins reduce that risk but do not remove it.
    - *Sidecar process:* the library could only reach the outside world through the gateway, because the OS would enforce the boundary. That costs an extra hop per step (latency), a second process to package and supervise, serialising agent state across the boundary, and roughly 2–3 weeks of work.
 

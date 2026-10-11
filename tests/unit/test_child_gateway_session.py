@@ -1,0 +1,335 @@
+"""LOCUS-432 hardened delegation: no authority, budget, identity or taint widening."""
+
+import dataclasses
+from math import inf, nan
+
+import pytest
+
+from locus_runtime.gateway import BudgetFigures, Capabilities, Gateway, RiskClass
+from tests.gateway_support import FakeEngine
+
+
+def _budget(*, tokens=1000, used=0, duration=60, cost=5.0):
+    return BudgetFigures(
+        tokens_used=used, max_tokens=tokens, duration_used_seconds=0,
+        max_duration_seconds=duration, cost_used_usd=0, max_cost_usd=cost
+    )
+
+
+def make(*, parent_tier="tiered", parent_budget="default"):
+    gateway = Gateway(FakeEngine(), lambda _: None)
+    caps = Capabilities(
+        allowed_tools=frozenset({"list_issues", "send_email"}),
+        read_roots=("/work",),
+        write_roots=("/work",),
+        allowed_executables=("bash",),
+        allowed_egress_hosts=("api.example.com",),
+        allowed_apps=("editor",),
+        denied_apps=("vault",),
+        max_actions=10,
+        max_tool_calls=20,
+        max_risk_class=RiskClass.R2,
+        autonomy_tier=parent_tier,
+        budget=_budget() if parent_budget == "default" else parent_budget,
+    )
+    parent = gateway.open_session(
+        run_id="run-1", principal="alice", engine="parent", capabilities=caps,
+        allow_child_delegation=True
+    )
+    child_caps = dataclasses.replace(
+        caps,
+        allowed_tools=frozenset({"list_issues"}),
+        read_roots=("/work/reports",),
+        max_actions=3,
+        max_tool_calls=5,
+        max_risk_class=RiskClass.R0,
+        budget=_budget(tokens=200, duration=20, cost=1.0),
+    )
+    return gateway, parent, child_caps
+
+
+def test_child_uses_parent_principal_and_scopes_action_authorization():
+    gateway, parent, caps = make()
+    child = gateway.open_child_session(parent, run_id="run-1:pod1", engine="worker", capabilities=caps)
+    assert child.caller.principal == "alice"
+    assert child.caller.run_id.startswith("run-1:pod1:")
+    assert child.authorize(kind="tool_call", tool="list_issues").outcome == "allow"
+    assert child.authorize(kind="tool_call", tool="send_email").outcome == "deny"
+
+
+@pytest.mark.parametrize("change", [
+    {"allowed_tools": frozenset({"list_issues", "send_email", "admin"})},
+    {"read_roots": ("/",)},
+    {"read_roots": "/work/reports"},
+    {"write_roots": "/work"},
+    {"write_roots": ("/other",)},
+    {"allowed_egress_hosts": ("evil.test",)},
+    {"allowed_executables": ("bash", "powershell")},
+    {"allowed_apps": ("editor", "vault")},
+    {"denied_apps": ()},
+    {"max_actions": 100},
+    {"max_actions": None},
+    {"max_actions": 0},
+    {"max_tool_calls": 0},
+    {"max_tool_calls": 100},
+    {"max_risk_class": RiskClass.R3},
+    {"max_risk_class": None},
+    {"data_classification": "restricted"},
+    {"runtime_profile": "evals"},
+    {"autonomy_tier": "envelope-autonomous"},
+    {"budget": None},
+    {"budget": _budget(tokens=2000)},
+    {"budget": _budget(tokens=200, duration=120)},
+    {"budget": _budget(tokens=200, cost=8.0)},
+    {"budget": _budget(tokens=200, used=201)},
+    {"budget": dataclasses.replace(_budget(), max_tokens=inf)},
+    {"budget": dataclasses.replace(_budget(), max_tokens=nan)},
+    {"budget": dataclasses.replace(_budget(), max_tokens=10 ** 1000)},
+    {"budget": dataclasses.replace(_budget(), duration_used_seconds=None)},
+])
+def test_reject_authority_or_resource_expansion(change):
+    gateway, parent, caps = make()
+    with pytest.raises(PermissionError):
+        gateway.open_child_session(
+            parent, run_id="run-1:pod1", engine="worker",
+            capabilities=dataclasses.replace(caps, **change)
+        )
+
+
+def test_parent_without_budget_does_not_allow_budgetless_child():
+    gateway, parent, caps = make(parent_budget=None)
+    # Fresh child is always bounded, even if a legacy parent had no budget.
+    with pytest.raises(PermissionError, match="finite budget"):
+        gateway.open_child_session(
+            parent, run_id="run-1:pod1", engine="worker",
+            capabilities=dataclasses.replace(caps, budget=None)
+        )
+
+
+def test_parent_used_budget_cannot_be_reset():
+    gateway, parent, caps = make(parent_budget=_budget(used=80))
+    with pytest.raises(PermissionError, match="tokens_used"):
+        gateway.open_child_session(
+            parent, run_id="run-1:pod1", engine="worker", capabilities=caps
+        )
+
+
+def test_child_can_tighten_autonomy_from_tiered_to_supervised():
+    gateway, parent, caps = make()
+    child = gateway.open_child_session(
+        parent, run_id="run-1:pod1", engine="worker",
+        capabilities=dataclasses.replace(caps, autonomy_tier="supervised")
+    )
+    assert child.capabilities.autonomy_tier == "supervised"
+
+
+def test_child_cannot_relax_supervised_parent():
+    gateway, parent, caps = make(parent_tier="supervised")
+    with pytest.raises(PermissionError, match="autonomy tier"):
+        gateway.open_child_session(
+            parent, run_id="run-1:pod1", engine="worker",
+            capabilities=dataclasses.replace(caps, autonomy_tier="tiered")
+        )
+
+
+def test_parent_revoke_denies_descendants_and_new_spawns():
+    gateway, parent, caps = make()
+    child = gateway.open_child_session(parent, run_id="run-1:pod1", engine="worker", capabilities=caps)
+    # A worker must not be able to reset its consumption limits by creating
+    # another child. Only the trusted root supervisor is delegated authority.
+    with pytest.raises(PermissionError, match="not authorized to delegate"):
+        gateway.open_child_session(
+            child, run_id=child.caller.run_id + ":subpod",
+            engine="reviewer", capabilities=caps
+        )
+    parent.close()
+    assert child.authorize(kind="tool_call", tool="list_issues").outcome == "deny"
+    with pytest.raises(PermissionError):
+        gateway.open_child_session(
+            parent, run_id="run-1:retry", engine="worker", capabilities=caps
+        )
+
+
+def test_foreign_parent_and_namespaced_identity_are_required():
+    gateway, parent, caps = make()
+    for name in ("different:pod1", "run-1:", "run-1"):
+        with pytest.raises(ValueError):
+            gateway.open_child_session(
+                parent, run_id=name, engine="worker", capabilities=caps
+            )
+    foreign = Gateway(FakeEngine(), lambda _: None)
+    with pytest.raises(PermissionError):
+        foreign.open_child_session(
+            parent, run_id="run-1:pod1", engine="worker", capabilities=caps
+        )
+
+
+def test_retrying_same_pod_name_creates_distinct_approval_identities():
+    gateway, parent, caps = make()
+    one = gateway.open_child_session(parent, run_id="run-1:pod1", engine="worker", capabilities=caps)
+    two = gateway.open_child_session(parent, run_id="run-1:pod1", engine="worker", capabilities=caps)
+    assert one.caller.run_id != two.caller.run_id
+    assert one.caller.token != two.caller.token
+
+
+def test_taint_propagates_to_child_after_initial_delegation():
+    gateway, parent, caps = make()
+    child = gateway.open_child_session(parent, run_id="run-1:pod1", engine="worker", capabilities=caps)
+    assert not child.tainted
+    # Mimic the gateway's post-approved secret-content taint transition.
+    with gateway._lock:
+        gateway._sessions[next(
+            key for key, rec in gateway._sessions.items()
+            if rec.caller.run_id == parent.caller.run_id
+        )].tainted = True
+    assert child.tainted
+    assert child.authorize(kind="tool_call", tool="list_issues").outcome == "allow"
+    assert child.tainted
+
+
+def test_zero_cost_budget_is_valid_for_offline_pod():
+    gateway, parent, caps = make()
+    child = gateway.open_child_session(
+        parent, run_id="run-1:offline", engine="worker",
+        capabilities=dataclasses.replace(caps, budget=_budget(tokens=200, cost=0)),
+    )
+    assert child.capabilities.budget.max_cost_usd == 0
+
+
+def test_parent_taint_removes_standing_grant_for_child():
+    class AllGrants:
+        def covers(self, action, capabilities):
+            return True
+
+    gateway = Gateway(FakeEngine(), lambda _: None, grants=AllGrants())
+    parent_caps = Capabilities(
+        allowed_tools=frozenset({"send_email"}),
+        max_actions=5,
+        max_tool_calls=5,
+        max_risk_class=RiskClass.R3,
+        budget=_budget(),
+    )
+    parent = gateway.open_session(
+        run_id="parent", principal="alice", engine="orchestrator", capabilities=parent_caps,
+        allow_child_delegation=True
+    )
+    child_caps = dataclasses.replace(
+        parent_caps, max_actions=3, max_tool_calls=3,
+        budget=_budget(tokens=200, duration=20, cost=1.0)
+    )
+    child = gateway.open_child_session(
+        parent, run_id="parent:email", engine="worker", capabilities=child_caps
+    )
+    assert child.authorize(kind="tool_call", tool="send_email", target="mail").outcome == "allow"
+    with gateway._lock:
+        for record in gateway._sessions.values():
+            if record.caller.run_id == parent.caller.run_id:
+                record.tainted = True
+    denied = child.authorize(kind="tool_call", tool="send_email", target="mail")
+    assert denied.outcome == "ask"
+    assert "gateway.taint_gate_grant_not_applicable" in denied.reasons
+
+
+def test_no_implicit_delegation_from_ordinary_parent_session():
+    gateway = Gateway(FakeEngine(), lambda _: None)
+    parent_caps = Capabilities(
+        allowed_tools=frozenset({"list_issues"}),
+        max_actions=6, max_tool_calls=10,
+        max_risk_class=RiskClass.R2, budget=_budget()
+    )
+    parent = gateway.open_session(
+        run_id="ordinary", principal="alice", engine="harness",
+        capabilities=parent_caps,
+    )
+    child_caps = dataclasses.replace(
+        parent_caps, max_actions=2, max_tool_calls=3,
+        max_risk_class=RiskClass.R0,
+        budget=_budget(tokens=200, duration=20, cost=1.0)
+    )
+    with pytest.raises(PermissionError, match="not authorized to delegate"):
+        gateway.open_child_session(
+            parent, run_id="ordinary:pod1", engine="worker", capabilities=child_caps
+        )
+
+
+def test_invalid_delegation_registration_is_rejected():
+    gateway = Gateway(FakeEngine(), lambda _: None)
+    with pytest.raises(ValueError, match="explicit boolean"):
+        gateway.open_session(
+            run_id="supervisor", principal="alice", engine="harness",
+            capabilities=Capabilities(),
+            allow_child_delegation="true",  # type: ignore[arg-type]
+        )
+
+
+def test_child_admission_refuses_capacity_exhaustion_before_eviction():
+    gateway = Gateway(FakeEngine(), lambda _: None, max_sessions=1)
+    caps = Capabilities(
+        allowed_tools=frozenset({"list_issues"}),
+        max_tool_calls=5,
+        max_actions=5,
+        max_risk_class=RiskClass.R2,
+        budget=_budget(),
+    )
+    parent = gateway.open_session(
+        run_id="root", principal="alice", engine="orchestrator",
+        capabilities=caps, allow_child_delegation=True
+    )
+    child_caps = dataclasses.replace(
+        caps, max_tool_calls=2, max_actions=2,
+        max_risk_class=RiskClass.R0,
+        budget=_budget(tokens=100, duration=10, cost=1.0),
+    )
+    with pytest.raises(RuntimeError, match="capacity exhausted"):
+        gateway.open_child_session(
+            parent, run_id="root:pod", engine="worker",
+            capabilities=child_caps
+        )
+    assert parent.authorize(kind="tool_call", tool="list_issues").outcome == "allow"
+    assert not gateway._session_parents
+
+
+def test_top_level_eviction_cleans_child_parent_links():
+    gateway = Gateway(FakeEngine(), lambda _: None, max_sessions=2)
+    caps = Capabilities(
+        allowed_tools=frozenset({"list_issues"}),
+        max_tool_calls=10, max_actions=10,
+        max_risk_class=RiskClass.R2, budget=_budget()
+    )
+    supervisor = gateway.open_session(
+        run_id="root", principal="alice", engine="controller",
+        capabilities=caps, allow_child_delegation=True
+    )
+    child_caps = dataclasses.replace(
+        caps, max_tool_calls=2, max_actions=2,
+        max_risk_class=RiskClass.R0,
+        budget=_budget(tokens=100, duration=10, cost=1.0)
+    )
+    child = gateway.open_child_session(
+        supervisor, run_id="root:pod", engine="worker",
+        capabilities=child_caps,
+    )
+    assert len(gateway._session_parents) == 1
+    # Top-level churn may evict the parent; its children must deny.
+    for i in range(32):
+        gateway.open_session(
+            run_id=f"other-{i}", principal="bob", engine="harness",
+            capabilities=caps,
+        )
+        assert len(gateway._session_parents) <= len(gateway._sessions) <= 2
+    assert child.authorize(kind="tool_call", tool="list_issues").outcome == "deny"
+    assert len(gateway._session_parents) == 0
+
+
+def test_child_root_subset_is_segment_aware():
+    gateway, parent, caps = make()
+    child = gateway.open_child_session(
+        parent, run_id="run-1:valid-subdir", engine="worker",
+        capabilities=caps
+    )
+    assert child.capabilities.read_roots == ("/work/reports",)
+    with pytest.raises(PermissionError, match="read_roots"):
+        gateway.open_child_session(
+            parent, run_id="run-1:lookalike", engine="worker",
+            capabilities=dataclasses.replace(caps, read_roots=("/workspace",))
+        )

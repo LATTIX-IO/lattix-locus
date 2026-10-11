@@ -1,6 +1,6 @@
 # Chat UI bake-off: assistant-ui vs CopilotKit React UI (2026-10)
 
-Status: **Measured 2026-10-05** · Owner: principal · Related: LOCUS-369 (AG-UI surfaces), LOCUS-409
+Status: **Measured 2026-10-05 (isolated spike; integration pending)** · Owner: principal · Related: LOCUS-369 (AG-UI surfaces), LOCUS-409
 (generative UI tiers), LOCUS-357 (desktop confirmation), [third-party assessment §3.4](../third-party-assessment.md#34-desktop-ui-surfaces-and-generative-ui) ·
 Spike: [`spikes/chat-ui-bakeoff/` (branch `spike/chat-ui-bakeoff`)](https://github.com/LATTIX-IO/lattix-locus/tree/spike/chat-ui-bakeoff/spikes/chat-ui-bakeoff/README.md)
 
@@ -282,3 +282,8 @@ That entry should be updated to cite this measurement and the downgrade of the C
 - **The real `ag-ui-langgraph` output.** The fixture emits the AG-UI 1.0 interrupt outcome. Whether the pinned backend version emits that or the legacy `on_interrupt` custom event was not checked: no backend ran, by design.
 - **Bus factor beyond npm maintainers.** GitHub contributor data was out of scope (no web scraping).
 - **`@copilotkit/react-ui` (the v1 components).** It was installed and is counted in the licence numbers. It is not imported, so it adds nothing to the bundle. The surface was built on the v2 `CopilotChat` in `@copilotkit/react-core/v2`, which is the current API.
+
+
+## 9. Evidence boundary and implementation gate (D-38)
+
+This is a historical, isolated benchmark: the instrumented source, lockfile and raw results live on the verified [`spike/chat-ui-bakeoff` branch](https://github.com/LATTIX-IO/lattix-locus/tree/spike/chat-ui-bakeoff/spikes/chat-ui-bakeoff/), **not in `main`**. Its 86/100 versus 62/100 result is a decision input, not proof that a production Locus UI, MCP approval flow or security mediation has shipped. Re-run the benchmark and pin toolchain/dependency versions before upgrading the live frontend; repeat strict CSP, network egress, keyboard/axe, AG-UI 1.0 contract and signed approval path tests against the real Locus backend. The existing AG-UI protocol and gateway remain authoritative regardless of the UI library.

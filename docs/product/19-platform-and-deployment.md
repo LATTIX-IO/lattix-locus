@@ -63,3 +63,12 @@ Structured logs (redacted), OpenTelemetry traces and metrics exportable to a loc
 - Computer-use scenario suite on Windows and macOS with zero safety escapes.
 - Security CI: SAST, secret scan, SCA, SBOM, provenance check, DAST on the local API.
 - Installer smoke tests on clean Windows and macOS VMs: install → first run → local chat → delegated run → uninstall.
+
+
+## 9. Optional fleet feedback and rollout boundary (D-34)
+
+**Supported default remains one principal per local instance (D-03).** An optional, separately authorized service may aggregate consented, minimized failure/quality/version signals and coordinate signed staged releases across many independent instances. It is **not** a hosted shared-runtime multi-tenancy feature, a cloud inference requirement, or a replacement for P2P peer collaboration (D-09). Organization access, device enrollment, retention, scoped RBAC and hosting/security posture require a separate implementation review.
+
+Telemetry and diagnostics export are OFF by default; prompts, memories, exact local paths, documents, credentials, screenshots, and tool content remain local unless deliberately included in a separately approved export. Consent must be inspectable, revocable and deletable. Device offline behavior, local tasks, native skills and updates already staged locally cannot depend on reaching the fleet service. Cross-cohort product changes undergo regularized held-out evaluation, protected-path review, signed artifact provenance, canary, stop switch and rollback gates (LOCUS-421, LOCUS-436, LOCUS-420, LOCUS-423).
+
+This is a **target profile**, not a claim that the server or managed deployment is implemented. Helm and shared hosted agent execution remain unsupported without a new ADR.

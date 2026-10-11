@@ -51,7 +51,7 @@ The loop improves Locus one module at a time. It proposes a new implementation o
 
 ## 5. Third-party code
 
-Third-party implementations run **out of process** as MCP servers (or A2A agents) inside the OS sandbox, go through quarantine → trust, and reach Locus only through the gateway. First-party implementations run in process. This takes the composability of plugin-style harnesses without their in-process trust model (see the 2026-10-03 review of DeepSeek Harness and OpenClaw).
+Third-party implementations **normally run out of process** as MCP servers (or A2A agents) inside an OS sandbox, go through quarantine → trust, and reach Locus through the gateway. First-party implementations run in process. **Narrow documented legacy exception (D-37):** the already-integrated pinned LangChain Deep Agents library currently runs in-process under Locus's native AgentRuntime. It must still use only Locus-mediated tools, keep vendor tracing/telemetry disabled and meet dependency pinning, outbound-network containment and adversarial escape tests. Running in the host backend increases supply-chain and lateral egress exposure; this does **not** relax the isolation requirement for other third-party modules. Reassess at Cedar cutover or any security incident, with sidecar/process isolation the preferred target. Do not describe the current in-process runtime as equivalent to a container sandbox or claim untested egress containment. This preserves composability without hiding a known boundary exception.
 
 Every candidate third-party repository has a recorded integrate / fork / clone / skip decision in [third-party-assessment.md](third-party-assessment.md) (LOCUS-406).
 
@@ -66,3 +66,21 @@ locus/composition/ # composition root and profiles
 ```
 
 Existing packages (`locus_runtime`, `apps/backend/app`) move into this layout incrementally. The `main.py` split (LOCUS-352) follows these module lines.
+
+
+## 7. General-purpose meta-harness ports and deployment boundary (D-32–D-35)
+
+Extend the **existing** D-28 composition root; do not create a second harness for noncoding tasks. Proposed ports and ownership:
+
+| Port (target) | Boundary and tests |
+|---|---|
+| `TaskIntentNormalizer` / `TaskPlanner` | Model may propose, deterministic schema/budget/taint/DAG validator admits; domain-neutral request contract (LOCUS-411) |
+| `TaskOrchestrator` / `PodScheduler` | Durable plan revisions, leases, independently verified artifact handoffs, parallel work, dependency invalidation and bounded repair (LOCUS-413, LOCUS-433) |
+| `PodComposer` | Spawn ephemeral expert roles with unique identity and attenuated context/grants, select an engine, record per-pod budget; verify role diversity and containment (LOCUS-412/437) |
+| `AgentRuntime` / `ExternalAgentEngine` | A single lifecycle port for Deep Agents and sandboxed Codex/Claude Code/OpenCode; separate from `ModelProvider` inference APIs (LOCUS-415/416) |
+| `ArtifactVerifier` | Independent rubric/evidence/uncertainty contract and versioned acceptance; no self-certified done state (LOCUS-414) |
+| `FleetFeedbackSink` (optional) | Local default-off data minimization, consent, aggregation and source trust; cannot grant an agent new authority (LOCUS-421/436) |
+| `HarnessCandidateEvaluator` | RRSI-style experiment record, anti-overfit/noise/cost/OOD guards and signed release gate (LOCUS-419/420/423) |
+| `SavantSkillSource` (optional) | Locus-native `SkillStore` retains full autonomy; external import never bypasses local trust/scan or requires Savant online (LOCUS-418) |
+
+The first checked-in contract is `locus_runtime/task_graph_contract.py` v1.0, a pure structural DAG and envelope admission helper with focused tests. It does not implement a scheduler, agent spawning, persistent store or PEP. The source of truth for desired semantics is [ADR-0002](adr/ADR-0002-general-purpose-meta-harness.md). No product readiness should be inferred from a declared port alone (P9).
