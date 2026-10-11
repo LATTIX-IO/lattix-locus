@@ -32,8 +32,9 @@ class BrokerTool:
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not _TOOL_NAME.fullmatch(self.name):
             raise ValueError("invalid registered tool name")
-        if not isinstance(self.argv, tuple) or not self.argv:
-            raise ValueError("registered tool requires fixed argv tuple")
+        if (not isinstance(self.argv, tuple) or not self.argv
+            or any(not isinstance(arg, str) for arg in self.argv)):
+            raise ValueError("registered tool requires fixed string argv tuple")
         if not isinstance(self.cwd, str) or not self.cwd or len(self.cwd) > 4096:
             raise ValueError("registered tool requires bounded working directory")
         if not Path(self.argv[0]).is_absolute() or not Path(self.cwd).is_absolute():
