@@ -13,7 +13,7 @@ import sqlite3
 import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Callable
+from typing import Callable, cast
 
 from locus_runtime.gateway import BudgetFigures, Capabilities, GatewayDecision, GatewaySession, RiskClass
 from locus_runtime.task_graph_contract import TaskNode, validate_task_plan
@@ -288,7 +288,7 @@ class PodReservationLedger:
         parent = db.execute("SELECT * FROM parent_budget WHERE run_id=?", (run_id,)).fetchone()
         if parent is None or parent["revoked"]:
             raise AdmissionDenied("unknown or revoked parent")
-        return parent
+        return cast(sqlite3.Row, parent)
 
     def _totals(self, db: sqlite3.Connection, run_id: str) -> tuple[ResourceBudget, ResourceBudget]:
         used = ResourceBudget.zero()
@@ -316,7 +316,7 @@ class PodReservationLedger:
         record = db.execute("SELECT * FROM pod_attempt WHERE id=?", (reservation_id,)).fetchone()
         if record is None:
             raise AdmissionDenied("unknown reservation")
-        return record
+        return cast(sqlite3.Row, record)
 
     @staticmethod
     def _as_reservation(row: sqlite3.Row) -> ResourceReservation:
