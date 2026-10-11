@@ -154,7 +154,7 @@ def test_cross_tenant_action_id_recovery_is_denied(tmp_path):
 
 
 @pytest.mark.parametrize("ids", [
-    ["x" * 257], ["bad-id", "bad-id"], ["../malicious"], [""],
+    ["x" * 257], ["bad-id", "bad-id"], ["../malicious"], [""], [[]],
 ])
 def test_adversarial_recovery_identifiers_fail_closed(tmp_path, ids):
     _, receipts, parent, _, _ = setup(tmp_path)
@@ -291,3 +291,16 @@ def test_symlinked_lock_directory_refused_before_side_effect(tmp_path):
             lease, idempotency_key="symlink", authorization=_ACTION,
             invoke=lambda: pytest.fail("symlink bypassed fencing"),
         )
+
+
+
+def test_revoked_supervisor_cannot_recover_guarded_orphan(tmp_path):
+    ledger, receipts, parent, lease, _ = setup(tmp_path)
+    rec = receipts.prepare(lease, idempotency_key="revoked", authorization=_ACTION)
+    with action_lock(receipts.reservations.path, rec.action_id) as owned:
+        assert owned
+        receipts._begin_dispatch(lease, rec.action_id, guarded=True)
+    ledger.revoke_parent(parent)
+    with pytest.raises(AdmissionDenied):
+        FencedActionRecovery(receipts).recover(parent, action_ids=[rec.action_id])
+    assert receipts.get(rec.action_id).state == "dispatching"

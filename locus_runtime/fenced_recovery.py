@@ -62,15 +62,21 @@ class FencedActionRecovery:
         they cannot prove they held this lock when a side effect occurred.
         """
         token_digest = self._verify_supervisor(supervisor)
+        if type(max_actions) is not int or not 1 <= max_actions <= 4096:
+            raise ValueError("bounded recovery batch required")
         ids = tuple(action_ids) if action_ids is not None else self.inspect(
             supervisor, max_actions=max_actions
         )
-        if len(ids) > max_actions or len(ids) != len(set(ids)):
-            raise AdmissionDenied("invalid or oversized recovery batch")
+        if len(ids) > max_actions:
+            raise AdmissionDenied("oversized recovery batch")
+        # Validate before set() so malformed/unhashable hostile IDs fail closed
+        # instead of breaking the supervisor's recovery loop.
+        if any(not isinstance(i, str) or not i or len(i) > 256 for i in ids):
+            raise AdmissionDenied("invalid action identifier")
+        if len(ids) != len(set(ids)):
+            raise AdmissionDenied("duplicate action identifiers")
         results: list[FencedRecoveryResult] = []
         for action_id in ids:
-            if not isinstance(action_id, str) or not action_id or len(action_id) > 256:
-                raise AdmissionDenied("invalid action identifier")
             # Authenticate and bind action BEFORE accessing a lock derived
             # from caller input; never disclose another tenant's liveness.
             with self.receipts.reservations._connect() as db:
@@ -89,6 +95,10 @@ class FencedActionRecovery:
                 # atomically with update; a previous broker may have finished.
                 with self.receipts.reservations._connect() as db:
                     self.receipts.reservations._tx(db)
+                    # A revoked supervisor cannot finish a recovery merely
+                    # because it was authenticated before taking the OS lock.
+                    if self._verify_supervisor(supervisor) != token_digest:
+                        raise AdmissionDenied("supervisor authority changed")
                     row = db.execute("""SELECT r.state,r.supervisor_token_digest,
                             pod.parent_id,
                             EXISTS(SELECT 1 FROM pod_action_audit AS audit
