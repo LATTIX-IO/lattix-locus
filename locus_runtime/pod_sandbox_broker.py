@@ -172,6 +172,9 @@ class PodSandboxBroker:
         # executable. A policy decision is not itself a process boundary.
         if plan.command[0] == command.argv[0] or plan.command == list(command.argv):
             raise AdmissionDenied("direct host execution is prohibited")
+        if (strategy == IsolationStrategy.HARDENED_DOCKER
+            and plan.command[:3] != ["docker", "run", "--rm"]):
+            raise AdmissionDenied("unrecognized Docker sandbox launcher")
         launcher_cwd = plan.metadata.get("launcher_cwd")
         if launcher_cwd is not None and (
             not isinstance(launcher_cwd, str) or not launcher_cwd
