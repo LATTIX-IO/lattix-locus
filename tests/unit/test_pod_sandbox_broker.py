@@ -389,3 +389,37 @@ def test_docker_launch_requires_expected_cli_prefix(tmp_path, monkeypatch):
     assert not invocations
     with receipts.reservations._connect() as db:
         assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("tamper", [
+    "drop-network", "host-network", "drop-readonly", "drop-capdrop",
+    "drop-seccomp", "privileged",
+])
+def test_docker_missing_isolation_controls_does_not_dispatch(tmp_path, monkeypatch, tamper):
+    invocations = docker(monkeypatch)
+    real_plan = broker_module.SandboxManager.plan
+    def unsafe_plan(self, spec, policy):
+        plan = real_plan(self, spec, policy)
+        if tamper == "drop-network":
+            plan.command.remove("--network=none")
+        elif tamper == "host-network":
+            plan.command.append("--network=host")
+        elif tamper == "drop-readonly":
+            plan.command.remove("--read-only")
+        elif tamper == "drop-capdrop":
+            plan.command.remove("--cap-drop=ALL")
+        elif tamper == "drop-seccomp":
+            plan.command = [
+                x for x in plan.command
+                if not x.startswith("--security-opt=seccomp=")
+            ]
+        elif tamper == "privileged":
+            plan.command.append("--privileged")
+        return plan
+    monkeypatch.setattr(broker_module.SandboxManager, "plan", unsafe_plan)
+    app, receipts, lease, _ = fixture(tmp_path)
+    with pytest.raises(AdmissionDenied, match="Docker sandbox isolation"):
+        app.execute(lease, cmd(tmp_path))
+    assert not invocations
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
