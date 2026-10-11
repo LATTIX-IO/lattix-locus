@@ -257,3 +257,18 @@ def test_durable_action_fingerprint_excludes_process_ephemeral_hmac(tmp_path):
     second = receipts.prepare(lease, idempotency_key="stable", authorization=_ACTION)
     assert first.action_id == second.action_id
     assert first.fingerprint == second.fingerprint
+
+
+
+def test_action_idempotency_survives_gateway_process_key_rotation(tmp_path, monkeypatch):
+    from locus_runtime import gateway as gw
+
+    _, receipts, _, lease, _ = setup(tmp_path)
+    first = receipts.prepare(lease, idempotency_key="rotation", authorization=_ACTION)
+    # Simulate a new process-local Gateway signing key. The fresh gateway
+    # decision HMAC necessarily differs, but persistent action identity must
+    # remain stable for this same authenticated run/argument scope.
+    monkeypatch.setattr(gw, "_PROCESS_KEY", b"simulated-restart-key-v2-for-test")
+    second = receipts.prepare(lease, idempotency_key="rotation", authorization=_ACTION)
+    assert second.action_id == first.action_id
+    assert second.fingerprint == first.fingerprint
