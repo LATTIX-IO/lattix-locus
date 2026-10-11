@@ -182,6 +182,21 @@ class PodSandboxBroker:
                     or PureWindowsPath(launcher_cwd).is_absolute())
         ):
             raise AdmissionDenied("sandbox launcher directory is invalid")
+        if strategy == IsolationStrategy.HARDENED_DOCKER:
+            # Verify the launch plan still has its mandatory isolation facts.
+            # Never claim no-network/read-only confinement if the actual
+            # Docker argv does not impose those restrictions.
+            required = {
+                "--network=none", "--read-only", "--cap-drop=ALL",
+                "--security-opt=no-new-privileges", "--user=1000:1000",
+            }
+            if (not required.issubset(set(plan.command))
+                or not any(arg.startswith("--security-opt=seccomp=")
+                           for arg in plan.command)
+                or any(arg.startswith("--network=") and arg != "--network=none"
+                       for arg in plan.command)
+                or "--privileged" in plan.command):
+                raise AdmissionDenied("Docker sandbox isolation controls are missing")
         audit_command = shlex.join(command.argv)
         facts = _jail_facts(strategy)
         # Do not let a second runner reclassify the jail based on metadata
