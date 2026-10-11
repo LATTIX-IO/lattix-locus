@@ -256,3 +256,24 @@ def test_remote_docker_host_never_inherited_by_broker(tmp_path, monkeypatch):
     assert launched
     assert "DOCKER_HOST" not in launched[0][1]["env"]
     assert "DOCKER_CONTEXT" not in launched[0][1]["env"]
+
+
+
+def test_unsupported_custom_authorization_object_is_not_serialized(tmp_path, monkeypatch):
+    docker(monkeypatch)
+    app, receipts, lease, _ = fixture(tmp_path)
+    class Opaque:
+        pass
+    # The PEP may ignore arbitrary untrusted fields, but persistent action
+    # identity must never fall back to repr() of opaque values.
+    with pytest.raises(AdmissionDenied):
+        receipts.prepare(
+            lease,
+            idempotency_key="opaque",
+            authorization={
+                "kind": "process_exec", "tool": "run_command",
+                "target": str(tmp_path), "extra": Opaque(),
+            },
+        )
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
