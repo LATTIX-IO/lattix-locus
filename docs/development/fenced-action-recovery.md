@@ -6,11 +6,11 @@ orphan recovery controller and no new executor or external authority.
 
 ## Safety contract
 
-A trusted supervisor's \`execute_once\` acquires a **per-action, kernel-held
-nonblocking lock** before the durable \`dispatching\` transaction, and holds
+A trusted supervisor's `execute_once` acquires a **per-action, kernel-held
+nonblocking lock** before the durable `dispatching` transaction, and holds
 that lock through the entire callback and terminal receipt transaction.
-A protected dispatch writes \`fence_guarded\` in the *same SQLite
-transaction* as \`dispatching\`. A legacy or manually started dispatch
+A protected dispatch writes `fence_guarded` in the *same SQLite
+transaction* as `dispatching`. A legacy or manually started dispatch
 without this marker **cannot be automatically reconciled**.
 
 The recovery controller authenticates the original delegating supervisor,
@@ -18,21 +18,21 @@ matches its random token digest against the persisted action owner and
 checks its parent run identity. Only then does it try to acquire the
 particular action's OS lock. Failure means a live holder exists — **skip**.
 Success proves the kernel released the previous owner; the controller
-rechecks persisted action state and marker in \`BEGIN IMMEDIATE\` and changes
+rechecks persisted action state and marker in `BEGIN IMMEDIATE` and changes
 only a still-dispatching, guarded record to **uncertain**. It does not
 mark success, run callbacks, release parent funds or generate replay
 permissions. If a prior callback already closed successfully, the
 controller leaves that terminal record intact.
 
-POSIX uses \`flock(LOCK_EX|LOCK_NB)\`; Windows uses a one-byte
-\`msvcrt.locking(LK_NBLCK)\` lock. Per-action files live in a private
+POSIX uses `flock(LOCK_EX|LOCK_NB)`; Windows uses a one-byte
+`msvcrt.locking(LK_NBLCK)` lock. Per-action files live in a private
 local directory with hashed action IDs and no caller-supplied paths.
 Independent action locks permit concurrent parallel pods; a shared
 global lock would have destroyed task parallelism.
 
 ## Unit / regression / adversarial verification
 
-\`tests/unit/test_fenced_recovery.py\` verifies live callbacks never
+`tests/unit/test_fenced_recovery.py` verifies live callbacks never
 get reclaimed, kernel release after killed subprocess, two parallel
 callbacks, replay prevention, legacy unfenced rejection, same-run-ID
 foreign Gateway impersonation refusal, nondelegating supervision refusal,
@@ -55,7 +55,7 @@ only on mocked locks for this trust boundary.
   restart cannot automatically reauthenticate an absent supervisor;
   such orphan actions remain blocked until an independent secure
   recovery identity service is implemented.
-- A dispatch marked \`uncertain\` may or may not have reached the external
+- A dispatch marked `uncertain` may or may not have reached the external
   provider. It requires authoritative external receipt reconciliation;
   **never** auto-retry or mark it completed based on OS lock ownership.
 - Directory protection relies on the trusted OS user and locally
