@@ -93,10 +93,10 @@ def test_crash_before_dispatch_is_still_prepared(tmp_path):
 
 
 def test_crash_after_write_ahead_dispatch_is_uncertain_and_not_replayable(tmp_path):
-    _, receipts, _, lease, clock = setup(tmp_path)
+    _, receipts, parent, lease, clock = setup(tmp_path)
     action = receipts.prepare(lease, idempotency_key="maybe-sent", authorization=_ACTION)
     receipts.begin_dispatch(lease, action.action_id)
-    restarted = PodActionReceipts(PodReservationLedger(tmp_path / "pods.db", clock=clock))
+    restarted = PodActionReceipts(PodReservationLedger(tmp_path / "pods.db", clock=clock), supervisor=parent)
     assert restarted.recover_ambiguous() == (action.action_id,)
     assert restarted.get(action.action_id).state == "dispatching"
     with pytest.raises(ActionReplayDenied):
