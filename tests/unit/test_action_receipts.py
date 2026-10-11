@@ -42,10 +42,10 @@ def test_execute_once_creates_write_ahead_record_and_digest_only(tmp_path):
     )
     assert final.action_id == rec.action_id
     assert result.startswith("Authorization")
-    assert called == ["dispatching"]
+    assert called == ["fence_guarded"]
     assert final.state == "succeeded"
     assert [x[0] for x in receipts.audit(final.action_id)] == [
-        "prepared", "dispatching", "succeeded",
+        "prepared", "dispatching", "fence_guarded", "succeeded",
     ]
     with sqlite3.connect(tmp_path / "pods.db") as db:
         dump = "\n".join(str(row) for row in db.execute(

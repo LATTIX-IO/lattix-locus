@@ -202,7 +202,18 @@ class PodReservationLedger:
 
     def _initialize(self) -> None:
         with self._connect() as db:
-            db.execute("PRAGMA journal_mode=WAL")
+            # PRAGMA journal_mode obtains a database-wide lock and can return
+            # SQLITE_BUSY immediately if many independent supervisors first
+            # open a fresh database concurrently. Retrying is safe before any
+            # schema transaction begins; never retry an admitted side effect.
+            for retry in range(16):
+                try:
+                    db.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc).lower() or retry == 15:
+                        raise
+                    time.sleep(0.02 * (retry + 1))
             # Initial schema creation/version registration must be one atomic
             # transaction when several local supervisor processes start.
             self._tx(db)
