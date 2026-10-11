@@ -1,10 +1,11 @@
 """LOCUS-433 bounded sandbox broker security and regression tests."""
 from __future__ import annotations
 import subprocess
+import sys
 from unittest.mock import Mock
 import pytest
 
-from locus_runtime.pod_tool_broker import BrokerTool, SandboxedPodToolBroker
+from locus_runtime.pod_tool_broker import BrokerTool, SandboxedPodToolBroker, _run_bounded
 from locus_runtime.pod_reservations import AdmissionDenied
 from locus_runtime.action_receipts import ActionReplayDenied
 from locus_runtime.sandbox import (
@@ -165,3 +166,31 @@ def test_invalid_launcher_cwd_denies_before_invocation(tmp_path):
         broker.execute(lease, tool_name="list_issues",
                        action_idempotency_key="bad-cwd")
     run.assert_not_called()
+
+
+
+def test_production_runner_drains_large_stdout_and_stderr_with_hard_cap(tmp_path):
+    command = [sys.executable, "-c",
+        "import sys; sys.stdout.buffer.write(b'A'*1000000); "
+        "sys.stderr.buffer.write(b'B'*1000000)"]
+    result = _run_bounded(command, cwd=str(tmp_path),
+                          env={"PATH": ""}, timeout=10)
+    assert result.returncode == 0
+    assert result.stdout == b"A" * 65536
+    assert result.stderr == b"B" * 65536
+
+
+def test_production_runner_kills_process_on_timeout(tmp_path):
+    command = [sys.executable, "-c", "import time; time.sleep(30)"]
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_bounded(command, cwd=str(tmp_path),
+                     env={"PATH": ""}, timeout=1)
+
+
+def test_production_runner_preserves_nonzero_exit_and_bounded_errors(tmp_path):
+    command = [sys.executable, "-c",
+        "import sys; sys.stderr.write('failure'); sys.exit(17)"]
+    result = _run_bounded(command, cwd=str(tmp_path),
+                          env={"PATH": ""}, timeout=10)
+    assert result.returncode == 17
+    assert result.stderr == b"failure"
