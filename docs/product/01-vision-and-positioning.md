@@ -11,7 +11,7 @@ A knowledge worker running several contexts at once (a primary role, a venture, 
 
 ## The thesis
 
-> Locus is a local-first personal AI operator. You give it a task; it plans, works and iterates to completion on your machine, using whichever models and subscriptions fit the task, under a zero trust core that makes every action bounded, attributable and reversible, so you can hand over real work and trust what comes back.
+> Locus is a local-first, Zero Trust-first, **general-purpose multi-agent meta-harness** with one coherent operator experience. You delegate any authorized work; a durable supervisor assembles bounded ephemeral experts and available agent engines, verifies their output and returns an accountable result. It retains your context and memory without persistent privileged worker personas.
 
 Four ideas carry it:
 
@@ -69,3 +69,10 @@ Targets to calibrate after the first 30 days of daily use.
 | Days per week the operator is used for real work | Proves it earned a place | ≥ 5 |
 
 Anti-measures (signs we are building the wrong thing): approvals you click through without reading; runs you watch end to end because you don't trust them; work tracked outside Locus because the tracker is too slow; engines chosen by habit rather than by the router.
+
+
+## Expansion of the product thesis (D-32)
+
+Coding is one task family, not the universal execution workflow. The same planning, artifact, approval and quality system must serve research, writing, spreadsheets/data analysis, communication, business operations and computer use. Teams of ephemeral experts may run independently when the graph permits; dependent work is released only after verified handoffs. A persistent user-facing assistant can coordinate across tasks without retaining a permanently running persona agent. The trade-off between ephemeral and persistent specialists must be measured by held-out quality/cost comparisons.
+
+Locus itself remains useful offline and without any optional organization service, Savant account, subscription or external agent CLI. Fleet-scale learning and release management are opt-in extensions under independently consented scopes, not hosted control of the principal's local data. See [ADR-0002](../adr/ADR-0002-general-purpose-meta-harness.md).

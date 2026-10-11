@@ -1,6 +1,6 @@
 # 11 · Agentic Model
 
-Locus is one operator you delegate to. Under the hood it composes engines, columns, skills and sub-agents, but the user deals with **one assistant, many runs**.
+Locus presents one persistent operator experience while using a **durable Task Orchestrator and ephemeral expert-agent pods** for many runs. Engines, columns, skills and subagents are selectable execution mechanisms; no task domain, including software development, owns the primary loop.
 
 ## 1. What the operator does and doesn't do
 
@@ -118,3 +118,17 @@ The service runs whether or not the UI is open.
 ## 10. The assistant persona
 
 One name, one voice, configurable. It is direct, concise and honest about uncertainty and limits. It is not a companion: no emotional dependency patterns, no flattery, and it disagrees when the plan is wrong.
+
+
+## 11. Task Orchestrator and ephemeral expert pods (D-33)
+
+The Task Orchestrator is a supervised service with code-enforced control decisions. It may consult models to ideate, decompose requests and propose experts, but model output does not authorize new capabilities, certify task completion or bypass the scheduler.
+
+1. **Admit:** origin identity, authorized area/context, done criteria, budget, action risk and delivery types.
+2. **Decompose:** draft a typed DAG, identify dependencies and data/artifact contracts; reject invalid edges and widened child envelopes before starting work.
+3. **Compose:** spawn only the experts needed, with per-pod ephemeral identity, tool/skill scope, context projection, model or agent-engine selection, budget and verifier rubric.
+4. **Schedule:** execute independent ready pods concurrently within device/global budgets. Do not release a downstream dependency until a verified versioned upstream artifact is available.
+5. **Verify and repair:** a separate verifier checks evidence against the request. A downstream pod may repair a narrowly scoped recoverable defect, otherwise return a structured blocker to replan. Invalidate downstream results that consumed stale artifacts; retry non-idempotent actions only after reconciliation.
+6. **Synthesize:** cross-check all requested outputs, record confidence, decisions, citations, consumption and blocked/partial outcomes; clean up transient workers and retain governed task state.
+
+The `TaskPlan` contract in `locus_runtime/task_graph_contract.py` provides the initial deterministic admission and DAG waves, **not** a running multi-pod dispatcher. Long-running tasks persist through checkpoints/leases, not long-running privileged persona processes. Existing cognitive columns can supply optional specialist evaluation, never replace the independent verification gate. LOCUS-411–414/437 deliver the runtime increments; LOCUS-431 measures general-purpose performance before parity claims.
