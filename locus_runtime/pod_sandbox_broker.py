@@ -22,7 +22,6 @@ from locus_runtime.pod_reservations import AdmissionDenied, PodLease
 from locus_runtime.sandbox import (
     CONFINING_STRATEGIES,
     ExecutionSpec,
-    HostPlatform,
     IsolationStrategy,
     SandboxManager,
     SandboxPolicy,
