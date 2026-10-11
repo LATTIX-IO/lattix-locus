@@ -33,7 +33,8 @@ def make(*, parent_tier="tiered", parent_budget="default"):
         budget=_budget() if parent_budget == "default" else parent_budget,
     )
     parent = gateway.open_session(
-        run_id="run-1", principal="alice", engine="parent", capabilities=caps
+        run_id="run-1", principal="alice", engine="parent", capabilities=caps,
+        allow_child_delegation=True
     )
     child_caps = dataclasses.replace(
         caps,
@@ -132,15 +133,18 @@ def test_child_cannot_relax_supervised_parent():
 def test_parent_revoke_denies_descendants_and_new_spawns():
     gateway, parent, caps = make()
     child = gateway.open_child_session(parent, run_id="run-1:pod1", engine="worker", capabilities=caps)
-    grandchild = gateway.open_child_session(
-        child, run_id=child.caller.run_id + ":subpod", engine="reviewer", capabilities=caps
-    )
+    # A worker must not be able to reset its consumption limits by creating
+    # another child. Only the trusted root supervisor is delegated authority.
+    with pytest.raises(PermissionError, match="not authorized to delegate"):
+        gateway.open_child_session(
+            child, run_id=child.caller.run_id + ":subpod",
+            engine="reviewer", capabilities=caps
+        )
     parent.close()
     assert child.authorize(kind="tool_call", tool="list_issues").outcome == "deny"
-    assert grandchild.authorize(kind="tool_call", tool="list_issues").outcome == "deny"
     with pytest.raises(PermissionError):
         gateway.open_child_session(
-            child, run_id=child.caller.run_id + ":retry", engine="worker", capabilities=caps
+            parent, run_id="run-1:retry", engine="worker", capabilities=caps
         )
 
 
@@ -204,7 +208,8 @@ def test_parent_taint_removes_standing_grant_for_child():
         budget=_budget(),
     )
     parent = gateway.open_session(
-        run_id="parent", principal="alice", engine="orchestrator", capabilities=parent_caps
+        run_id="parent", principal="alice", engine="orchestrator", capabilities=parent_caps,
+        allow_child_delegation=True
     )
     child_caps = dataclasses.replace(
         parent_caps, max_actions=3, max_tool_calls=3,
@@ -221,3 +226,35 @@ def test_parent_taint_removes_standing_grant_for_child():
     denied = child.authorize(kind="tool_call", tool="send_email", target="mail")
     assert denied.outcome == "ask"
     assert "gateway.taint_gate_grant_not_applicable" in denied.reasons
+
+
+def test_no_implicit_delegation_from_ordinary_parent_session():
+    gateway = Gateway(FakeEngine(), lambda _: None)
+    parent_caps = Capabilities(
+        allowed_tools=frozenset({"list_issues"}),
+        max_actions=6, max_tool_calls=10,
+        max_risk_class=RiskClass.R2, budget=_budget()
+    )
+    parent = gateway.open_session(
+        run_id="ordinary", principal="alice", engine="harness",
+        capabilities=parent_caps,
+    )
+    child_caps = dataclasses.replace(
+        parent_caps, max_actions=2, max_tool_calls=3,
+        max_risk_class=RiskClass.R0,
+        budget=_budget(tokens=200, duration=20, cost=1.0)
+    )
+    with pytest.raises(PermissionError, match="not authorized to delegate"):
+        gateway.open_child_session(
+            parent, run_id="ordinary:pod1", engine="worker", capabilities=child_caps
+        )
+
+
+def test_invalid_delegation_registration_is_rejected():
+    gateway = Gateway(FakeEngine(), lambda _: None)
+    with pytest.raises(ValueError, match="explicit boolean"):
+        gateway.open_session(
+            run_id="supervisor", principal="alice", engine="harness",
+            capabilities=Capabilities(),
+            allow_child_delegation="true",  # type: ignore[arg-type]
+        )

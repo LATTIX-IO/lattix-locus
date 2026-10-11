@@ -1,6 +1,11 @@
 # LOCUS-432 — Trusted child session attenuation (second increment)
 
-A trusted service can now call `Gateway.open_child_session(parent, run_id=..., engine=..., capabilities=...)`.
+A trusted supervising service must first explicitly register its top-level
+session with `Gateway.open_session(..., allow_child_delegation=True)`, then
+call `Gateway.open_child_session(parent, run_id=..., engine=..., capabilities=...)`.
+Ordinary sessions have delegation disabled by default; child sessions are
+**never** granted delegation rights. Pods requesting subtasks must send them
+to the trusted supervisor rather than mint nested sessions or fresh budgets.
 The gateway authenticates the parent against its server-side record, derives the
 principal from the registered parent, rejects widening of named tools, normalized lexical filesystem
 roots, executable/host/app allowlists, autonomy tiers, risk ceilings, budgets and data scope,
@@ -24,3 +29,11 @@ This increment does not prove symlink-safe filesystem traversal, hostile process
 containment or cancellation of already-in-flight actions after revocation; those
 remain separate runtime and sandbox acceptance tests.
 Changes to gateway.py are protected by CODEOWNERS and require principal review.
+
+## Delegation trust boundary
+
+The `allow_child_delegation` flag is granted only by trusted in-process startup
+code. An untrusted worker must never receive the supervisor session handle or
+access to unrestricted Python gateway objects. Process/container isolation and
+shared-budget reservation remain necessary for production agent execution.
+A child holding only its own gateway session cannot delegate another child.

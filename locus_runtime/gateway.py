@@ -1621,6 +1621,9 @@ class _SessionRecord:
     caller: GatewayCaller
     capabilities: Capabilities
     listener: DecisionListener | None
+    # Only a trusted supervisor explicitly enabled at top-level admission can
+    # mint new child sessions. Transient worker sessions never receive this.
+    can_delegate: bool = False
     tool_calls_used: int = 0
     actions_used: int = 0
     # Set by the gateway once it allowed an action that releases secret-bearing
@@ -1811,6 +1814,7 @@ class Gateway:
         engine: str,
         capabilities: Capabilities,
         on_decision: DecisionListener | None = None,
+        allow_child_delegation: bool = False,
     ) -> GatewaySession:
         if (
             not str(run_id or "").strip()
@@ -1828,10 +1832,14 @@ class Gateway:
         ceiling = capabilities.max_risk_class
         if ceiling is not None and (type(ceiling) is not RiskClass or ceiling == RiskClass.R4):
             raise ValueError("max_risk_class must be R0, R1, R2 or R3")
+        if type(allow_child_delegation) is not bool:
+            raise ValueError("allow_child_delegation must be an explicit boolean")
         token = secrets.token_urlsafe(32)
         caller = GatewayCaller(run_id=run_id, principal=principal, engine=engine, token=token)
         with self._lock:
-            self._sessions[_token_key(token)] = _SessionRecord(caller, capabilities, on_decision)
+            self._sessions[_token_key(token)] = _SessionRecord(
+                caller, capabilities, on_decision, can_delegate=allow_child_delegation
+            )
             while len(self._sessions) > self._max_sessions:
                 self._sessions.popitem(last=False)
         return GatewaySession(self, caller, capabilities)
@@ -1857,6 +1865,8 @@ class Gateway:
             registered = self._sessions.get(key)
             if registered is None or registered.caller != parent.caller:
                 raise PermissionError("parent session is not registered")
+            if not registered.can_delegate:
+                raise PermissionError("parent session is not authorized to delegate")
             ancestor = key
             while ancestor in self._session_parents:
                 ancestor = self._session_parents[ancestor]
