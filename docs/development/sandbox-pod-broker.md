@@ -39,7 +39,7 @@ assistant/research and richer noncoding tool results.
 
 ## Acceptance tests
 
-`tests/unit/test_sandbox_broker.py` has negative first-class cases for bad
+`tests/unit/test_pod_sandbox_broker.py` has negative first-class cases for bad
 argv, shells, undeclared tools/executables, forbidden workdir, missing
 sandbox tier, Linux bwrap all-files leakage, denied gateway decision,
 network-disabled launch configuration, no inherited secret environment,
@@ -55,6 +55,6 @@ dispatch, external provider receipt attestation, independent worker process
 identity, sandbox-escape certification, network-enabled tools, or distributed
 orchestration. A sandboxed command can complete externally before timing out;
 its durable action remains `uncertain` and is never automatically repeated.
-Docker daemon or image trust is an operational prerequisite to be attested
+Docker `run` is named with a broker-generated identifier and a timed-out Docker client triggers a bounded `docker kill`; a failed cleanup remains an uncertain, non-replayable action. Canonical read/write mount overlaps are mounted once with the already-authorized write scope. Docker daemon or image trust is an operational prerequisite to be attested
 before deployment. Release as a **trusted-supervisor local tool primitive**,
 not a general production-safe agent execution surface.
