@@ -470,14 +470,15 @@ class _HardenedDockerStrategy:
         # Writable /tmp inside read-only container
         args += ["--tmpfs", "/tmp:rw,noexec,nosuid,size=100m"]
 
-        # Explicit writable mounts
-        for path in policy.allowed_write_paths:
-            resolved = str(Path(path).expanduser().resolve())
+        # Docker rejects duplicate mount destinations. A path granted both
+        # read and write access must be mounted once, with the write permission
+        # already admitted by the policy. Deduplicate canonical paths, including
+        # symlink aliases, without ever widening the supplied scope.
+        writable = {str(Path(path).expanduser().resolve()) for path in policy.allowed_write_paths}
+        readable = {str(Path(path).expanduser().resolve()) for path in policy.allowed_read_paths}
+        for resolved in sorted(writable):
             args += ["-v", f"{resolved}:{resolved}:rw"]
-
-        # Explicit read-only mounts
-        for path in policy.allowed_read_paths:
-            resolved = str(Path(path).expanduser().resolve())
+        for resolved in sorted(readable - writable):
             args += ["-v", f"{resolved}:{resolved}:ro"]
 
         # Working directory
