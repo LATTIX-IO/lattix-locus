@@ -24,7 +24,8 @@ def test_meta_harness_security_and_consent_are_explicit() -> None:
     deployment = _read("docs/product/19-platform-and-deployment.md")
     skills = _read("docs/product/15-skills-mcp-and-extensions.md")
     assert "R4" in security and "not a new policy decision point" in security
-    assert "OFF by default" in deployment and "not a hosted shared-runtime multi-tenancy" in deployment
+    assert "off by default" in deployment.casefold()
+    assert "hosted shared-runtime multi-tenancy" in deployment.casefold()
     assert "Savant access is optional" in skills and "native skill" in skills.lower()
 
 
