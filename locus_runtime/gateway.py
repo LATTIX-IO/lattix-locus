@@ -1724,14 +1724,18 @@ def _validate_child_capabilities(parent: Capabilities, child: Capabilities) -> N
         value = getattr(child.budget, name)
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise PermissionError(f"child budget {name} must be finite")
-        if not math.isfinite(value) or value < 0:
+        try:
+            valid = math.isfinite(value)
+        except (OverflowError, ValueError):
+            valid = False
+        if not valid or value < 0:
             raise PermissionError(f"child budget {name} must be finite and nonnegative")
     for used, limit in (
         ("tokens_used", "max_tokens"),
         ("duration_used_seconds", "max_duration_seconds"),
         ("cost_used_usd", "max_cost_usd"),
     ):
-        if getattr(child.budget, limit) <= 0:
+        if getattr(child.budget, limit) <= 0 and limit != "max_cost_usd":
             raise PermissionError(f"child requires a positive {limit}")
         if getattr(child.budget, used) > getattr(child.budget, limit):
             raise PermissionError(f"child budget {used} exceeds {limit}")

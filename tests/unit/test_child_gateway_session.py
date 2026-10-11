@@ -16,7 +16,7 @@ def _budget(*, tokens=1000, used=0, duration=60, cost=5.0):
     )
 
 
-def make(*, parent_tier="tiered", parent_budget=None):
+def make(*, parent_tier="tiered", parent_budget="default"):
     gateway = Gateway(FakeEngine(), lambda _: None)
     caps = Capabilities(
         allowed_tools=frozenset({"list_issues", "send_email"}),
@@ -30,7 +30,7 @@ def make(*, parent_tier="tiered", parent_budget=None):
         max_tool_calls=20,
         max_risk_class=RiskClass.R2,
         autonomy_tier=parent_tier,
-        budget=parent_budget or _budget(),
+        budget=_budget() if parent_budget == "default" else parent_budget,
     )
     parent = gateway.open_session(
         run_id="run-1", principal="alice", engine="parent", capabilities=caps
@@ -81,6 +81,7 @@ def test_child_uses_parent_principal_and_scopes_action_authorization():
     {"budget": _budget(tokens=200, used=201)},
     {"budget": dataclasses.replace(_budget(), max_tokens=inf)},
     {"budget": dataclasses.replace(_budget(), max_tokens=nan)},
+    {"budget": dataclasses.replace(_budget(), max_tokens=10 ** 1000)},
     {"budget": dataclasses.replace(_budget(), duration_used_seconds=None)},
 ])
 def test_reject_authority_or_resource_expansion(change):
@@ -93,7 +94,7 @@ def test_reject_authority_or_resource_expansion(change):
 
 
 def test_parent_without_budget_does_not_allow_budgetless_child():
-    gateway, parent, caps = make()
+    gateway, parent, caps = make(parent_budget=None)
     # Fresh child is always bounded, even if a legacy parent had no budget.
     with pytest.raises(PermissionError, match="finite budget"):
         gateway.open_child_session(
@@ -178,3 +179,12 @@ def test_taint_propagates_to_child_after_initial_delegation():
     assert child.tainted
     assert child.authorize(kind="tool_call", tool="list_issues").outcome == "allow"
     assert child.tainted
+
+
+def test_zero_cost_budget_is_valid_for_offline_pod():
+    gateway, parent, caps = make()
+    child = gateway.open_child_session(
+        parent, run_id="run-1:offline", engine="worker",
+        capabilities=dataclasses.replace(caps, budget=_budget(tokens=200, cost=0)),
+    )
+    assert child.capabilities.budget.max_cost_usd == 0
