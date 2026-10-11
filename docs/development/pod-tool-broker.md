@@ -12,8 +12,10 @@ A confining SandboxManager strategy (bubblewrap, Seatbelt, Windows
 AppContainer or hardened Docker) is required. Restricted process and K8s
 plans are never run by this *local subprocess* broker; a missing sandbox
 fails closed. No network, inherited secrets, shell, tool-managed writes
-or dynamically supplied argv are supported. Subprocess runtime and output
-are bounded. Tool results are returned to the trusted caller; only hashed
+or dynamically supplied argv are supported. Subprocess runtime and retained output
+are bounded with separate draining threads for stdout/stderr (64 KiB per stream), including
+when the sandbox emits substantially more data. The trusted broker still
+handles finite data throughput for the duration of the bounded process. Tool results are returned to the trusted caller; only hashed
 outcome evidence enters the receipt database. A timeout results in an
 uncertain receipt and cannot automatically replay.
 
