@@ -1,6 +1,6 @@
 {
   "name": "lattix-locus-installer",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "bootstrap": {
     "sh": "install/bootstrap.sh",
     "powershell": "install/bootstrap.ps1"
