@@ -298,7 +298,7 @@ def test_direct_host_launcher_plan_is_rejected(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("launcher", [
-    ["docker", "run", ""], ["docker", "run", "bad\\x00arg"],
+    ["docker", "run", ""], ["docker", "run", "bad\x00arg"],
     ["docker", "run", 12], [],
 ])
 def test_malformed_sandbox_launcher_fails_before_dispatch(tmp_path, monkeypatch, launcher):
