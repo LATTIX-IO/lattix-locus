@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable
 
-from locus_runtime.gateway import BudgetFigures, Capabilities, GatewaySession, RiskClass
+from locus_runtime.gateway import BudgetFigures, Capabilities, GatewayDecision, GatewaySession, RiskClass
 from locus_runtime.task_graph_contract import TaskNode, validate_task_plan
 from locus_runtime.task_plan_compiler import CompiledTaskPlan
 
@@ -147,7 +147,7 @@ class PodLease:
     def run_id(self) -> str:
         return self._session.caller.run_id
 
-    def authorize(self, **kwargs: object):
+    def authorize(self, **kwargs: object) -> GatewayDecision:
         self._ledger.require_active(self._reservation_id)
         return self._session.authorize(**kwargs)
 
