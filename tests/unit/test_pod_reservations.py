@@ -130,7 +130,7 @@ def test_idempotency_collision_cross_parent_or_changed_revision_is_rejected(tmp_
     first = ledger.reserve(plan, parent, request())
     assert ledger.reserve(plan, parent, request()).reservation_id == first.reservation_id
     with pytest.raises(AdmissionDenied, match="idempotency collision"):
-        ledger.reserve(plan, parent, request(attempt="run-1", amount=budget(actions=2)))
+        ledger.reserve(plan, parent, request(attempt="run-1", amount=budget(actions=2, tools=1)))
     with pytest.raises(AdmissionDenied, match="node"):
         ledger.reserve(plan, parent, request(name="unknown", attempt="forged"))
     altered = dataclasses.replace(plan, digest="c" * 64)
@@ -204,7 +204,7 @@ def test_reject_unbounded_or_mismatched_claims(tmp_path):
     with pytest.raises(ValueError):
         ResourceBudget(True, 1, 1, 1, 0)
     with pytest.raises(ValueError):
-        ResourceBudget(1, 2, 1, 1, 0)
+        request(amount=ResourceBudget(1, 2, 1, 1, 0))
     with pytest.raises(AdmissionDenied):
         ledger.reserve(plan, parent, request(amount=budget(tokens=551)))
 

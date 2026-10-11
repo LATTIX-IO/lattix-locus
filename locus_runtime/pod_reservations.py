@@ -40,8 +40,6 @@ class ResourceBudget:
     def __post_init__(self) -> None:
         if any(type(getattr(self, k)) is not int or getattr(self, k) < 0 for k in _FIELDS):
             raise ValueError("resource budgets require nonnegative integer units")
-        if self.tool_calls > self.actions:
-            raise ValueError("tool calls cannot exceed action reservation")
 
     def plus(self, other: ResourceBudget) -> ResourceBudget:
         return ResourceBudget(**{k: getattr(self, k) + getattr(other, k) for k in _FIELDS})
@@ -75,8 +73,6 @@ def _decode_budget(raw: str) -> ResourceBudget:
     values = {k: obj[k] for k in _FIELDS}
     if any(type(v) is not int or v < 0 for v in values.values()):
         raise AdmissionDenied("invalid durable budget units")
-    if values["tool_calls"] > values["actions"]:
-        raise AdmissionDenied("invalid durable tool budget")
     return ResourceBudget._from_dict(values)
 
 
@@ -100,6 +96,8 @@ class ReservationRequest:
             raise ValueError("lease_seconds must be in 1..86400")
         if self.requested.wall_seconds == 0:
             raise ValueError("requested wall_seconds must be positive")
+        if self.requested.tool_calls > self.requested.actions:
+            raise ValueError("requested tool_calls cannot exceed actions")
         if self.requested.wall_seconds > self.lease_seconds:
             raise ValueError("requested execution duration exceeds lease")
 
@@ -473,7 +471,8 @@ class PodReservationLedger:
             if row["state"] != "active" or row["expires_at"] <= self._now():
                 raise AdmissionDenied("only live admitted pods may settle usage")
             requested, old = _decode_budget(row["requested"]), _decode_budget(row["used"])
-            if not old.leq(cumulative) or not cumulative.leq(requested):
+            if (not old.leq(cumulative) or not cumulative.leq(requested)
+                or cumulative.tool_calls > cumulative.actions):
                 raise AdmissionDenied("usage must be monotone and within reservation")
             db.execute("UPDATE pod_attempt SET used=? WHERE id=?", (_encode_budget(cumulative), reservation_id))
             self._event(db, row["parent_id"], reservation_id, "usage_settled")
@@ -488,7 +487,8 @@ class PodReservationLedger:
             if row["state"] not in ("active", "uncertain", "revoked"):
                 raise AdmissionDenied("cannot finish an unexecuted or completed attempt")
             old, requested = _decode_budget(row["used"]), _decode_budget(row["requested"])
-            if not old.leq(total) or not total.leq(requested):
+            if (not old.leq(total) or not total.leq(requested)
+                or total.tool_calls > total.actions):
                 raise AdmissionDenied("invalid final usage or double spending")
             db.execute("UPDATE pod_attempt SET state='closed',used=?,evidence=? WHERE id=?",
                        (_encode_budget(total), evidence, reservation_id))
