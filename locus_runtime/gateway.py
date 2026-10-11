@@ -1664,6 +1664,56 @@ class GatewaySession:
 # --------------------------------------------------------------------------- #
 # Gateway
 # --------------------------------------------------------------------------- #
+def _validate_child_capabilities(parent: Capabilities, child: Capabilities) -> None:
+    """Reject all known dimensions of authority widening (never auto-intersect)."""
+    if not child.allowed_tools.issubset(parent.allowed_tools):
+        raise PermissionError("child cannot expand tools")
+    for key in ("read_roots", "write_roots"):
+        parent_roots = getattr(parent, key)
+        if any(not any(path_within(root, allowed) for allowed in parent_roots) for root in getattr(child, key)):
+            raise PermissionError(f"child cannot expand {key}")
+    for key in ("allowed_executables", "allowed_egress_hosts", "allowed_apps"):
+        if not set(getattr(child, key)).issubset(set(getattr(parent, key))):
+            raise PermissionError(f"child cannot expand {key}")
+    if not set(parent.denied_apps).issubset(set(child.denied_apps)):
+        raise PermissionError("child cannot remove denied apps")
+    if child.data_classification != parent.data_classification:
+        raise PermissionError("child cannot change data classification")
+    if child.runtime_profile != parent.runtime_profile:
+        raise PermissionError("child cannot change runtime profile")
+    # A supervised parent cannot produce a less supervised child.
+    if parent.autonomy_tier == "supervised" and child.autonomy_tier != "supervised":
+        raise PermissionError("child cannot relax autonomy")
+    if parent.autonomy_tier != child.autonomy_tier and parent.autonomy_tier != "tiered":
+        raise PermissionError("child cannot change autonomy tier")
+    for key in ("max_tool_calls", "max_actions"):
+        p, c = getattr(parent, key), getattr(child, key)
+        if p not in (None, 0) and (c in (None, 0) or c > p):
+            raise PermissionError(f"child cannot expand {key}")
+    if parent.max_risk_class is not None and (
+        child.max_risk_class is None or child.max_risk_class > parent.max_risk_class
+    ):
+        raise PermissionError("child cannot expand risk ceiling")
+    if child.max_risk_class is None or type(child.max_risk_class) is not RiskClass or child.max_risk_class == RiskClass.R4:
+        raise PermissionError("child requires a valid hard risk ceiling")
+    if parent.budget is not None:
+        if child.budget is None:
+            raise PermissionError("child cannot remove budget")
+        for used_key, limit_key in (
+            ("tokens_used", "max_tokens"),
+            ("duration_used_seconds", "max_duration_seconds"),
+            ("cost_used_usd", "max_cost_usd"),
+        ):
+            p_limit = getattr(parent.budget, limit_key)
+            c_limit = getattr(child.budget, limit_key)
+            if p_limit is not None and (c_limit is None or c_limit > p_limit):
+                raise PermissionError(f"child cannot expand {limit_key}")
+            p_used = getattr(parent.budget, used_key)
+            c_used = getattr(child.budget, used_key)
+            if p_used is not None and (c_used is None or c_used < p_used):
+                raise PermissionError(f"child cannot reset {used_key}")
+
+
 class Gateway:
     """The single PEP. Construct once per process with a policy engine and audit sink."""
 
@@ -1691,6 +1741,7 @@ class Gateway:
         self._clock = clock
         # Bounded: the oldest sessions are evicted (their actions then deny).
         self._sessions: OrderedDict[str, _SessionRecord] = OrderedDict()
+        self._session_parents: dict[str, str] = {}
         self._max_sessions = max_sessions
         self._lock = threading.Lock()
 
@@ -1744,9 +1795,57 @@ class Gateway:
                 self._sessions.popitem(last=False)
         return GatewaySession(self, caller, capabilities)
 
+    def open_child_session(
+        self,
+        parent: GatewaySession,
+        *,
+        run_id: str,
+        engine: str,
+        capabilities: Capabilities,
+    ) -> GatewaySession:
+        """Open a subordinate session using only authenticated parent authority.
+
+        The caller cannot choose the principal or inherit a broader capability.
+        The child is linked to its parent, so revocation/expiry of the parent
+        denies the child even if its token remains otherwise registered.
+        """
+        if not isinstance(parent, GatewaySession) or parent.gateway is not self:
+            raise PermissionError("parent must be a session of this gateway")
+        with self._lock:
+            key = _token_key(parent.caller.token)
+            registered = self._sessions.get(key)
+            if registered is None or registered.caller != parent.caller:
+                raise PermissionError("parent session is not registered")
+            ancestor = key
+            while ancestor in self._session_parents:
+                ancestor = self._session_parents[ancestor]
+                if ancestor not in self._sessions:
+                    raise PermissionError("ancestor session has been revoked")
+            _validate_child_capabilities(registered.capabilities, capabilities)
+            if not str(run_id).startswith(f"{parent.caller.run_id}:"):
+                raise ValueError("child run ID must be namespaced under parent run")
+            if not str(engine or "").strip():
+                raise ValueError("child engine is required")
+            token = secrets.token_urlsafe(32)
+            caller = GatewayCaller(
+                run_id=run_id,
+                principal=registered.caller.principal,
+                engine=engine,
+                token=token,
+            )
+            child_key = _token_key(token)
+            self._sessions[child_key] = _SessionRecord(caller, capabilities, None)
+            self._session_parents[child_key] = key
+            while len(self._sessions) > self._max_sessions:
+                removed, _ = self._sessions.popitem(last=False)
+                self._session_parents.pop(removed, None)
+        return GatewaySession(self, caller, capabilities)
+
     def close_session(self, session: GatewaySession) -> None:
         with self._lock:
             self._sessions.pop(_token_key(session.caller.token), None)
+            # Descendant checks fail immediately when the registered parent vanishes.
+            self._session_parents.pop(_token_key(session.caller.token), None)
         # Approvals outlive the session: a run continued later (same run id) may
         # retry the approved action once. The ledger is bounded.
 
@@ -1754,6 +1853,7 @@ class Gateway:
         """Revoke live sessions and close owned policy-engine resources."""
         with self._lock:
             self._sessions.clear()
+            self._session_parents.clear()
         close_engine = getattr(self._engine, "close", None)
         if callable(close_engine):
             close_engine()
@@ -1788,6 +1888,13 @@ class Gateway:
             record = self._sessions.get(_token_key(caller.token))
         if record is None:
             return None
+        # Descendants cannot outlive or bypass revoked ancestor identities.
+        ancestor = _token_key(caller.token)
+        with self._lock:
+            while ancestor in self._session_parents:
+                ancestor = self._session_parents[ancestor]
+                if ancestor not in self._sessions:
+                    return None
         registered = record.caller
         if (registered.run_id, registered.principal, registered.engine) != (
             caller.run_id,
