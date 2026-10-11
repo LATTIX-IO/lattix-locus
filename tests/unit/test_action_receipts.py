@@ -67,11 +67,11 @@ def test_same_action_key_cannot_repeat_external_effect(tmp_path):
 
 
 def test_concurrent_dispatch_has_exactly_one_winner(tmp_path):
-    _, receipts, _, lease, _ = setup(tmp_path)
+    _, receipts, _, lease, clock = setup(tmp_path)
     rec = receipts.prepare(lease, idempotency_key="once", authorization=_ACTION)
     barrier = threading.Barrier(16)
     def compete(_):
-        other = PodActionReceipts(PodReservationLedger(tmp_path / "pods.db"))
+        other = PodActionReceipts(PodReservationLedger(tmp_path / "pods.db", clock=clock))
         barrier.wait()
         try:
             return other.begin_dispatch(lease, rec.action_id).state
@@ -84,19 +84,19 @@ def test_concurrent_dispatch_has_exactly_one_winner(tmp_path):
 
 
 def test_crash_before_dispatch_is_still_prepared(tmp_path):
-    _, receipts, _, lease, _ = setup(tmp_path)
+    _, receipts, _, lease, clock = setup(tmp_path)
     rec = receipts.prepare(lease, idempotency_key="not-started", authorization=_ACTION)
-    restarted = PodActionReceipts(PodReservationLedger(tmp_path / "pods.db"))
+    restarted = PodActionReceipts(PodReservationLedger(tmp_path / "pods.db", clock=clock))
     assert restarted.recover_ambiguous() == ()
     assert restarted.get(rec.action_id).state == "prepared"
     assert restarted.begin_dispatch(lease, rec.action_id).state == "dispatching"
 
 
 def test_crash_after_write_ahead_dispatch_is_uncertain_and_not_replayable(tmp_path):
-    _, receipts, _, lease, _ = setup(tmp_path)
+    _, receipts, _, lease, clock = setup(tmp_path)
     action = receipts.prepare(lease, idempotency_key="maybe-sent", authorization=_ACTION)
     receipts.begin_dispatch(lease, action.action_id)
-    restarted = PodActionReceipts(PodReservationLedger(tmp_path / "pods.db"))
+    restarted = PodActionReceipts(PodReservationLedger(tmp_path / "pods.db", clock=clock))
     assert restarted.recover_ambiguous() == (action.action_id,)
     assert restarted.get(action.action_id).state == "uncertain"
     with pytest.raises(ActionReplayDenied):
@@ -203,9 +203,9 @@ def test_action_attempt_count_never_exceeds_reserved_actions(tmp_path):
     _, receipts, _, lease, _ = setup(tmp_path)
     for i in range(4):
         receipts.prepare(lease, idempotency_key=f"op-{i}", authorization=_ACTION)
-    # Independent gateway tool-call ceiling is tighter than action count;
-    # either boundary must deny before another executable intent is stored.
-    with pytest.raises(AdmissionDenied):
+    # Enforce the reservation's separate tool-call ceiling even when the
+    # gateway authorizer would permit one more action.
+    with pytest.raises(AdmissionDenied, match="tool call intent ceiling"):
         receipts.prepare(lease, idempotency_key="op-5", authorization=_ACTION)
     with receipts.reservations._connect() as db:
         count = db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0]

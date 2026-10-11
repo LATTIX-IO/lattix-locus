@@ -89,6 +89,7 @@ class PodActionReceipts:
                 idempotency_key TEXT NOT NULL,
                 fingerprint TEXT NOT NULL,
                 gateway_audit_id TEXT NOT NULL,
+                action_kind TEXT NOT NULL,
                 child_run_id TEXT NOT NULL,
                 state TEXT NOT NULL,
                 outcome_digest TEXT,
@@ -174,12 +175,21 @@ class PodActionReceipts:
                 raise AdmissionDenied("missing action count for reservation")
             if int(count_row[0]) >= max_actions:
                 raise AdmissionDenied("action intent ceiling exhausted")
+            if decision.action_kind in ("tool_call", "mcp_tool_call"):
+                tool_count_row = db.execute("""SELECT COUNT(*) FROM pod_action_receipt
+                    WHERE reservation_id=? AND action_kind IN ('tool_call','mcp_tool_call')""",
+                    (lease.reservation_id,)).fetchone()
+                if tool_count_row is None:
+                    raise AdmissionDenied("tool call accounting unavailable")
+                max_tools = self.reservations._as_reservation(pod).requested.tool_calls
+                if int(tool_count_row[0]) >= max_tools:
+                    raise AdmissionDenied("tool call intent ceiling exhausted")
             action_id = secrets.token_urlsafe(24)
             db.execute("""INSERT INTO pod_action_receipt
                 (id,reservation_id,idempotency_key,fingerprint,gateway_audit_id,
-                 child_run_id,state) VALUES(?,?,?,?,?,?,?)""",
+                 action_kind,child_run_id,state) VALUES(?,?,?,?,?,?,?,?)""",
                 (action_id, lease.reservation_id, idempotency_key, digest,
-                 decision.audit_id, lease.run_id, "prepared"))
+                 decision.audit_id, decision.action_kind, lease.run_id, "prepared"))
             db.execute("""INSERT INTO pod_action_audit(action_id,event)
                 VALUES (?,?)""", (action_id, "prepared"))
             return self._record(self._row(db, action_id))
