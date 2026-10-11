@@ -247,3 +247,39 @@ def test_schema_fail_closed_for_unknown_migration_and_audit_is_durable(tmp_path)
         db.execute("UPDATE schema_meta SET version = 999")
     with pytest.raises(RuntimeError, match="unsupported reservation-ledger schema"):
         PodReservationLedger(db_path)
+
+
+
+def test_concurrent_schema_startup_is_atomic(tmp_path):
+    path = tmp_path / "initialized-together.db"
+    def start(_i):
+        service = PodReservationLedger(path)
+        with service._connect() as db:
+            return db.execute("SELECT version FROM schema_meta").fetchall()[0][0]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+        assert list(pool.map(start, range(12))) == [1] * 12
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT count(*) FROM schema_meta").fetchone()[0] == 1
+
+
+def test_failed_gateway_session_admission_releases_unstarted_hold(tmp_path):
+    ledger, plan, parent, _ = build(tmp_path)
+    record = ledger.reserve(plan, parent, request())
+    # Root is already registered; admission cannot silently evict it to
+    # create a worker session.
+    parent.gateway._max_sessions = 1
+    with pytest.raises(RuntimeError, match="capacity"):
+        ledger.admit(plan, parent, record.reservation_id, engine="unlaunchable")
+    assert ledger.get(record.reservation_id).state == "canceled"
+    assert ledger.snapshot(parent.caller.run_id).held == zero()
+
+
+def test_snapshot_version_advances_on_settlement(tmp_path):
+    ledger, plan, parent, _ = build(tmp_path)
+    r = ledger.reserve(plan, parent, request())
+    old_version = ledger.snapshot(parent.caller.run_id).version
+    lease = ledger.admit(plan, parent, r.reservation_id, engine="agent")
+    version_admitted = ledger.snapshot(parent.caller.run_id).version
+    assert version_admitted > old_version
+    lease.settle(budget(1, 1, 10, 1, 100))
+    assert ledger.snapshot(parent.caller.run_id).version > version_admitted

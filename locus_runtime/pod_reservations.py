@@ -187,6 +187,9 @@ class PodReservationLedger:
     def _initialize(self) -> None:
         with self._connect() as db:
             db.execute("PRAGMA journal_mode=WAL")
+            # Initial schema creation/version registration must be one atomic
+            # transaction when several local supervisor processes start.
+            self._tx(db)
             db.execute("CREATE TABLE IF NOT EXISTS schema_meta(version INTEGER NOT NULL)")
             version = db.execute("SELECT version FROM schema_meta").fetchone()
             if version and version["version"] != _SCHEMA_VERSION:
@@ -304,6 +307,8 @@ class PodReservationLedger:
 
     def snapshot(self, run_id: str) -> LedgerSnapshot:
         with self._connect() as db:
+            # Pin limits, spent and all sibling holds to one SQLite read snapshot.
+            db.execute("BEGIN")
             parent = db.execute("SELECT * FROM parent_budget WHERE run_id=?", (run_id,)).fetchone()
             if parent is None:
                 raise AdmissionDenied("unknown parent")
