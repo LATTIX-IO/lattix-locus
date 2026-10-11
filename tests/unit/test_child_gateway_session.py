@@ -258,3 +258,62 @@ def test_invalid_delegation_registration_is_rejected():
             capabilities=Capabilities(),
             allow_child_delegation="true",  # type: ignore[arg-type]
         )
+
+
+def test_child_admission_refuses_capacity_exhaustion_before_eviction():
+    gateway = Gateway(FakeEngine(), lambda _: None, max_sessions=1)
+    caps = Capabilities(
+        allowed_tools=frozenset({"list_issues"}),
+        max_tool_calls=5,
+        max_actions=5,
+        max_risk_class=RiskClass.R2,
+        budget=_budget(),
+    )
+    parent = gateway.open_session(
+        run_id="root", principal="alice", engine="orchestrator",
+        capabilities=caps, allow_child_delegation=True
+    )
+    child_caps = dataclasses.replace(
+        caps, max_tool_calls=2, max_actions=2,
+        max_risk_class=RiskClass.R0,
+        budget=_budget(tokens=100, duration=10, cost=1.0),
+    )
+    with pytest.raises(RuntimeError, match="capacity exhausted"):
+        gateway.open_child_session(
+            parent, run_id="root:pod", engine="worker",
+            capabilities=child_caps
+        )
+    assert parent.authorize(kind="tool_call", tool="list_issues").outcome == "allow"
+    assert not gateway._session_parents
+
+
+def test_top_level_eviction_cleans_child_parent_links():
+    gateway = Gateway(FakeEngine(), lambda _: None, max_sessions=2)
+    caps = Capabilities(
+        allowed_tools=frozenset({"list_issues"}),
+        max_tool_calls=10, max_actions=10,
+        max_risk_class=RiskClass.R2, budget=_budget()
+    )
+    supervisor = gateway.open_session(
+        run_id="root", principal="alice", engine="controller",
+        capabilities=caps, allow_child_delegation=True
+    )
+    child_caps = dataclasses.replace(
+        caps, max_tool_calls=2, max_actions=2,
+        max_risk_class=RiskClass.R0,
+        budget=_budget(tokens=100, duration=10, cost=1.0)
+    )
+    child = gateway.open_child_session(
+        supervisor, run_id="root:pod", engine="worker",
+        capabilities=child_caps,
+    )
+    assert len(gateway._session_parents) == 1
+    # Top-level churn may evict the parent; its children must deny.
+    for i in range(32):
+        gateway.open_session(
+            run_id=f"other-{i}", principal="bob", engine="harness",
+            capabilities=caps,
+        )
+        assert len(gateway._session_parents) <= len(gateway._sessions) <= 2
+    assert child.authorize(kind="tool_call", tool="list_issues").outcome == "deny"
+    assert len(gateway._session_parents) == 0

@@ -13,6 +13,9 @@ and registers a fresh child token and unique run identity. The child is namespac
 run; reusing a logical pod name cannot reuse an earlier approval identity.
 Authorization fails when any ancestor is revoked, and parent/ancestor taint
 is inherited even if the ancestor becomes tainted after delegation.
+A full gateway session table causes an explicit child admission failure rather
+than silently evicting the just-created child's parent. Top-level eviction
+cleans corresponding lineage bookkeeping, preventing unbounded retained links.
 
 This is **not** a pod scheduler or a substitute for child process sandboxing,
 accounting aggregation, validated artifact handoffs, or independent verification.

@@ -1841,7 +1841,10 @@ class Gateway:
                 caller, capabilities, on_decision, can_delegate=allow_child_delegation
             )
             while len(self._sessions) > self._max_sessions:
-                self._sessions.popitem(last=False)
+                evicted_key, _ = self._sessions.popitem(last=False)
+                # Keep lineage bookkeeping bounded under top-level churn.
+                # Existing children of an evicted parent become unauthenticated.
+                self._session_parents.pop(evicted_key, None)
         return GatewaySession(self, caller, capabilities)
 
     def open_child_session(
@@ -1873,6 +1876,11 @@ class Gateway:
                 if ancestor not in self._sessions:
                     raise PermissionError("ancestor session has been revoked")
             _validate_child_capabilities(registered.capabilities, capabilities)
+            # A new child must not evict its own parent or any ancestor and
+            # return an immediately unusable session. Capacity failure is
+            # explicit and must be reconciled by the supervising scheduler.
+            if len(self._sessions) >= self._max_sessions:
+                raise RuntimeError("gateway child session capacity exhausted")
             if (
                 not isinstance(run_id, str)
                 or not run_id.startswith(f"{registered.caller.run_id}:")
@@ -1895,9 +1903,6 @@ class Gateway:
                 caller, capabilities, None, tainted=registered.tainted
             )
             self._session_parents[child_key] = key
-            while len(self._sessions) > self._max_sessions:
-                removed, _ = self._sessions.popitem(last=False)
-                self._session_parents.pop(removed, None)
         return GatewaySession(self, caller, capabilities)
 
     def close_session(self, session: GatewaySession) -> None:
