@@ -124,3 +124,44 @@ def test_unregistered_child_capability_fails_closed(tmp_path):
         broker.execute(lease,tool_name="not_granted",
                        action_idempotency_key="no-grant")
     run.assert_not_called()
+
+
+
+def test_sandbox_plan_must_not_be_raw_tool_command(tmp_path):
+    broker, lease, run, manager = fixture(tmp_path)
+    manager.plan.return_value = ExecutionPlan(
+        backend="kernel-bwrap",
+        command=list(broker._tools["list_issues"].argv),
+        strategy=IsolationStrategy.KERNEL_BWRAP,
+    )
+    with pytest.raises(AdmissionDenied, match="directly invoke"):
+        broker.execute(lease, tool_name="list_issues",
+                       action_idempotency_key="raw-tool")
+    run.assert_not_called()
+
+
+def test_windows_launcher_cwd_from_confining_plan_is_obeyed(tmp_path):
+    broker, lease, run, manager = fixture(tmp_path)
+    manager.plan.return_value = ExecutionPlan(
+        backend="windows-appcontainer", command=["C:/Windows/isolated-launcher.exe",
+                                                    "C:/Temp/trusted_tool"],
+        strategy=IsolationStrategy.WINDOWS_APPCONTAINER,
+        metadata={"launcher_cwd": str(tmp_path)},
+    )
+    receipt, _ = broker.execute(lease, tool_name="list_issues",
+                                 action_idempotency_key="windows-launch")
+    assert receipt.state == "succeeded"
+    assert run.call_args.kwargs["cwd"] == str(tmp_path)
+
+
+def test_invalid_launcher_cwd_denies_before_invocation(tmp_path):
+    broker, lease, run, manager = fixture(tmp_path)
+    manager.plan.return_value = ExecutionPlan(
+        backend="kernel-bwrap", command=["/usr/bin/bwrap", "--", "fixed"],
+        strategy=IsolationStrategy.KERNEL_BWRAP,
+        metadata={"launcher_cwd": "relative"},
+    )
+    with pytest.raises(AdmissionDenied, match="launcher working directory"):
+        broker.execute(lease, tool_name="list_issues",
+                       action_idempotency_key="bad-cwd")
+    run.assert_not_called()
