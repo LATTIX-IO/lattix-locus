@@ -44,3 +44,12 @@ before claiming safe general computer-use or multi-device autonomy.
 
 Rollback: disable invocation, preserve the durable receipt database and all
 uncertain holds. Never delete or auto-mark \`uncertain\` as successful.
+
+## Result fidelity
+
+A successfully returned callback result is canonicalized as bounded JSON
+(up to 1 MiB), then SHA-256 hashed. Equal output *types* with different
+values produce distinct durable digests; raw output values are not persisted.
+An unserializable or oversized result becomes **uncertain**, because its
+external side effect may already have happened. A digest alone is not a
+provider-signed result receipt and must not substitute for later verification.

@@ -7,6 +7,7 @@ Ambiguous starts never replay without explicit supervisor reconciliation.
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 import sqlite3
 from dataclasses import dataclass
@@ -37,6 +38,18 @@ class ActionRecord:
 
 def _sha(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _result_digest(value: object) -> str:
+    """Bounded canonical result fingerprint; never writes the raw payload."""
+    try:
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=True, allow_nan=False, default=repr)
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        raise AdmissionDenied("unserializable action outcome must be reconciled") from exc
+    if len(encoded.encode("utf-8")) > 1_048_576:
+        raise AdmissionDenied("action outcome exceeds fingerprint size limit")
+    return _sha(encoded)
 
 
 def _valid_key(key: str) -> str:
@@ -209,14 +222,14 @@ class PodActionReceipts:
         self.begin_dispatch(lease, intent.action_id)
         try:
             output = invoke()
+            digest = _result_digest(output)
         except BaseException as exc:
             # The external effect may have completed before a provider timeout
             # or worker crash. Never replay; require out-of-band proof.
             self._complete(intent.action_id, "uncertain",
                            evidence=type(exc).__qualname__)
             raise
-        receipt = self._complete(intent.action_id, "succeeded",
-                                 evidence=repr(type(output)))
+        receipt = self._complete(intent.action_id, "succeeded", evidence=digest)
         return receipt, output
 
     def get(self, action_id: str) -> ActionRecord:

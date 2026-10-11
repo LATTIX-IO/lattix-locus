@@ -210,3 +210,24 @@ def test_action_attempt_count_never_exceeds_reserved_actions(tmp_path):
     with receipts.reservations._connect() as db:
         count = db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0]
     assert count == 4
+
+
+
+def test_successful_action_receipt_binds_actual_result_not_merely_its_type(tmp_path):
+    _, receipts, _, lease, _ = setup(tmp_path)
+    first, _ = receipts.execute_once(
+        lease, idempotency_key="outcome-a", authorization=_ACTION,
+        invoke=lambda: {"status": "sent", "recipient": "secret@example.org"},
+    )
+    second, _ = receipts.execute_once(
+        lease, idempotency_key="outcome-b", authorization=_ACTION,
+        invoke=lambda: {"status": "denied", "recipient": "secret@example.org"},
+    )
+    assert first.outcome_digest != second.outcome_digest
+    with receipts.reservations._connect() as db:
+        values = [row[0] for row in db.execute(
+            "SELECT outcome_digest FROM pod_action_receipt ORDER BY id"
+        )]
+    assert len(values) == 2
+    assert all(len(v) == 64 for v in values)
+    assert "secret@example.org" not in repr(values)
