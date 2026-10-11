@@ -21,7 +21,6 @@ from locus_runtime.task_plan_compiler import CompiledTaskPlan
 
 _FIELDS = ("actions", "tool_calls", "tokens", "wall_seconds", "spend_microunits")
 _HELD = frozenset({"reserved", "admitting", "active", "uncertain", "revoked"})
-_TERMINAL = frozenset({"closed", "canceled"})
 _SCHEMA_VERSION = 1
 
 
@@ -464,6 +463,8 @@ class PodReservationLedger:
                 self._transition(reservation_id, frozenset({"admitting"}), outcome,
                                  note="gateway_refused" if child is None else "admission_failure_reconcile")
             except AdmissionDenied:
+                # A competing cancel/revoke/recovery already changed state;
+                # preserve its terminal outcome and re-raise the real failure.
                 pass
             raise
 
