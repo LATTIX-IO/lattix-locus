@@ -251,15 +251,18 @@ def test_schema_fail_closed_for_unknown_migration_and_audit_is_durable(tmp_path)
 
 
 def test_concurrent_schema_startup_is_atomic(tmp_path):
-    path = tmp_path / "initialized-together.db"
-    def start(_i):
-        service = PodReservationLedger(path)
-        with service._connect() as db:
-            return db.execute("SELECT version FROM schema_meta").fetchall()[0][0]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
-        assert list(pool.map(start, range(12))) == [1] * 12
-    with sqlite3.connect(path) as db:
-        assert db.execute("SELECT count(*) FROM schema_meta").fetchone()[0] == 1
+    # Repeat on multiple new paths: schema+WAL lock races are intermittent
+    # and first-open contention must never reject independent supervisors.
+    for n in range(3):
+        path = tmp_path / f"initialized-together-{n}.db"
+        def start(_i):
+            service = PodReservationLedger(path)
+            with service._connect() as db:
+                return db.execute("SELECT version FROM schema_meta").fetchall()[0][0]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            assert list(pool.map(start, range(12))) == [1] * 12
+        with sqlite3.connect(path) as db:
+            assert db.execute("SELECT count(*) FROM schema_meta").fetchone()[0] == 1
 
 
 def test_failed_gateway_session_admission_releases_unstarted_hold(tmp_path):
