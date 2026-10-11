@@ -8,6 +8,7 @@ dispatch, kernel fencing and at-most-once broker invocation.
 from __future__ import annotations
 
 import os
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -191,15 +192,40 @@ class PodSandboxBroker:
                 env = minimal_agent_env(base={})
             else:
                 env = minimal_agent_env()
+            # Docker's client can time out while the daemon keeps the
+            # container running. Use a broker-generated name, never one taken
+            # from a model, to attempt bounded cleanup on client timeout.
+            argv = list(plan.command)
+            container_name: str | None = None
+            if strategy == IsolationStrategy.HARDENED_DOCKER:
+                if argv[:3] != ["docker", "run", "--rm"]:
+                    raise AdmissionDenied("unrecognized Docker sandbox launcher")
+                container_name = "locus-pod-" + secrets.token_hex(16)
+                argv[3:3] = ["--name", container_name]
             # No shell and no output payload enters logs, telemetry or
             # the durable action ledger. Rich bounded output requires a
             # separate, typed and redacted tool-response adapter.
-            result = subprocess.run(
-                plan.command, shell=False, check=False,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=command.timeout_seconds,
-                env=env, cwd=launcher_cwd,
-            )
+            try:
+                result = subprocess.run(
+                    argv, shell=False, check=False,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=command.timeout_seconds,
+                    env=env, cwd=launcher_cwd,
+                )
+            except subprocess.TimeoutExpired:
+                if container_name is not None:
+                    try:
+                        subprocess.run(
+                            ["docker", "kill", container_name],
+                            shell=False, check=False,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            timeout=5, env=env, cwd=launcher_cwd,
+                        )
+                    except (OSError, subprocess.TimeoutExpired):
+                        # Unknown external state remains 'uncertain'; the
+                        # timeout is never converted to permission to replay.
+                        pass
+                raise
             return {
                 "exit_code": result.returncode,
                 "backend": plan.backend,
