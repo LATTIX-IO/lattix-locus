@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Sequence
 
 from locus_runtime.action_receipts import ActionRecord, PodActionReceipts
@@ -27,7 +27,6 @@ from locus_runtime.sandbox import (
     SandboxManager,
     SandboxPolicy,
     detect_host_platform,
-    docker_cli_env,
     minimal_agent_env,
     select_confining_strategy,
 )
@@ -63,7 +62,11 @@ class BrokerCommand:
             for v in self.argv
         ):
             raise ValueError("malformed command argument")
-        if Path(self.argv[0]).name.lower() in _SHELLS:
+        # Match POSIX and Windows basename syntax regardless of the broker's
+        # test/build host, so a Windows absolute shell path cannot bypass a
+        # Linux-side authorization or vice versa.
+        if (Path(self.argv[0]).name.lower() in _SHELLS
+            or PureWindowsPath(self.argv[0]).name.lower() in _SHELLS):
             raise AdmissionDenied("shell and inline-interpreter commands are not admitted")
         if not isinstance(self.working_dir, str) or not self.working_dir.strip():
             raise ValueError("explicit working directory required")
@@ -170,7 +173,9 @@ class PodSandboxBroker:
         def invoke() -> dict[str, int | str]:
             start = time.monotonic()
             if strategy == IsolationStrategy.HARDENED_DOCKER:
-                env = docker_cli_env()
+                # Never inherit DOCKER_HOST/DOCKER_CONTEXT, which might route
+                # an apparently local no-network command to a remote daemon.
+                env = minimal_agent_env(base={})
             else:
                 env = minimal_agent_env()
             # No shell and no output payload enters logs, telemetry or

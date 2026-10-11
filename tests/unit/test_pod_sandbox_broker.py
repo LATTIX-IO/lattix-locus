@@ -152,6 +152,7 @@ def test_unknown_tool_and_executable_fail_before_gateway_receipt(tmp_path, monke
     ("sh", "-c", "echo hi"),
     ("cmd.exe", "/c", "whoami"),
     ("powershell.exe", "-Command", "whoami"),
+    ("C:\\Windows\\System32\\cmd.exe", "/C", "whoami"),
     ("python3", "-c", "import os"),
 ])
 def test_shell_interpreter_entrypoints_are_rejected(args, tmp_path):
@@ -244,3 +245,16 @@ def test_revoked_parent_prevents_process_dispatch(tmp_path, monkeypatch):
     with pytest.raises(AdmissionDenied):
         app.execute(lease, cmd(tmp_path))
     assert not invocations
+
+
+
+def test_remote_docker_host_never_inherited_by_broker(tmp_path, monkeypatch):
+    launched = docker(monkeypatch)
+    monkeypatch.setenv("DOCKER_HOST", "tcp://remote-host.internal:2375")
+    monkeypatch.setenv("DOCKER_CONTEXT", "cloud-admin")
+    app, _, lease, _ = fixture(tmp_path)
+    result = app.execute(lease, cmd(tmp_path))
+    assert result.exit_code == 0
+    assert launched
+    assert "DOCKER_HOST" not in launched[0][1]["env"]
+    assert "DOCKER_CONTEXT" not in launched[0][1]["env"]
