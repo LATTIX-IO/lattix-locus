@@ -271,8 +271,8 @@ def test_unsupported_custom_authorization_object_is_not_serialized(tmp_path, mon
             lease,
             idempotency_key="opaque",
             authorization={
-                "kind": "process_exec", "tool": "run_command",
-                "target": str(tmp_path), "extra": Opaque(),
+                "kind": "tool_call", "tool": "run_command",
+                "args": {"opaque": Opaque()},
             },
         )
     with receipts.reservations._connect() as db:
