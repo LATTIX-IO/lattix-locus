@@ -54,7 +54,7 @@ def action_lock(database: str, action_id: str) -> Iterator[bool]:
                 os.write(fd, b"\x00")
             os.lseek(fd, 0, os.SEEK_SET)
             try:
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                getattr(msvcrt, "locking")(fd, getattr(msvcrt, "LK_NBLCK"), 1)
             except OSError as exc:
                 if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
                     raise
@@ -78,7 +78,7 @@ def action_lock(database: str, action_id: str) -> Iterator[bool]:
                     import msvcrt
 
                     os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                    getattr(msvcrt, "locking")(fd, getattr(msvcrt, "LK_UNLCK"), 1)
                 else:
                     import fcntl
 
