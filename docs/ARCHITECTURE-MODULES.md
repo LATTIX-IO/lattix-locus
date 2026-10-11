@@ -51,7 +51,7 @@ The loop improves Locus one module at a time. It proposes a new implementation o
 
 ## 5. Third-party code
 
-Third-party implementations run **out of process** as MCP servers (or A2A agents) inside the OS sandbox, go through quarantine → trust, and reach Locus only through the gateway. First-party implementations run in process. This takes the composability of plugin-style harnesses without their in-process trust model (see the 2026-10-03 review of DeepSeek Harness and OpenClaw).
+Third-party implementations **normally run out of process** as MCP servers (or A2A agents) inside an OS sandbox, go through quarantine → trust, and reach Locus through the gateway. First-party implementations run in process. **Narrow documented legacy exception (D-37):** the already-integrated pinned LangChain Deep Agents library currently runs in-process under Locus's native AgentRuntime. It must still use only Locus-mediated tools, keep vendor tracing/telemetry disabled and meet dependency pinning, outbound-network containment and adversarial escape tests. Running in the host backend increases supply-chain and lateral egress exposure; this does **not** relax the isolation requirement for other third-party modules. Reassess at Cedar cutover or any security incident, with sidecar/process isolation the preferred target. Do not describe the current in-process runtime as equivalent to a container sandbox or claim untested egress containment. This preserves composability without hiding a known boundary exception.
 
 Every candidate third-party repository has a recorded integrate / fork / clone / skip decision in [third-party-assessment.md](third-party-assessment.md) (LOCUS-406).
 
