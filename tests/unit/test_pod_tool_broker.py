@@ -1,13 +1,12 @@
 """LOCUS-433 bounded sandbox broker security and regression tests."""
 from __future__ import annotations
 import subprocess
-from pathlib import Path
 from unittest.mock import Mock
 import pytest
 
 from locus_runtime.pod_tool_broker import BrokerTool, SandboxedPodToolBroker
 from locus_runtime.pod_reservations import AdmissionDenied
-from locus_runtime.action_receipts import ActionReplayDenied, PodActionReceipts
+from locus_runtime.action_receipts import ActionReplayDenied
 from locus_runtime.sandbox import (
     ExecutionPlan, HostPlatform, IsolationStrategy,
 )
@@ -110,7 +109,8 @@ def test_invalid_registered_tool_is_rejected(tool):
 
 
 def test_registry_name_mismatch_rejected(tmp_path):
-    exe=tmp_path/"trusted";exe.write_text("")
+    exe = tmp_path / "trusted"
+    exe.write_text("")
     t=BrokerTool("one",(str(exe),),str(tmp_path))
     with pytest.raises(ValueError):
         SandboxedPodToolBroker(Mock(),{"two":t})
