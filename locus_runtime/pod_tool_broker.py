@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
@@ -18,6 +19,69 @@ from locus_runtime.pod_reservations import AdmissionDenied, PodLease
 from locus_runtime.sandbox import (
     CONFINING_STRATEGIES, ExecutionSpec, HostPlatform, SandboxManager, SandboxPolicy,
 )
+
+
+def _run_bounded(
+    command: list[str], *, cwd: str, env: dict[str, str],
+    timeout: int,
+) -> subprocess.CompletedProcess[bytes]:
+    """Drain both subprocess pipes while retaining <=64KiB of each.
+
+    Draining continues even after the output cap so a noisy child cannot
+    deadlock on a full pipe. A timeout kills the sandbox launcher and still
+    collects the bounded tails; the caller records an uncertain action.
+    """
+    process = subprocess.Popen(
+        command, shell=False, cwd=cwd, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    collected: dict[str, bytes] = {"stdout": b"", "stderr": b""}
+    failures: list[BaseException] = []
+
+    def drain(name: str) -> None:
+        stream = process.stdout if name == "stdout" else process.stderr
+        assert stream is not None
+        parts = bytearray()
+        try:
+            while True:
+                chunk = stream.read(32768)
+                if not chunk:
+                    break
+                remaining = 65536 - len(parts)
+                if remaining > 0:
+                    parts.extend(chunk[:remaining])
+        except OSError as exc:
+            failures.append(exc)
+        finally:
+            collected[name] = bytes(parts)
+            stream.close()
+
+    readers = [
+        threading.Thread(target=drain, args=(name,), daemon=True)
+        for name in ("stdout", "stderr")
+    ]
+    for reader in readers:
+        reader.start()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        for reader in readers:
+            reader.join()
+        raise
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    for reader in readers:
+        reader.join()
+    if failures:
+        raise OSError("sandbox output drain failed") from failures[0]
+    return subprocess.CompletedProcess(
+        args=command, returncode=process.returncode,
+        stdout=collected["stdout"], stderr=collected["stderr"],
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +118,7 @@ class SandboxedPodToolBroker:
     def __init__(self, receipts: PodActionReceipts,
                  tools: Mapping[str, BrokerTool], *,
                  manager: SandboxManager | None = None,
-                 run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+                 run: Callable[..., subprocess.CompletedProcess[bytes]] | None = None,
                  platform: HostPlatform | None = None) -> None:
         self.receipts = receipts
         self._tools = dict(tools)
@@ -102,9 +166,15 @@ class SandboxedPodToolBroker:
             raise AdmissionDenied("invalid sandbox launcher working directory")
         def invoke() -> BrokerResult:
             try:
-                result = self._run(list(plan.command), shell=False,
-                    cwd=launcher_cwd, env={"PATH": os.defpath},
-                    capture_output=True, timeout=descriptor.max_seconds, check=False)
+                if self._run is None:
+                    result = _run_bounded(list(plan.command), cwd=launcher_cwd,
+                        env={"PATH": os.defpath}, timeout=descriptor.max_seconds)
+                else:
+                    # Explicitly injected runners are for deterministic unit
+                    # tests; production always uses bounded pipe drainage.
+                    result = self._run(list(plan.command), shell=False,
+                        cwd=launcher_cwd, env={"PATH": os.defpath},
+                        capture_output=True, timeout=descriptor.max_seconds, check=False)
             except (subprocess.TimeoutExpired, OSError):
                 # Receipt layer quarantines ambiguous callbacks and forbids replay.
                 raise
