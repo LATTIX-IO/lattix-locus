@@ -7,7 +7,6 @@ Ambiguous starts never replay without explicit supervisor reconciliation.
 from __future__ import annotations
 
 import hashlib
-import json
 import secrets
 import sqlite3
 from dataclasses import dataclass
@@ -18,7 +17,6 @@ from locus_runtime.pod_reservations import AdmissionDenied, PodLease, PodReserva
 
 _ACTION_RECEIPT_SCHEMA_VERSION = 1
 _T = TypeVar("_T")
-_DISPATCH_STATES = frozenset({"dispatching", "uncertain", "succeeded", "failed", "reconciled"})
 
 
 class ActionReplayDenied(AdmissionDenied):

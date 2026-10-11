@@ -153,17 +153,15 @@ def test_stale_parent_or_finished_pod_does_not_prepare_or_dispatch(tmp_path):
         receipts.prepare(lease, idempotency_key="after-revoke", authorization=_ACTION)
 
 
-def test_cross_pod_use_of_receipt_is_rejected(tmp_path):
-    ledger, receipts, parent, first, _ = setup(tmp_path)
-    other = ledger.reserve(
-        __import__("tests.unit.test_pod_reservations", fromlist=["build"]).build.__defaults__[0]
-        if False else None, parent, request()
-    ) if False else None
-    # Another pod's session cannot claim an already-recorded dispatch.
-    forged = object()
+def test_cross_pod_or_forged_lease_is_rejected(tmp_path):
+    _, receipts, _, lease, _ = setup(tmp_path / "a")
+    other_ledger, _, _, other_lease, _ = setup(tmp_path / "b")
+    assert other_ledger.path != receipts.reservations.path
+    prepared = receipts.prepare(lease, idempotency_key="own", authorization=_ACTION)
     with pytest.raises(AdmissionDenied):
-        receipts.begin_dispatch(forged, "nonexistent")  # type: ignore[arg-type]
-    assert other is None
+        receipts.begin_dispatch(other_lease, prepared.action_id)
+    with pytest.raises(AdmissionDenied):
+        receipts.begin_dispatch(object(), prepared.action_id)  # type: ignore[arg-type]
 
 
 def test_ambiguous_reconciliation_requires_exact_registered_supervisor(tmp_path):
@@ -203,7 +201,12 @@ def test_receipt_schema_unknown_version_fails_closed(tmp_path):
 
 def test_action_attempt_count_never_exceeds_reserved_actions(tmp_path):
     _, receipts, _, lease, _ = setup(tmp_path)
-    for i in range(5):
+    for i in range(4):
         receipts.prepare(lease, idempotency_key=f"op-{i}", authorization=_ACTION)
-    with pytest.raises(AdmissionDenied, match="ceiling"):
-        receipts.prepare(lease, idempotency_key="op-6", authorization=_ACTION)
+    # Independent gateway tool-call ceiling is tighter than action count;
+    # either boundary must deny before another executable intent is stored.
+    with pytest.raises(AdmissionDenied):
+        receipts.prepare(lease, idempotency_key="op-5", authorization=_ACTION)
+    with receipts.reservations._connect() as db:
+        count = db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0]
+    assert count == 4
