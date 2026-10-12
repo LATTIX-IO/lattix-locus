@@ -185,6 +185,9 @@ def _expected_docker_launch_contract(
         expected.extend(("-v", f"{path}:{path}:rw"))
     readonly = readable - writable
     for path in sorted(readonly):
+        # Match the planner's no-auto-create contract before Gateway/receipts.
+        if not Path(path).exists():
+            raise AdmissionDenied("Docker read mount source denied")
         expected.extend(("-v", f"{path}:{path}:ro"))
     for protected in sensitive_readonly:
         if protected not in readonly:
