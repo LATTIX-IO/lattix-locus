@@ -43,8 +43,8 @@ _SHELLS = frozenset({
 _MAX_ARGV = 32
 _MAX_ARG_LEN = 2048
 _MAX_TIMEOUT = 60
-_IMAGE_SHA256 = re.compile(r"[0-9a-f]{64}\\Z", re.ASCII)
-_IMAGE_NAME = re.compile(r"[a-z0-9][a-z0-9._:/-]{0,239}\\Z", re.ASCII)
+_IMAGE_SHA256 = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
+_IMAGE_NAME = re.compile(r"[a-z0-9][a-z0-9._:/-]{0,239}\Z", re.ASCII)
 
 
 @dataclass(frozen=True, slots=True)
