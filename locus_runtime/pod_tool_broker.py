@@ -121,14 +121,20 @@ class SandboxedPodToolBroker:
             raise AdmissionDenied("tool outside admitted capabilities")
         if descriptor.argv[0] not in caps.allowed_executables:
             raise AdmissionDenied("executable outside admitted capabilities")
-        # Pin a regular executable and workspace at dispatch. A symlink may
-        # redirect execution outside administrator-pinned filesystem identity.
+        # A symlink in *any ancestor* is an alias, even if the final path
+        # component is a regular file/directory. Bind the exact administrator
+        # and child capability paths to canonical filesystem objects at
+        # dispatch. This is a deny-first check, not a race-free file handle.
         executable = Path(descriptor.argv[0])
-        if executable.is_symlink() or not executable.is_file():
-            raise AdmissionDenied("registered executable is missing or linked")
         cwd = Path(descriptor.cwd)
-        if cwd.is_symlink() or not cwd.is_dir():
-            raise AdmissionDenied("registered workspace is missing or linked")
+        try:
+            actual_executable = executable.resolve(strict=True)
+            actual_cwd = cwd.resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise AdmissionDenied("registered tool path is unavailable") from None
+        if (actual_executable != executable or not actual_executable.is_file()
+            or actual_cwd != cwd or not actual_cwd.is_dir()):
+            raise AdmissionDenied("registered tool path is missing or linked")
         return self._executor.execute(
             lease, BrokerCommand(
                 tool=descriptor.name, argv=descriptor.argv,
