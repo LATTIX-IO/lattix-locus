@@ -541,6 +541,10 @@ class _HardenedDockerStrategy:
             args += ["-v", f"{resolved}:{resolved}:rw"]
         readonly = readable - writable
         for resolved in sorted(readonly):
+            # Docker -v silently creates missing host sources as directories.
+            # Never allow a read-only grant to manufacture host paths.
+            if not Path(resolved).exists():
+                raise ValueError("Docker read mount source does not exist")
             args += ["-v", f"{resolved}:{resolved}:ro"]
         # Compute masks from raw lexical paths BEFORE canonicalization.
         # Existing control paths use a bind; absent paths must not be creatable.
