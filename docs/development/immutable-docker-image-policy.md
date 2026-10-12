@@ -14,11 +14,12 @@ When strict mode is enabled and the chosen strategy is hardened Docker, the brok
 
 This example is syntactic only and is not a real trusted artifact. Operators must supply an actual registry-issued digest separately.
 
-The image selected before planning becomes part of the already-existing exact Docker argv contract. A modified environment, substituted planner image argument, or other launch-plan mismatch fails **before** Gateway authorization, receipt preparation or process dispatch. The strict-mode setting is a frozen administrator catalog property and enters its canonical catalog revision digest, which is already bound to the durable Gateway/receipt action identity. Changing strict mode therefore changes that catalog identity. The default remains `False` for legacy compatibility; such deployments **do not** receive pinned-image guarantees.
+Strict mode requires both a content-addressed format **and the exact image reference supplied by the trusted supervisor at catalog construction** via `pinned_docker_image`. Missing or malformed administrator pins reject catalog construction; a different valid digest selected at runtime is denied before launch. The approved reference is included in the canonical catalog identity and therefore in the downstream Gateway/receipt action identity. The image selected before planning becomes part of the already-existing exact Docker argv contract. A modified environment, substituted planner image argument, or other launch-plan mismatch fails **before** Gateway authorization, receipt preparation or process dispatch. The strict-mode setting is a frozen administrator catalog property and enters its canonical catalog revision digest, which is already bound to the durable Gateway/receipt action identity. Changing strict mode therefore changes that catalog identity. The default remains `False` for legacy compatibility; such deployments **do not** receive pinned-image guarantees.
 
 ## Definition of done and tests
 
 - Reject mutable tags, absent or malformed SHA-256, uppercase hex, ambiguous tag+digest references, illegal path components and injected Docker options before any receipt or subprocess.
+- Reject strict catalogs without an explicit supervisor-provided approved digest, and reject a different syntactically valid runtime image digest.
 - Accept a syntactically valid content-addressed image with exactly one authorized, no-network, read-only-rootfs, cap-drop Docker launch.
 - Preserve `stdout=DEVNULL`, `stderr=DEVNULL`, durable audit/fencing and idempotency-key replay denial.
 - A planner-side environment switch to a different, valid digest cannot alter the originally approved image.
