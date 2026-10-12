@@ -79,3 +79,15 @@ def test_untrusted_type_never_grants_remote_execution():
 def test_malformed_container_denied(bad):
     with pytest.raises(InvalidRemoteEnvelope):
         parse_untrusted_remote_envelope(bad)
+
+
+
+@pytest.mark.parametrize("field", [
+    "org_id", "sender_device_id", "recipient_device_id",
+    "workspace_id", "run_id", "task_id", "nonce", "payload_sha256",
+])
+def test_unpaired_unicode_surrogate_fails_closed_without_unhandled_exception(field):
+    wire = valid()
+    wire[field] = "\\ud800"
+    with pytest.raises(InvalidRemoteEnvelope, match="identifier denied"):
+        parse_untrusted_remote_envelope(wire)
