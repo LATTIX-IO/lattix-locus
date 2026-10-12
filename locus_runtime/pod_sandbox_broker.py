@@ -105,16 +105,15 @@ def _jail_facts(strategy: IsolationStrategy) -> JailFacts:
     raise AdmissionDenied("no approved confined process execution strategy")
 
 
-def _validate_docker_launch_contract(
-    argv: list[str], spec: ExecutionSpec, policy: SandboxPolicy,
-) -> None:
-    """Independently reconstruct the one allowed Docker CLI contract.
+def _expected_docker_launch_contract(
+    spec: ExecutionSpec, policy: SandboxPolicy,
+) -> list[str]:
+    """Snapshot the one permitted Docker command BEFORE invoking the planner.
 
-    The old presence-only checks could be defeated by duplicate/contradictory
-    flags (e.g. --user=0:0 after --user=1000:1000), added host mounts,
-    extra capabilities or alternate entrypoints. Compare the entire argument
-    vector against the trusted policy; never parse an attacker-modified plan
-    into a more privileged equivalent.
+    SandboxPolicy and ExecutionSpec carry mutable lists, so reconstructing
+    the contract *after* SandboxManager.plan() would trust mutations made by
+    the planner. Freeze this immutable string vector before crossing that
+    boundary instead.
     """
     if policy.allow_network or spec.env or spec.requested_hosts:
         raise AdmissionDenied("Docker sandbox isolation contract denied")
@@ -144,6 +143,13 @@ def _validate_docker_launch_contract(
     if spec.cwd:
         expected.extend(("-w", spec.cwd))
     expected.extend((sandbox_runner_image(), *spec.command))
+    return expected
+
+
+def _validate_docker_launch_contract(
+    argv: list[str], expected: list[str],
+) -> None:
+    """Deny conflicting, additional or planner-forged Docker CLI arguments."""
     if argv != expected:
         raise AdmissionDenied("Docker sandbox isolation contract denied")
 
@@ -213,6 +219,12 @@ class PodSandboxBroker:
             tool_id=command.tool, command=list(command.argv), cwd=cwd, env={},
             requested_hosts=[],
         )
+        # Snapshot the immutable authorized Docker argv before the planner
+        # can mutate the spec or policy's mutable fields.
+        expected_docker = (
+            _expected_docker_launch_contract(spec, policy)
+            if strategy == IsolationStrategy.HARDENED_DOCKER else None
+        )
         plan = SandboxManager(force_strategy=strategy).plan(spec, policy)
         if (plan.strategy != strategy or plan.backend != strategy.value
             or not isinstance(plan.command, list) or not plan.command
@@ -234,7 +246,9 @@ class PodSandboxBroker:
         ):
             raise AdmissionDenied("sandbox launcher directory is invalid")
         if strategy == IsolationStrategy.HARDENED_DOCKER:
-            _validate_docker_launch_contract(plan.command, spec, policy)
+            if expected_docker is None:
+                raise AdmissionDenied("Docker sandbox isolation contract denied")
+            _validate_docker_launch_contract(plan.command, expected_docker)
         audit_command = shlex.join(command.argv)
         facts = _jail_facts(strategy)
         # Do not let a second runner reclassify the jail based on metadata
