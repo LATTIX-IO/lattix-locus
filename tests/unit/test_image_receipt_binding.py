@@ -56,7 +56,9 @@ def test_supervisor_image_identity_reaches_gateway_and_durable_receipt(
     assert len(calls) == 1
     assert len(seen) == 1
     args = seen[0]["args"]
-    assert args == {"sandbox_image_ref_digest": _expected_digest(_FIRST)}
+    assert args["sandbox_image_ref_digest"] == _expected_digest(_FIRST)
+    assert len(args["sandbox_launch_contract_digest"]) == 64
+    assert set(args) == {"sandbox_image_ref_digest", "sandbox_launch_contract_digest"}
     assert _FIRST not in repr(args)
     assert seen[0]["kind"] == "process_exec"
     assert seen[0]["jail"].allow_network is False
@@ -167,7 +169,10 @@ def test_catalog_and_image_identity_share_canonical_authorization(
     result = strict.execute(lease, command)
     assert result.receipt.state == "succeeded"
     assert len(calls) == 1
-    assert seen[0]["args"] == {
-        "catalog_digest": "1" * 64,
-        "sandbox_image_ref_digest": _expected_digest(_FIRST),
+    assert seen[0]["args"]["catalog_digest"] == "1" * 64
+    assert seen[0]["args"]["sandbox_image_ref_digest"] == _expected_digest(_FIRST)
+    assert len(seen[0]["args"]["sandbox_launch_contract_digest"]) == 64
+    assert set(seen[0]["args"]) == {
+        "catalog_digest", "sandbox_image_ref_digest",
+        "sandbox_launch_contract_digest",
     }
