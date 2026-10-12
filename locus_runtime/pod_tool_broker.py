@@ -125,16 +125,20 @@ class SandboxedPodToolBroker:
     _executor: PodSandboxBroker
     _catalog_digest: str
     _require_pinned_executables: bool
+    _require_immutable_docker_image: bool
 
     def __init__(self, receipts: PodActionReceipts,
                  tools: Mapping[str, BrokerTool], *,
-                 require_pinned_executables: bool = False) -> None:
+                 require_pinned_executables: bool = False,
+                 require_immutable_docker_image: bool = False) -> None:
         if not isinstance(receipts, PodActionReceipts):
             raise ValueError("trusted receipt supervisor is required")
         if not isinstance(tools, Mapping) or not tools:
             raise ValueError("nonempty administrator tool registry required")
         if type(require_pinned_executables) is not bool:
             raise ValueError("executable pin requirement must be a boolean")
+        if type(require_immutable_docker_image) is not bool:
+            raise ValueError("Docker image pin policy must be a boolean")
         # Snapshot first; all validation and digest material derive from the
         # same immutable descriptor values, not the mutable caller mapping.
         snapshot = dict(tools)
@@ -155,6 +159,7 @@ class SandboxedPodToolBroker:
         ]
         material = json.dumps(
             {"require_pinned_executables": require_pinned_executables,
+             "require_immutable_docker_image": require_immutable_docker_image,
              "tools": canonical}, sort_keys=True, ensure_ascii=True,
             separators=(",", ":"),
         ).encode("ascii")
@@ -162,10 +167,16 @@ class SandboxedPodToolBroker:
             b"locus.admin-tool-catalog.v1\x00" + material
         ).hexdigest()
         object.__setattr__(self, "_tools", MappingProxyType(snapshot))
-        object.__setattr__(self, "_executor", PodSandboxBroker(receipts))
+        object.__setattr__(
+            self, "_executor", PodSandboxBroker(
+                receipts, require_immutable_docker_image=require_immutable_docker_image,
+            ),
+        )
         object.__setattr__(self, "_catalog_digest", digest)
         object.__setattr__(self, "_require_pinned_executables",
                            require_pinned_executables)
+        object.__setattr__(self, "_require_immutable_docker_image",
+                           require_immutable_docker_image)
 
     @property
     def catalog_digest(self) -> str:
@@ -176,6 +187,11 @@ class SandboxedPodToolBroker:
     def requires_pinned_executables(self) -> bool:
         """Supervisor-pinned admission setting (not a binary attestation)."""
         return self._require_pinned_executables
+
+    @property
+    def requires_immutable_docker_image(self) -> bool:
+        """Trusted supervisor's Docker image reference requirement."""
+        return self._require_immutable_docker_image
 
     def execute(self, lease: PodLease, *, tool_name: str,
                 action_idempotency_key: str) -> BrokerOutcome:
