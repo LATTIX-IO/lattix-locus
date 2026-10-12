@@ -225,7 +225,16 @@ class PodSandboxBroker:
             _expected_docker_launch_contract(spec, policy)
             if strategy == IsolationStrategy.HARDENED_DOCKER else None
         )
-        plan = SandboxManager(force_strategy=strategy).plan(spec, policy)
+        try:
+            plan = SandboxManager(force_strategy=strategy).plan(spec, policy)
+        except PermissionError:
+            # A mutated planner may reject its own widened request (for
+            # example network access without host allowlisting). Normalize
+            # this early planner denial into the broker's fail-closed API;
+            # never expose or persist planner-supplied diagnostic strings.
+            if strategy == IsolationStrategy.HARDENED_DOCKER:
+                raise AdmissionDenied("Docker sandbox isolation contract denied") from None
+            raise
         if (plan.strategy != strategy or plan.backend != strategy.value
             or not isinstance(plan.command, list) or not plan.command
             or any(not isinstance(arg, str) or not arg or "\x00" in arg
