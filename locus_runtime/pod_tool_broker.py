@@ -8,8 +8,11 @@ which owns admission, native Gateway policy, fenced receipts and cleanup.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -23,6 +26,8 @@ from locus_runtime.tool_result_contract import (
 )
 
 _TOOL_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}\Z")
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
+_MAX_PINNED_EXECUTABLE_BYTES = 128 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +38,7 @@ class BrokerTool:
     argv: tuple[str, ...]
     cwd: str
     max_seconds: int = 30
+    executable_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not _TOOL_NAME.fullmatch(self.name):
@@ -46,6 +52,10 @@ class BrokerTool:
             raise ValueError("registered executable and cwd must be absolute paths")
         if "\x00" in self.cwd or "\r" in self.cwd or "\n" in self.cwd:
             raise ValueError("invalid registered working directory")
+        if (self.executable_sha256 is not None
+            and (not isinstance(self.executable_sha256, str)
+                 or _SHA256_HEX.fullmatch(self.executable_sha256) is None)):
+            raise ValueError("executable digest must be canonical SHA-256 hex")
         # Share the executor's strict grammar, interpreter denial and time
         # ceiling. The artificial key is only for registration validation.
         try:
@@ -55,6 +65,43 @@ class BrokerTool:
             )
         except (AdmissionDenied, ValueError) as exc:
             raise ValueError("registered tool violates broker command policy") from exc
+
+
+def _verify_pinned_executable(path: Path, expected: str) -> None:
+    """Bounded best-effort digest check; does not hold an execution file handle.
+
+    Deny unexpected file types, huge files, changing metadata, short reads,
+    permission errors and substitutions, before the receipt can be created.
+    This remains vulnerable to a replacement *after* the check; it is not an
+    OS-backed race-free executable binding.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        with os.fdopen(os.open(path, flags), "rb") as fh:
+            before = os.fstat(fh.fileno())
+            if (not stat.S_ISREG(before.st_mode)
+                or before.st_size > _MAX_PINNED_EXECUTABLE_BYTES):
+                raise AdmissionDenied("registered executable digest scope denied")
+            digest = hashlib.sha256()
+            size = 0
+            while data := fh.read(1024 * 1024):
+                size += len(data)
+                if size > _MAX_PINNED_EXECUTABLE_BYTES:
+                    raise AdmissionDenied("registered executable digest scope denied")
+                digest.update(data)
+            after = os.fstat(fh.fileno())
+            facts_before = (before.st_dev, before.st_ino, before.st_size,
+                            before.st_mtime_ns, before.st_ctime_ns)
+            facts_after = (after.st_dev, after.st_ino, after.st_size,
+                           after.st_mtime_ns, after.st_ctime_ns)
+            if size != before.st_size or facts_before != facts_after:
+                raise AdmissionDenied("registered executable changed during measurement")
+    except (OSError, RuntimeError):
+        raise AdmissionDenied("registered executable measurement unavailable") from None
+    if not hmac.compare_digest(digest.hexdigest(), expected):
+        raise AdmissionDenied("registered executable digest mismatch")
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +135,8 @@ class SandboxedPodToolBroker:
         snapshot = dict(tools)
         canonical = [
             {"name": key, "argv": list(tool.argv), "cwd": tool.cwd,
-             "max_seconds": tool.max_seconds}
+             "max_seconds": tool.max_seconds,
+             "executable_sha256": tool.executable_sha256}
             for key, tool in sorted(snapshot.items())
         ]
         material = json.dumps(
@@ -135,6 +183,8 @@ class SandboxedPodToolBroker:
         if (actual_executable != executable or not actual_executable.is_file()
             or actual_cwd != cwd or not actual_cwd.is_dir()):
             raise AdmissionDenied("registered tool path is missing or linked")
+        if descriptor.executable_sha256 is not None:
+            _verify_pinned_executable(actual_executable, descriptor.executable_sha256)
         return self._executor.execute(
             lease, BrokerCommand(
                 tool=descriptor.name, argv=descriptor.argv,
