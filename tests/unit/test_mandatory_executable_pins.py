@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from locus_runtime.action_receipts import ActionReplayDenied
+from locus_runtime.pod_reservations import AdmissionDenied
 from locus_runtime.pod_tool_broker import BrokerTool, SandboxedPodToolBroker
 from tests.unit.test_pod_tool_broker import setup
 
@@ -84,7 +85,7 @@ def test_strict_mode_denies_substituted_file_without_receipt(tmp_path, monkeypat
         receipts, {"fixed_tool": descriptor}, require_pinned_executables=True,
     )
     binary.write_bytes(b"X" * len(binary.read_bytes()))
-    with pytest.raises(Exception, match="registered executable digest mismatch"):
+    with pytest.raises(AdmissionDenied, match="registered executable digest mismatch"):
         catalog.execute(lease, tool_name="fixed_tool",
                         action_idempotency_key="changed-binary")
     assert not launches
