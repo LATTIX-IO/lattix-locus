@@ -4,7 +4,7 @@
 
 The gateway-mediated Docker broker must verify the *entire* argument vector it is about to invoke, not merely the presence of key isolation flags. A Docker CLI that contains both `--user=1000:1000` and a later `--user=0:0`, or an extra host mount or capability, is not a valid confinement plan even though the earlier controls are still present.
 
-This increment adds a deterministic, independent reconstruction of the approved Docker argument contract, based on the trusted `ExecutionSpec` and `SandboxPolicy`. The broker compares the complete planned argument list to that expected vector **before** Gateway authorization, receipt preparation, subprocess dispatch, or side effects. Any difference denies with a fixed error.
+This increment adds a deterministic, independent reconstruction of the approved Docker argument contract, based on the trusted `ExecutionSpec` and `SandboxPolicy`. The broker takes the immutable expected-argument snapshot **before** invoking `SandboxManager.plan`, because both its inputs expose mutable lists and dictionaries. The planner therefore cannot add a host-write root, change its network policy, or alter command/environment fields to redefine what the broker considers authorized. The broker compares the complete planned argument list to that frozen expected vector **before** Gateway authorization, receipt preparation, subprocess dispatch, or side effects. Any difference denies with a fixed error.
 
 ## Accepted Docker contract
 
