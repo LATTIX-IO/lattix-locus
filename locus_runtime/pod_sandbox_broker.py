@@ -8,6 +8,7 @@ dispatch, kernel fencing and at-most-once broker invocation.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -383,6 +384,22 @@ class PodSandboxBroker:
             authorization_args["sandbox_image_ref_digest"] = hashlib.sha256(
                 b"locus.sandbox-image-ref.v1\x00" + docker_image.encode("utf-8"),
             ).hexdigest()
+            # Bind the *entire* pre-receipt verified Docker launch contract,
+            # excluding only the randomly generated container name. This
+            # captures limits, mounts, seccomp, image, cwd and the admitted
+            # argv. Changing any of these under an old idempotency key must
+            # not be treated as the same durable action.
+            canonical_launch = json.dumps(
+                {"backend": authorized_backend,
+                 "argv": authorized_launch_argv},
+                sort_keys=True, separators=(",", ":"),
+                ensure_ascii=True, allow_nan=False,
+            ).encode("ascii")
+            authorization_args["sandbox_launch_contract_digest"] = (
+                hashlib.sha256(
+                    b"locus.sandbox-launch-contract.v1\x00" + canonical_launch,
+                ).hexdigest()
+            )
         receipt, data = self._receipts.execute_once(
             lease, idempotency_key=command.idempotency_key,
             authorization={
