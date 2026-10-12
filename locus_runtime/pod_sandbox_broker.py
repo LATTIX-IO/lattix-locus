@@ -30,6 +30,7 @@ from locus_runtime.sandbox import (
     SandboxManager,
     SandboxPolicy,
     _validated_seccomp_profile_path,
+    _verify_broker_seccomp_profile,
     _docker_protected_workspace_mounts,
     detect_host_platform,
     minimal_agent_env,
@@ -156,6 +157,11 @@ def _expected_docker_launch_contract(
     """
     if policy.allow_network or spec.env or spec.requested_hosts:
         raise AdmissionDenied("Docker sandbox isolation contract denied")
+    seccomp_path = _validated_seccomp_profile_path()
+    try:
+        _verify_broker_seccomp_profile(seccomp_path)
+    except ValueError:
+        raise AdmissionDenied("Docker seccomp baseline denied") from None
     writable = {
         str(Path(path).expanduser().resolve())
         for path in policy.allowed_write_paths
@@ -179,7 +185,7 @@ def _expected_docker_launch_contract(
         "docker", "run", "--rm",
         "--cap-drop=ALL", "--security-opt=no-new-privileges",
         "--read-only", "--user=1000:1000", "--ipc=private",
-        f"--security-opt=seccomp={_validated_seccomp_profile_path()}",
+        f"--security-opt=seccomp={seccomp_path}",
         "--network=none",
         f"--memory={policy.memory_limit}",
         f"--cpus={policy.cpu_limit}",
