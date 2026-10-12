@@ -54,70 +54,66 @@ DEFAULT_TOOL_TIMEOUT_SECONDS = 60
 SANDBOX_SECURITY_ROOT = Path(__file__).resolve().parent.parent / "docker" / "sandbox"
 DEFAULT_SECCOMP_PROFILE_PATH = SANDBOX_SECURITY_ROOT / "seccomp-strict.json"
 
-def _docker_protected_readonly_mounts(writable_roots: set[str]) -> tuple[str, ...]:
-    """Reprotect existing credential/control directories below writable binds.
+def _docker_protected_workspace_mounts(
+    writable_roots: set[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Existing read-only binds and masks for absent protected directories.
 
-    A sensitive subtree cannot itself be an admitted write root. Symlinked
-    sensitive paths are denied rather than trusting Docker's host bind
-    resolution to protect the intended in-container destination.
+    Validate the original lexical path BEFORE resolving symlink aliases.
+    Any absent protected path is masked by read-only tmpfs at its first absent
+    ancestor so a container cannot create it after admission.
     """
-    protected: set[str] = set()
+    readonly: set[str] = set()
+    masked: set[str] = set()
     for raw_root in writable_roots:
-        root = Path(raw_root).expanduser().resolve()
+        lexical = Path(raw_root).expanduser()
+        root = lexical.resolve()
         for sensitive in ALWAYS_READONLY_SUBPATHS:
             parts = Path(sensitive).parts
-            # Compare with case folding on *every* host. This intentionally
-            # rejects .GIT/.SSH aliases even on a case-sensitive CI machine,
-            # because the same approval may be used on macOS or Windows.
-            root_parts = tuple(component.casefold() for component in root.parts)
-            protected_parts = tuple(component.casefold() for component in parts)
-            if any(
-                root_parts[i:i + len(parts)] == protected_parts
-                for i in range(len(root_parts) - len(parts) + 1)
-            ) or any(
-                root_parts[-prefix:] == protected_parts[:prefix]
-                for prefix in range(1, len(parts))
-            ):
-                # A writable .config root would also make its gcloud
-                # credential child writable, even if that child is created
-                # only after admission. Reject sensitive ancestors as roots.
-                raise ValueError("protected control path may not be writable")
-            # A case-insensitive host may expose an existing .GIT directory
-            # through .git, but a Linux Docker guest sees different paths.
-            # Refuse case aliases rather than creating an ineffective overlay.
+            target_parts = tuple(part.casefold() for part in parts)
+            for name in (lexical, root):
+                name_parts = tuple(part.casefold() for part in name.parts)
+                if any(
+                    name_parts[i:i + len(parts)] == target_parts
+                    for i in range(len(name_parts) - len(parts) + 1)
+                ) or any(
+                    name_parts[-prefix:] == target_parts[:prefix]
+                    for prefix in range(1, len(parts))
+                ):
+                    raise ValueError("protected control path may not be writable")
             cursor = root
             for component in parts:
                 if cursor.is_symlink():
                     raise ValueError("protected control path symlink denied")
-                if not cursor.is_dir():
+                if not cursor.exists():
+                    masked.add(str(cursor))
                     break
+                if not cursor.is_dir():
+                    raise ValueError("protected control path parent is not a directory")
                 try:
                     with os.scandir(cursor) as siblings:
-                        if any(
-                            sibling.name.casefold() == component.casefold()
-                            and sibling.name != component
-                            for sibling in siblings
-                        ):
-                            raise ValueError("protected control path alias denied")
+                        for sibling in siblings:
+                            if sibling.name.casefold() == component.casefold():
+                                if sibling.name != component or sibling.is_symlink():
+                                    raise ValueError("protected control path alias denied")
                 except OSError as exc:
-                    raise ValueError("protected control directory cannot be inspected") from exc
+                    raise ValueError("protected control path cannot be inspected") from exc
                 cursor = cursor / component
-            candidate = root.joinpath(*parts)
-            # Check every sensitive ancestor even when its leaf is absent:
-            # a symlinked .config may later acquire gcloud credentials.
-            if any(
-                root.joinpath(*parts[:length]).is_symlink()
-                for length in range(1, len(parts) + 1)
-            ):
-                raise ValueError("protected control path symlink denied")
-            if not candidate.exists():
-                continue
-            actual = candidate.resolve(strict=True)
-            if root not in actual.parents:
-                raise ValueError("protected control path exceeds write root")
-            protected.add(str(actual))
-    return tuple(sorted(protected))
+            else:
+                if cursor.is_symlink():
+                    raise ValueError("protected control path symlink denied")
+                if cursor.exists():
+                    if root not in cursor.resolve(strict=True).parents:
+                        raise ValueError("protected control path escapes writable root")
+                    readonly.add(str(cursor))
+                else:
+                    masked.add(str(cursor))
+    return tuple(sorted(readonly)), tuple(sorted(masked))
 
+
+def _docker_protected_readonly_mounts(writable_roots: set[str]) -> tuple[str, ...]:
+    """Existing read-only overlays, retained for compatibility."""
+    return _docker_protected_workspace_mounts(writable_roots)[0]
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -546,11 +542,19 @@ class _HardenedDockerStrategy:
         readonly = readable - writable
         for resolved in sorted(readonly):
             args += ["-v", f"{resolved}:{resolved}:ro"]
-        # Overlay sensitive subtrees AFTER writable parents. Explicit read-only
-        # grants may already mount a protected path; Docker rejects duplicates.
-        for protected in _docker_protected_readonly_mounts(writable):
+        # Compute masks from raw lexical paths BEFORE canonicalization.
+        # Existing control paths use a bind; absent paths must not be creatable.
+        overlays, missing = _docker_protected_workspace_mounts(
+            set(policy.allowed_write_paths)
+        )
+        for protected in overlays:
             if protected not in readonly:
                 args += ["-v", f"{protected}:{protected}:ro"]
+        for protected in missing:
+            args += [
+                "--tmpfs",
+                f"{protected}:ro,nosuid,nodev,noexec,size=4k,mode=0555",
+            ]
 
         # Working directory
         if spec.cwd:
