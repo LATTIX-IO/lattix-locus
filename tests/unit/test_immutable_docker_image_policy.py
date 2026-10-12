@@ -45,7 +45,7 @@ def test_strict_registry_denies_mutable_or_malformed_images(
 ):
     docker_calls = docker(monkeypatch)
     monkeypatch.setenv("SANDBOX_RUNNER_IMAGE", image)
-    app, receipts, lease, _, _ = fixture(tmp_path)
+    _, receipts, lease, _ = fixture(tmp_path)
     strict = PodSandboxBroker(receipts, require_immutable_docker_image=True)
     with pytest.raises(AdmissionDenied, match="Docker sandbox image digest pin"):
         strict.execute(lease, cmd(tmp_path))
@@ -57,7 +57,7 @@ def test_strict_registry_executes_one_immutable_image_without_raw_output(
     tmp_path, monkeypatch,
 ):
     monkeypatch.setenv("SANDBOX_RUNNER_IMAGE", _IMAGE)
-    app, receipts, lease, _, mapping, calls = setup(tmp_path, monkeypatch)
+    _, receipts, lease, _, mapping, calls = setup(tmp_path, monkeypatch)
     strict = SandboxedPodToolBroker(
         receipts, mapping, require_immutable_docker_image=True,
     )
