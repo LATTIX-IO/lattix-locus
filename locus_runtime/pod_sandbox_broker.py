@@ -328,17 +328,25 @@ class PodSandboxBroker:
         if (strategy == IsolationStrategy.HARDENED_DOCKER
             and plan.command[:3] != ["docker", "run", "--rm"]):
             raise AdmissionDenied("unrecognized Docker sandbox launcher")
-        launcher_cwd = plan.metadata.get("launcher_cwd")
-        if launcher_cwd is not None and (
-            not isinstance(launcher_cwd, str) or not launcher_cwd
-            or not (Path(launcher_cwd).is_absolute()
-                    or PureWindowsPath(launcher_cwd).is_absolute())
-        ):
-            raise AdmissionDenied("sandbox launcher directory is invalid")
+        # Docker's vetted planner emits NO host-side launcher directory,
+        # metadata, or network route. Never allow a mutable planner to widen
+        # the host working directory or smuggle network parameters that the
+        # verified Docker command itself does not reflect.
         if strategy == IsolationStrategy.HARDENED_DOCKER:
+            if plan.metadata != {} or plan.network_name is not None:
+                raise AdmissionDenied("Docker sandbox planner metadata denied")
+            launcher_cwd = None
             if expected_docker is None:
                 raise AdmissionDenied("Docker sandbox isolation contract denied")
             _validate_docker_launch_contract(plan.command, expected_docker)
+        else:
+            launcher_cwd = plan.metadata.get("launcher_cwd")
+            if launcher_cwd is not None and (
+                not isinstance(launcher_cwd, str) or not launcher_cwd
+                or not (Path(launcher_cwd).is_absolute()
+                        or PureWindowsPath(launcher_cwd).is_absolute())
+            ):
+                raise AdmissionDenied("sandbox launcher directory is invalid")
         # The planner may retain its mutable plan object. The receipt engine
         # performs durable preparation/fencing before invoke(), so never read
         # the planner-owned argv or backend again after this validation point.

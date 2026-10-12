@@ -339,7 +339,7 @@ def test_relative_launcher_working_directory_denied(tmp_path, monkeypatch):
         ),
     )
     app, _, lease, _ = fixture(tmp_path)
-    with pytest.raises(AdmissionDenied, match="launcher directory"):
+    with pytest.raises(AdmissionDenied, match="Docker sandbox planner metadata denied"):
         app.execute(lease, cmd(tmp_path))
     assert not executions
 

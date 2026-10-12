@@ -13,6 +13,7 @@ import pytest
 
 from locus_runtime import pod_sandbox_broker as broker_module
 from locus_runtime.action_receipts import ActionReplayDenied
+from locus_runtime.pod_reservations import AdmissionDenied
 from locus_runtime.pod_sandbox_broker import PodSandboxBroker
 from tests.unit.test_pod_sandbox_broker import cmd, docker, fixture
 
@@ -174,7 +175,9 @@ def test_changed_launcher_directory_cannot_reuse_action_key(
         return plan
 
     monkeypatch.setattr(broker_module.SandboxManager, "plan", redirected_launcher)
-    with pytest.raises(ActionReplayDenied, match="different action"):
+    # Docker's validated contract has no host-side launcher cwd; the
+    # modified planner is rejected *before* Gateway or receipt reuse checks.
+    with pytest.raises(AdmissionDenied, match="Docker sandbox planner metadata denied"):
         broker.execute(lease, cmd(tmp_path, key="launcher-key"))
     assert len(calls) == 1
     assert _receipt_count(receipts) == 1
