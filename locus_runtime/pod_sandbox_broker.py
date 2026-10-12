@@ -309,6 +309,12 @@ class PodSandboxBroker:
             if expected_docker is None:
                 raise AdmissionDenied("Docker sandbox isolation contract denied")
             _validate_docker_launch_contract(plan.command, expected_docker)
+        # The planner may retain its mutable plan object. The receipt engine
+        # performs durable preparation/fencing before invoke(), so never read
+        # the planner-owned argv or backend again after this validation point.
+        # A post-validation mutation must not change the dispatched command.
+        authorized_launch_argv = tuple(plan.command)
+        authorized_backend = strategy.value
         audit_command = shlex.join(command.argv)
         facts = _jail_facts(strategy)
         # Do not let a second runner reclassify the jail based on metadata
@@ -325,7 +331,7 @@ class PodSandboxBroker:
             # Docker's client can time out while the daemon keeps the
             # container running. Use a broker-generated name, never one taken
             # from a model, to attempt bounded cleanup on client timeout.
-            argv = list(plan.command)
+            argv = list(authorized_launch_argv)
             container_name: str | None = None
             if strategy == IsolationStrategy.HARDENED_DOCKER:
                 if argv[:3] != ["docker", "run", "--rm"]:
@@ -358,7 +364,7 @@ class PodSandboxBroker:
                 raise
             return {
                 "exit_code": result.returncode,
-                "backend": plan.backend,
+                "backend": authorized_backend,
                 "elapsed_ms": max(0, int((time.monotonic() - start) * 1000)),
             }
 
