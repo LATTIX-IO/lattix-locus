@@ -187,3 +187,75 @@ def test_explicit_readonly_sensitive_child_does_not_create_duplicate_mount(
     assert argv == expected
     assert mounts.count(readonly) == 1
     assert mounts.index(readonly) > mounts.index(f"{tmp_path}:{tmp_path}:rw")
+
+
+
+@pytest.mark.parametrize("sensitive", [
+    ".git", ".ssh", ".gnupg", ".aws", ".azure", ".kube",
+    ".locus", ".config/gcloud",
+])
+def test_missing_protected_destination_uses_readonly_tmpfs_mask(
+    tmp_path, monkeypatch, sensitive,
+):
+    calls = docker(monkeypatch)
+    if sensitive == ".config/gcloud":
+        (tmp_path / ".config").mkdir()
+    app, receipts, lease, _ = fixture(tmp_path)
+    out = app.execute(lease, cmd(tmp_path, key="missing-control-mask"))
+    assert out.receipt.state == "succeeded"
+    argv = calls[0][0]
+    expected = f"{tmp_path / sensitive}:ro,nosuid,nodev,noexec,size=4k,mode=0555"
+    assert argv[argv.index(expected) - 1] == "--tmpfs"
+    assert "--network=none" in argv
+    assert "--cap-drop=ALL" in argv
+
+
+def test_absent_config_ancestor_masked_without_host_directory_creation(
+    tmp_path, monkeypatch,
+):
+    calls = docker(monkeypatch)
+    app, _, lease, _ = fixture(tmp_path)
+    app.execute(lease, cmd(tmp_path, key="absent-config-parent"))
+    expected = f"{tmp_path / '.config'}:ro,nosuid,nodev,noexec,size=4k,mode=0555"
+    assert expected in calls[0][0]
+    assert not (tmp_path / ".config").exists()
+
+
+@pytest.mark.parametrize("sensitive", [".git", ".GIT", ".config", ".SSH"])
+def test_symlinked_sensitive_writable_root_denied_before_receipts(
+    tmp_path, monkeypatch, sensitive,
+):
+    calls = docker(monkeypatch)
+    dest = tmp_path.parent / ("symlink-control-" + sensitive.replace(".", ""))
+    dest.mkdir(exist_ok=True)
+    alias = tmp_path / sensitive
+    alias.symlink_to(dest, target_is_directory=True)
+    app, receipts, lease, _ = fixture(alias)
+    with pytest.raises(AdmissionDenied, match="Docker protected workspace path denied"):
+        app.execute(lease, cmd(alias, key="protected-symlink-root"))
+    assert calls == []
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+def test_planner_omitting_required_empty_mount_denied_before_receipt_or_launch(
+    tmp_path, monkeypatch,
+):
+    calls = docker(monkeypatch)
+    original = broker_module.SandboxManager.plan
+
+    def missing_mask(self, spec, policy):
+        plan = original(self, spec, policy)
+        target = f"{tmp_path / '.git'}:ro,nosuid,nodev,noexec,size=4k,mode=0555"
+        index = plan.command.index(target)
+        assert plan.command[index - 1] == "--tmpfs"
+        del plan.command[index - 1:index + 1]
+        return plan
+
+    monkeypatch.setattr(broker_module.SandboxManager, "plan", missing_mask)
+    app, receipts, lease, _ = fixture(tmp_path)
+    with pytest.raises(AdmissionDenied, match="Docker sandbox isolation contract denied"):
+        app.execute(lease, cmd(tmp_path, key="forged-missing-mask"))
+    assert calls == []
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
