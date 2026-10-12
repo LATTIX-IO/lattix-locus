@@ -259,3 +259,28 @@ def test_planner_omitting_required_empty_mount_denied_before_receipt_or_launch(
     assert calls == []
     with receipts.reservations._connect() as db:
         assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+
+def test_absent_readonly_bind_source_cannot_be_created_by_docker_v(
+    tmp_path,
+):
+    from locus_runtime.pod_sandbox_broker import _expected_docker_launch_contract
+    from locus_runtime.sandbox import (
+        ExecutionSpec, HostPlatform, SandboxPolicy, _HardenedDockerStrategy,
+        sandbox_runner_image,
+    )
+    missing = tmp_path / "future-secret"
+    policy = SandboxPolicy(
+        platform=HostPlatform.LINUX,
+        allowed_read_paths=[str(tmp_path), str(missing)],
+        allowed_write_paths=[str(tmp_path)],
+    )
+    spec = ExecutionSpec(
+        tool_id="run_command", command=["echo", "safe"], cwd=str(tmp_path),
+    )
+    with pytest.raises(AdmissionDenied, match="Docker read mount source denied"):
+        _expected_docker_launch_contract(spec, policy, image=sandbox_runner_image())
+    with pytest.raises(ValueError, match="Docker read mount source does not exist"):
+        _HardenedDockerStrategy().build_command(spec, policy)
+    assert not missing.exists()
