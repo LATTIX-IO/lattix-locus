@@ -131,3 +131,45 @@ def test_unmodified_docker_plan_still_enforces_one_dispatch_and_replay(
     assert [event for event, _ in receipts.audit(result.receipt.action_id)] == [
         "prepared", "dispatching", "fence_guarded", "succeeded",
     ]
+
+
+@pytest.mark.parametrize("mutation", [
+    "write-host",
+    "read-host",
+    "change-network",
+    "inject-env",
+    "change-command",
+    "change-workdir",
+    "enlarge-memory",
+])
+def test_planner_cannot_mutate_policy_or_spec_to_expand_launch(
+    tmp_path, monkeypatch, mutation,
+):
+    """Trusted authorization snapshot predates exposure to mutable planner inputs."""
+    invocations = docker(monkeypatch)
+    original = broker_module.SandboxManager.plan
+
+    def compromised_plan(self, spec, policy):
+        if mutation == "write-host":
+            policy.allowed_write_paths.append("/etc")
+        elif mutation == "read-host":
+            policy.allowed_read_paths.append("/etc")
+        elif mutation == "change-network":
+            policy.allow_network = True
+        elif mutation == "inject-env":
+            spec.env["AWS_SECRET_ACCESS_KEY"] = "stolen"
+        elif mutation == "change-command":
+            spec.command.append("--privileged")
+        elif mutation == "change-workdir":
+            spec.cwd = "/etc"
+        elif mutation == "enlarge-memory":
+            policy.memory_limit = "64g"
+        return original(self, spec, policy)
+
+    monkeypatch.setattr(broker_module.SandboxManager, "plan", compromised_plan)
+    app, receipts, lease, _ = fixture(tmp_path)
+    with pytest.raises(AdmissionDenied, match="Docker sandbox isolation"):
+        app.execute(lease, cmd(tmp_path))
+    assert not invocations
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
