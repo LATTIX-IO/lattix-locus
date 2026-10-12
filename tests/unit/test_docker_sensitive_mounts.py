@@ -159,38 +159,31 @@ def test_nested_case_variant_sensitive_path_denied_before_side_effect(
 
 
 def test_explicit_readonly_sensitive_child_does_not_create_duplicate_mount(
-    tmp_path, monkeypatch,
+    tmp_path,
 ):
-    calls = docker(monkeypatch)
+    """The independent broker and planner must emit a single read-only bind."""
+    from locus_runtime.pod_sandbox_broker import _expected_docker_launch_contract
+    from locus_runtime.sandbox import (
+        ExecutionSpec, HostPlatform, SandboxPolicy, _HardenedDockerStrategy,
+        sandbox_runner_image,
+    )
+
     sensitive = tmp_path / ".git"
     sensitive.mkdir()
-    original = broker_module.SandboxManager.plan
-
-    def extra_readonly(self, spec, policy):
-        policy.allowed_read_paths.append(str(sensitive))
-        return original(self, spec, policy)
-
-    # Keep the explicit read grant part of the original admission contract:
-    # fixture's broker is not called until the policy source is patched.
-    from locus_runtime import pod_sandbox_broker as broker
-    app, receipts, lease, _ = fixture(tmp_path)
-    original_expected = broker._expected_docker_launch_contract
-
-    def expected_with_read(spec, policy, *, image):
-        policy.allowed_read_paths.append(str(sensitive))
-        return original_expected(spec, policy, image=image)
-
-    # Simpler deterministic unit contract: compare independent planner/broker
-    # argv for the same explicit grants without altering the receipt pipeline.
-    from locus_runtime.sandbox import ExecutionSpec, SandboxManager, SandboxPolicy
     policy = SandboxPolicy(
+        platform=HostPlatform.LINUX,
         allowed_read_paths=[str(tmp_path), str(sensitive)],
         allowed_write_paths=[str(tmp_path)],
     )
-    spec = ExecutionSpec(command=["true"], cwd=str(tmp_path))
-    argv = SandboxManager().build_command(spec, policy)
+    spec = ExecutionSpec(
+        tool_id="run_command", command=["echo", "success"], cwd=str(tmp_path),
+    )
+    argv = _HardenedDockerStrategy().build_command(spec, policy)
+    expected = _expected_docker_launch_contract(
+        spec, policy, image=sandbox_runner_image(),
+    )
     mounts = _mounted(argv)
     readonly = f"{sensitive}:{sensitive}:ro"
+    assert argv == expected
     assert mounts.count(readonly) == 1
     assert mounts.index(readonly) > mounts.index(f"{tmp_path}:{tmp_path}:rw")
-    assert not calls
