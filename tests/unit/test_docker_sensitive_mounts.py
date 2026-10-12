@@ -120,3 +120,77 @@ def test_workspace_without_sensitive_subpaths_remains_compatible(
     assert _mounted(argv) == [f"{tmp_path}:{tmp_path}:rw"]
     assert "--network=none" in argv
     assert len(receipts.audit(result.receipt.action_id)) == 4
+
+
+
+@pytest.mark.parametrize("sensitive", [
+    ".GIT", ".SSH", ".AWS", ".CONFIG", ".config/GCLOUD",
+])
+def test_case_variant_protected_directory_is_never_a_writable_root(
+    tmp_path, monkeypatch, sensitive,
+):
+    """Deny even on Linux CI: such aliases are sensitive on casefolding hosts."""
+    calls = docker(monkeypatch)
+    root = tmp_path / sensitive
+    root.mkdir(parents=True)
+    app, receipts, lease, _ = fixture(root)
+    with pytest.raises(AdmissionDenied, match="Docker protected workspace path denied"):
+        app.execute(lease, cmd(root, key="casefold-sensitive-root"))
+    assert not calls
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("sensitive", [
+    ".GIT", ".SSH", ".CONFIG", ".config/GCLOUD",
+])
+def test_nested_case_variant_sensitive_path_denied_before_side_effect(
+    tmp_path, monkeypatch, sensitive,
+):
+    """Read-only mount at .git would not protect an existing .GIT spelling."""
+    calls = docker(monkeypatch)
+    (tmp_path / sensitive).mkdir(parents=True)
+    app, receipts, lease, _ = fixture(tmp_path)
+    with pytest.raises(AdmissionDenied, match="Docker protected workspace path denied"):
+        app.execute(lease, cmd(tmp_path, key="nested-casefold-sensitive"))
+    assert not calls
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+def test_explicit_readonly_sensitive_child_does_not_create_duplicate_mount(
+    tmp_path, monkeypatch,
+):
+    calls = docker(monkeypatch)
+    sensitive = tmp_path / ".git"
+    sensitive.mkdir()
+    original = broker_module.SandboxManager.plan
+
+    def extra_readonly(self, spec, policy):
+        policy.allowed_read_paths.append(str(sensitive))
+        return original(self, spec, policy)
+
+    # Keep the explicit read grant part of the original admission contract:
+    # fixture's broker is not called until the policy source is patched.
+    from locus_runtime import pod_sandbox_broker as broker
+    app, receipts, lease, _ = fixture(tmp_path)
+    original_expected = broker._expected_docker_launch_contract
+
+    def expected_with_read(spec, policy, *, image):
+        policy.allowed_read_paths.append(str(sensitive))
+        return original_expected(spec, policy, image=image)
+
+    # Simpler deterministic unit contract: compare independent planner/broker
+    # argv for the same explicit grants without altering the receipt pipeline.
+    from locus_runtime.sandbox import ExecutionSpec, SandboxManager, SandboxPolicy
+    policy = SandboxPolicy(
+        allowed_read_paths=[str(tmp_path), str(sensitive)],
+        allowed_write_paths=[str(tmp_path)],
+    )
+    spec = ExecutionSpec(command=["true"], cwd=str(tmp_path))
+    argv = SandboxManager().build_command(spec, policy)
+    mounts = _mounted(argv)
+    readonly = f"{sensitive}:{sensitive}:ro"
+    assert mounts.count(readonly) == 1
+    assert mounts.index(readonly) > mounts.index(f"{tmp_path}:{tmp_path}:rw")
+    assert not calls
