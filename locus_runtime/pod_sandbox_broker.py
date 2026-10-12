@@ -210,8 +210,13 @@ def _bounded_dir(path: str, permitted: Sequence[str]) -> str:
     return str(actual)
 
 
+@dataclass(frozen=True, slots=True, init=False, repr=False)
 class PodSandboxBroker:
-    """Admitted CLI tool, sandboxed off-host effects and durable action receipt."""
+    """Immutable trusted configuration; executes only via fenced receipt sink."""
+
+    _receipts: PodActionReceipts
+    _require_immutable_docker_image: bool
+    _pinned_docker_image: str | None
 
     def __init__(self, receipts: PodActionReceipts, *,
                  require_immutable_docker_image: bool = False,
@@ -225,9 +230,13 @@ class PodSandboxBroker:
                 raise ValueError("strict Docker image policy requires an approved digest") from None
         elif pinned_docker_image is not None:
             raise ValueError("approved Docker image must have strict mode enabled")
-        self._receipts = receipts
-        self._require_immutable_docker_image = require_immutable_docker_image
-        self._pinned_docker_image = pinned_docker_image
+        # Freeze the validated supervisor settings and the single receipt
+        # delegate at construction; application code must create a new broker
+        # for a configuration revision rather than mutate a live one.
+        object.__setattr__(self, "_receipts", receipts)
+        object.__setattr__(self, "_require_immutable_docker_image",
+                           require_immutable_docker_image)
+        object.__setattr__(self, "_pinned_docker_image", pinned_docker_image)
 
     def execute(self, lease: PodLease, command: BrokerCommand) -> BrokerOutcome:
         # Fail before any side effect or action receipt when capabilities are
