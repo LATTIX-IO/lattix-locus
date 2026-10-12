@@ -120,3 +120,32 @@ def test_digest_attestation_does_not_log_binary_bytes(tmp_path, monkeypatch):
             "SELECT fingerprint, outcome_digest FROM pod_action_receipt"
         ).fetchone()
     assert secret_marker not in repr(tuple(row))
+
+
+def test_mutated_measurement_metadata_fails_closed(tmp_path, monkeypatch):
+    app, receipts, lease, invocations, _, _ = _pinned(tmp_path, monkeypatch)
+    original_fstat = catalog_module.os.fstat
+    calls = 0
+
+    def changing_fstat(fd):
+        nonlocal calls
+        stat_result = original_fstat(fd)
+        calls += 1
+        if calls == 2:
+            from types import SimpleNamespace
+            return SimpleNamespace(
+                st_mode=stat_result.st_mode, st_size=stat_result.st_size,
+                st_dev=stat_result.st_dev, st_ino=stat_result.st_ino,
+                st_mtime_ns=stat_result.st_mtime_ns + 1,
+                st_ctime_ns=stat_result.st_ctime_ns,
+            )
+        return stat_result
+
+    monkeypatch.setattr(catalog_module.os, "fstat", changing_fstat)
+    with pytest.raises(AdmissionDenied, match="changed during measurement"):
+        app.execute(
+            lease, tool_name="fixed_tool",
+            action_idempotency_key="modified-during-measurement",
+        )
+    assert not invocations
+    assert _count_receipts(receipts) == 0
