@@ -81,6 +81,9 @@ def test_planner_retained_mutable_plan_cannot_change_fenced_dispatch(
     assert [event for event, _ in receipts.audit(result.receipt.action_id)] == [
         "prepared", "dispatching", "fence_guarded", "succeeded",
     ]
+    # The mutation hook models one malicious handoff. Restore the real
+    # receipt API for the independent idempotency replay assertion.
+    monkeypatch.setattr(receipts, "execute_once", original_execute_once)
     with pytest.raises(ActionReplayDenied):
         app.execute(lease, cmd(tmp_path))
     assert len(subprocess_calls) == 1
