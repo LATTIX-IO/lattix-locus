@@ -46,7 +46,10 @@ def test_strict_registry_denies_mutable_or_malformed_images(
     docker_calls = docker(monkeypatch)
     monkeypatch.setenv("SANDBOX_RUNNER_IMAGE", image)
     _, receipts, lease, _ = fixture(tmp_path)
-    strict = PodSandboxBroker(receipts, require_immutable_docker_image=True)
+    strict = PodSandboxBroker(
+        receipts, require_immutable_docker_image=True,
+        pinned_docker_image=_IMAGE,
+    )
     with pytest.raises(AdmissionDenied, match="Docker sandbox image digest pin"):
         strict.execute(lease, cmd(tmp_path))
     assert docker_calls == []
@@ -60,6 +63,7 @@ def test_strict_registry_executes_one_immutable_image_without_raw_output(
     _, receipts, lease, _, mapping, calls = setup(tmp_path, monkeypatch)
     strict = SandboxedPodToolBroker(
         receipts, mapping, require_immutable_docker_image=True,
+        pinned_docker_image=_IMAGE,
     )
     assert strict.requires_immutable_docker_image is True
     out = strict.execute_status(
@@ -115,6 +119,7 @@ def test_supervisor_image_policy_requires_exact_bool(
     with pytest.raises(ValueError, match="Docker image pin policy must be a boolean"):
         SandboxedPodToolBroker(
             receipts, mapping, require_immutable_docker_image=invalid,
+            pinned_docker_image=_IMAGE,
         )
     assert not calls
     assert _count(receipts) == 0
@@ -125,6 +130,7 @@ def test_image_requirement_frozen_and_changes_catalog_revision(tmp_path, monkeyp
     optional = SandboxedPodToolBroker(receipts, mapping)
     strict = SandboxedPodToolBroker(
         receipts, mapping, require_immutable_docker_image=True,
+        pinned_docker_image=_IMAGE,
     )
     assert optional.requires_immutable_docker_image is False
     assert strict.requires_immutable_docker_image is True
@@ -145,3 +151,60 @@ def test_legacy_tagged_image_remains_usable_only_without_strict_mode(
     assert out.receipt.state == "succeeded"
     assert len(calls) == 1
     assert "python:3.12.10-slim-bookworm" in calls[0][0]
+
+
+def test_strict_mode_requires_supervisor_approved_exact_digest(tmp_path, monkeypatch):
+    _, receipts, _, _, mapping, invocations = setup(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="approved digest"):
+        PodSandboxBroker(receipts, require_immutable_docker_image=True)
+    with pytest.raises(ValueError, match="approved digest"):
+        SandboxedPodToolBroker(
+            receipts, mapping, require_immutable_docker_image=True,
+        )
+    with pytest.raises(ValueError, match="approved digest"):
+        PodSandboxBroker(
+            receipts, require_immutable_docker_image=True,
+            pinned_docker_image="python:latest",
+        )
+    with pytest.raises(ValueError, match="strict mode enabled"):
+        PodSandboxBroker(receipts, pinned_docker_image=_IMAGE)
+    assert not invocations
+    assert _count(receipts) == 0
+
+
+def test_valid_runtime_digest_other_than_supervisor_pin_denied(
+    tmp_path, monkeypatch,
+):
+    calls = docker(monkeypatch)
+    monkeypatch.setenv(
+        "SANDBOX_RUNNER_IMAGE",
+        "registry.example:5000/locus/sandbox@sha256:" + _OTHER_PIN,
+    )
+    _, receipts, lease, _ = fixture(tmp_path)
+    strict = PodSandboxBroker(
+        receipts, require_immutable_docker_image=True,
+        pinned_docker_image=_IMAGE,
+    )
+    with pytest.raises(AdmissionDenied, match="does not match approved digest"):
+        strict.execute(lease, cmd(tmp_path))
+    assert not calls
+    assert _count(receipts) == 0
+
+
+def test_distinct_admin_image_pins_have_distinct_catalog_identity(
+    tmp_path, monkeypatch,
+):
+    _, receipts, _, _, mapping, invocations = setup(tmp_path, monkeypatch)
+    first = SandboxedPodToolBroker(
+        receipts, mapping, require_immutable_docker_image=True,
+        pinned_docker_image=_IMAGE,
+    )
+    second = SandboxedPodToolBroker(
+        receipts, mapping, require_immutable_docker_image=True,
+        pinned_docker_image="registry.example:5000/locus/sandbox@sha256:" + _OTHER_PIN,
+    )
+    assert first.catalog_digest != second.catalog_digest
+    with pytest.raises(FrozenInstanceError):
+        first._pinned_docker_image = None
+    assert not invocations
+    assert _count(receipts) == 0
