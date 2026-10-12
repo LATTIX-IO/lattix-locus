@@ -7,6 +7,7 @@ which owns admission, native Gateway policy, fenced receipts and cleanup.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -64,8 +65,13 @@ class TypedToolStatus:
     status: StatusResult
 
 
+@dataclass(frozen=True, slots=True, init=False, repr=False)
 class SandboxedPodToolBroker:
-    """Fixed tool registry; exactly one security/dispatch sink."""
+    """Frozen administrator catalog with a canonical, content-bound identity."""
+
+    _tools: Mapping[str, BrokerTool]
+    _executor: PodSandboxBroker
+    _catalog_digest: str
 
     def __init__(self, receipts: PodActionReceipts,
                  tools: Mapping[str, BrokerTool]) -> None:
@@ -76,10 +82,30 @@ class SandboxedPodToolBroker:
         if any(not isinstance(v, BrokerTool) or key != v.name
                for key, v in tools.items()):
             raise ValueError("registry keys must match trusted descriptors")
-        # Copy to cut off subsequent mutation by the caller; frozen values and
-        # read-only mapping prevent registration from being rewritten in place.
-        self._tools: Mapping[str, BrokerTool] = MappingProxyType(dict(tools))
-        self._executor = PodSandboxBroker(receipts)
+        # Snapshot first to prevent the administrator's mutable source map
+        # from changing under the broker. Both the slots and frozen dataclass
+        # block accidental rebinding of the admitted catalog/dispatch sink.
+        snapshot = dict(tools)
+        canonical = [
+            {"name": key, "argv": list(tool.argv), "cwd": tool.cwd,
+             "max_seconds": tool.max_seconds}
+            for key, tool in sorted(snapshot.items())
+        ]
+        material = json.dumps(
+            canonical, sort_keys=True, ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+        digest = hashlib.sha256(
+            b"locus.admin-tool-catalog.v1\x00" + material
+        ).hexdigest()
+        object.__setattr__(self, "_tools", MappingProxyType(snapshot))
+        object.__setattr__(self, "_executor", PodSandboxBroker(receipts))
+        object.__setattr__(self, "_catalog_digest", digest)
+
+    @property
+    def catalog_digest(self) -> str:
+        """Nonsecret snapshot correlation only; not an attested signature."""
+        return self._catalog_digest
 
     def execute(self, lease: PodLease, *, tool_name: str,
                 action_idempotency_key: str) -> BrokerOutcome:

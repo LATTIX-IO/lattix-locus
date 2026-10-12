@@ -153,11 +153,11 @@ def test_unapproved_child_capability_blocks_dispatch(tmp_path, monkeypatch):
     app, receipts, lease, _, _, invokes = setup(tmp_path, monkeypatch)
     other = tmp_path / "other_tool"
     other.write_text("other\n", encoding="utf-8")
-    app._tools = {"fixed_tool": BrokerTool(
+    unapproved = SandboxedPodToolBroker(receipts, {"fixed_tool": BrokerTool(
         "fixed_tool", (str(other), "--fixed"), str(tmp_path), 10,
-    )}
+    )})
     with pytest.raises(AdmissionDenied, match="executable outside"):
-        app.execute(lease, tool_name="fixed_tool", action_idempotency_key="unapproved")
+        unapproved.execute(lease, tool_name="fixed_tool", action_idempotency_key="unapproved")
     assert not invokes
     with receipts.reservations._connect() as db:
         assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
@@ -237,3 +237,54 @@ def test_revoked_parent_cannot_dispatch_registered_tool(tmp_path, monkeypatch):
     with pytest.raises(AdmissionDenied):
         app.execute(lease, tool_name="fixed_tool", action_idempotency_key="revoked")
     assert not invokes
+
+
+def test_catalog_and_dispatch_sink_are_immutable(tmp_path, monkeypatch):
+    app, receipts, lease, _, mapping, launches = setup(tmp_path, monkeypatch)
+    original = app.catalog_digest
+    other = BrokerTool("fixed_tool", (str(tmp_path / "other"),), str(tmp_path))
+    mapping["fixed_tool"] = other
+    assert app.catalog_digest == original
+    assert app._tools["fixed_tool"] != other
+    with pytest.raises(FrozenInstanceError):
+        app._tools = mapping
+    with pytest.raises(FrozenInstanceError):
+        app._executor = None
+    with pytest.raises(FrozenInstanceError):
+        app._catalog_digest = "0" * 64
+    with pytest.raises((AttributeError, TypeError)):
+        app.rogue_state = "not allowed"
+    app.execute(lease, tool_name="fixed_tool", action_idempotency_key="frozen-identity")
+    assert len(launches) == 1
+    assert app.catalog_digest == original
+
+
+def test_catalog_digest_is_stable_but_changes_for_descriptor_revision(tmp_path, monkeypatch):
+    app, receipts, _, _, mapping, _ = setup(tmp_path, monkeypatch)
+    first = app.catalog_digest
+    assert len(first) == 64
+    assert all(character in "0123456789abcdef" for character in first)
+    same = SandboxedPodToolBroker(receipts, dict(reversed(list(mapping.items()))))
+    assert same.catalog_digest == first
+    descriptor = mapping["fixed_tool"]
+    changed = SandboxedPodToolBroker(receipts, {
+        "fixed_tool": BrokerTool(
+            "fixed_tool", descriptor.argv + ("--different",),
+            descriptor.cwd, descriptor.max_seconds,
+        ),
+    })
+    assert changed.catalog_digest != first
+    changed_timeout = SandboxedPodToolBroker(receipts, {
+        "fixed_tool": BrokerTool(
+            "fixed_tool", descriptor.argv,
+            descriptor.cwd, descriptor.max_seconds + 1,
+        ),
+    })
+    assert changed_timeout.catalog_digest not in {first, changed.catalog_digest}
+
+
+def test_catalog_repr_never_exposes_registered_argv(tmp_path, monkeypatch):
+    app, _, _, _, mapping, _ = setup(tmp_path, monkeypatch)
+    descriptor = mapping["fixed_tool"]
+    assert descriptor.argv[0] not in repr(app)
+    assert descriptor.cwd not in repr(app)
