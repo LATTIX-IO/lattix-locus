@@ -25,6 +25,7 @@ Existing native Gateway authorization and `PodActionReceipts.execute_once` bind 
 - Assert no raw argv, registry image URI, host paths, random container name or subprocess output enters the newly added authorization args.
 - An otherwise identical action with a different timeout and the same idempotency key is rejected, with one original subprocess and one receipt.
 - An otherwise identical action with different authorized memory limits and the same idempotency key is rejected, with no second subprocess.
+- A changed host-side launcher working directory or additional read mount under a reused idempotency key is rejected before another process or receipt.
 - The unchanged same-action replay barrier, HMAC receipt fingerprint, and legacy non-strict authorization shape remain valid.
 - Update the earlier strict-image action-identity regression to account for the additional digest without weakening its image and catalog assertions.
 - Preserve exact pre-planner policy checks, frozen argv, native Zero Trust Gateway, receipt write-ahead/fencing, Docker containment, timeout cleanup, and no-output transport.
