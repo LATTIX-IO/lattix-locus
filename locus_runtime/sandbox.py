@@ -543,7 +543,7 @@ class _HardenedDockerStrategy:
         # Docker --mount uses comma-separated options; never allow a pathname
         # to inject flags such as "readonly" or "bind-recursive=disabled".
         for path in writable | readable:
-            if any(char in path for char in (",", "\\n", "\\r", "\\x00")):
+            if any(ord(char) in (0, 10, 13, 44) for char in path):
                 raise ValueError("Docker mount source path denied")
         for resolved in sorted(writable):
             args += [
