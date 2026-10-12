@@ -26,8 +26,10 @@ from locus_runtime.sandbox import (
     IsolationStrategy,
     SandboxManager,
     SandboxPolicy,
+    _validated_seccomp_profile_path,
     detect_host_platform,
     minimal_agent_env,
+    sandbox_runner_image,
     select_confining_strategy,
 )
 
@@ -101,6 +103,49 @@ def _jail_facts(strategy: IsolationStrategy) -> JailFacts:
         return JailFacts(strategy=strategy.value, allow_network=False,
                          appcontainer=True, job_object=True, require_appcontainer=True)
     raise AdmissionDenied("no approved confined process execution strategy")
+
+
+def _validate_docker_launch_contract(
+    argv: list[str], spec: ExecutionSpec, policy: SandboxPolicy,
+) -> None:
+    """Independently reconstruct the one allowed Docker CLI contract.
+
+    The old presence-only checks could be defeated by duplicate/contradictory
+    flags (e.g. --user=0:0 after --user=1000:1000), added host mounts,
+    extra capabilities or alternate entrypoints. Compare the entire argument
+    vector against the trusted policy; never parse an attacker-modified plan
+    into a more privileged equivalent.
+    """
+    if policy.allow_network or spec.env or spec.requested_hosts:
+        raise AdmissionDenied("Docker sandbox isolation contract denied")
+    writable = {
+        str(Path(path).expanduser().resolve())
+        for path in policy.allowed_write_paths
+    }
+    readable = {
+        str(Path(path).expanduser().resolve())
+        for path in policy.allowed_read_paths
+    }
+    expected = [
+        "docker", "run", "--rm",
+        "--cap-drop=ALL", "--security-opt=no-new-privileges",
+        "--read-only", "--user=1000:1000", "--ipc=private",
+        f"--security-opt=seccomp={_validated_seccomp_profile_path()}",
+        "--network=none",
+        f"--memory={policy.memory_limit}",
+        f"--cpus={policy.cpu_limit}",
+        f"--pids-limit={policy.pid_limit}",
+        "--tmpfs", "/tmp:rw,noexec,nosuid,size=100m",
+    ]
+    for path in sorted(writable):
+        expected.extend(("-v", f"{path}:{path}:rw"))
+    for path in sorted(readable - writable):
+        expected.extend(("-v", f"{path}:{path}:ro"))
+    if spec.cwd:
+        expected.extend(("-w", spec.cwd))
+    expected.extend((sandbox_runner_image(), *spec.command))
+    if argv != expected:
+        raise AdmissionDenied("Docker sandbox isolation contract denied")
 
 
 def _choose_strategy() -> IsolationStrategy:
@@ -189,20 +234,7 @@ class PodSandboxBroker:
         ):
             raise AdmissionDenied("sandbox launcher directory is invalid")
         if strategy == IsolationStrategy.HARDENED_DOCKER:
-            # Verify the launch plan still has its mandatory isolation facts.
-            # Never claim no-network/read-only confinement if the actual
-            # Docker argv does not impose those restrictions.
-            required = {
-                "--network=none", "--read-only", "--cap-drop=ALL",
-                "--security-opt=no-new-privileges", "--user=1000:1000",
-            }
-            if (not required.issubset(set(plan.command))
-                or not any(arg.startswith("--security-opt=seccomp=")
-                           for arg in plan.command)
-                or any(arg.startswith("--network=") and arg != "--network=none"
-                       for arg in plan.command)
-                or "--privileged" in plan.command):
-                raise AdmissionDenied("Docker sandbox isolation controls are missing")
+            _validate_docker_launch_contract(plan.command, spec, policy)
         audit_command = shlex.join(command.argv)
         facts = _jail_facts(strategy)
         # Do not let a second runner reclassify the jail based on metadata
