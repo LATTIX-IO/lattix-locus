@@ -14,7 +14,7 @@ This intentionally restricts portability when a supervisor mandates the image pi
 
 ## Tests / definition of done
 
-- Simulated macOS Seatbelt and Windows AppContainer selections must deny strict Docker mode **without calling the planner**, writing an action receipt, or executing a subprocess.
+- Simulated macOS Seatbelt and Windows AppContainer selections must deny strict Docker mode **without calling the planner**, writing an action receipt, or executing a subprocess. Cover both direct trusted broker calls and the immutable administrator tool-catalog wrapper.
 - Bwrap selection promoted to actual Docker must use the pinned image, no network, frozen argv, suppressed stdout/stderr, and one durable action receipt; replay is denied.
 - Bwrap selection without Docker must remain denied without side effects.
 - Legacy non-strict native selection must retain the existing planner dispatch pathway; the new guard may not silently disable unrelated native operation.
