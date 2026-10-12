@@ -153,3 +153,51 @@ def test_legacy_non_strict_receipt_does_not_add_launch_identity(
     assert out.receipt.state == "succeeded"
     assert len(calls) == 1
     assert "args" not in seen[0]
+
+
+def test_changed_launcher_directory_cannot_reuse_action_key(
+    tmp_path, monkeypatch,
+):
+    calls = docker(monkeypatch)
+    monkeypatch.setenv("SANDBOX_RUNNER_IMAGE", _IMAGE)
+    _, receipts, lease, _ = fixture(tmp_path)
+    broker = _strict(receipts)
+    broker.execute(lease, cmd(tmp_path, key="launcher-key"))
+
+    alternate = tmp_path / "other-launcher-dir"
+    alternate.mkdir()
+    original_plan = broker_module.SandboxManager.plan
+
+    def redirected_launcher(self, spec, policy):
+        plan = original_plan(self, spec, policy)
+        plan.metadata["launcher_cwd"] = str(alternate)
+        return plan
+
+    monkeypatch.setattr(broker_module.SandboxManager, "plan", redirected_launcher)
+    with pytest.raises(ActionReplayDenied, match="different action"):
+        broker.execute(lease, cmd(tmp_path, key="launcher-key"))
+    assert len(calls) == 1
+    assert _receipt_count(receipts) == 1
+
+
+def test_changed_read_mount_cannot_reuse_action_key(tmp_path, monkeypatch):
+    calls = docker(monkeypatch)
+    monkeypatch.setenv("SANDBOX_RUNNER_IMAGE", _IMAGE)
+    _, receipts, lease, _ = fixture(tmp_path)
+    broker = _strict(receipts)
+    broker.execute(lease, cmd(tmp_path, key="mount-key"))
+
+    extra = tmp_path / "extra-read"
+    extra.mkdir()
+    original_policy = broker_module.SandboxPolicy
+
+    def added_mount(*args, **kwargs):
+        policy = original_policy(*args, **kwargs)
+        policy.allowed_read_paths.append(str(extra))
+        return policy
+
+    monkeypatch.setattr(broker_module, "SandboxPolicy", added_mount)
+    with pytest.raises(ActionReplayDenied, match="different action"):
+        broker.execute(lease, cmd(tmp_path, key="mount-key"))
+    assert len(calls) == 1
+    assert _receipt_count(receipts) == 1
