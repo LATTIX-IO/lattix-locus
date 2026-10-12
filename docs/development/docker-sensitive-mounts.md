@@ -63,3 +63,9 @@ against the supported Docker engine versions must verify write refusal to
 both existing read-only bind and missing tmpfs masked destinations before
 claiming this control fully runtime-attested. Host-side pathname TOCTOU
 under privileged writers remains a separate deployment threat.
+
+5. **Missing read-only host bind sources:** Docker `-v` creates absent host
+   paths automatically. Both the broker and planner now deny any explicitly
+   readable-but-missing source rather than allowing Docker to manufacture
+   credential/control directories. This is independently tested alongside
+   existing legitimate read/write mount compatibility.
