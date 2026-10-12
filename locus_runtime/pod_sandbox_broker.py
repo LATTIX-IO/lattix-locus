@@ -7,6 +7,7 @@ dispatch, kernel fencing and at-most-once broker invocation.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import secrets
@@ -368,17 +369,31 @@ class PodSandboxBroker:
                 "elapsed_ms": max(0, int((time.monotonic() - start) * 1000)),
             }
 
+        # Bind the supervisor-approved Docker image *reference* to both the
+        # native gateway action fingerprint and receipt's canonical HMAC.
+        # A hash of the full ref commits to its registry/repository as well
+        # as its digest; never emit a raw registry URL into the audit args.
+        authorization_args: dict[str, str] = {}
+        if command.catalog_digest is not None:
+            authorization_args["catalog_digest"] = command.catalog_digest
+        if (self._require_immutable_docker_image
+            and strategy == IsolationStrategy.HARDENED_DOCKER):
+            if docker_image is None:
+                raise AdmissionDenied("Docker sandbox image digest pin required")
+            authorization_args["sandbox_image_ref_digest"] = hashlib.sha256(
+                b"locus.sandbox-image-ref.v1\x00" + docker_image.encode("utf-8"),
+            ).hexdigest()
         receipt, data = self._receipts.execute_once(
             lease, idempotency_key=command.idempotency_key,
             authorization={
                 "kind": "process_exec", "tool": command.tool, "target": cwd,
                 "command": audit_command, "executable": command.argv[0],
                 "jail": facts,
-                # Validated administrator catalog identity joins the Gateway
-                # action fingerprint and durable receipt authorization HMAC.
-                # Direct legacy broker callers omit it for compatibility.
-                **({"args": {"catalog_digest": command.catalog_digest}}
-                   if command.catalog_digest is not None else {}),
+                # Structured, nonsecret identity material is canonically
+                # included in the Gateway fingerprint and durable receipt.
+                # Legacy direct callers without strict image policy or
+                # catalog identity retain the original authorization shape.
+                **({"args": authorization_args} if authorization_args else {}),
             },
             invoke=invoke,
         )
