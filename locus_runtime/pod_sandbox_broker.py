@@ -244,6 +244,13 @@ class PodSandboxBroker:
         strategy = _choose_strategy()
         if strategy not in CONFINING_STRATEGIES:
             raise AdmissionDenied("unsupported unconfined strategy")
+        # Strict image admission is meaningful only if Docker actually runs
+        # the selected digest. Never silently substitute Seatbelt,
+        # AppContainer, or another confinement backend when the supervisor
+        # explicitly requires the approved Docker image.
+        if (self._require_immutable_docker_image
+            and strategy != IsolationStrategy.HARDENED_DOCKER):
+            raise AdmissionDenied("strict Docker image policy requires hardened Docker")
         policy = SandboxPolicy(
             platform=detect_host_platform(),
             allow_network=False,
