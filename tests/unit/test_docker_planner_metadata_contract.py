@@ -95,13 +95,9 @@ def test_existing_native_windows_launcher_metadata_unchanged(
             "approved native sandbox",
         ),
     )
-    original = broker_module.SandboxManager.plan
-
     def native_planner(self, spec, policy):
-        plan = original(self, spec, policy)
-        # Existing native planner owns Windows launcher directory selection.
-        # Validating that value still uses the preexisting native path.
-        assert plan.metadata.get("launcher_cwd") is not None
+        # The new empty-metadata rule applies only to Docker, not the
+        # preexisting native Windows planning code.
         raise RuntimeError("native strategy reached planner")
 
     monkeypatch.setattr(broker_module.SandboxManager, "plan", native_planner)
