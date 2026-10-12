@@ -7,15 +7,19 @@ which owns admission, native Gateway policy, fenced receipts and cleanup.
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
 
-from locus_runtime.action_receipts import PodActionReceipts
+from locus_runtime.action_receipts import ActionRecord, PodActionReceipts
 from locus_runtime.pod_reservations import AdmissionDenied, PodLease
 from locus_runtime.pod_sandbox_broker import BrokerCommand, BrokerOutcome, PodSandboxBroker
+from locus_runtime.tool_result_contract import (
+    StatusResult, ToolResultPolicy, ToolResultRejected, decode_tool_result,
+)
 
 _TOOL_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}\Z")
 
@@ -50,6 +54,14 @@ class BrokerTool:
             )
         except (AdmissionDenied, ValueError) as exc:
             raise ValueError("registered tool violates broker command policy") from exc
+
+
+@dataclass(frozen=True, slots=True)
+class TypedToolStatus:
+    """Status-only result bound to the real broker's completed receipt."""
+
+    receipt: ActionRecord
+    status: StatusResult
 
 
 class SandboxedPodToolBroker:
@@ -99,3 +111,27 @@ class SandboxedPodToolBroker:
                 timeout_seconds=descriptor.max_seconds,
             ),
         )
+
+    def execute_status(self, lease: PodLease, *, tool_name: str,
+                       action_idempotency_key: str) -> TypedToolStatus:
+        """Project an already-fenced invocation into the strict status schema.
+
+        No alternative invocation or output stream exists here. A launched
+        action with a non-representable exit code has already consumed its
+        idempotency key; validation failure never permits a second launch.
+        """
+        outcome = self.execute(
+            lease, tool_name=tool_name,
+            action_idempotency_key=action_idempotency_key,
+        )
+        if outcome.receipt.state != "succeeded":
+            raise ToolResultRejected("tool status requires terminal execution receipt")
+        raw = json.dumps({
+            "schema": "status/v1",
+            "ok": outcome.exit_code == 0,
+            "code": outcome.exit_code,
+        }, separators=(",", ":")).encode("ascii")
+        result = decode_tool_result(raw, ToolResultPolicy("status/v1"))
+        if not isinstance(result, StatusResult):
+            raise ToolResultRejected("status policy yielded unexpected schema")
+        return TypedToolStatus(receipt=outcome.receipt, status=result)
