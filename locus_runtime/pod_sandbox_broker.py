@@ -49,6 +49,7 @@ class BrokerCommand:
     working_dir: str
     idempotency_key: str
     timeout_seconds: int = 30
+    catalog_digest: str | None = None
 
     def __post_init__(self) -> None:
         if (not isinstance(self.tool, str) or not self.tool.strip()
@@ -74,6 +75,11 @@ class BrokerCommand:
             raise ValueError("action idempotency key required")
         if type(self.timeout_seconds) is not int or not 1 <= self.timeout_seconds <= _MAX_TIMEOUT:
             raise ValueError("execution timeout must be in 1..60 seconds")
+        if (self.catalog_digest is not None
+            and (type(self.catalog_digest) is not str
+                 or len(self.catalog_digest) != 64
+                 or any(char not in "0123456789abcdef" for char in self.catalog_digest))):
+            raise ValueError("catalog digest must be 64 canonical SHA-256 hex characters")
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +262,11 @@ class PodSandboxBroker:
                 "kind": "process_exec", "tool": command.tool, "target": cwd,
                 "command": audit_command, "executable": command.argv[0],
                 "jail": facts,
+                # Validated administrator catalog identity joins the Gateway
+                # action fingerprint and durable receipt authorization HMAC.
+                # Direct legacy broker callers omit it for compatibility.
+                **({"args": {"catalog_digest": command.catalog_digest}}
+                   if command.catalog_digest is not None else {}),
             },
             invoke=invoke,
         )
