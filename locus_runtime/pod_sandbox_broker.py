@@ -30,6 +30,7 @@ from locus_runtime.sandbox import (
     SandboxManager,
     SandboxPolicy,
     _validated_seccomp_profile_path,
+    _docker_protected_readonly_mounts,
     detect_host_platform,
     minimal_agent_env,
     sandbox_runner_image,
@@ -163,6 +164,10 @@ def _expected_docker_launch_contract(
         str(Path(path).expanduser().resolve())
         for path in policy.allowed_read_paths
     }
+    try:
+        sensitive_readonly = _docker_protected_readonly_mounts(writable)
+    except (OSError, RuntimeError, ValueError):
+        raise AdmissionDenied("Docker protected workspace path denied") from None
     expected = [
         "docker", "run", "--rm",
         "--cap-drop=ALL", "--security-opt=no-new-privileges",
@@ -178,6 +183,8 @@ def _expected_docker_launch_contract(
         expected.extend(("-v", f"{path}:{path}:rw"))
     for path in sorted(readable - writable):
         expected.extend(("-v", f"{path}:{path}:ro"))
+    for protected in sensitive_readonly:
+        expected.extend(("-v", f"{protected}:{protected}:ro"))
     if spec.cwd:
         expected.extend(("-w", spec.cwd))
     expected.extend((image, *spec.command))

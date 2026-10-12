@@ -54,6 +54,41 @@ DEFAULT_TOOL_TIMEOUT_SECONDS = 60
 SANDBOX_SECURITY_ROOT = Path(__file__).resolve().parent.parent / "docker" / "sandbox"
 DEFAULT_SECCOMP_PROFILE_PATH = SANDBOX_SECURITY_ROOT / "seccomp-strict.json"
 
+def _docker_protected_readonly_mounts(writable_roots: set[str]) -> tuple[str, ...]:
+    """Reprotect existing credential/control directories below writable binds.
+
+    A sensitive subtree cannot itself be an admitted write root. Symlinked
+    sensitive paths are denied rather than trusting Docker's host bind
+    resolution to protect the intended in-container destination.
+    """
+    protected: set[str] = set()
+    for raw_root in writable_roots:
+        root = Path(raw_root).expanduser().resolve()
+        for sensitive in ALWAYS_READONLY_SUBPATHS:
+            parts = Path(sensitive).parts
+            root_parts = root.parts
+            if any(
+                root_parts[i:i + len(parts)] == parts
+                for i in range(len(root_parts) - len(parts) + 1)
+            ):
+                raise ValueError("protected control path may not be writable")
+            candidate = root.joinpath(*parts)
+            # Check every sensitive ancestor even when its leaf is absent:
+            # a symlinked .config may later acquire gcloud credentials.
+            if any(
+                root.joinpath(*parts[:length]).is_symlink()
+                for length in range(1, len(parts) + 1)
+            ):
+                raise ValueError("protected control path symlink denied")
+            if not candidate.exists():
+                continue
+            actual = candidate.resolve(strict=True)
+            if root not in actual.parents:
+                raise ValueError("protected control path exceeds write root")
+            protected.add(str(actual))
+    return tuple(sorted(protected))
+
+
 
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
@@ -480,6 +515,10 @@ class _HardenedDockerStrategy:
             args += ["-v", f"{resolved}:{resolved}:rw"]
         for resolved in sorted(readable - writable):
             args += ["-v", f"{resolved}:{resolved}:ro"]
+        # Docker bind mounts must explicitly overlay sensitive subtrees with
+        # read-only mounts AFTER any admitted writable parent bind.
+        for protected in _docker_protected_readonly_mounts(writable):
+            args += ["-v", f"{protected}:{protected}:ro"]
 
         # Working directory
         if spec.cwd:
