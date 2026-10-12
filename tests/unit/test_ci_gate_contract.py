@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from locus_tooling.ci_gate_contract import GateContractError, validate_ci_gates
+from locus_tooling.ci_gate_contract import GateContractError, main, validate_ci_gates
 
 NAMES = (
     "release-version", "frontend-unit", "backend-unit", "integration",
@@ -110,3 +110,41 @@ def test_gate_workflow_prevents_duplicate_feature_branch_push_and_pr_runs():
 def test_realistic_serialization_has_same_result():
     sample = json.loads(json.dumps(jobs()))
     assert validate_ci_gates(sample, env=switches()).not_executed == ()
+
+
+
+def test_entrypoint_marks_optional_disabled_scans_unexecuted(
+    monkeypatch, capsys,
+):
+    values = jobs()
+    for name in SECURITY:
+        values[name]["result"] = "skipped"
+    monkeypatch.setenv("RESULTS", json.dumps(values))
+    monkeypatch.setenv("CODEQL_ENABLED", "false")
+    monkeypatch.setenv("LATTIX_PENTEST_ENABLED", "false")
+    monkeypatch.setenv("LATTIX_SECURITY_RELEASE_REQUIRED", "false")
+    assert main() == 0
+    output = capsys.readouterr().out
+    assert "NOT EXECUTED" in output
+    assert "NOT ATTESTED" in output
+
+
+def test_entrypoint_fails_strict_release_when_scanners_skipped(
+    monkeypatch, capsys,
+):
+    values = jobs()
+    values["sast-codeql"]["result"] = "skipped"
+    monkeypatch.setenv("RESULTS", json.dumps(values))
+    monkeypatch.setenv("CODEQL_ENABLED", "false")
+    monkeypatch.setenv("LATTIX_PENTEST_ENABLED", "true")
+    monkeypatch.setenv("LATTIX_SECURITY_RELEASE_REQUIRED", "true")
+    assert main() == 1
+    assert "DENIED" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("payload", ["not json", "[]", "null"])
+def test_entrypoint_fails_closed_on_invalid_ci_payload(
+    monkeypatch, payload,
+):
+    monkeypatch.setenv("RESULTS", payload)
+    assert main() == 1
