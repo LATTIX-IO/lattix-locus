@@ -212,11 +212,20 @@ class PodSandboxBroker:
     """Admitted CLI tool, sandboxed off-host effects and durable action receipt."""
 
     def __init__(self, receipts: PodActionReceipts, *,
-                 require_immutable_docker_image: bool = False) -> None:
+                 require_immutable_docker_image: bool = False,
+                 pinned_docker_image: str | None = None) -> None:
         if type(require_immutable_docker_image) is not bool:
             raise ValueError("Docker image pin policy must be a boolean")
+        if require_immutable_docker_image:
+            try:
+                _require_content_addressed_image(pinned_docker_image)
+            except AdmissionDenied:
+                raise ValueError("strict Docker image policy requires an approved digest") from None
+        elif pinned_docker_image is not None:
+            raise ValueError("approved Docker image must have strict mode enabled")
         self._receipts = receipts
         self._require_immutable_docker_image = require_immutable_docker_image
+        self._pinned_docker_image = pinned_docker_image
 
     def execute(self, lease: PodLease, command: BrokerCommand) -> BrokerOutcome:
         # Fail before any side effect or action receipt when capabilities are
@@ -256,6 +265,8 @@ class PodSandboxBroker:
         )
         if (self._require_immutable_docker_image
             and strategy == IsolationStrategy.HARDENED_DOCKER):
+            if docker_image != self._pinned_docker_image:
+                raise AdmissionDenied("Docker sandbox image does not match approved digest")
             if docker_image is None:
                 raise AdmissionDenied("Docker sandbox image digest pin required")
             _require_content_addressed_image(docker_image)
