@@ -351,3 +351,19 @@ def test_docker_planner_cannot_remove_recursive_readonly_from_overlays(tmp_path,
     assert calls == []
     with receipts.reservations._connect() as db:
         assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+
+@pytest.mark.parametrize("name", ["comma,readonly", "comma,bind-recursive=disabled"])
+def test_mount_option_injection_in_workspace_path_denied_before_any_side_effect(
+    tmp_path, monkeypatch, name,
+):
+    calls = docker(monkeypatch)
+    root = tmp_path / name
+    root.mkdir()
+    app, receipts, lease, _ = fixture(root)
+    with pytest.raises(AdmissionDenied, match="Docker mount source path denied"):
+        app.execute(lease, cmd(root, key="mount-injection"))
+    assert calls == []
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0

@@ -164,6 +164,11 @@ def _expected_docker_launch_contract(
         str(Path(path).expanduser().resolve())
         for path in policy.allowed_read_paths
     }
+    # Source path strings become comma-delimited Docker --mount options.
+    # Reject ambiguity before any policy decision, receipt or process launch.
+    for path in writable | readable:
+        if any(char in path for char in (",", "\\n", "\\r", "\\x00")):
+            raise AdmissionDenied("Docker mount source path denied")
     try:
         sensitive_readonly, missing_protected = _docker_protected_workspace_mounts(
             set(policy.allowed_write_paths)

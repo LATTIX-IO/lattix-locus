@@ -540,6 +540,11 @@ class _HardenedDockerStrategy:
         # symlink aliases, without ever widening the supplied scope.
         writable = {str(Path(path).expanduser().resolve()) for path in policy.allowed_write_paths}
         readable = {str(Path(path).expanduser().resolve()) for path in policy.allowed_read_paths}
+        # Docker --mount uses comma-separated options; never allow a pathname
+        # to inject flags such as "readonly" or "bind-recursive=disabled".
+        for path in writable | readable:
+            if any(char in path for char in (",", "\\n", "\\r", "\\x00")):
+                raise ValueError("Docker mount source path denied")
         for resolved in sorted(writable):
             args += [
                 "--mount",
