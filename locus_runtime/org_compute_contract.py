@@ -55,7 +55,13 @@ def parse_untrusted_remote_envelope(value: Mapping[str, Any]) -> UntrustedRemote
     fields = {key: value[key] for key in _ALLOWED}
     for key in _ALLOWED - {"policy_epoch", "expires_at"}:
         data = fields[key]
-        if type(data) is not str or not data or len(data.encode("utf-8")) > 128:
+        if type(data) is not str or not data:
+            raise InvalidRemoteEnvelope("remote envelope identifier denied")
+        try:
+            encoded = data.encode("utf-8")
+        except UnicodeError:
+            raise InvalidRemoteEnvelope("remote envelope identifier denied") from None
+        if len(encoded) > 128:
             raise InvalidRemoteEnvelope("remote envelope identifier denied")
     for key in ("policy_epoch", "expires_at"):
         data = fields[key]
