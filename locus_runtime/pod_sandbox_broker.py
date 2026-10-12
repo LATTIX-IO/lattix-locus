@@ -386,12 +386,14 @@ class PodSandboxBroker:
             ).hexdigest()
             # Bind the *entire* pre-receipt verified Docker launch contract,
             # excluding only the randomly generated container name. This
-            # captures limits, mounts, seccomp, image, cwd and the admitted
-            # argv. Changing any of these under an old idempotency key must
+            # captures limits, mounts, seccomp, image, cwd, timeout and the
+            # admitted argv. Changing any of these under an old idempotency key must
             # not be treated as the same durable action.
             canonical_launch = json.dumps(
                 {"backend": authorized_backend,
-                 "argv": authorized_launch_argv},
+                 "argv": authorized_launch_argv,
+                 "launcher_cwd": launcher_cwd,
+                 "timeout_seconds": command.timeout_seconds},
                 sort_keys=True, separators=(",", ":"),
                 ensure_ascii=True, allow_nan=False,
             ).encode("ascii")
