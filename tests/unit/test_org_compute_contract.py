@@ -88,6 +88,6 @@ def test_malformed_container_denied(bad):
 ])
 def test_unpaired_unicode_surrogate_fails_closed_without_unhandled_exception(field):
     wire = valid()
-    wire[field] = "\\ud800"
+    wire[field] = chr(0xD800)
     with pytest.raises(InvalidRemoteEnvelope, match="identifier denied"):
         parse_untrusted_remote_envelope(wire)
