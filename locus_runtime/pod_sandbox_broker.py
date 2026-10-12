@@ -181,10 +181,12 @@ def _expected_docker_launch_contract(
     ]
     for path in sorted(writable):
         expected.extend(("-v", f"{path}:{path}:rw"))
-    for path in sorted(readable - writable):
+    readonly = readable - writable
+    for path in sorted(readonly):
         expected.extend(("-v", f"{path}:{path}:ro"))
     for protected in sensitive_readonly:
-        expected.extend(("-v", f"{protected}:{protected}:ro"))
+        if protected not in readonly:
+            expected.extend(("-v", f"{protected}:{protected}:ro"))
     if spec.cwd:
         expected.extend(("-w", spec.cwd))
     expected.extend((image, *spec.command))
