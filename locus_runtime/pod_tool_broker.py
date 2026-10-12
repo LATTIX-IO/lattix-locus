@@ -215,6 +215,7 @@ class SandboxedPodToolBroker:
                 working_dir=descriptor.cwd,
                 idempotency_key=action_idempotency_key,
                 timeout_seconds=descriptor.max_seconds,
+                catalog_digest=self._catalog_digest,
             ),
         )
 
