@@ -182,16 +182,22 @@ def _expected_docker_launch_contract(
         "--tmpfs", "/tmp:rw,noexec,nosuid,size=100m",
     ]
     for path in sorted(writable):
-        expected.extend(("-v", f"{path}:{path}:rw"))
+        expected.extend((
+            "--mount", f"type=bind,source={path},target={path}",
+        ))
     readonly = readable - writable
     for path in sorted(readonly):
         # Match the planner's no-auto-create contract before Gateway/receipts.
         if not Path(path).exists():
             raise AdmissionDenied("Docker read mount source denied")
-        expected.extend(("-v", f"{path}:{path}:ro"))
+        expected.extend((
+            "--mount", f"type=bind,source={path},target={path},readonly,bind-recursive=readonly",
+        ))
     for protected in sensitive_readonly:
         if protected not in readonly:
-            expected.extend(("-v", f"{protected}:{protected}:ro"))
+            expected.extend((
+                "--mount", f"type=bind,source={protected},target={protected},readonly,bind-recursive=readonly",
+            ))
     for protected in missing_protected:
         expected.extend((
             "--tmpfs", f"{protected}:ro,nosuid,nodev,noexec,size=4k,mode=0555",

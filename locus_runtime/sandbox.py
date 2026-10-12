@@ -68,6 +68,9 @@ def _docker_protected_workspace_mounts(
     for raw_root in writable_roots:
         lexical = Path(raw_root).expanduser()
         root = lexical.resolve()
+        # Nonexistent writable bind sources must not be created by Docker.
+        if not lexical.exists() or not root.is_dir():
+            raise ValueError("Docker writable workspace root does not exist")
         for sensitive in ALWAYS_READONLY_SUBPATHS:
             parts = Path(sensitive).parts
             target_parts = tuple(part.casefold() for part in parts)
@@ -538,14 +541,20 @@ class _HardenedDockerStrategy:
         writable = {str(Path(path).expanduser().resolve()) for path in policy.allowed_write_paths}
         readable = {str(Path(path).expanduser().resolve()) for path in policy.allowed_read_paths}
         for resolved in sorted(writable):
-            args += ["-v", f"{resolved}:{resolved}:rw"]
+            args += [
+                "--mount",
+                f"type=bind,source={resolved},target={resolved}",
+            ]
         readonly = readable - writable
         for resolved in sorted(readonly):
             # Docker -v silently creates missing host sources as directories.
             # Never allow a read-only grant to manufacture host paths.
             if not Path(resolved).exists():
                 raise ValueError("Docker read mount source does not exist")
-            args += ["-v", f"{resolved}:{resolved}:ro"]
+            args += [
+                "--mount",
+                f"type=bind,source={resolved},target={resolved},readonly,bind-recursive=readonly",
+            ]
         # Compute masks from raw lexical paths BEFORE canonicalization.
         # Existing control paths use a bind; absent paths must not be creatable.
         overlays, missing = _docker_protected_workspace_mounts(
@@ -553,7 +562,10 @@ class _HardenedDockerStrategy:
         )
         for protected in overlays:
             if protected not in readonly:
-                args += ["-v", f"{protected}:{protected}:ro"]
+                args += [
+                    "--mount",
+                    f"type=bind,source={protected},target={protected},readonly,bind-recursive=readonly",
+                ]
         for protected in missing:
             args += [
                 "--tmpfs",

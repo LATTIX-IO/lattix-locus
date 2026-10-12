@@ -17,7 +17,15 @@ from tests.unit.test_pod_sandbox_broker import cmd, docker, fixture
 
 
 def _mounted(argv: list[str]) -> list[str]:
-    return [argv[i + 1] for i, value in enumerate(argv[:-1]) if value == "-v"]
+    return [argv[i + 1] for i, value in enumerate(argv[:-1]) if value == "--mount"]
+
+
+def _write_bind(path) -> str:
+    return f"type=bind,source={path},target={path}"
+
+
+def _read_bind(path) -> str:
+    return f"type=bind,source={path},target={path},readonly,bind-recursive=readonly"
 
 
 @pytest.mark.parametrize("sensitive", [
@@ -37,8 +45,8 @@ def test_writable_workspace_reprotects_existing_sensitive_subtree(
     assert len(calls) == 1
     argv, opts = calls[0]
     mounts = _mounted(argv)
-    rw = f"{root}:{root}:rw"
-    ro = f"{path}:{path}:ro"
+    rw = _write_bind(root)
+    ro = _read_bind(path)
     assert rw in mounts
     assert ro in mounts
     assert mounts.index(ro) > mounts.index(rw)
@@ -62,9 +70,9 @@ def test_planner_cannot_remove_required_sensitive_readonly_overlay(
 
     def stripped(self, spec, policy):
         plan = original(self, spec, policy)
-        target = f"{sensitive}:{sensitive}:ro"
+        target = _read_bind(sensitive)
         index = plan.command.index(target)
-        assert plan.command[index - 1] == "-v"
+        assert plan.command[index - 1] == "--mount"
         del plan.command[index - 1:index + 1]
         return plan
 
@@ -117,7 +125,7 @@ def test_workspace_without_sensitive_subpaths_remains_compatible(
     assert result.receipt.state == "succeeded"
     assert len(calls) == 1
     argv = calls[0][0]
-    assert _mounted(argv) == [f"{tmp_path}:{tmp_path}:rw"]
+    assert _mounted(argv) == [_write_bind(tmp_path)]
     assert "--network=none" in argv
     assert len(receipts.audit(result.receipt.action_id)) == 4
 
@@ -183,10 +191,10 @@ def test_explicit_readonly_sensitive_child_does_not_create_duplicate_mount(
         spec, policy, image=sandbox_runner_image(),
     )
     mounts = _mounted(argv)
-    readonly = f"{sensitive}:{sensitive}:ro"
+    readonly = _read_bind(sensitive)
     assert argv == expected
     assert mounts.count(readonly) == 1
-    assert mounts.index(readonly) > mounts.index(f"{tmp_path}:{tmp_path}:rw")
+    assert mounts.index(readonly) > mounts.index(_write_bind(tmp_path))
 
 
 
@@ -284,3 +292,62 @@ def test_absent_readonly_bind_source_cannot_be_created_by_docker_v(
     with pytest.raises(ValueError, match="Docker read mount source does not exist"):
         _HardenedDockerStrategy().build_command(spec, policy)
     assert not missing.exists()
+
+
+
+def test_absent_write_root_denied_before_receipt_or_subprocess(tmp_path, monkeypatch):
+    calls = docker(monkeypatch)
+    missing = tmp_path / "not-yet-created"
+    app, receipts, lease, _ = fixture(missing)
+    with pytest.raises(AdmissionDenied, match="Docker protected workspace path denied"):
+        app.execute(lease, cmd(missing, key="missing-write-root"))
+    assert calls == []
+    assert not missing.exists()
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+def test_read_bind_is_noncreating_and_recursively_readonly(tmp_path):
+    from locus_runtime.pod_sandbox_broker import _expected_docker_launch_contract
+    from locus_runtime.sandbox import (
+        ExecutionSpec, HostPlatform, SandboxPolicy, _HardenedDockerStrategy,
+        sandbox_runner_image,
+    )
+    (tmp_path / ".git").mkdir()
+    source = tmp_path / "readonly-input"
+    source.mkdir()
+    policy = SandboxPolicy(
+        platform=HostPlatform.LINUX,
+        allowed_write_paths=[str(tmp_path)],
+        allowed_read_paths=[str(source), str(tmp_path)],
+    )
+    spec = ExecutionSpec(tool_id="run_command", command=["echo", "safe"], cwd=str(tmp_path))
+    plan = _HardenedDockerStrategy().build_command(spec, policy)
+    expected = _expected_docker_launch_contract(spec, policy, image=sandbox_runner_image())
+    assert plan == expected
+    assert _write_bind(tmp_path) in _mounted(plan)
+    assert _read_bind(source) in _mounted(plan)
+    assert _read_bind(tmp_path / ".git") in _mounted(plan)
+    assert "-v" not in plan
+    assert "bind-recursive=readonly" in _read_bind(source)
+
+
+def test_docker_planner_cannot_remove_recursive_readonly_from_overlays(tmp_path, monkeypatch):
+    calls = docker(monkeypatch)
+    protected = tmp_path / ".git"
+    protected.mkdir()
+    original = broker_module.SandboxManager.plan
+
+    def weakened(self, spec, policy):
+        plan = original(self, spec, policy)
+        index = plan.command.index(_read_bind(protected))
+        plan.command[index] = plan.command[index].replace(",bind-recursive=readonly", "")
+        return plan
+
+    monkeypatch.setattr(broker_module.SandboxManager, "plan", weakened)
+    app, receipts, lease, _ = fixture(tmp_path)
+    with pytest.raises(AdmissionDenied, match="Docker sandbox isolation contract denied"):
+        app.execute(lease, cmd(tmp_path, key="recursive-readonly-stripped"))
+    assert calls == []
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0

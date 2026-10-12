@@ -69,3 +69,8 @@ under privileged writers remains a separate deployment threat.
    readable-but-missing source rather than allowing Docker to manufacture
    credential/control directories. This is independently tested alongside
    existing legitimate read/write mount compatibility.
+
+
+## Security review: non-creating recursive bind mounts
+
+Docker `-v` creates missing host paths in a rename race even after an existence check, and ordinary `:ro` on older kernels can leave nested submounts writable. All workspace binds now use `--mount type=bind,source=...,target=...`, which fails rather than creating absent source paths; read-only and protected overlays additionally require `readonly,bind-recursive=readonly`. Docker Engine 25+ and kernel 5.12+ support the explicitly recursive read-only bind mode; incompatible runtimes fail closed and **must not** be marked production-ready. Absent writable roots are denied before Gateway or receipts. Tests cover noncreating sources, recursive flag retention, and planner/broker argument identity. A real supported Docker daemon with a nested submount remains necessary for release attestation.
