@@ -19,6 +19,7 @@ isolation backend.
 
 from __future__ import annotations
 
+import json
 import os
 import platform as platform_module
 import shutil
@@ -128,6 +129,83 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 def _restricted_process_allowed() -> bool:
     return _env_flag("LOCUS_ALLOW_RESTRICTED_PROCESS_SANDBOX", False)
+
+
+_BROKER_BLOCKED_SYSCALLS: frozenset[str] = frozenset({
+    "ptrace", "process_vm_readv", "process_vm_writev", "kcmp",
+    "io_uring_setup", "io_uring_enter", "io_uring_register",
+    "init_module", "finit_module", "delete_module", "kexec_load",
+    "kexec_file_load", "reboot", "swapon", "swapoff", "acct",
+    "settimeofday", "stime", "adjtimex", "clock_adjtime",
+    "clock_settime", "mount", "umount2", "pivot_root", "unshare",
+    "setns", "keyctl", "request_key", "add_key", "bpf",
+    "perf_event_open", "setuid", "setgid", "setreuid",
+    "setregid", "setresuid", "setresgid", "setgroups",
+    "setfsgid", "setfsuid", "personality", "modify_ldt",
+    "arch_prctl_multiop", "open_by_handle_at", "name_to_handle_at",
+    "lookup_dcookie", "quotactl", "nfsservctl", "vm86", "vm86old",
+})
+_BROKER_DENY_ACTIONS = frozenset({
+    "SCMP_ACT_ERRNO", "SCMP_ACT_KILL", "SCMP_ACT_KILL_PROCESS",
+    "SCMP_ACT_KILL_THREAD",
+})
+_MAX_BROKER_SECCOMP_BYTES = 65536
+
+
+def _verify_broker_seccomp_profile(path: Path) -> None:
+    """Require unconditional denial of the hardened Docker syscall baseline.
+
+    Docker reads the profile by *path* during launch. This verifies on-disk
+    policy before broker authorization, not the daemon's eventual file bytes.
+    """
+    def unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        obj: dict[str, object] = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError("duplicate seccomp JSON key")
+            obj[key] = value
+        return obj
+
+    try:
+        # Bound the parser input and reject oversized or non-regular profiles.
+        if not path.is_file() or path.stat().st_size > _MAX_BROKER_SECCOMP_BYTES:
+            raise ValueError("invalid Docker seccomp profile size")
+        raw = path.read_bytes()
+        if len(raw) > _MAX_BROKER_SECCOMP_BYTES:
+            raise ValueError("invalid Docker seccomp profile size")
+        profile = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_keys)
+        if not isinstance(profile, dict) or not isinstance(profile.get("syscalls"), list):
+            raise ValueError("invalid Docker seccomp profile structure")
+        if profile.get("defaultAction") not in (
+            "SCMP_ACT_ALLOW", "SCMP_ACT_ERRNO", "SCMP_ACT_KILL",
+            "SCMP_ACT_KILL_PROCESS", "SCMP_ACT_KILL_THREAD",
+        ):
+            raise ValueError("invalid Docker seccomp default action")
+        covered: set[str] = set()
+        for rule in profile["syscalls"]:
+            if not isinstance(rule, dict) or not isinstance(rule.get("names"), list):
+                raise ValueError("invalid Docker seccomp rule")
+            names = rule["names"]
+            if any(not isinstance(name, str) for name in names):
+                raise ValueError("invalid Docker syscall name")
+            affected = _BROKER_BLOCKED_SYSCALLS.intersection(names)
+            if not affected:
+                continue
+            # Includes/excludes and argument filters can make a deny rule
+            # conditional; none are admissible for the baseline.
+            if (rule.get("action") not in _BROKER_DENY_ACTIONS
+                or "includes" in rule or "excludes" in rule
+                or "args" in rule):
+                raise ValueError("conditional or permissive seccomp baseline rule")
+            if rule["action"] == "SCMP_ACT_ERRNO":
+                errno = rule.get("errnoRet", 1)
+                if type(errno) is not int or not 1 <= errno <= 4095:
+                    raise ValueError("invalid seccomp deny errno")
+            covered.update(affected)
+        if covered != _BROKER_BLOCKED_SYSCALLS:
+            raise ValueError("Docker seccomp baseline omissions")
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError("hardened Docker seccomp baseline required") from exc
 
 
 def _validated_seccomp_profile_path() -> Path:
