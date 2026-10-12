@@ -98,6 +98,11 @@ def _verify_pinned_executable(path: Path, expected: str) -> None:
                            after.st_mtime_ns, after.st_ctime_ns)
             if size != before.st_size or facts_before != facts_after:
                 raise AdmissionDenied("registered executable changed during measurement")
+    except AdmissionDenied:
+        # AdmissionDenied subclasses PermissionError/OSError. Preserve explicit
+        # fail-closed scope and mutation denials instead of mislabeling them
+        # as filesystem availability errors.
+        raise
     except (OSError, RuntimeError):
         raise AdmissionDenied("registered executable measurement unavailable") from None
     if not hmac.compare_digest(digest.hexdigest(), expected):
