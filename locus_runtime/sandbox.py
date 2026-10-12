@@ -66,12 +66,36 @@ def _docker_protected_readonly_mounts(writable_roots: set[str]) -> tuple[str, ..
         root = Path(raw_root).expanduser().resolve()
         for sensitive in ALWAYS_READONLY_SUBPATHS:
             parts = Path(sensitive).parts
-            root_parts = root.parts
+            # Compare with case folding on *every* host. This intentionally
+            # rejects .GIT/.SSH aliases even on a case-sensitive CI machine,
+            # because the same approval may be used on macOS or Windows.
+            root_parts = tuple(component.casefold() for component in root.parts)
+            protected_parts = tuple(component.casefold() for component in parts)
             if any(
-                root_parts[i:i + len(parts)] == parts
+                root_parts[i:i + len(parts)] == protected_parts
                 for i in range(len(root_parts) - len(parts) + 1)
             ):
                 raise ValueError("protected control path may not be writable")
+            # A case-insensitive host may expose an existing .GIT directory
+            # through .git, but a Linux Docker guest sees different paths.
+            # Refuse case aliases rather than creating an ineffective overlay.
+            cursor = root
+            for component in parts:
+                if cursor.is_symlink():
+                    raise ValueError("protected control path symlink denied")
+                if not cursor.is_dir():
+                    break
+                try:
+                    with os.scandir(cursor) as siblings:
+                        if any(
+                            sibling.name.casefold() == component.casefold()
+                            and sibling.name != component
+                            for sibling in siblings
+                        ):
+                            raise ValueError("protected control path alias denied")
+                except OSError as exc:
+                    raise ValueError("protected control directory cannot be inspected") from exc
+                cursor = cursor / component
             candidate = root.joinpath(*parts)
             # Check every sensitive ancestor even when its leaf is absent:
             # a symlinked .config may later acquire gcloud credentials.
