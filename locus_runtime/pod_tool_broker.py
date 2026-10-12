@@ -124,20 +124,29 @@ class SandboxedPodToolBroker:
     _tools: Mapping[str, BrokerTool]
     _executor: PodSandboxBroker
     _catalog_digest: str
+    _require_pinned_executables: bool
 
     def __init__(self, receipts: PodActionReceipts,
-                 tools: Mapping[str, BrokerTool]) -> None:
+                 tools: Mapping[str, BrokerTool], *,
+                 require_pinned_executables: bool = False) -> None:
         if not isinstance(receipts, PodActionReceipts):
             raise ValueError("trusted receipt supervisor is required")
         if not isinstance(tools, Mapping) or not tools:
             raise ValueError("nonempty administrator tool registry required")
+        if type(require_pinned_executables) is not bool:
+            raise ValueError("executable pin requirement must be a boolean")
+        # Snapshot first; all validation and digest material derive from the
+        # same immutable descriptor values, not the mutable caller mapping.
+        snapshot = dict(tools)
         if any(not isinstance(v, BrokerTool) or key != v.name
-               for key, v in tools.items()):
+               for key, v in snapshot.items()):
             raise ValueError("registry keys must match trusted descriptors")
+        if (require_pinned_executables
+            and any(tool.executable_sha256 is None for tool in snapshot.values())):
+            raise ValueError("strict tool catalog requires all executable digests")
         # Snapshot first to prevent the administrator's mutable source map
         # from changing under the broker. Both the slots and frozen dataclass
         # block accidental rebinding of the admitted catalog/dispatch sink.
-        snapshot = dict(tools)
         canonical = [
             {"name": key, "argv": list(tool.argv), "cwd": tool.cwd,
              "max_seconds": tool.max_seconds,
@@ -145,7 +154,8 @@ class SandboxedPodToolBroker:
             for key, tool in sorted(snapshot.items())
         ]
         material = json.dumps(
-            canonical, sort_keys=True, ensure_ascii=True,
+            {"require_pinned_executables": require_pinned_executables,
+             "tools": canonical}, sort_keys=True, ensure_ascii=True,
             separators=(",", ":"),
         ).encode("ascii")
         digest = hashlib.sha256(
@@ -154,11 +164,18 @@ class SandboxedPodToolBroker:
         object.__setattr__(self, "_tools", MappingProxyType(snapshot))
         object.__setattr__(self, "_executor", PodSandboxBroker(receipts))
         object.__setattr__(self, "_catalog_digest", digest)
+        object.__setattr__(self, "_require_pinned_executables",
+                           require_pinned_executables)
 
     @property
     def catalog_digest(self) -> str:
         """Nonsecret snapshot correlation only; not an attested signature."""
         return self._catalog_digest
+
+    @property
+    def requires_pinned_executables(self) -> bool:
+        """Supervisor-pinned admission setting (not a binary attestation)."""
+        return self._require_pinned_executables
 
     def execute(self, lease: PodLease, *, tool_name: str,
                 action_idempotency_key: str) -> BrokerOutcome:
@@ -169,6 +186,8 @@ class SandboxedPodToolBroker:
         descriptor = self._tools.get(tool_name)
         if descriptor is None:
             raise AdmissionDenied("tool is not registered")
+        if self._require_pinned_executables and descriptor.executable_sha256 is None:
+            raise AdmissionDenied("tool digest required by catalog policy")
         caps = lease._session.capabilities
         if descriptor.name not in caps.allowed_tools:
             raise AdmissionDenied("tool outside admitted capabilities")
