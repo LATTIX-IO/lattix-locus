@@ -108,7 +108,7 @@ def _jail_facts(strategy: IsolationStrategy) -> JailFacts:
     raise AdmissionDenied("no approved confined process execution strategy")
 
 
-def _require_content_addressed_image(image: str) -> None:
+def _require_content_addressed_image(image: str | None) -> None:
     """Deny mutable Docker image tags when strict admin policy is enabled.
 
     This validates a *reference*, not registry attestations or local daemon
