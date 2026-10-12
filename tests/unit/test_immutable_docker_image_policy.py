@@ -102,7 +102,10 @@ def test_image_changed_by_planner_fails_against_preplanner_snapshot(
 
     monkeypatch.setattr(broker_module.SandboxManager, "plan", swapped)
     _, receipts, lease, _ = fixture(tmp_path)
-    strict = PodSandboxBroker(receipts, require_immutable_docker_image=True)
+    strict = PodSandboxBroker(
+        receipts, require_immutable_docker_image=True,
+        pinned_docker_image=_IMAGE,
+    )
     with pytest.raises(AdmissionDenied, match="Docker sandbox isolation contract"):
         strict.execute(lease, cmd(tmp_path))
     assert not docker_calls
