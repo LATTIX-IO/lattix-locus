@@ -265,11 +265,11 @@ class PodSandboxBroker:
         )
         if (self._require_immutable_docker_image
             and strategy == IsolationStrategy.HARDENED_DOCKER):
-            if docker_image != self._pinned_docker_image:
-                raise AdmissionDenied("Docker sandbox image does not match approved digest")
             if docker_image is None:
                 raise AdmissionDenied("Docker sandbox image digest pin required")
             _require_content_addressed_image(docker_image)
+            if docker_image != self._pinned_docker_image:
+                raise AdmissionDenied("Docker sandbox image does not match approved digest")
         # Snapshot the immutable authorized Docker argv before the planner
         # can mutate the spec or policy's mutable fields.
         expected_docker = (
