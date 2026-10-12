@@ -128,3 +128,32 @@ def test_legacy_non_strict_native_strategy_retains_prior_planning_path(
         ordinary.execute(lease, cmd(tmp_path, key="legacy-native"))
     assert not calls
     assert _receipts_count(receipts) == 0
+
+
+@pytest.mark.parametrize(("strategy", "platform"), [
+    (IsolationStrategy.KERNEL_SEATBELT, HostPlatform.MACOS),
+    (IsolationStrategy.WINDOWS_APPCONTAINER, HostPlatform.WINDOWS),
+])
+def test_immutable_admin_catalog_cannot_dispatch_native_backend(
+    tmp_path, monkeypatch, strategy, platform,
+):
+    """Registry enforcement must match direct trusted broker behavior."""
+    from locus_runtime.pod_tool_broker import SandboxedPodToolBroker
+    from tests.unit.test_pod_tool_broker import setup
+
+    _, receipts, lease, _, mapping, invocations = setup(tmp_path, monkeypatch)
+    configured = SandboxedPodToolBroker(
+        receipts, mapping, require_immutable_docker_image=True,
+        pinned_docker_image=_APPROVED,
+    )
+    monkeypatch.setattr(
+        broker_module, "select_confining_strategy",
+        lambda: ConfinementSelection(strategy, platform, "native confinement"),
+    )
+    with pytest.raises(AdmissionDenied, match="requires hardened Docker"):
+        configured.execute(
+            lease, tool_name="fixed_tool",
+            action_idempotency_key="catalog-native-denied",
+        )
+    assert invocations == []
+    assert _receipts_count(receipts) == 0
