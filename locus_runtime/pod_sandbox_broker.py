@@ -45,6 +45,8 @@ _SHELLS = frozenset({
 _MAX_ARGV = 32
 _MAX_ARG_LEN = 2048
 _MAX_TIMEOUT = 60
+_BROKER_TOOL_ID = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}\Z", re.ASCII)
+_ACTION_KEY = re.compile(r"[A-Za-z0-9_.:-]{1,160}\Z", re.ASCII)
 _IMAGE_SHA256 = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 _IMAGE_NAME = re.compile(r"[a-z0-9][a-z0-9._:/-]{0,239}\Z", re.ASCII)
 
@@ -59,9 +61,12 @@ class BrokerCommand:
     catalog_digest: str | None = None
 
     def __post_init__(self) -> None:
-        if (not isinstance(self.tool, str) or not self.tool.strip()
-            or len(self.tool) > 128):
-            raise ValueError("bounded tool identifier required")
+        # Use the administrator catalog's exact ASCII tool-name grammar.
+        # No whitespace, control sequences, slash aliases, or Unicode
+        # lookalikes can reach gateway/audit action labels.
+        if (not isinstance(self.tool, str)
+            or _BROKER_TOOL_ID.fullmatch(self.tool) is None):
+            raise ValueError("bounded canonical tool identifier required")
         if not isinstance(self.argv, tuple) or not 1 <= len(self.argv) <= _MAX_ARGV:
             raise ValueError("command must be a bounded tuple of arguments")
         if any(
@@ -76,10 +81,17 @@ class BrokerCommand:
         if (Path(self.argv[0]).name.lower() in _SHELLS
             or PureWindowsPath(self.argv[0]).name.lower() in _SHELLS):
             raise AdmissionDenied("shell and inline-interpreter commands are not admitted")
-        if not isinstance(self.working_dir, str) or not self.working_dir.strip():
-            raise ValueError("explicit working directory required")
-        if not isinstance(self.idempotency_key, str) or not self.idempotency_key:
-            raise ValueError("action idempotency key required")
+        if (not isinstance(self.working_dir, str)
+            or not 1 <= len(self.working_dir) <= 4096
+            or not self.working_dir.strip()
+            or any(char in self.working_dir for char in ("\x00", "\r", "\n"))):
+            raise ValueError("bounded working directory required")
+        # Mirror the durable receipt key grammar at construction, before
+        # strategy planning or gateway receipt work begins. Do not admit
+        # characters that the ledger would reject only at prepare().
+        if (not isinstance(self.idempotency_key, str)
+            or _ACTION_KEY.fullmatch(self.idempotency_key) is None):
+            raise ValueError("bounded canonical idempotency key required")
         if type(self.timeout_seconds) is not int or not 1 <= self.timeout_seconds <= _MAX_TIMEOUT:
             raise ValueError("execution timeout must be in 1..60 seconds")
         if (self.catalog_digest is not None
