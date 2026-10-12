@@ -74,7 +74,13 @@ def _docker_protected_readonly_mounts(writable_roots: set[str]) -> tuple[str, ..
             if any(
                 root_parts[i:i + len(parts)] == protected_parts
                 for i in range(len(root_parts) - len(parts) + 1)
+            ) or any(
+                root_parts[-prefix:] == protected_parts[:prefix]
+                for prefix in range(1, len(parts))
             ):
+                # A writable .config root would also make its gcloud
+                # credential child writable, even if that child is created
+                # only after admission. Reject sensitive ancestors as roots.
                 raise ValueError("protected control path may not be writable")
             # A case-insensitive host may expose an existing .GIT directory
             # through .git, but a Linux Docker guest sees different paths.
