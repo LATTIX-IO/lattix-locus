@@ -537,12 +537,14 @@ class _HardenedDockerStrategy:
         readable = {str(Path(path).expanduser().resolve()) for path in policy.allowed_read_paths}
         for resolved in sorted(writable):
             args += ["-v", f"{resolved}:{resolved}:rw"]
-        for resolved in sorted(readable - writable):
+        readonly = readable - writable
+        for resolved in sorted(readonly):
             args += ["-v", f"{resolved}:{resolved}:ro"]
-        # Docker bind mounts must explicitly overlay sensitive subtrees with
-        # read-only mounts AFTER any admitted writable parent bind.
+        # Overlay sensitive subtrees AFTER writable parents. Explicit read-only
+        # grants may already mount a protected path; Docker rejects duplicates.
         for protected in _docker_protected_readonly_mounts(writable):
-            args += ["-v", f"{protected}:{protected}:ro"]
+            if protected not in readonly:
+                args += ["-v", f"{protected}:{protected}:ro"]
 
         # Working directory
         if spec.cwd:
