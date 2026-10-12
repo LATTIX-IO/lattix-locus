@@ -32,3 +32,34 @@ This intentionally uses the existing supervisor-approved Docker invocation and f
 Docker bind mounts are resolved by the host daemon; this increment does not independently attest container mount state or protect against a privileged host process/daemon modifying mounted paths between validation and execution. Read-only container mounts do not guarantee that a sensitive directory is absent from the tool's *read* authority. Tenants should avoid exposing unnecessary credentials through read scopes and enforce privilege isolation at the OS and container runtime.
 
 Merge sequence: PR #106 must merge first. Then reconcile this increment onto latest `main`, confirm scope is limited to the sandbox Docker planner, broker launch validation, tests and docs, and pass exact-head backend-unit, Ruff/mypy quality, integration, Windows sandbox, DAST, performance, frontend, release/version and final required-gates. CodeQL, SBOM/SCA and AppSec jobs skipped in CI are not treated as verified security gates.
+
+
+## 2026-10-12 subsequent P1/P2 security review
+
+1. **Writable symlink roots:** The authoritative policy may name a symlinked
+   directory `.git` whose canonical target no longer contains the sensitive
+   component. The planner and independent broker now inspect the *original
+   lexical path* and canonical target before resolving and admitting Docker
+   writable binds. Direct symlinked control roots and casefolded aliases deny
+   prior to the Gateway, receipts, or Docker subprocess.
+2. **Sensitive destinations initially absent:** A Docker process could create
+   a nonexistent `.git`, `.locus`, `.aws` or `.config/gcloud` inside an
+   approved writable parent. Existing protected paths still receive
+   `:ro` bind overlays. Missing protected destinations now receive an empty
+   `--tmpfs <destination>:ro,nosuid,nodev,noexec,size=4k,mode=0555` mask;
+   for missing nested ancestors (for example absent `.config`), mask the
+   first missing ancestor. Docker supports `ro` tmpfs options:
+   https://docs.docker.com/engine/storage/tmpfs/
+3. **Independent contract:** Both the planner and broker derive these masks
+   from the policy's original untrusted write-path strings before launch. A
+   planner that strips a required mask is rejected before any durable receipt.
+4. **Regression evidence:** Added wrong-root symlink, multiple absent
+   protected paths, nested `.config`, unchanged normal writable workspace,
+   overlay-mismatch and no-side-effect tests.
+
+**Important limitation:** CI unit tests verify the generated Docker CLI
+contract, not an actual daemon mount in production. A Linux Docker smoke
+against the supported Docker engine versions must verify write refusal to
+both existing read-only bind and missing tmpfs masked destinations before
+claiming this control fully runtime-attested. Host-side pathname TOCTOU
+under privileged writers remains a separate deployment threat.
