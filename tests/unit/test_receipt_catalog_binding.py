@@ -104,8 +104,6 @@ def test_direct_broker_command_remains_compatible_without_catalog_identity(
     tmp_path, monkeypatch,
 ):
     from locus_runtime.pod_sandbox_broker import PodSandboxBroker
-    from locus_runtime.action_receipts import PodActionReceipts
-    from locus_runtime.pod_reservations import AdmissionDenied
 
     _, receipts, lease, _, descriptors, launches = setup(tmp_path, monkeypatch)
     tool = descriptors["fixed_tool"]
