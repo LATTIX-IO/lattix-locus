@@ -102,6 +102,13 @@ def decode_tool_result(
         raise ToolResultRejected("trusted result policy required")
     if type(raw) is not bytes or not raw or len(raw) > policy.max_bytes:
         raise ToolResultRejected("result input exceeds its admitted binary envelope")
+    # A JSONDecodeError can retain the entire source string in .doc and a
+    # UnicodeDecodeError retains the original bytes in .object. Raising inside
+    # the except block leaves that exception accessible via __context__, even
+    # when 'from None' suppresses its normal traceback display. Exit the
+    # handler before constructing a public rejection.
+    malformed = False
+    root: object = None
     try:
         text = raw.decode("utf-8", errors="strict")
         root = json.loads(
@@ -110,7 +117,9 @@ def decode_tool_result(
             parse_constant=_reject_non_integer,
         )
     except (UnicodeError, ValueError, TypeError, OverflowError, RecursionError):
-        raise ToolResultRejected("malformed structured tool result") from None
+        malformed = True
+    if malformed:
+        raise ToolResultRejected("malformed structured tool result")
     if type(root) is not dict or root.get("schema") != policy.schema:
         raise ToolResultRejected("result schema is not authorized")
 
