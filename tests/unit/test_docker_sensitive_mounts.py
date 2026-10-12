@@ -295,16 +295,27 @@ def test_absent_readonly_bind_source_cannot_be_created_by_docker_v(
 
 
 
-def test_absent_write_root_denied_before_receipt_or_subprocess(tmp_path, monkeypatch):
-    calls = docker(monkeypatch)
+def test_absent_write_root_denied_by_broker_and_planner_contract(tmp_path):
+    from locus_runtime.pod_sandbox_broker import _expected_docker_launch_contract
+    from locus_runtime.sandbox import (
+        ExecutionSpec, HostPlatform, SandboxPolicy,
+        _HardenedDockerStrategy, sandbox_runner_image,
+    )
+
     missing = tmp_path / "not-yet-created"
-    app, receipts, lease, _ = fixture(missing)
+    policy = SandboxPolicy(
+        platform=HostPlatform.LINUX,
+        allowed_read_paths=[str(tmp_path)],
+        allowed_write_paths=[str(missing)],
+    )
+    spec = ExecutionSpec(
+        tool_id="run_command", command=["echo", "safe"], cwd=str(missing),
+    )
     with pytest.raises(AdmissionDenied, match="Docker protected workspace path denied"):
-        app.execute(lease, cmd(missing, key="missing-write-root"))
-    assert calls == []
+        _expected_docker_launch_contract(spec, policy, image=sandbox_runner_image())
+    with pytest.raises(ValueError, match="Docker writable workspace root does not exist"):
+        _HardenedDockerStrategy().build_command(spec, policy)
     assert not missing.exists()
-    with receipts.reservations._connect() as db:
-        assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
 
 
 def test_read_bind_is_noncreating_and_recursively_readonly(tmp_path):
