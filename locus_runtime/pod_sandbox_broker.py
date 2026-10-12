@@ -8,6 +8,7 @@ dispatch, kernel fencing and at-most-once broker invocation.
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -42,6 +43,8 @@ _SHELLS = frozenset({
 _MAX_ARGV = 32
 _MAX_ARG_LEN = 2048
 _MAX_TIMEOUT = 60
+_IMAGE_SHA256 = re.compile(r"[0-9a-f]{64}\\Z", re.ASCII)
+_IMAGE_NAME = re.compile(r"[a-z0-9][a-z0-9._:/-]{0,239}\\Z", re.ASCII)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,8 +108,29 @@ def _jail_facts(strategy: IsolationStrategy) -> JailFacts:
     raise AdmissionDenied("no approved confined process execution strategy")
 
 
+def _require_content_addressed_image(image: str) -> None:
+    """Deny mutable Docker image tags when strict admin policy is enabled.
+
+    This validates a *reference*, not registry attestations or local daemon
+    image identity. A digest must remain in the image argument actually
+    delivered to Docker, validated again by the exact launch contract.
+    """
+    if not isinstance(image, str) or image.count("@sha256:") != 1:
+        raise AdmissionDenied("Docker sandbox image digest pin required")
+    name, digest = image.split("@sha256:")
+    # The repository name must have at least one valid component, and no
+    # path traversal, repeated separators, tags, or whitespace. Port notation
+    # may occur only in a registry prefix such as host:5000/team/runner.
+    last_segment = name.rsplit("/", 1)[-1]
+    if (not _IMAGE_NAME.fullmatch(name)
+        or not _IMAGE_SHA256.fullmatch(digest)
+        or ".." in name or "//" in name or "/./" in name
+        or ":" in last_segment or name.endswith((".", "/", "-", "_"))):
+        raise AdmissionDenied("Docker sandbox image digest pin required")
+
+
 def _expected_docker_launch_contract(
-    spec: ExecutionSpec, policy: SandboxPolicy,
+    spec: ExecutionSpec, policy: SandboxPolicy, *, image: str,
 ) -> list[str]:
     """Snapshot the one permitted Docker command BEFORE invoking the planner.
 
@@ -142,7 +166,7 @@ def _expected_docker_launch_contract(
         expected.extend(("-v", f"{path}:{path}:ro"))
     if spec.cwd:
         expected.extend(("-w", spec.cwd))
-    expected.extend((sandbox_runner_image(), *spec.command))
+    expected.extend((image, *spec.command))
     return expected
 
 
@@ -187,8 +211,12 @@ def _bounded_dir(path: str, permitted: Sequence[str]) -> str:
 class PodSandboxBroker:
     """Admitted CLI tool, sandboxed off-host effects and durable action receipt."""
 
-    def __init__(self, receipts: PodActionReceipts) -> None:
+    def __init__(self, receipts: PodActionReceipts, *,
+                 require_immutable_docker_image: bool = False) -> None:
+        if type(require_immutable_docker_image) is not bool:
+            raise ValueError("Docker image pin policy must be a boolean")
         self._receipts = receipts
+        self._require_immutable_docker_image = require_immutable_docker_image
 
     def execute(self, lease: PodLease, command: BrokerCommand) -> BrokerOutcome:
         # Fail before any side effect or action receipt when capabilities are
@@ -219,11 +247,23 @@ class PodSandboxBroker:
             tool_id=command.tool, command=list(command.argv), cwd=cwd, env={},
             requested_hosts=[],
         )
+        # Capture the image from trusted supervisor configuration exactly
+        # once. A mutable environment change during planning cannot authorize
+        # a different image argument; the exact argv contract will reject it.
+        docker_image = (
+            sandbox_runner_image()
+            if strategy == IsolationStrategy.HARDENED_DOCKER else None
+        )
+        if (self._require_immutable_docker_image
+            and strategy == IsolationStrategy.HARDENED_DOCKER):
+            if docker_image is None:
+                raise AdmissionDenied("Docker sandbox image digest pin required")
+            _require_content_addressed_image(docker_image)
         # Snapshot the immutable authorized Docker argv before the planner
         # can mutate the spec or policy's mutable fields.
         expected_docker = (
-            _expected_docker_launch_contract(spec, policy)
-            if strategy == IsolationStrategy.HARDENED_DOCKER else None
+            _expected_docker_launch_contract(spec, policy, image=docker_image)
+            if docker_image is not None else None
         )
         try:
             plan = SandboxManager(force_strategy=strategy).plan(spec, policy)
