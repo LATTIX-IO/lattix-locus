@@ -153,3 +153,21 @@ def test_digest_domain_separated_by_schema():
         ToolResultPolicy("counter/v1", frozenset({"ok"})),
     )
     assert status.digest != counter.digest
+
+
+@pytest.mark.parametrize("raw", [
+    b'\xff\xfeAuthorization: Bearer untrusted-secret',
+    b'{"schema":"status/v1","ok":true,"code":0,"secret":"Bearer hidden"',
+    b'{"schema":"status/v1","ok":true,"ok":false,"code":0}',
+    b'{"schema":"status/v1","ok":true,"code":NaN}',
+    b'{"schema":"status/v1","ok":true,"code":1.5}',
+])
+def test_parser_rejections_have_no_original_exception_context(raw):
+    """Trace exporters inspect __context__, even when __suppress_context__ is set."""
+    with pytest.raises(ToolResultRejected) as caught:
+        decode_tool_result(raw, ToolResultPolicy("status/v1"))
+    exc = caught.value
+    assert exc.__cause__ is None
+    assert exc.__context__ is None
+    assert raw.decode("utf-8", errors="ignore") not in str(exc)
+    assert "Bearer" not in repr(exc)
