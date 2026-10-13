@@ -289,7 +289,7 @@ def test_malformed_or_unbounded_raw_events_denied(bad):
 def test_cross_session_mixed_events_denied():
     with pytest.raises(OpenCodeContractDenied, match="cross-session"):
         audit_opencode_jsonl(
-            jsonl(text("first"), finish(), event("step_start", session="ses_other")),
+            jsonl(text("first"), event("step_start", session="ses_other"), finish()),
             allowed_mcp_tools=(), max_tokens=120,
         )
 
@@ -366,3 +366,39 @@ def test_engine_config_module_never_executes_external_binary():
     for banned in ("subprocess.run(", "subprocess.Popen(", "os.system(",
                    "shell=True", "check_output(", "urllib.request.urlopen("):
         assert banned not in src
+
+
+
+def test_large_or_bombarded_event_stream_is_denied_before_any_inference_artifact():
+    oversize = "a" * (64 * 1024 + 2)
+    with pytest.raises(OpenCodeContractDenied):
+        audit_opencode_jsonl(
+            jsonl(text(oversize), finish()), allowed_mcp_tools=(), max_tokens=100,
+        )
+    many = [event("step_start", {"type": "step-start"})] * 4097
+    with pytest.raises(OpenCodeContractDenied, match="event count"):
+        audit_opencode_jsonl(
+            jsonl(*many), allowed_mcp_tools=(), max_tokens=100,
+        )
+
+
+def test_only_successful_completion_not_token_budget_exit_is_a_result():
+    payload = jsonl(
+        text("partial"),
+        event("step_finish", {"type": "step-finish", "reason": "length",
+                              "tokens": {"input": 20, "output": 10}}),
+    )
+    with pytest.raises(OpenCodeContractDenied, match="incomplete"):
+        audit_opencode_jsonl(
+            payload, allowed_mcp_tools=(), max_tokens=100,
+        )
+
+
+def test_authorized_mcp_call_is_still_only_model_claim_not_verified_outcome():
+    evidence = audit_opencode_jsonl(
+        jsonl(tool("locus_search"), text("model-says-done"), finish()),
+        allowed_mcp_tools=("locus_search",), max_tokens=100,
+    )
+    assert evidence.state == "complete_unverified"
+    assert not hasattr(evidence, "verified")
+    assert "model-says-done" not in repr(evidence)
