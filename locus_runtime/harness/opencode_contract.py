@@ -174,6 +174,7 @@ def compile_opencode_launch(
             "model": model,
             "formatter": False,
             "lsp": False,
+            "snapshot": False,
             "enabled_providers": [provider_id],
             "permission": {
                 "*": "deny",
@@ -243,11 +244,14 @@ def compile_opencode_launch(
         "XDG_DATA_HOME": str(root / "xdg-data"),
         "XDG_CACHE_HOME": str(root / "xdg-cache"),
         "OPENCODE_CONFIG_CONTENT": serialized,
-        "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+        "OPENCODE_CONFIG_DIR": str(root / "opencode-config"),
         "OPENCODE_DISABLE_AUTOUPDATE": "1",
         "OPENCODE_DISABLE_LSP_DOWNLOAD": "1",
-        "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
         "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
+        "OPENCODE_DISABLE_CLAUDE_CODE": "1",
+        "OPENCODE_DISABLE_CLAUDE_CODE_PROMPT": "1",
+        "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS": "1",
+        "OPENCODE_DISABLE_MODELS_FETCH": "1",
     }
     if platform == "windows":
         env.update({
@@ -296,7 +300,7 @@ def validate_effective_opencode_config(
     for section in (
         "permission", "permissions", "mcp", "experimental",
         "agent", "agents", "default_agent", "formatter", "lsp", "snapshots",
-        "enabled_providers",
+        "snapshot", "enabled_providers",
     ):
         if effective.get(section) != expected.get(section):
             raise OpenCodeContractDenied("effective OpenCode policy was overridden")
