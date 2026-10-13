@@ -100,6 +100,20 @@ def _verify_binary(profile: OpenCodeLaunchProfile) -> None:
     # mutations while reading, but cannot prevent post-check TOCTOU replacement:
     # actual launch still requires an image/fd pinned by the sandbox broker.
     _verify_pinned_executable(original, profile.executable_sha256)
+    try:
+        after = original.stat(follow_symlinks=False)
+    except (OSError, RuntimeError) as exc:
+        raise AdmissionDenied("pinned CLI changed after measurement") from exc
+    facts_before = (
+        st.st_dev, st.st_ino, st.st_size, st.st_mode,
+        st.st_mtime_ns, st.st_ctime_ns,
+    )
+    facts_after = (
+        after.st_dev, after.st_ino, after.st_size, after.st_mode,
+        after.st_mtime_ns, after.st_ctime_ns,
+    )
+    if facts_before != facts_after or not stat.S_ISREG(after.st_mode):
+        raise AdmissionDenied("pinned CLI changed during preflight")
 
 
 def approved_profile_digest(profile: OpenCodeLaunchProfile) -> str:
