@@ -103,7 +103,7 @@ def test_blank_security_toggles_are_explicit_not_executed():
 
 def test_gate_workflow_prevents_duplicate_feature_branch_push_and_pr_runs():
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
-    assert "push:\n    branches: [main]\n  pull_request:" in workflow
+    assert "push:\n    branches: [main]\n    tags: ['v*']\n  pull_request:" in workflow
     assert "python -m locus_tooling.ci_gate_contract" in workflow
 
 
