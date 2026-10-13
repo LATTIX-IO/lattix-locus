@@ -9,7 +9,16 @@ permissions:
   contents: write
 
 jobs:
+  release-security-gates:
+    uses: ./.github/workflows/ci.yml
+    with:
+      require_security: true
+    permissions:
+      contents: read
+      security-events: write
+
   bundle:
+    needs: release-security-gates
     runs-on: ubuntu-latest
     env:
       AGENT_PYTHON_BASE_IMAGE: python:3.12.10-slim-bookworm
