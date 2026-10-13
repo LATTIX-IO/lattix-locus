@@ -12,7 +12,6 @@ import pytest
 from locus_runtime.pod_reservations import (
     AdmissionDenied, PodReservationLedger, ReservationRequest,
 )
-from locus_runtime.task_dispatch_driver import GatewayTaskDriver
 from locus_runtime.task_scheduler import DurableTaskScheduler
 from tests.unit.test_task_dispatch_driver import (
     TrustedVerifier, Worker, driver,
