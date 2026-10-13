@@ -207,6 +207,7 @@ class GatewayTaskDriver:
         parent: GatewaySession,
         *,
         should_stop: Callable[[], bool] | None = None,
+        recover_unstarted: bool = False,
     ) -> DispatchWave:
         """Execute one bounded set of independent nodes.
 
@@ -214,6 +215,12 @@ class GatewayTaskDriver:
         its existing reservation and report uncertainty. A separate recovery
         controller must reconcile; this driver never retries side effects.
         """
+        if type(recover_unstarted) is not bool:
+            raise ValueError("recovery flag must be boolean")
+        resumable = (
+            list(self.scheduler.recover_unstarted(plan, parent))
+            if recover_unstarted else []
+        )
         nodes = {node.node_id: node for node in plan.plan.nodes}
         outcomes: list[DispatchOutcome] = []
         tasks: list[tuple[TaskNode, NodeClaim, PodLease, EngineBinding]] = []
@@ -224,30 +231,42 @@ class GatewayTaskDriver:
                         break
                 except Exception:
                     break
-            claim = self.scheduler.claim_next(plan, parent)
+            claim = (
+                resumable.pop(0) if resumable
+                else self.scheduler.claim_next(plan, parent)
+            )
             if claim is None:
                 break
             node = nodes[claim.node_id]
             binding = self._select(node)
             if binding is None:
-                self.scheduler.block_unstarted(plan, parent, claim)
+                if claim.state == "claimed":
+                    self.scheduler.block_unstarted(plan, parent, claim)
                 outcomes.append(DispatchOutcome(
-                    claim.node_id, "", "blocked", "engine_capability_unavailable",
+                    claim.node_id, "",
+                    "blocked" if claim.state == "claimed" else "uncertain",
+                    "engine_capability_unavailable",
                 ))
                 continue
             try:
                 budget = self._budget(node)
             except (AdmissionDenied, ValueError):
-                self.scheduler.block_unstarted(plan, parent, claim)
+                if claim.state == "claimed":
+                    self.scheduler.block_unstarted(plan, parent, claim)
                 outcomes.append(DispatchOutcome(
-                    claim.node_id, binding.engine_id, "blocked", "invalid_node_budget",
+                    claim.node_id, binding.engine_id,
+                    "blocked" if claim.state == "claimed" else "uncertain",
+                    "invalid_node_budget",
                 ))
                 continue
             try:
-                self.scheduler.reserve(
-                    plan, parent, claim,
-                    budget=budget, lease_seconds=budget.wall_seconds,
-                )
+                if claim.state == "claimed":
+                    self.scheduler.reserve(
+                        plan, parent, claim,
+                        budget=budget, lease_seconds=budget.wall_seconds,
+                    )
+                elif claim.state != "reserved":
+                    raise AdmissionDenied("recovered attempt is not unstarted")
                 lease = self.scheduler.admit(
                     plan, parent, claim, engine=binding.engine_id,
                 )
@@ -278,6 +297,7 @@ class GatewayTaskDriver:
         *,
         max_waves: int = 256,
         should_stop: Callable[[], bool] | None = None,
+        recover_unstarted: bool = True,
     ) -> DispatchSummary:
         """Drive deterministically until verified, blocked, waiting or bounded stop.
 
@@ -286,6 +306,8 @@ class GatewayTaskDriver:
         """
         if type(max_waves) is not int or not 1 <= max_waves <= 256:
             raise ValueError("max_waves must be in 1..256")
+        if type(recover_unstarted) is not bool:
+            raise ValueError("recovery flag must be boolean")
         outcomes: list[DispatchOutcome] = []
         for index in range(max_waves):
             if should_stop is not None:
@@ -300,7 +322,10 @@ class GatewayTaskDriver:
                         "stopped", index, tuple(outcomes),
                         self.scheduler.states(plan, parent),
                     )
-            wave = self.run_wave(plan, parent, should_stop=should_stop)
+            wave = self.run_wave(
+                plan, parent, should_stop=should_stop,
+                recover_unstarted=recover_unstarted,
+            )
             outcomes.extend(wave.outcomes)
             states = self.scheduler.states(plan, parent)
             if all(state == "verified" for state in states.values()):
