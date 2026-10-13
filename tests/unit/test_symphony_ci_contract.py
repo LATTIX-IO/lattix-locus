@@ -28,10 +28,12 @@ def test_symphony_is_bound_to_locus_and_omniroute() -> None:
     assert '$linearProject.name -ne "Locus"' in preflight
 
 
-def test_ci_runs_required_gates_for_every_push() -> None:
+def test_ci_runs_required_gates_for_main_tag_and_every_pr() -> None:
     ci = _read(".github/workflows/ci.yml")
 
-    assert "on:\n  push:\n  pull_request:" in ci
+    assert "on:\n  push:\n    branches: [main]\n    tags: ['v*']\n  pull_request:" in ci
+    assert "  workflow_call:" in ci
+    assert "      - uses: actions/checkout@v4" in ci
     for job in (
         "frontend-unit",
         "backend-unit",
