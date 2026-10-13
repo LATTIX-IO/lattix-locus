@@ -33,10 +33,12 @@ class GateDecision:
 
 
 def _enabled(name: str, env: Mapping[str, str]) -> bool:
-    value = env.get(name, "").strip().lower()
-    if value in ("", "false", "0"):
+    # GitHub job expressions compare the literal repository variable to 'true'.
+    # Normalizing 1/TRUE/whitespace would disagree with which scanners ran.
+    value = env.get(name, "")
+    if value in ("", "false"):
         return False
-    if value in ("true", "1"):
+    if value == "true":
         return True
     raise GateContractError(f"invalid CI security toggle: {name}")
 
