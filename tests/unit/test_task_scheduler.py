@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import concurrent.futures
+import sqlite3
 from dataclasses import replace
 
 import pytest
 
 from locus_runtime.gateway import BudgetFigures, Capabilities, Gateway, RiskClass
 from locus_runtime.pod_reservations import (
-    AdmissionDenied, PodReservationLedger, ResourceBudget,
+    AdmissionDenied, PodReservationLedger, ReservationRequest, ResourceBudget,
 )
 from locus_runtime.task_graph_contract import TaskAuthority, TaskBudget, TaskIntent
 from locus_runtime.task_plan_compiler import compile_task_plan
@@ -318,3 +319,159 @@ def test_restart_with_wider_concurrency_limit_is_rejected(tmp_path):
         widened.ready(plan, parent)
     with pytest.raises(AdmissionDenied, match="concurrency"):
         widened.bind(plan, parent, max_tool_calls=12)
+
+
+
+def test_crash_after_claim_is_resumable_without_new_claim_or_duplicate_effect(tmp_path):
+    scheduler, ledger, plan, parent = build(tmp_path)
+    abandoned = scheduler.claim_next(plan, parent)
+    assert abandoned is not None and abandoned.node_id == "research"
+    restart = DurableTaskScheduler(PodReservationLedger(tmp_path / "pods.db"), max_inflight=2)
+    restart.bind(plan, parent, max_tool_calls=12)
+    claims = restart.recover_unstarted(plan, parent)
+    assert len(claims) == 1 and claims[0].attempt_key == abandoned.attempt_key
+    assert restart.recover_unstarted(plan, parent) == claims
+    # No new attempt identity was minted; concurrently resuming uses one hold.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        holds = list(pool.map(
+            lambda _: restart.reserve(
+                plan, parent, claims[0], budget=REQUEST, lease_seconds=30,
+            ), range(2),
+        ))
+    assert holds[0].reservation_id == holds[1].reservation_id
+    assert ledger.snapshot(parent.caller.run_id).held == REQUEST
+    lease = restart.admit(plan, parent, claims[0], engine="trusted-worker")
+    verified(restart, plan, parent, claims[0], lease)
+    with pytest.raises(AdmissionDenied):
+        restart.admit(plan, parent, claims[0], engine="trusted-worker")
+
+
+def test_crash_after_reserve_before_dispatch_persist_recovers_same_reservation(tmp_path):
+    scheduler, ledger, plan, parent = build(tmp_path)
+    claimed = scheduler.claim_next(plan, parent)
+    assert claimed is not None
+    hold = ledger.reserve(
+        plan, parent, ReservationRequest(
+            claimed.node_id, claimed.attempt_key, "v1", REQUEST, 30,
+        ),
+    )
+    # Simulate termination between ledger transaction and scheduler transition.
+    recovered = DurableTaskScheduler(PodReservationLedger(tmp_path / "pods.db"), max_inflight=2)
+    claims = recovered.recover_unstarted(plan, parent)
+    assert len(claims) == 1 and claims[0].state == "reserved"
+    assert claims[0].reservation_id == hold.reservation_id
+    assert recovered.reserve(
+        plan, parent, claims[0], budget=REQUEST, lease_seconds=30,
+    ).reservation_id == hold.reservation_id
+    lease = recovered.admit(plan, parent, claims[0], engine="trusted-worker")
+    verified(recovered, plan, parent, claims[0], lease)
+
+
+def test_canceled_unadmitted_hold_requeues_with_fresh_identity_and_stale_claim_denied(tmp_path):
+    scheduler, ledger, plan, parent = build(tmp_path)
+    previous = scheduler.claim_next(plan, parent)
+    assert previous is not None
+    first = scheduler.reserve(plan, parent, previous, budget=REQUEST, lease_seconds=30)
+    with ledger._connect() as db:
+        ledger._tx(db)
+        db.execute("UPDATE pod_attempt SET expires_at=0 WHERE id=?", (first.reservation_id,))
+    assert ledger.recover_expired() == (first.reservation_id,)
+    assert ledger.get(first.reservation_id).state == "canceled"
+    assert scheduler.recover_unstarted(plan, parent) == ()
+    assert scheduler.ready(plan, parent) == ("research", "triage")
+    replacement = scheduler.claim_next(plan, parent)
+    assert replacement is not None
+    assert replacement.node_id == previous.node_id
+    assert replacement.attempt_key != previous.attempt_key
+    with pytest.raises(AdmissionDenied, match="claim replay"):
+        scheduler.reserve(plan, parent, previous, budget=REQUEST, lease_seconds=30)
+    second = scheduler.reserve(
+        plan, parent, replacement, budget=REQUEST, lease_seconds=30,
+    )
+    assert first.reservation_id != second.reservation_id
+    assert ledger.snapshot(parent.caller.run_id).held == REQUEST
+    lease = scheduler.admit(plan, parent, replacement, engine="trusted-worker")
+    verified(scheduler, plan, parent, replacement, lease)
+
+
+def test_crash_before_persist_reservation_canceled_never_reuses_terminal_key(tmp_path):
+    scheduler, ledger, plan, parent = build(tmp_path)
+    claim = scheduler.claim_next(plan, parent)
+    assert claim is not None
+    hold = ledger.reserve(
+        plan, parent, ReservationRequest(claim.node_id, claim.attempt_key, "v1", REQUEST, 30),
+    )
+    assert ledger.cancel_reserved(hold.reservation_id).state == "canceled"
+    assert scheduler.recover_unstarted(plan, parent) == ()
+    replacement = scheduler.claim_next(plan, parent)
+    assert replacement is not None and replacement.attempt_key != claim.attempt_key
+
+
+def test_ambiguous_admitted_child_never_requeued_by_recovery(tmp_path):
+    scheduler, ledger, plan, parent = build(tmp_path)
+    claim = scheduler.claim_next(plan, parent)
+    assert claim is not None
+    hold = ledger.reserve(
+        plan, parent, ReservationRequest(claim.node_id, claim.attempt_key, "v1", REQUEST, 30),
+    )
+    child = ledger.admit(plan, parent, hold.reservation_id, engine="sandbox-child")
+    assert child.reservation_id == hold.reservation_id
+    assert scheduler.recover_unstarted(plan, parent) == ()
+    with ledger._connect() as db:
+        state = db.execute(
+            "SELECT state FROM task_dispatch_node WHERE parent_run_id=? AND node_id=?",
+            (parent.caller.run_id, claim.node_id),
+        ).fetchone()[0]
+    assert state == "uncertain"
+    assert ledger.snapshot(parent.caller.run_id).held.actions == REQUEST.actions
+    with pytest.raises(AdmissionDenied, match="claim replay"):
+        scheduler.reserve(plan, parent, claim, budget=REQUEST, lease_seconds=30)
+
+
+def test_recovery_key_corruption_is_rejected_and_does_not_release_hold(tmp_path):
+    scheduler, ledger, plan, parent = build(tmp_path)
+    claim = scheduler.claim_next(plan, parent)
+    assert claim is not None
+    with ledger._connect() as db:
+        ledger._tx(db)
+        db.execute(
+            "UPDATE task_dispatch_node SET attempt_key='forged' WHERE "
+            "parent_run_id=? AND node_id=?",
+            (parent.caller.run_id, claim.node_id),
+        )
+    with pytest.raises(AdmissionDenied, match="corrupt durable"):
+        scheduler.recover_unstarted(plan, parent)
+    assert scheduler.claim_next(plan, parent).node_id == "triage"
+
+
+def test_bounded_recovery_denies_infinite_attempt_identity_churn(tmp_path):
+    scheduler, ledger, plan, parent = build(tmp_path)
+    for attempt in range(4):
+        claimed = scheduler.claim_next(plan, parent)
+        assert claimed is not None and claimed.node_id == "research"
+        held = scheduler.reserve(
+            plan, parent, claimed, budget=REQUEST, lease_seconds=30,
+        )
+        assert ledger.cancel_reserved(held.reservation_id).state == "canceled"
+        assert scheduler.recover_unstarted(plan, parent) == ()
+        if attempt < 3:
+            assert scheduler.ready(plan, parent) == ("research", "triage")
+    assert scheduler.ready(plan, parent) == ("triage",)
+    assert scheduler.claim_next(plan, parent).node_id == "triage"
+    assert ledger.snapshot(parent.caller.run_id).held.actions == 0
+
+
+def test_legacy_dispatch_schema_upgrade_preserves_claim_format(tmp_path):
+    path = tmp_path / "pods.db"
+    ledger = PodReservationLedger(path)
+    with sqlite3.connect(path) as db:
+        db.execute("""CREATE TABLE task_dispatch_node (
+            parent_run_id TEXT NOT NULL, node_id TEXT NOT NULL,
+            plan_digest TEXT NOT NULL, graph_fingerprint TEXT NOT NULL,
+            state TEXT NOT NULL, attempt_key TEXT, reservation_id TEXT,
+            artifact_digest TEXT, PRIMARY KEY (parent_run_id,node_id)
+        )""")
+    DurableTaskScheduler(ledger, max_inflight=2)
+    with ledger._connect() as db:
+        fields = {r["name"] for r in db.execute("PRAGMA table_info(task_dispatch_node)")}
+    assert "attempt_epoch" in fields
