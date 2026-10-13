@@ -32,6 +32,7 @@ from locus_runtime.task_plan_compiler import CompiledTaskPlan
 
 _PROOF_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _BUSY = frozenset({"claimed", "reserved", "active", "uncertain"})
+_MAX_UNSTARTED_RECLAIMS = 3
 
 
 class VerificationRejected(AdmissionDenied):
@@ -89,10 +90,21 @@ class DurableTaskScheduler:
                 graph_fingerprint TEXT NOT NULL,
                 state TEXT NOT NULL,
                 attempt_key TEXT,
+                attempt_epoch INTEGER NOT NULL DEFAULT 0,
                 reservation_id TEXT,
                 artifact_digest TEXT,
                 PRIMARY KEY (parent_run_id, node_id)
             )""")
+            # Existing unmerged development DBs may predate the recovery field.
+            # The schema change is additive and guarded by BEGIN IMMEDIATE.
+            columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(task_dispatch_node)")
+            }
+            if "attempt_epoch" not in columns:
+                db.execute(
+                    "ALTER TABLE task_dispatch_node ADD COLUMN "
+                    "attempt_epoch INTEGER NOT NULL DEFAULT 0"
+                )
 
     @staticmethod
     def _fingerprint(plan: CompiledTaskPlan) -> str:
@@ -163,8 +175,12 @@ class DurableTaskScheduler:
         return {str(row["node_id"]): row for row in rows}
 
     @staticmethod
-    def _key(run_id: str, digest: str, node_id: str) -> str:
+    def _key(run_id: str, digest: str, node_id: str, epoch: int = 0) -> str:
+        if type(epoch) is not int or not 0 <= epoch <= _MAX_UNSTARTED_RECLAIMS:
+            raise AdmissionDenied("invalid task attempt epoch")
         raw = f"{run_id}\x00{digest}\x00{node_id}".encode("utf-8")
+        if epoch:
+            raw += f"\x00unstarted-reclaim:{epoch}".encode("ascii")
         return "dag-" + hashlib.sha256(raw).hexdigest()
 
     @staticmethod
@@ -242,13 +258,100 @@ class DurableTaskScheduler:
             if not ready:
                 return None
             node_id = ready[0]
-            key = self._key(parent.caller.run_id, plan.digest, node_id)
+            key = self._key(
+                parent.caller.run_id, plan.digest, node_id,
+                int(rows[node_id]["attempt_epoch"]),
+            )
             db.execute(
                 "UPDATE task_dispatch_node SET state='claimed',attempt_key=? "
                 "WHERE parent_run_id=? AND node_id=? AND state='pending'",
                 (key, parent.caller.run_id, node_id),
             )
             return NodeClaim(parent.caller.run_id, plan.digest, node_id, key, "claimed")
+
+    def recover_unstarted(
+        self, plan: CompiledTaskPlan, parent: GatewaySession,
+    ) -> tuple[NodeClaim, ...]:
+        """Reconstruct safe claims and requeue definitively unexecuted holds.
+
+        The existing idempotency key is reused when a claim is not known to
+        have launched work. Every ledger lookup and scheduler transition
+        occurs in one SQLite write transaction. Canceled *unadmitted* holds
+        get a new bounded attempt epoch; active/uncertain/closed attempts
+        remain non-replayable. Call ledger.recover_expired() first if needed.
+        """
+        resumable: list[NodeClaim] = []
+        with self.ledger._connect() as db:
+            self.ledger._tx(db)
+            rows = self._check(db, plan, parent)
+            for node_id in sorted(rows):
+                row = rows[node_id]
+                if row["state"] not in {"claimed", "reserved"}:
+                    continue
+                epoch = row["attempt_epoch"]
+                key = row["attempt_key"]
+                if (
+                    type(epoch) is not int
+                    or not isinstance(key, str)
+                    or key != self._key(parent.caller.run_id, plan.digest, node_id, epoch)
+                ):
+                    raise AdmissionDenied("corrupt durable task attempt identity")
+                pod = db.execute(
+                    "SELECT * FROM pod_attempt WHERE parent_id=? AND attempt_key=?",
+                    (parent.caller.run_id, key),
+                ).fetchone()
+                bound_id = row["reservation_id"]
+                if pod is None and row["state"] == "claimed" and bound_id is None:
+                    # No reservation or Gateway child exists. Original
+                    # supervisor and recovering supervisor share this key.
+                    resumable.append(NodeClaim(
+                        parent.caller.run_id, plan.digest, node_id, key, "claimed",
+                    ))
+                    continue
+                if pod is not None and (
+                    pod["node_id"] != node_id
+                    or pod["plan_digest"] != plan.digest
+                    or bound_id not in (None, pod["id"])
+                ):
+                    raise AdmissionDenied("reservation identity does not match graph")
+                state = pod["state"] if pod is not None else "missing"
+                if state == "reserved" and pod is not None:
+                    # Crash between successful ledger.reserve and the
+                    # scheduler's reservation state update: restore the hold.
+                    db.execute(
+                        "UPDATE task_dispatch_node SET state='reserved',reservation_id=? "
+                        "WHERE parent_run_id=? AND node_id=?",
+                        (pod["id"], parent.caller.run_id, node_id),
+                    )
+                    resumable.append(NodeClaim(
+                        parent.caller.run_id, plan.digest, node_id, key,
+                        "reserved", str(pod["id"]),
+                    ))
+                elif state == "canceled" and pod is not None and not pod["child_run_id"]:
+                    # An expired reserved hold never admitted a child; the
+                    # old idempotency key is terminal and must not be reused.
+                    if epoch < _MAX_UNSTARTED_RECLAIMS:
+                        db.execute(
+                            "UPDATE task_dispatch_node SET state='pending',"
+                            "attempt_key=NULL,reservation_id=NULL,attempt_epoch=? "
+                            "WHERE parent_run_id=? AND node_id=?",
+                            (epoch + 1, parent.caller.run_id, node_id),
+                        )
+                    else:
+                        db.execute(
+                            "UPDATE task_dispatch_node SET state='blocked' "
+                            "WHERE parent_run_id=? AND node_id=?",
+                            (parent.caller.run_id, node_id),
+                        )
+                else:
+                    # Admitting, active, closed, revoked, unknown or corrupted
+                    # attempts might already have caused effects. Never retry.
+                    db.execute(
+                        "UPDATE task_dispatch_node SET state='uncertain' "
+                        "WHERE parent_run_id=? AND node_id=?",
+                        (parent.caller.run_id, node_id),
+                    )
+        return tuple(resumable)
 
     def _require_claim(
         self, db: sqlite3.Connection, plan: CompiledTaskPlan,
@@ -405,7 +508,6 @@ class DurableTaskScheduler:
                     )
                     quarantined.append(node_id)
         return tuple(sorted(quarantined))
-
 
     def block_unstarted(
         self, plan: CompiledTaskPlan, parent: GatewaySession, claim: NodeClaim,
