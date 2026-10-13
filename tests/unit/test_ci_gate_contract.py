@@ -148,3 +148,27 @@ def test_entrypoint_fails_closed_on_invalid_ci_payload(
 ):
     monkeypatch.setenv("RESULTS", payload)
     assert main() == 1
+
+
+
+def test_release_workflows_require_exact_source_security_gate():
+    ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    release = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    desktop = Path(".github/workflows/desktop-release.yml").read_text(encoding="utf-8")
+    assert "    tags: ['v*']" in ci
+    assert "  workflow_call:" in ci
+    assert "github.ref_type == 'tag' || inputs.require_security" in ci
+    for workflow in (release, desktop):
+        assert "  release-security-gates:" in workflow
+        assert "    uses: ./.github/workflows/ci.yml" in workflow
+        assert "      require_security: true" in workflow
+        assert "    needs: release-security-gates" in workflow
+    assert "needs.release-security-gates.result == 'success'" in desktop
+
+
+def test_required_gates_job_checks_out_security_policy_module():
+    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    section = workflow.split("\n  required-gates:\n", 1)[1]
+    assert "      - uses: actions/checkout@v4" in section
+    assert "      - uses: actions/setup-python@v5" in section
+    assert section.index("actions/checkout@v4") < section.index("python -m locus_tooling.ci_gate_contract")
