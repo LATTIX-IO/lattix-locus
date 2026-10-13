@@ -174,6 +174,12 @@ def compile_opencode_launch(
                 "*": "deny",
                 **{name: "allow" for name in tools},
             },
+            "default_agent": "locus",
+            "agent": {"locus": {
+                "description": "Locus approved external worker",
+                "mode": "primary",
+                "permission": {"*": "deny", **{name: "allow" for name in tools}},
+            }},
             "mcp": (
                 {"locus": {"type": "local", "command": mcp_cmd, "enabled": True}}
                 if tools else {}
@@ -201,6 +207,12 @@ def compile_opencode_launch(
             "update": "disable",
             "share": "disabled",
             "permissions": rules,
+            "default_agent": "locus",
+            "agents": {"locus": {
+                "description": "Locus approved external worker",
+                "mode": "primary",
+                "permissions": list(rules),
+            }},
             "experimental": {"policies": hard_rules},
             "mcp": (
                 {"servers": {"locus": {
@@ -249,7 +261,7 @@ def compile_opencode_launch(
             str(binary), "run",
             *(("--standalone",) if parsed.major == 2 else ()),
             "--format", "json", "--model", model,
-            "--file", str(request), _RUN_MESSAGE,
+            "--agent", "locus", "--file", str(request), _RUN_MESSAGE,
         ),
         env=tuple(sorted(env.items())),
         config_json=serialized,
@@ -269,14 +281,17 @@ def validate_effective_opencode_config(
     if not isinstance(profile, OpenCodeLaunchProfile) or not isinstance(effective, Mapping):
         raise OpenCodeContractDenied("trusted profile and effective config required")
     expected = profile.config()
-    for section in ("permission", "permissions", "mcp", "experimental"):
+    for section in (
+        "permission", "permissions", "mcp", "experimental",
+        "agent", "agents", "default_agent",
+    ):
         if effective.get(section) != expected.get(section):
             raise OpenCodeContractDenied("effective OpenCode policy was overridden")
     if effective.get("model", profile.model) != profile.model:
         raise OpenCodeContractDenied("resolved model differs from approved provider")
     # The installed CLI must not load extra plugins, agents, tools, skills,
     # formatters or project instructions capable of overriding this profile.
-    for key in ("plugin", "plugins", "tools", "agent", "agents", "instructions",
+    for key in ("plugin", "plugins", "tools", "instructions",
                 "formatter", "lsp", "command", "commands", "skills"):
         if effective.get(key):
             raise OpenCodeContractDenied("untrusted OpenCode extension in effective config")
