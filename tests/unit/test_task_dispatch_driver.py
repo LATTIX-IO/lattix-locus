@@ -111,7 +111,9 @@ def test_restart_dispatches_only_unverified_predecessor_and_never_reexecutes(tmp
     result = driver(restarted, second).run_until_idle(plan, parent)
     assert result.status == "done"
     assert [row[0] for row in second.calls] == ["compose", "publish"]
-    assert [row[0] for row in first.calls] == ["research", "triage"]
+    # Sibling callbacks run concurrently; dispatch order is deterministic,
+    # but completion order must not be specified by the test.
+    assert sorted(row[0] for row in first.calls) == ["research", "triage"]
 
 
 def test_missing_engine_capability_blocks_without_gateway_child_or_budget_hold(tmp_path):
