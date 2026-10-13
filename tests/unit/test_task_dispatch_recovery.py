@@ -169,10 +169,10 @@ def test_two_recovering_supervisors_cannot_duplicate_admission(tmp_path):
             for run in (a, b)
         ]
         waves = [task.result() for task in futures]
-    assert [name for name, *_ in shared_worker.calls].count("research") <= 1
-    assert len({child for name, child, _ in shared_worker.calls if name == "research"}) <= 1
+    assert [name for name, *_ in shared_worker.calls].count("research") == 1
+    assert len({child for name, child, _ in shared_worker.calls if name == "research"}) == 1
     assert sum(x.status == "verified" and x.node_id == "research"
-               for wave in waves for x in wave.outcomes) <= 1
+               for wave in waves for x in wave.outcomes) == 1
     assert ledger.snapshot(parent.caller.run_id).used.actions <= 2
 
 
