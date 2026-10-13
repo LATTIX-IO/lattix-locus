@@ -33,6 +33,10 @@ A provider is never implicitly privileged because it is local.
    per-user server and `update: "disable"` (not V1 `autoupdate: false`);
    sharing is explicitly disabled in both dialects. Default tools,
    subagents, plugins, skills, filesystem, shell and web receive no grant.
+   The selected provider is independently pinned: V1
+   `enabled_providers=[provider]`, V2 ordered `provider.use` policy denies
+   all providers except the one the Gateway approved. The chosen model is
+   present in both the launch flags and resolved configuration.
    A dedicated `locus` primary agent is selected explicitly rather than
    inheriting the permissive built-in `build` agent. Resolved agent-level
    grants must match the exact deny-first profile. Windows and POSIX paths
