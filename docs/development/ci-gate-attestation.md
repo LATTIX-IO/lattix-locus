@@ -34,3 +34,23 @@ and merge authority before declaring a universal code-owner deadlock.
 This increment is **not** complete production security assessment: DAST,
 SAST and dependency scan coverage depend on enabled engines/credentials,
 and protected Docker mounts need live supported-host validation.
+
+
+## Exact-commit publication fencing (2026-10-13)
+
+Both tagged server releases and release-producing desktop installer builds now
+invoke the complete reusable CI workflow with `require_security: true`
+before packaging or publishing. The reused workflow evaluates the caller's
+commit and makes skipped CodeQL, AppSec/pentest, or SBOM/SCA jobs fatal.
+An ordinary manual desktop artifacts-only build may skip this publishing gate
+but cannot publish a GitHub release from that path.
+
+The CI workflow also listens to `v*` tags for audit evidence; these runs
+are not a substitute for the reusable, blocking release dependency. The
+`required-gates` job checks out the repository and configures Python before
+loading `locus_tooling.ci_gate_contract`. Any missing security engine,
+disabled scanner, unavailable kit, or failed check must block publication.
+
+Release operators must enable and configure the CodeQL and Lattix scanning
+jobs before triggering a production tag. CodeQL/AppSec/SCA being unavailable
+is an explicit release blocker, not an accepted baseline exception.
