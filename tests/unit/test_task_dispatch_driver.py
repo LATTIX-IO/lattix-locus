@@ -166,12 +166,17 @@ def test_independent_verifier_failure_blocks_child_without_replaying(tmp_path, o
     )
     subject = driver(scheduler, Worker(), verifier)
     wave = subject.run_wave(plan, parent)
-    assert all(item.status == "blocked" for item in wave.outcomes)
-    assert all(item.reason_code == "artifact_not_verified" for item in wave.outcomes)
+    expected_status = "blocked" if outcome == "rejected" else "uncertain"
+    expected_code = "artifact_not_verified" if outcome == "rejected" else "verifier_unavailable"
+    assert all(item.status == expected_status for item in wave.outcomes)
+    assert all(item.reason_code == expected_code for item in wave.outcomes)
     assert scheduler.ready(plan, parent) == ()
     assert ledger.snapshot(parent.caller.run_id).held.actions == 0
     assert all(value != "verified" for value in scheduler.states(plan, parent).values())
     assert subject.run_wave(plan, parent).outcomes == ()
+    assert set(scheduler.states(plan, parent).values()) <= {
+        "pending", "blocked" if outcome == "rejected" else "active",
+    }
 
 
 def test_interrupt_prior_to_admission_has_zero_effect_and_no_child(tmp_path):
@@ -253,3 +258,11 @@ def test_dispatcher_never_gains_a_subprocess_or_ambient_tool_path():
     for prohibited in ("subprocess.", "os.system(", "os.popen(", "authorize_action(",
                        "Gateway.open_session(", "shell=True", "eval("):
         assert prohibited not in source
+
+
+def test_run_summary_requires_manual_reconciliation_after_worker_interruption(tmp_path):
+    scheduler, _, plan, parent = build(tmp_path)
+    summary = driver(scheduler, Worker(fail=True)).run_until_idle(plan, parent)
+    assert summary.status == "blocked"
+    assert any(item.status == "uncertain" for item in summary.outcomes)
+    assert summary.node_states["compose"] == "pending"
