@@ -202,6 +202,8 @@ class DurableTaskScheduler:
             lease_seconds=lease_seconds,
         )
         reserved = self.ledger.reserve(plan, parent, request)
+        if reserved.state != "reserved":
+            raise AdmissionDenied("attempt is no longer reservable")
         with self.ledger._connect() as db:
             self.ledger._tx(db)
             current = self._require_claim(
