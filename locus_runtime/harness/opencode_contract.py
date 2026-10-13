@@ -170,6 +170,8 @@ def compile_opencode_launch(
             "$schema": "https://opencode.ai/config.json",
             "autoupdate": False,
             "share": "disabled",
+            "formatter": False,
+            "lsp": False,
             "permission": {
                 "*": "deny",
                 **{name: "allow" for name in tools},
@@ -206,6 +208,9 @@ def compile_opencode_launch(
             "$schema": "https://opencode.ai/config.json",
             "update": "disable",
             "share": "disabled",
+            "formatter": False,
+            "lsp": False,
+            "snapshots": False,
             "permissions": rules,
             "default_agent": "locus",
             "agents": {"locus": {
@@ -283,10 +288,12 @@ def validate_effective_opencode_config(
     expected = profile.config()
     for section in (
         "permission", "permissions", "mcp", "experimental",
-        "agent", "agents", "default_agent",
+        "agent", "agents", "default_agent", "formatter", "lsp", "snapshots",
     ):
         if effective.get(section) != expected.get(section):
             raise OpenCodeContractDenied("effective OpenCode policy was overridden")
+    # A model/provider identity must stay explicit: missing values cannot be
+    # used to bypass an independently approved inference egress policy.
     if effective.get("model", profile.model) != profile.model:
         raise OpenCodeContractDenied("resolved model differs from approved provider")
     # The installed CLI must not load extra plugins, agents, tools, skills,
