@@ -383,6 +383,30 @@ def test_inherited_formatters_and_language_servers_are_explicitly_disabled(tmp_p
             validate_effective_opencode_config(p, mutated)
 
 
+
+@pytest.mark.parametrize("version", ["1.16.0", "2.0.0"])
+def test_effective_config_must_pin_actual_provider_not_silent_default(tmp_path, version):
+    p = profile(tmp_path, version=version, model="ollama/qwen3:8b")
+    assert p.config()["model"] == "ollama/qwen3:8b"
+    validate_effective_opencode_config(p, p.config())
+    for alternative in (None, "anthropic/other", "", "openai/gpt-6"):
+        modified = copy.deepcopy(p.config())
+        if alternative is None:
+            modified.pop("model")
+        else:
+            modified["model"] = alternative
+        with pytest.raises(OpenCodeContractDenied, match="resolved model"):
+            validate_effective_opencode_config(p, modified)
+
+
+def test_v1_missing_autoupdate_false_is_not_interpreted_as_disabled(tmp_path):
+    p = profile(tmp_path, version="1.16.0")
+    modified = copy.deepcopy(p.config())
+    modified.pop("autoupdate")
+    with pytest.raises(OpenCodeContractDenied, match="automatic update"):
+        validate_effective_opencode_config(p, modified)
+
+
 def test_engine_config_module_never_executes_external_binary():
     root = Path(__file__).resolve().parents[2]
     src = (root / "locus_runtime" / "harness" / "opencode_contract.py").read_text()
