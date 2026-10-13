@@ -110,9 +110,11 @@ def test_v2_compile_deny_first_rules_and_non_codemode_mcp(tmp_path):
         {"action": "locus_run_tests", "resource": "*", "effect": "allow"},
         {"action": "locus_search", "resource": "*", "effect": "allow"},
     ]
-    assert cfg["experimental"]["policies"][0] == {
-        "action": "permission", "resource": "*", "effect": "deny",
-    }
+    assert cfg["experimental"]["policies"][:3] == [
+        {"action": "provider.use", "resource": "*", "effect": "deny"},
+        {"action": "provider.use", "resource": "anthropic", "effect": "allow"},
+        {"action": "permission", "resource": "*", "effect": "deny"},
+    ]
     assert cfg["experimental"]["policies"][-1] == {
         "action": "permission", "resource": "locus_search:*", "effect": "allow",
     }
@@ -404,6 +406,34 @@ def test_v1_missing_autoupdate_false_is_not_interpreted_as_disabled(tmp_path):
     modified = copy.deepcopy(p.config())
     modified.pop("autoupdate")
     with pytest.raises(OpenCodeContractDenied, match="automatic update"):
+        validate_effective_opencode_config(p, modified)
+
+
+
+@pytest.mark.parametrize("version", ["1.16.0", "2.0.0"])
+@pytest.mark.parametrize("model", ["ollama/qwen3:8b", "openai/gpt-6",
+                                   "anthropic/claude-sonnet-4-5"])
+def test_provider_allowlist_is_bound_to_one_selected_provider(tmp_path, version, model):
+    p = profile(tmp_path, version=version, model=model)
+    provider = model.split("/", 1)[0]
+    cfg = p.config()
+    assert cfg["model"] == model
+    if p.version.major == 1:
+        assert cfg["enabled_providers"] == [provider]
+    else:
+        policies = cfg["experimental"]["policies"]
+        assert policies[:2] == [
+            {"action": "provider.use", "resource": "*", "effect": "deny"},
+            {"action": "provider.use", "resource": provider, "effect": "allow"},
+        ]
+    modified = copy.deepcopy(cfg)
+    if p.version.major == 1:
+        modified["enabled_providers"].append("untrusted")
+    else:
+        modified["experimental"]["policies"].append(
+            {"action": "provider.use", "resource": "untrusted", "effect": "allow"},
+        )
+    with pytest.raises(OpenCodeContractDenied):
         validate_effective_opencode_config(p, modified)
 
 
