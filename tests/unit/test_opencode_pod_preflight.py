@@ -294,3 +294,24 @@ def test_empty_or_unapproved_registry_fingerprint_denied(tmp_path):
                 observed_version="1.16.0",
                 observed_effective_config=profile.config(),
             )
+
+
+
+def test_post_hash_mode_change_fails_closed_before_engine_run(tmp_path, monkeypatch):
+    import locus_runtime.harness.opencode_pod_preflight as module
+
+    profile, lease, *_ = pod(tmp_path)
+    measure = module._verify_pinned_executable
+
+    def simulated_host_mutation(path, expected):
+        measure(path, expected)
+        Path(path).chmod(0o777)
+
+    monkeypatch.setattr(module, "_verify_pinned_executable", simulated_host_mutation)
+    with pytest.raises(AdmissionDenied, match="changed during preflight"):
+        preflight_opencode_pod(
+            profile, lease,
+            expected_profile_sha256=approved_profile_digest(profile),
+            observed_version="1.16.0",
+            observed_effective_config=profile.config(),
+        )
