@@ -50,6 +50,8 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       require_security: true
+    secrets:
+      LATTIX_CICD_PENTEST_READ_TOKEN: ${{ secrets.LATTIX_CICD_PENTEST_READ_TOKEN }}
     permissions:
       contents: read
       security-events: write
