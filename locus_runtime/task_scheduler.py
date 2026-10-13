@@ -12,9 +12,10 @@ external reconciliation, not automatic retry of an effectful child.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Protocol
 
 from locus_runtime.gateway import GatewaySession
@@ -71,12 +72,41 @@ class DurableTaskScheduler:
                 parent_run_id TEXT NOT NULL,
                 node_id TEXT NOT NULL,
                 plan_digest TEXT NOT NULL,
+                graph_fingerprint TEXT NOT NULL,
                 state TEXT NOT NULL,
                 attempt_key TEXT,
                 reservation_id TEXT,
                 artifact_digest TEXT,
                 PRIMARY KEY (parent_run_id, node_id)
             )""")
+
+    @staticmethod
+    def _fingerprint(plan: CompiledTaskPlan) -> str:
+        """Independent canonical binding of every trusted intent/graph field."""
+        obj = plan.plan
+        body = {
+            "version": obj.contract_version,
+            "intent": asdict(obj.intent),
+            "parent": {
+                "capabilities": sorted(obj.parent_authority.capabilities),
+                "risk": obj.parent_authority.risk_ceiling,
+                "budget": asdict(obj.parent_authority.budget),
+            },
+            "nodes": [
+                {
+                    "id": node.node_id,
+                    "depends_on": sorted(node.depends_on),
+                    "capabilities": sorted(node.authority.capabilities),
+                    "risk": node.authority.risk_ceiling,
+                    "budget": asdict(node.authority.budget),
+                    "deliverables": node.deliverables,
+                    "criteria": node.acceptance_criteria,
+                }
+                for node in sorted(obj.nodes, key=lambda n: n.node_id)
+            ],
+        }
+        raw = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def _check(
         self, db: sqlite3.Connection, plan: CompiledTaskPlan, parent: GatewaySession,
@@ -99,7 +129,12 @@ class DurableTaskScheduler:
         ).fetchall()
         if {row["node_id"] for row in rows} != {n.node_id for n in plan.plan.nodes}:
             raise AdmissionDenied("task graph has not been bound to durable scheduler")
-        if any(row["plan_digest"] != plan.digest for row in rows):
+        fingerprint = self._fingerprint(plan)
+        if any(
+            row["plan_digest"] != plan.digest
+            or row["graph_fingerprint"] != fingerprint
+            for row in rows
+        ):
             raise AdmissionDenied("scheduler graph revision changed")
         return {str(row["node_id"]): row for row in rows}
 
@@ -126,21 +161,27 @@ class DurableTaskScheduler:
         with self.ledger._connect() as db:
             self.ledger._tx(db)
             self.ledger._parent(db, run_id)
+            fingerprint = self._fingerprint(plan)
             existing = db.execute(
-                "SELECT node_id,plan_digest FROM task_dispatch_node WHERE parent_run_id=?",
+                "SELECT node_id,plan_digest,graph_fingerprint FROM task_dispatch_node "
+                "WHERE parent_run_id=?",
                 (run_id,),
             ).fetchall()
             if existing and (
                 len(existing) != len(plan.plan.nodes)
-                or any(row["plan_digest"] != plan.digest for row in existing)
+                or any(
+                    row["plan_digest"] != plan.digest
+                    or row["graph_fingerprint"] != fingerprint for row in existing
+                )
                 or {row["node_id"] for row in existing} != {n.node_id for n in plan.plan.nodes}
             ):
                 raise AdmissionDenied("scheduler cannot silently replace a graph")
             for node in plan.plan.nodes:
                 db.execute(
                     "INSERT OR IGNORE INTO task_dispatch_node "
-                    "(parent_run_id,node_id,plan_digest,state) VALUES (?,?,?,'pending')",
-                    (run_id, node.node_id, plan.digest),
+                    "(parent_run_id,node_id,plan_digest,graph_fingerprint,state) "
+                    "VALUES (?,?,?,?,'pending')",
+                    (run_id, node.node_id, plan.digest, fingerprint),
                 )
 
     def ready(
