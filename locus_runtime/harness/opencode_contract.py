@@ -101,7 +101,7 @@ def _absolute_path(
             raise OpenCodeContractDenied(f"untrusted Windows {name} path")
         path: PurePath = PureWindowsPath(value)
     else:
-        if "\" in value:
+        if "\\" in value:
             raise OpenCodeContractDenied(f"untrusted POSIX {name} path")
         path = PurePosixPath(value)
     if (not path.is_absolute() or str(path) != value
