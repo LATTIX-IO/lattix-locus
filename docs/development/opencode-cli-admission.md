@@ -33,6 +33,11 @@ A provider is never implicitly privileged because it is local.
    per-user server and `update: "disable"` (not V1 `autoupdate: false`);
    sharing is explicitly disabled in both dialects. Default tools,
    subagents, plugins, skills, filesystem, shell and web receive no grant.
+   A dedicated `locus` primary agent is selected explicitly rather than
+   inheriting the permissive built-in `build` agent. Resolved agent-level
+   grants must match the exact deny-first profile. Windows and POSIX paths
+   are modeled separately; actual AppContainer/OS sandbox execution is a
+   follow-on gate.
    Unknown major/prerelease versions deny admission.
 5. A trusted sandbox runner must verify the installed executable SHA-256,
    observed CLI version, isolated credential/config source namespace,
