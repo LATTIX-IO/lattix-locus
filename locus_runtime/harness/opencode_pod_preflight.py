@@ -11,10 +11,11 @@ requirements before this preflight may be used to launch a real worker.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -101,6 +102,16 @@ def _verify_binary(profile: OpenCodeLaunchProfile) -> None:
     _verify_pinned_executable(original, profile.executable_sha256)
 
 
+def approved_profile_digest(profile: OpenCodeLaunchProfile) -> str:
+    """Canonical digest to store in trusted operator-owned engine registry."""
+    if not isinstance(profile, OpenCodeLaunchProfile):
+        raise OpenCodeContractDenied("trusted launch profile required")
+    material = json.dumps(
+        asdict(profile), sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    ).encode("ascii")
+    return hashlib.sha256(material).hexdigest()
+
+
 def _validate_profile_integrity(profile: OpenCodeLaunchProfile) -> None:
     """Recompile the frozen operator contract; fail closed on dataclass substitution."""
     version = profile.version
@@ -143,6 +154,7 @@ def preflight_opencode_pod(
     profile: OpenCodeLaunchProfile,
     lease: PodLease,
     *,
+    expected_profile_sha256: str,
     observed_version: str,
     observed_effective_config: Mapping[str, Any],
 ) -> OpenCodePodPreflight:
@@ -151,6 +163,8 @@ def preflight_opencode_pod(
     The observed version and effective config must be obtained by trusted
     preflight code running under an independent, already established jail.
     They must not originate in model output or untrusted event JSONL.
+    expected_profile_sha256 must come from a separately trusted, immutable
+    operator registry, never recomputed from a model-supplied mutated profile.
     The returned fingerprint is correlation metadata, not an authorization
     token, signature, or evidence that a CLI process was safely executed.
     """
@@ -161,6 +175,15 @@ def preflight_opencode_pod(
         raise AdmissionDenied("child lease identity is not bound to reservation")
     if not isinstance(profile, OpenCodeLaunchProfile):
         raise OpenCodeContractDenied("trusted launch profile required")
+    if (
+        not isinstance(expected_profile_sha256, str)
+        or len(expected_profile_sha256) != 64
+        or any(c not in "0123456789abcdef" for c in expected_profile_sha256)
+        or not hmac.compare_digest(
+            approved_profile_digest(profile), expected_profile_sha256,
+        )
+    ):
+        raise OpenCodeContractDenied("OpenCode profile is not approved by registry")
     _validate_profile_integrity(profile)
     _validate_pod_mcp_grants(profile, lease)
     verified_version = _validate_observed_version(observed_version, profile.version)
@@ -185,6 +208,7 @@ def preflight_opencode_pod(
         "plan": reservation.plan_digest,
         "cli": profile.executable_sha256,
         "config": profile.config_sha256,
+        "profile": expected_profile_sha256,
         "version": verified_version,
         "model": profile.model,
         "mcp_tools": list(profile.allowed_mcp_tools),
