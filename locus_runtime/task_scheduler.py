@@ -68,6 +68,12 @@ class DurableTaskScheduler:
         self.max_inflight = max_inflight
         with ledger._connect() as db:
             ledger._tx(db)
+            db.execute("""CREATE TABLE IF NOT EXISTS task_dispatch_parent (
+                parent_run_id TEXT PRIMARY KEY,
+                plan_digest TEXT NOT NULL,
+                graph_fingerprint TEXT NOT NULL,
+                max_inflight INTEGER NOT NULL
+            )""")
             db.execute("""CREATE TABLE IF NOT EXISTS task_dispatch_node (
                 parent_run_id TEXT NOT NULL,
                 node_id TEXT NOT NULL,
@@ -117,6 +123,16 @@ class DurableTaskScheduler:
             raise AdmissionDenied("invalid accepted plan digest")
         run_id = parent.caller.run_id
         stored = self.ledger._parent(db, run_id)
+        supervisor = db.execute(
+            "SELECT * FROM task_dispatch_parent WHERE parent_run_id=?", (run_id,)
+        ).fetchone()
+        if (
+            supervisor is None
+            or supervisor["plan_digest"] != plan.digest
+            or supervisor["graph_fingerprint"] != self._fingerprint(plan)
+            or supervisor["max_inflight"] != self.max_inflight
+        ):
+            raise AdmissionDenied("scheduler graph revision or capacity changed")
         if (
             stored["principal"] != parent.caller.principal
             or stored["area"] != plan.plan.intent.area
@@ -162,6 +178,20 @@ class DurableTaskScheduler:
             self.ledger._tx(db)
             self.ledger._parent(db, run_id)
             fingerprint = self._fingerprint(plan)
+            supervisor = db.execute(
+                "SELECT * FROM task_dispatch_parent WHERE parent_run_id=?", (run_id,)
+            ).fetchone()
+            if supervisor is not None and (
+                supervisor["plan_digest"] != plan.digest
+                or supervisor["graph_fingerprint"] != fingerprint
+                or supervisor["max_inflight"] != self.max_inflight
+            ):
+                raise AdmissionDenied("scheduler cannot widen durable concurrency")
+            db.execute(
+                "INSERT OR IGNORE INTO task_dispatch_parent "
+                "(parent_run_id,plan_digest,graph_fingerprint,max_inflight) VALUES (?,?,?,?)",
+                (run_id, plan.digest, fingerprint, self.max_inflight),
+            )
             existing = db.execute(
                 "SELECT node_id,plan_digest,graph_fingerprint FROM task_dispatch_node "
                 "WHERE parent_run_id=?",
