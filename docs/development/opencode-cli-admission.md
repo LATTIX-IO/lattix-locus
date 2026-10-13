@@ -61,6 +61,20 @@ A provider is never implicitly privileged because it is local.
    Locus's separate independent domain verifier must inspect a trusted
    artifact and promote it before dependent DAG nodes become runnable.
 
+## Verified configuration flags (2026-10-13)
+
+OpenCode V1 uses `snapshot: false`; V2 uses `snapshots: false`.
+The launch environment uses documented `OPENCODE_CONFIG_CONTENT`,
+`OPENCODE_CONFIG_DIR`, and `OPENCODE_DISABLE_CLAUDE_CODE*` controls
+alongside isolated `HOME`/`XDG_*` directories. The earlier proposed
+`OPENCODE_DISABLE_PROJECT_CONFIG` and
+`OPENCODE_DISABLE_EXTERNAL_SKILLS` flags are not documented API guarantees,
+so they are not relied on as isolation controls. A project `opencode.json`,
+`AGENTS.md`, plugin or imported skill might still affect model context.
+That is why a trusted external runner must inspect resolved configuration
+under a separately enforced OS jail, refuse unauthorized instruction/tool
+sources, and never grant direct writable mounts or unrestricted network access.
+
 ## Version-specific risks
 
 - V1's `permission` object and V2's ordered `permissions` array are not
