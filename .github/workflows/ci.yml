@@ -12,6 +12,9 @@ on:
         type: boolean
         required: false
         default: false
+    secrets:
+      LATTIX_CICD_PENTEST_READ_TOKEN:
+        required: false
 
 permissions:
   contents: read
