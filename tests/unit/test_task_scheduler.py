@@ -273,7 +273,7 @@ def test_untrusted_flags_and_unregistered_parent_cannot_widen_scope(tmp_path):
 
 
 def test_rebind_after_restart_keeps_verified_state_and_disallows_plan_mutation(tmp_path):
-    scheduler, ledger, plan, parent = build(tmp_path)
+    scheduler, _, plan, parent = build(tmp_path)
     claim, lease = start(scheduler, plan, parent)
     verified(scheduler, plan, parent, claim, lease)
     reopened = DurableTaskScheduler(PodReservationLedger(tmp_path / "pods.db"))
