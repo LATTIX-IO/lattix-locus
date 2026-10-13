@@ -26,6 +26,12 @@ from locus_runtime.pod_reservations import AdmissionDenied
 from tests.unit.test_task_scheduler import REQUEST, build
 
 
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="This fixture exercises POSIX binary measurement; Windows path grammar is separately tested",
+)
+
+
 def pod(tmp_path, *, version="1.16.0", tools=()):
     scheduler, ledger, plan, parent = build(tmp_path)
     claim = scheduler.claim_next(plan, parent)
