@@ -137,7 +137,7 @@ def test_staged_file_and_command_hide_untrusted_prompt_and_secrets(tmp_path):
     assert p.argv == (
         "/opt/locus/bin/opencode", "run", "--format", "json",
         "--model", "ollama/qwen3:8b",
-        "--file", p.request_file,
+        "--agent", "locus", "--file", p.request_file,
         "Follow the attached task using only the approved Locus MCP tools.",
     )
     assert "--auto" not in p.argv
@@ -471,3 +471,42 @@ def test_windows_unc_device_relative_and_shell_executables_denied(invalid):
             mcp_python=r"C:\Locus\bin\python.exe",
             mcp_config_file=r"C:\Locus\private\mcp-run.json",
         )
+
+
+def test_external_cli_is_locked_to_dedicated_primary_agent_not_builtin_build(tmp_path):
+    for version in ("1.16.0", "2.0.0"):
+        p = profile(tmp_path, version=version)
+        cfg = p.config()
+        assert cfg["default_agent"] == "locus"
+        assert ("--agent", "locus") == p.argv[
+            p.argv.index("--agent"):p.argv.index("--agent") + 2
+        ]
+        agent = (
+            cfg["agents"]["locus"] if version.startswith("2.")
+            else cfg["agent"]["locus"]
+        )
+        assert agent["mode"] == "primary"
+        permissions = (
+            agent["permissions"] if version.startswith("2.")
+            else agent["permission"]
+        )
+        assert permissions == cfg[
+            "permissions" if version.startswith("2.") else "permission"
+        ]
+        tampered = copy.deepcopy(cfg)
+        tampered["default_agent"] = "build"
+        with pytest.raises(OpenCodeContractDenied):
+            validate_effective_opencode_config(p, tampered)
+        tampered = copy.deepcopy(cfg)
+        inner = (
+            tampered["agents"]["locus"] if version.startswith("2.")
+            else tampered["agent"]["locus"]
+        )
+        if version.startswith("2."):
+            inner["permissions"].append({
+                "action": "shell", "resource": "*", "effect": "allow",
+            })
+        else:
+            inner["permission"]["bash"] = "allow"
+        with pytest.raises(OpenCodeContractDenied):
+            validate_effective_opencode_config(p, tampered)
