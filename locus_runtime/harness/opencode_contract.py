@@ -41,7 +41,7 @@ class OpenCodeVersion:
     def parse(cls, raw: str) -> OpenCodeVersion:
         if not isinstance(raw, str):
             raise OpenCodeContractDenied("OpenCode version must be canonical")
-        match = _VERSION.fullmatch(raw.strip())
+        match = _VERSION.fullmatch(raw)
         if match is None:
             raise OpenCodeContractDenied("unknown OpenCode CLI version")
         version = cls(*(int(v) for v in match.groups()))
@@ -94,7 +94,8 @@ def _absolute_path(value: str, *, name: str) -> PurePath:
     ):
         raise OpenCodeContractDenied(f"invalid {name}")
     path = PurePath(value)
-    if not path.is_absolute() or ".." in path.parts or "." in path.parts:
+    if (not path.is_absolute() or str(path) != value
+        or ".." in path.parts or "." in path.parts):
         raise OpenCodeContractDenied(f"{name} must be a canonical absolute POSIX path")
     return path
 
@@ -124,6 +125,8 @@ def compile_opencode_launch(
     if not isinstance(model, str) or _MODEL.fullmatch(model) is None:
         raise OpenCodeContractDenied("model must be a bounded provider/model identifier")
     binary = _absolute_path(executable, name="executable")
+    if binary.name != "opencode":
+        raise OpenCodeContractDenied("CLI executable must be a pinned OpenCode binary")
     root = _absolute_path(private_root, name="private_root")
     work = _absolute_path(workspace, name="workspace")
     request = _absolute_path(request_file, name="request_file")
@@ -327,7 +330,7 @@ def audit_opencode_jsonl(
             if not isinstance(part, dict) or part.get("type") != "text":
                 raise OpenCodeContractDenied("malformed OpenCode text event")
             text = part.get("text")
-            if not isinstance(text, str) or len(text) > _MAX_EVENT_LINE:
+            if not isinstance(text, str) or not text or len(text) > _MAX_EVENT_LINE:
                 raise OpenCodeContractDenied("invalid OpenCode text payload")
             answer.update(text.encode("utf-8"))
             answer_parts += 1
@@ -351,8 +354,6 @@ def audit_opencode_jsonl(
         if typ in _FINISH_EVENTS:
             if not isinstance(part, dict) or part.get("type") not in _FINISH_EVENTS:
                 raise OpenCodeContractDenied("malformed OpenCode terminal step")
-            if part.get("reason") != "stop":
-                continue
             usage = part.get("tokens")
             if not isinstance(usage, dict):
                 raise OpenCodeContractDenied("missing OpenCode usage counters")
@@ -366,7 +367,10 @@ def audit_opencode_jsonl(
             tokens_out += b
             if tokens_in + tokens_out > max_tokens:
                 raise OpenCodeContractDenied("OpenCode token budget exceeded")
-            final = True
+            if part.get("reason") == "stop":
+                final = True
+            elif part.get("reason") not in {"tool-calls", "length", "max-tokens"}:
+                raise OpenCodeContractDenied("unknown OpenCode completion reason")
             continue
         raise OpenCodeContractDenied("unrecognized or denied OpenCode event")
     if not final or answer_parts == 0:
