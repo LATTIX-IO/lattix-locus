@@ -6,6 +6,7 @@ an executable smoke test.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import os
 from dataclasses import replace
@@ -253,3 +254,43 @@ def test_preflight_does_not_dispatch_host_process_or_provider_call():
     for sink in ("subprocess.", "os.system(", "shell=True",
                  "requests.", "urllib.request", "Gateway.open_session("):
         assert sink not in source
+
+
+
+def test_external_mcp_catalog_stays_equal_to_existing_broker_exports():
+    # Drift in the only approved MCP server must not silently expand the
+    # external engine's tool authority.
+    from locus_runtime.harness.opencode_pod_preflight import _AUTHORIZED_MCP_EXPORTS
+
+    path = (
+        Path(__file__).resolve().parents[2] /
+        "locus_runtime/harness/codex_mcp_server.py"
+    )
+    module = ast.parse(path.read_text(encoding="utf-8"))
+    assignments = [
+        n for n in module.body
+        if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "_SUPPORTED_TOOLS" for t in n.targets)
+    ]
+    assert len(assignments) == 1
+    expression = assignments[0].value
+    assert isinstance(expression, ast.Call)
+    assert isinstance(expression.func, ast.Name)
+    assert expression.func.id == "frozenset"
+    actual_tools = set(ast.literal_eval(expression.args[0]))
+    assert {original for _, original in _AUTHORIZED_MCP_EXPORTS} == actual_tools
+    assert {external for external, _ in _AUTHORIZED_MCP_EXPORTS} == {
+        "locus_" + name for name in actual_tools
+    }
+
+
+def test_empty_or_unapproved_registry_fingerprint_denied(tmp_path):
+    profile, lease, *_ = pod(tmp_path)
+    for forged in ("", "f" * 64, "xyz", "A" * 64, 42):
+        with pytest.raises(OpenCodeContractDenied, match="not approved"):
+            preflight_opencode_pod(
+                profile, lease,
+                expected_profile_sha256=forged,
+                observed_version="1.16.0",
+                observed_effective_config=profile.config(),
+            )
