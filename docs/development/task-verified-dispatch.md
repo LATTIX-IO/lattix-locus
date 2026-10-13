@@ -93,3 +93,41 @@ Feature is additive and unreferenced by the live API until worker wiring is
 explicitly enabled. Rollback stops using the scheduler; existing run and pod
 tables continue functioning. Do not delete \`task_dispatch_node\` rows while
 a child is active/uncertain; retain reconciliation evidence first.
+
+
+## Crash-safe unstarted claim recovery (LOCUS-413, 2026-10-13)
+
+New additive schema field \`task_dispatch_node.attempt_epoch\` (default 0)
+pins the attempt identity across restart and preserves legacy first-attempt
+keys. Schema initialization under \`BEGIN IMMEDIATE\` migrates an existing
+prototype dispatch table lacking this field; schema migration never rewrites
+the signed plan, node authority, Gateway child identity or receipts.
+
+A trusted supervisor on startup:
+
+1. Call \`PodReservationLedger.recover_expired()\` to mark expired but
+   definitively unadmitted holds \`canceled\` and active/admitting attempts
+   \`uncertain\` (retaining effectful holds).
+2. Call \`DurableTaskScheduler.recover_unstarted(compiled, parent)\`.
+   Returned claims are either still \`claimed\` with no reservation or are
+   safely reconstructed \`reserved\` holds (same ledger idempotency key).
+   Resume only these claims through \`reserve\`/\`admit\`; a concurrent older
+   supervisor cannot launch two children on the same reservation.
+3. A terminal \`canceled\` unadmitted hold is requeued with a **new**
+   epoch-derived attempt identity (maximum three replacements); a stale
+   \`NodeClaim\` cannot regain admission. Use \`claim_next\` normally.
+4. A child that might have reached \`admitting\`, \`active\`, \`closed\`,
+   \`uncertain\` or \`revoked\` is quarantined and not restarted.
+   \`reconcile_interrupted\` handles expired active rows.
+5. If all retries are spent, mark the node blocked for explicit human
+   recovery instead of spinning indefinitely.
+
+Crash-window tests cover (a) claim committed but return lost, (b) reserved
+hold committed but scheduler state not persisted, (c) canceled unadmitted hold
+including the same crash window, (d) active child with stale claimed state,
+(e) competing recovering supervisors, (f) forged attempt identifiers,
+(g) bounded retry exhaustion, and (h) old schema upgrade. None permit an
+effectful child to be reissued without an independently reconciled receipt.
+
+Recovery is a trusted supervisor operation, not a model-callable skill/MCP
+tool and never grants the parent additional authority or budget.
