@@ -12,8 +12,8 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from pathlib import PurePath
-from typing import Any, Mapping
+from pathlib import PurePath, PurePosixPath, PureWindowsPath
+from typing import Any, Literal, Mapping
 
 _VERSION = re.compile(r"v?([12])\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,4})\Z", re.ASCII)
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
@@ -64,6 +64,7 @@ class OpenCodeLaunchProfile:
     """
 
     version: OpenCodeVersion
+    platform: Literal["posix", "windows"]
     executable: str
     executable_sha256: str
     model: str
@@ -85,18 +86,27 @@ class OpenCodeLaunchProfile:
         return dict(self.env)
 
 
-def _absolute_path(value: str, *, name: str) -> PurePath:
+def _absolute_path(
+    value: str, *, name: str, platform: Literal["posix", "windows"],
+) -> PurePath:
     if (
         not isinstance(value, str)
         or not 1 <= len(value) <= 4096
         or any(ord(ch) < 32 for ch in value)
-        or "\\" in value
     ):
         raise OpenCodeContractDenied(f"invalid {name}")
-    path = PurePath(value)
+    if platform == "windows":
+        # UNC shares and device paths cannot become trusted mount sources.
+        if value.startswith("\\") or "/" in value:
+            raise OpenCodeContractDenied(f"untrusted Windows {name} path")
+        path: PurePath = PureWindowsPath(value)
+    else:
+        if "\" in value:
+            raise OpenCodeContractDenied(f"untrusted POSIX {name} path")
+        path = PurePosixPath(value)
     if (not path.is_absolute() or str(path) != value
         or ".." in path.parts or "." in path.parts):
-        raise OpenCodeContractDenied(f"{name} must be a canonical absolute POSIX path")
+        raise OpenCodeContractDenied(f"{name} must be a canonical absolute path")
     return path
 
 
@@ -104,6 +114,7 @@ def compile_opencode_launch(
     *,
     version: str,
     executable: str,
+    platform: Literal["posix", "windows"] = "posix",
     executable_sha256: str,
     model: str,
     workspace: str,
@@ -120,18 +131,21 @@ def compile_opencode_launch(
     No user prompt is put in an argv string, shell command or environment.
     """
     parsed = OpenCodeVersion.parse(version)
+    if platform not in ("posix", "windows"):
+        raise OpenCodeContractDenied("unsupported engine platform")
     if not isinstance(executable_sha256, str) or not _DIGEST.fullmatch(executable_sha256):
         raise OpenCodeContractDenied("pinned OpenCode executable SHA-256 required")
     if not isinstance(model, str) or _MODEL.fullmatch(model) is None:
         raise OpenCodeContractDenied("model must be a bounded provider/model identifier")
-    binary = _absolute_path(executable, name="executable")
-    if binary.name != "opencode":
+    binary = _absolute_path(executable, name="executable", platform=platform)
+    expected_name = "opencode.exe" if platform == "windows" else "opencode"
+    if binary.name.lower() != expected_name:
         raise OpenCodeContractDenied("CLI executable must be a pinned OpenCode binary")
-    root = _absolute_path(private_root, name="private_root")
-    work = _absolute_path(workspace, name="workspace")
-    request = _absolute_path(request_file, name="request_file")
-    python = _absolute_path(mcp_python, name="mcp_python")
-    mcp_cfg = _absolute_path(mcp_config_file, name="mcp_config_file")
+    root = _absolute_path(private_root, name="private_root", platform=platform)
+    work = _absolute_path(workspace, name="workspace", platform=platform)
+    request = _absolute_path(request_file, name="request_file", platform=platform)
+    python = _absolute_path(mcp_python, name="mcp_python", platform=platform)
+    mcp_cfg = _absolute_path(mcp_config_file, name="mcp_config_file", platform=platform)
     if work == root or work in root.parents or root in work.parents:
         raise OpenCodeContractDenied("private runtime root must be isolated from workspace")
     if root not in request.parents or root not in mcp_cfg.parents:
@@ -211,8 +225,17 @@ def compile_opencode_launch(
         "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
         "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1",
     }
+    if platform == "windows":
+        env.update({
+            "USERPROFILE": str(root / "home"),
+            "APPDATA": str(root / "appdata"),
+            "LOCALAPPDATA": str(root / "localappdata"),
+            "TEMP": str(root / "tmp"),
+            "TMP": str(root / "tmp"),
+        })
     return OpenCodeLaunchProfile(
         version=parsed,
+        platform=platform,
         executable=str(binary),
         executable_sha256=executable_sha256,
         model=model,
