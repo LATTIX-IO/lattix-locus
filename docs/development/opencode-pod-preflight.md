@@ -7,7 +7,8 @@ task-graph scheduler and Gateway pod reservation/lease infrastructure, without
 granting new tools or running an unconfined external program.
 
 A trusted supervisor uses `preflight_opencode_pod(profile, lease,
-observed_version=..., observed_effective_config=...)`. It must supply a
+expected_profile_sha256=approved_registry_digest, observed_version=...,
+observed_effective_config=...)`. It must supply a
 compiled profile from increment A, an admitted PodLease from the existing
 `DurableTaskScheduler`, and observations collected by an **independently
 sandboxed, trusted** CLI inspection process. Values echoed by a model or
@@ -18,10 +19,12 @@ The preflight executes these checks in order:
 1. The existing SQLite ledger confirms the pod is active and the child run
    ID matches the reservation; a revoked/expired parent or pod cannot
    authenticate.
-2. Every field of the immutable launch plan is recomputed through
-   `compile_opencode_launch` and compared to the submitted plan, preventing
-   arbitrary replacement of argv, model, tools, environment, config JSON,
-   digest, platform or executable path.
+2. The supervisor passes `expected_profile_sha256` from a separately
+   trusted operator-owned registry. The preflight calculates the canonical
+   profile digest and rejects substitutions. It then recompiles every launch
+   field through `compile_opencode_launch` to rule out internally inconsistent
+   argv, model, tool, environment or configuration material. **Never**
+   calculate the "expected" value from untrusted model-supplied profiles.
 3. The only MCP-visible names accepted are the documented `locus_*`
    namespace of `codex_mcp_server`: `locus_execute_bash`, `locus_search`,
    `locus_str_replace_editor` and `locus_run_tests`. Each resolves to the
