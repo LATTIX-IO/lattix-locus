@@ -3,8 +3,15 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      require_security:
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -362,10 +369,14 @@ jobs:
       - windows-sandbox
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Require every configured gate and report disabled scanners
         env:
           RESULTS: ${{ toJSON(needs) }}
           CODEQL_ENABLED: ${{ vars.CODEQL_ENABLED }}
           LATTIX_PENTEST_ENABLED: ${{ vars.LATTIX_PENTEST_ENABLED }}
-          LATTIX_SECURITY_RELEASE_REQUIRED: ${{ vars.LATTIX_SECURITY_RELEASE_REQUIRED }}
+          LATTIX_SECURITY_RELEASE_REQUIRED: ${{ (github.ref_type == 'tag' || inputs.require_security) && 'true' || vars.LATTIX_SECURITY_RELEASE_REQUIRED }}
         run: python -m locus_tooling.ci_gate_contract
