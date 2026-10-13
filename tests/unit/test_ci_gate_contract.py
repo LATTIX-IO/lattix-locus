@@ -172,3 +172,32 @@ def test_required_gates_job_checks_out_security_policy_module():
     assert "      - uses: actions/checkout@v4" in section
     assert "      - uses: actions/setup-python@v5" in section
     assert section.index("actions/checkout@v4") < section.index("python -m locus_tooling.ci_gate_contract")
+
+
+@pytest.mark.parametrize("bad", ["1", "0", "TRUE", "False", " true", "true ", " True "])
+def test_ci_toggle_accepts_only_literal_workflow_values(bad):
+    with pytest.raises(GateContractError, match="invalid CI security toggle"):
+        validate_ci_gates(jobs(), env=switches(CODEQL_ENABLED=bad))
+
+
+def test_private_pentest_checkout_receives_explicit_reusable_workflow_secret():
+    ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    callers = [
+        Path(".github/workflows/release.yml").read_text(encoding="utf-8"),
+        Path(".github/workflows/desktop-release.yml").read_text(encoding="utf-8"),
+    ]
+    assert "  workflow_call:" in ci
+    assert (
+        "    secrets:\n      LATTIX_CICD_PENTEST_READ_TOKEN:\n        required: false"
+        in ci
+    )
+    assert ci.count(
+        "token: ${{ secrets.LATTIX_CICD_PENTEST_READ_TOKEN || github.token }}"
+    ) == 2
+    for workflow in callers:
+        assert (
+            "    secrets:\n"
+            "      LATTIX_CICD_PENTEST_READ_TOKEN: "
+            "${{ secrets.LATTIX_CICD_PENTEST_READ_TOKEN }}"
+        ) in workflow
+        assert "      require_security: true" in workflow
