@@ -11,7 +11,6 @@ requirements before this preflight may be used to launch a real worker.
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import os
 import stat
@@ -23,6 +22,7 @@ from locus_runtime.harness.opencode_contract import (
     OpenCodeContractDenied,
     OpenCodeLaunchProfile,
     OpenCodeVersion,
+    compile_opencode_launch,
     validate_effective_opencode_config,
 )
 from locus_runtime.pod_reservations import AdmissionDenied, PodLease
@@ -101,6 +101,26 @@ def _verify_binary(profile: OpenCodeLaunchProfile) -> None:
     _verify_pinned_executable(original, profile.executable_sha256)
 
 
+def _validate_profile_integrity(profile: OpenCodeLaunchProfile) -> None:
+    """Recompile the frozen operator contract; fail closed on dataclass substitution."""
+    version = profile.version
+    expected = compile_opencode_launch(
+        version=f"{version.major}.{version.minor}.{version.patch}",
+        executable=profile.executable,
+        executable_sha256=profile.executable_sha256,
+        platform=profile.platform,
+        model=profile.model,
+        workspace=profile.workspace,
+        private_root=profile.private_root,
+        request_file=profile.request_file,
+        mcp_python=profile.mcp_python,
+        mcp_config_file=profile.mcp_config_file,
+        allowed_mcp_tools=profile.allowed_mcp_tools,
+    )
+    if profile != expected:
+        raise OpenCodeContractDenied("external launch profile was substituted")
+
+
 def _validate_pod_mcp_grants(profile: OpenCodeLaunchProfile, lease: PodLease) -> None:
     grants = dict(_AUTHORIZED_MCP_EXPORTS)
     allowed = lease._session.capabilities.allowed_tools
@@ -141,6 +161,7 @@ def preflight_opencode_pod(
         raise AdmissionDenied("child lease identity is not bound to reservation")
     if not isinstance(profile, OpenCodeLaunchProfile):
         raise OpenCodeContractDenied("trusted launch profile required")
+    _validate_profile_integrity(profile)
     _validate_pod_mcp_grants(profile, lease)
     verified_version = _validate_observed_version(observed_version, profile.version)
     validate_effective_opencode_config(profile, observed_effective_config)
@@ -170,10 +191,8 @@ def preflight_opencode_pod(
     }
     canonical = json.dumps(material, sort_keys=True, separators=(",", ":")).encode("ascii")
     fingerprint = hashlib.sha256(canonical).hexdigest()
-    # A digest is not an authorization or certificate. No client-side supplied
-    # fingerprint is ever compared in place of a durable receipt/lease.
-    if not hmac.compare_digest(fingerprint, hashlib.sha256(canonical).hexdigest()):
-        raise AdmissionDenied("OpenCode preflight digest inconsistent")
+    # This digest is correlation-only, not an authorization, signature or
+    # substitute for durable action receipts/lease checks.
     return OpenCodePodPreflight(
         parent_run_id=reservation.parent_run_id,
         child_run_id=lease.run_id,
