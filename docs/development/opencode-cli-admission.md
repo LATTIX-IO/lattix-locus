@@ -29,8 +29,11 @@ A provider is never implicitly privileged because it is local.
 4. V1 (`1.1.1+`) uses `permission`, direct `mcp.locus`, and deny-all
    except exact approved MCP names. V2 uses ordered `permissions`,
    `experimental.policies`, and `mcp.servers.locus` with Code Mode
-   disabled; default tools/subagents/plugins/skills/filesystem/shell/web
-   receive no grant. Unknown major/prerelease versions deny admission.
+   disabled. V2 must use `opencode run --standalone` to avoid the shared
+   per-user server and `update: "disable"` (not V1 `autoupdate: false`);
+   sharing is explicitly disabled in both dialects. Default tools,
+   subagents, plugins, skills, filesystem, shell and web receive no grant.
+   Unknown major/prerelease versions deny admission.
 5. A trusted sandbox runner must verify the installed executable SHA-256,
    observed CLI version, isolated credential/config source namespace,
    actual *resolved* configuration and MCP identity before invocation.
@@ -55,6 +58,10 @@ A provider is never implicitly privileged because it is local.
   interchangeable. V2 also nests MCP registrations under `mcp.servers`
   and defaults to Code Mode, which must be disabled when using the gated
   stdio MCP tool bridge.
+- OpenCode V2 normally connects to a persistent shared per-user service.
+  Connecting to it would inherit another session's plugins, credentials and
+  tool authorization. V2 therefore requires `run --standalone`; V1 has
+  distinct startup semantics.
 - OpenCode merges remote/global/project/inline/managed configuration.
   The future runner must enforce isolated `HOME`, `XDG_*`, independent
   project scanning, no inherited credentials, and comparison against the
@@ -124,3 +131,5 @@ Sources verified October 13, 2026:
 - https://docs.opencode.ai/docs/cli/
 - https://dev.opencode.ai/v2/docs/permissions/
 - https://dev.opencode.ai/v2/docs/mcp-servers/
+- https://dev.opencode.ai/v2/docs/cli
+- https://dev.opencode.ai/v2/docs/config/
