@@ -34,6 +34,14 @@ _PROOF_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _BUSY = frozenset({"claimed", "reserved", "active", "uncertain"})
 
 
+class VerificationRejected(AdmissionDenied):
+    """Independent verification explicitly rejected an artifact."""
+
+
+class VerificationUnavailable(AdmissionDenied):
+    """The independent verification service did not provide a decision."""
+
+
 class IndependentVerifier(Protocol):
     """Injected trusted verifier. Never accept this callback from a pod or LLM."""
 
@@ -355,9 +363,9 @@ class DurableTaskScheduler:
                 artifact_digest=artifact_digest,
             ) is True
         except Exception as exc:
-            raise AdmissionDenied("independent verifier unavailable") from exc
+            raise VerificationUnavailable("independent verifier unavailable") from exc
         if not accepted:
-            raise AdmissionDenied("independent verification rejected artifact")
+            raise VerificationRejected("independent verification rejected artifact")
         with self.ledger._connect() as db:
             self.ledger._tx(db)
             self._require_claim(db, plan, parent, claim, frozenset({"active"}))
