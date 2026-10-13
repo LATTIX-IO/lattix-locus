@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from locus_runtime.pod_reservations import AdmissionDenied, ResourceBudget
+from locus_runtime.pod_reservations import ResourceBudget
 from locus_runtime.task_dispatch_driver import (
     EngineBinding, GatewayTaskDriver, WorkReport,
 )
@@ -67,7 +67,7 @@ class TrustedVerifier:
 def driver(scheduler, worker, verifier=None, *, parallel=2, caps=None):
     verifier = verifier or TrustedVerifier()
     registered = EngineBinding(
-        "opencode/ollama", caps if caps is not None else frozenset({"list_issues"}),
+        "test/gateway-worker", caps if caps is not None else frozenset({"list_issues"}),
         worker,
     )
     return GatewayTaskDriver(
@@ -76,7 +76,7 @@ def driver(scheduler, worker, verifier=None, *, parallel=2, caps=None):
     )
 
 
-def test_local_open_code_adapter_wave_diamond_is_parallel_and_verified(tmp_path):
+def test_mock_engine_wave_diamond_is_parallel_and_verified(tmp_path):
     scheduler, ledger, plan, parent = build(tmp_path)
     worker = Worker(barrier=threading.Barrier(2))
     verifier = TrustedVerifier()
