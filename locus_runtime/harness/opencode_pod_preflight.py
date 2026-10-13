@@ -115,6 +115,8 @@ def approved_profile_digest(profile: OpenCodeLaunchProfile) -> str:
 def _validate_profile_integrity(profile: OpenCodeLaunchProfile) -> None:
     """Recompile the frozen operator contract; fail closed on dataclass substitution."""
     version = profile.version
+    if not isinstance(version, OpenCodeVersion):
+        raise OpenCodeContractDenied("invalid approved CLI version")
     expected = compile_opencode_launch(
         version=f"{version.major}.{version.minor}.{version.patch}",
         executable=profile.executable,
