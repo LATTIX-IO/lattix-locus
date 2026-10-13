@@ -118,7 +118,10 @@ def test_v2_compile_deny_first_rules_and_non_codemode_mcp(tmp_path):
     }
     assert cfg["mcp"]["servers"]["locus"]["codemode"] is False
     assert "permission" not in cfg
-    assert cfg["autoupdate"] is False
+    assert cfg["update"] == "disable"
+    assert cfg["share"] == "disabled"
+    assert "autoupdate" not in cfg
+    assert p.argv[0:3] == ("/opt/locus/bin/opencode", "run", "--standalone")
 
 
 def test_general_purpose_provider_selection_not_hardwired_to_ollama(tmp_path):
@@ -402,3 +405,22 @@ def test_authorized_mcp_call_is_still_only_model_claim_not_verified_outcome():
     assert evidence.state == "complete_unverified"
     assert not hasattr(evidence, "verified")
     assert "model-says-done" not in repr(evidence)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("share", "auto"), ("share", "manual"), ("update", "auto"),
+    ("update", "notify"), ("update", None),
+])
+def test_v2_update_and_share_overrides_are_denied(tmp_path, field, value):
+    p = profile(tmp_path, version="2.0.0")
+    resolved = copy.deepcopy(p.config())
+    resolved[field] = value
+    with pytest.raises(OpenCodeContractDenied):
+        validate_effective_opencode_config(p, resolved)
+
+
+def test_v2_run_cannot_connect_to_shared_user_service(tmp_path):
+    p = profile(tmp_path, version="2.0.0")
+    assert p.argv[:3] == ("/opt/locus/bin/opencode", "run", "--standalone")
+    assert "--server" not in p.argv and "--attach" not in p.argv
+    assert "SHARED_SERVER" not in p.environment()
