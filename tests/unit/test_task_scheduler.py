@@ -216,7 +216,7 @@ def test_foreign_claim_plan_and_out_of_order_node_cannot_be_launched(tmp_path):
 
 def test_concurrent_supervisors_claim_only_one_attempt_per_ready_node(tmp_path):
     scheduler, _, plan, parent = build(tmp_path)
-    another = DurableTaskScheduler(PodReservationLedger(tmp_path / "pods.db"))
+    another = DurableTaskScheduler(PodReservationLedger(tmp_path / "pods.db"), max_inflight=2)
     with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
         futures = [
             pool.submit(
@@ -276,7 +276,7 @@ def test_rebind_after_restart_keeps_verified_state_and_disallows_plan_mutation(t
     scheduler, _, plan, parent = build(tmp_path)
     claim, lease = start(scheduler, plan, parent)
     verified(scheduler, plan, parent, claim, lease)
-    reopened = DurableTaskScheduler(PodReservationLedger(tmp_path / "pods.db"))
+    reopened = DurableTaskScheduler(PodReservationLedger(tmp_path / "pods.db"), max_inflight=2)
     reopened.bind(plan, parent, max_tool_calls=12)
     assert reopened.ready(plan, parent) == ("triage",)
     alternate = replace(plan, digest="c" * 64)
@@ -306,3 +306,15 @@ def test_structural_digest_substitution_cannot_remove_dependencies_or_widen_auth
     )
     with pytest.raises(AdmissionDenied, match="graph revision"):
         scheduler.claim_next(forged_authority, parent)
+
+
+def test_restart_with_wider_concurrency_limit_is_rejected(tmp_path):
+    scheduler, _, plan, parent = build(tmp_path, max_inflight=2)
+    assert scheduler.ready(plan, parent) == ("research", "triage")
+    widened = DurableTaskScheduler(
+        PodReservationLedger(tmp_path / "pods.db"), max_inflight=64,
+    )
+    with pytest.raises(AdmissionDenied, match="capacity"):
+        widened.ready(plan, parent)
+    with pytest.raises(AdmissionDenied, match="concurrency"):
+        widened.bind(plan, parent, max_tool_calls=12)
