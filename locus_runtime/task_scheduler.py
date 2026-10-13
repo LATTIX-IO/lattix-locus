@@ -35,6 +35,14 @@ _BUSY = frozenset({"claimed", "reserved", "active", "uncertain"})
 _MAX_UNSTARTED_RECLAIMS = 3
 
 
+class VerificationRejected(AdmissionDenied):
+    """Independent verification explicitly rejected an artifact."""
+
+
+class VerificationUnavailable(AdmissionDenied):
+    """The independent verification service did not provide a decision."""
+
+
 class IndependentVerifier(Protocol):
     """Injected trusted verifier. Never accept this callback from a pod or LLM."""
 
@@ -458,9 +466,9 @@ class DurableTaskScheduler:
                 artifact_digest=artifact_digest,
             ) is True
         except Exception as exc:
-            raise AdmissionDenied("independent verifier unavailable") from exc
+            raise VerificationUnavailable("independent verifier unavailable") from exc
         if not accepted:
-            raise AdmissionDenied("independent verification rejected artifact")
+            raise VerificationRejected("independent verification rejected artifact")
         with self.ledger._connect() as db:
             self.ledger._tx(db)
             self._require_claim(db, plan, parent, claim, frozenset({"active"}))
@@ -500,3 +508,63 @@ class DurableTaskScheduler:
                     )
                     quarantined.append(node_id)
         return tuple(sorted(quarantined))
+
+    def block_unstarted(
+        self, plan: CompiledTaskPlan, parent: GatewaySession, claim: NodeClaim,
+    ) -> None:
+        """Record unsupported work without reserving budget or granting a child.
+
+        Only a claimed node with no reservation may be blocked. This is a
+        terminal outcome for this graph revision, not an automatic retry.
+        """
+        with self.ledger._connect() as db:
+            self.ledger._tx(db)
+            row = self._require_claim(
+                db, plan, parent, claim, frozenset({"claimed"})
+            )
+            if row["reservation_id"]:
+                raise AdmissionDenied("cannot block an attempt with a reservation")
+            db.execute(
+                "UPDATE task_dispatch_node SET state='blocked' "
+                "WHERE parent_run_id=? AND node_id=?",
+                (parent.caller.run_id, claim.node_id),
+            )
+
+    def reject_closed(
+        self, plan: CompiledTaskPlan, parent: GatewaySession, claim: NodeClaim,
+        *, artifact_digest: str,
+    ) -> None:
+        """Quarantine a closed but unverified worker result.
+
+        A trusted supervisor calls this only after independent verification
+        rejected the artifact. No dependent is released and no retry is made.
+        """
+        if not isinstance(artifact_digest, str) or _PROOF_DIGEST.fullmatch(artifact_digest) is None:
+            raise AdmissionDenied("artifact digest must be SHA-256 hex")
+        with self.ledger._connect() as db:
+            self.ledger._tx(db)
+            row = self._require_claim(
+                db, plan, parent, claim, frozenset({"active"})
+            )
+            pod = self.ledger._row(db, str(row["reservation_id"] or ""))
+            if (
+                pod["state"] != "closed"
+                or pod["parent_id"] != parent.caller.run_id
+                or pod["node_id"] != claim.node_id
+                or pod["plan_digest"] != plan.digest
+                or pod["evidence"] != hashlib.sha256(artifact_digest.encode()).hexdigest()
+            ):
+                raise AdmissionDenied("rejected artifact is not bound to closed pod")
+            db.execute(
+                "UPDATE task_dispatch_node SET state='blocked' "
+                "WHERE parent_run_id=? AND node_id=?",
+                (parent.caller.run_id, claim.node_id),
+            )
+
+    def states(
+        self, plan: CompiledTaskPlan, parent: GatewaySession,
+    ) -> dict[str, str]:
+        """Read trusted scheduler states without leaking artifacts or worker logs."""
+        with self.ledger._connect() as db:
+            rows = self._check(db, plan, parent)
+            return {key: str(row["state"]) for key, row in rows.items()}
