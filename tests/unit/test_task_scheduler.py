@@ -282,3 +282,27 @@ def test_rebind_after_restart_keeps_verified_state_and_disallows_plan_mutation(t
     alternate = replace(plan, digest="c" * 64)
     with pytest.raises(AdmissionDenied):
         reopened.bind(alternate, parent, max_tool_calls=12)
+
+
+def test_structural_digest_substitution_cannot_remove_dependencies_or_widen_authority(tmp_path):
+    scheduler, _, plan, parent = build(tmp_path)
+    # A forged CompiledTaskPlan can keep the accepted digest while mutating
+    # valid graph dependencies or capabilities. The scheduler pins both.
+    changed_nodes = tuple(
+        replace(node, depends_on=()) if node.node_id == "compose" else node
+        for node in plan.plan.nodes
+    )
+    forged_graph = replace(plan, plan=replace(plan.plan, nodes=changed_nodes))
+    with pytest.raises(AdmissionDenied, match="graph revision"):
+        scheduler.ready(forged_graph, parent)
+    first = plan.plan.nodes[0]
+    revised_authority = replace(
+        first.authority, capabilities=frozenset({"read_file"}),
+    )
+    modified = replace(first, authority=revised_authority)
+    forged_authority = replace(
+        plan,
+        plan=replace(plan.plan, nodes=(modified, *plan.plan.nodes[1:])),
+    )
+    with pytest.raises(AdmissionDenied, match="graph revision"):
+        scheduler.claim_next(forged_authority, parent)
