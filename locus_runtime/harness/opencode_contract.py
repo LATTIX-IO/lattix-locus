@@ -170,6 +170,7 @@ def compile_opencode_launch(
             "$schema": "https://opencode.ai/config.json",
             "autoupdate": False,
             "share": "disabled",
+            "model": model,
             "formatter": False,
             "lsp": False,
             "permission": {
@@ -208,6 +209,7 @@ def compile_opencode_launch(
             "$schema": "https://opencode.ai/config.json",
             "update": "disable",
             "share": "disabled",
+            "model": model,
             "formatter": False,
             "lsp": False,
             "snapshots": False,
@@ -292,9 +294,9 @@ def validate_effective_opencode_config(
     ):
         if effective.get(section) != expected.get(section):
             raise OpenCodeContractDenied("effective OpenCode policy was overridden")
-    # A model/provider identity must stay explicit: missing values cannot be
-    # used to bypass an independently approved inference egress policy.
-    if effective.get("model", profile.model) != profile.model:
+    # The effective provider must be explicit: absent model identity could
+    # silently fall back to a globally configured unapproved provider.
+    if effective.get("model") != profile.model:
         raise OpenCodeContractDenied("resolved model differs from approved provider")
     # The installed CLI must not load extra plugins, agents, tools, skills,
     # formatters or project instructions capable of overriding this profile.
@@ -303,7 +305,7 @@ def validate_effective_opencode_config(
         if effective.get(key):
             raise OpenCodeContractDenied("untrusted OpenCode extension in effective config")
     if profile.version.major == 1:
-        if effective.get("autoupdate", False) is not False:
+        if effective.get("autoupdate") is not False:
             raise OpenCodeContractDenied("OpenCode automatic update must be disabled")
     elif effective.get("update") != "disable":
         raise OpenCodeContractDenied("OpenCode V2 update policy must be disabled")
