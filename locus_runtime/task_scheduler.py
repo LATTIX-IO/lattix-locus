@@ -14,7 +14,6 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -27,7 +26,7 @@ from locus_runtime.pod_reservations import (
     ResourceBudget,
     ResourceReservation,
 )
-from locus_runtime.task_graph_contract import TaskNode, validate_task_plan
+from locus_runtime.task_graph_contract import validate_task_plan
 from locus_runtime.task_plan_compiler import CompiledTaskPlan
 
 _PROOF_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
