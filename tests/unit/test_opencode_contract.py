@@ -424,3 +424,50 @@ def test_v2_run_cannot_connect_to_shared_user_service(tmp_path):
     assert p.argv[:3] == ("/opt/locus/bin/opencode", "run", "--standalone")
     assert "--server" not in p.argv and "--attach" not in p.argv
     assert "SHARED_SERVER" not in p.environment()
+
+
+def test_windows_launcher_uses_private_appdata_and_pinned_executable_without_host_profile():
+    p = compile_opencode_launch(
+        version="1.16.0",
+        platform="windows",
+        executable=r"C:\Locus\bin\opencode.exe",
+        executable_sha256="f" * 64,
+        model="ollama/qwen3:8b",
+        workspace=r"C:\Locus\work",
+        private_root=r"C:\Locus\private",
+        request_file=r"C:\Locus\private\task.md",
+        mcp_python=r"C:\Locus\bin\python.exe",
+        mcp_config_file=r"C:\Locus\private\mcp-run.json",
+        allowed_mcp_tools=("locus_search",),
+    )
+    assert p.platform == "windows"
+    assert p.argv[0] == r"C:\Locus\bin\opencode.exe"
+    assert p.environment()["USERPROFILE"] == r"C:\Locus\private\home"
+    assert p.environment()["APPDATA"] == r"C:\Locus\private\appdata"
+    assert p.environment()["TEMP"] == r"C:\Locus\private\tmp"
+    assert "USERPROFILE" not in profile(Path("/tmp/loc-test")).environment()
+    assert all("C:\\Users\\" not in arg for arg in p.argv)
+
+
+@pytest.mark.parametrize("invalid", [
+    r"\\server\share\opencode.exe",
+    r"\\?\C:\bin\opencode.exe",
+    r"C:relative\opencode.exe",
+    r"C:\temp\..\opencode.exe",
+    "C:/Locus/opencode.exe",
+    r"C:\Locus\bin\cmd.exe",
+])
+def test_windows_unc_device_relative_and_shell_executables_denied(invalid):
+    with pytest.raises(OpenCodeContractDenied):
+        compile_opencode_launch(
+            version="2.0.0",
+            platform="windows",
+            executable=invalid,
+            executable_sha256="f" * 64,
+            model="ollama/qwen3:8b",
+            workspace=r"C:\Locus\work",
+            private_root=r"C:\Locus\private",
+            request_file=r"C:\Locus\private\task.md",
+            mcp_python=r"C:\Locus\bin\python.exe",
+            mcp_config_file=r"C:\Locus\private\mcp-run.json",
+        )
