@@ -2,8 +2,8 @@
 
 ## Boundary and rollout
 
-\`GatewayTaskDriver\` is the control-plane driver connecting the durable
-\`DurableTaskScheduler\` task DAG to an administrator-registered \`TrustedWorker\`
+`GatewayTaskDriver` is the control-plane driver connecting the durable
+`DurableTaskScheduler` task DAG to an administrator-registered `TrustedWorker`
 adapter. It is **not** a model API, subprocess launcher, browser driver or
 secondary policy decision point.
 
@@ -15,31 +15,31 @@ The dispatcher:
    binary, endpoint, toolset, credential or raw Gateway session.
 3. Reserves the node's entire declared action/tool/token/wall/spend ceiling
    against the existing parent pod ledger, then creates the child session
-   via \`PodReservationLedger.admit\`.
-4. Invokes the adapter with a \`PodLease\` in a bounded thread pool. The
+   via `PodReservationLedger.admit`.
+4. Invokes the adapter with a `PodLease` in a bounded thread pool. The
    adapter is trusted supervisor code: it is responsible for running the
    untrusted agent process through the OS-isolated broker and for enforcing
    per-worker timeouts and cancellation. **Threads are not sandboxes.**
 5. Accepts only a well-formed SHA-256 artifact digest and cumulative
-   \`ResourceBudget\`. The ledger enforces the reservation and usage.
+   `ResourceBudget`. The ledger enforces the reservation and usage.
 6. Closes the child with the digest (not raw artifact data), then calls the
-   **separately configured** \`IndependentVerifier\`. No model/worker verdict
+   **separately configured** `IndependentVerifier`. No model/worker verdict
    can stand in for trusted independent verification.
-7. Marks the node \`verified\` on accepted evidence, or \`blocked\` on
+7. Marks the node `verified` on accepted evidence, or `blocked` on
    independent rejection. Unfinished or ambiguous actions remain held and
    cannot be automatically replayed.
 
-When one wave finishes, \`run_until_idle\` may start the next verified wave.
-It returns \`done\` only when **every** graph node is independently verified.
-Otherwise it returns an explicit \`blocked\`, \`waiting\`, \`stopped\` or
-\`budget\` outcome. Caller continuation after \`waiting\` requires a separate
+When one wave finishes, `run_until_idle` may start the next verified wave.
+It returns `done` only when **every** graph node is independently verified.
+Otherwise it returns an explicit `blocked`, `waiting`, `stopped` or
+`budget` outcome. Caller continuation after `waiting` requires a separate
 supervisor process/lease/reconciliation policy.
 
 ## Engine and provider separation
 
-\`EngineBinding(engine_id, supported_tools, worker)\` binds a trusted, installed
+`EngineBinding(engine_id, supported_tools, worker)` binds a trusted, installed
 execution adapter, not a model endpoint. A worker can use local Ollama through
-the unified \`ModelClient\`, a hosted provider, or a vendor engine such as
+the unified `ModelClient`, a hosted provider, or a vendor engine such as
 OpenCode/Codex after its own CLI adapter passes the same Gateway, isolation,
 MCP mediation, version-pinning and tool parity checks.
 
@@ -47,10 +47,10 @@ No user-installed skill, dynamically discovered MCP server or model-generated
 command is automatically registered as a trusted worker. Registration and
 requested tool capabilities are distinct from actual Gateway authorization.
 
-An adapter implementing \`TrustedWorker\` must never give an untrusted process
-the \`PodLease\` Python object or the raw GatewaySession. Instead, untrusted
-work is constrained by the existing \`SandboxedPodToolBroker\`/
-\`PodSandboxBroker\` or a separately audited equivalent transport. Direct
+An adapter implementing `TrustedWorker` must never give an untrusted process
+the `PodLease` Python object or the raw GatewaySession. Instead, untrusted
+work is constrained by the existing `SandboxedPodToolBroker`/
+`PodSandboxBroker` or a separately audited equivalent transport. Direct
 host execution and unrestricted vendor CLI tools are not supported by this
 increment. Not all providers have the same native tool capabilities.
 
@@ -59,14 +59,15 @@ increment. Not all providers have the same native tool capabilities.
 - The parent budget and concurrent execution ceiling remain durable and
   shared across cooperating supervisors.
 - A worker exception, invalid report, admission error or invalid settlement
-  produces \`uncertain\`. Resource holds are not automatically released;
+  produces `uncertain`. Resource holds are not automatically released;
   reconcile the existing receipt/lease ledger before attempting a new run.
-- A worker that returns a successful digest but whose independent verifier
-  fails is terminal \`blocked\` for this graph revision, not eligible for retry.
+- An artifact **explicitly rejected** by the independent verifier is
+  terminal `blocked` for this graph revision, not eligible for retry.
+  A verifier outage is `uncertain` pending reconciliation, not a rejection.
 - A user cancellation prior to claim does not launch anything or reserve
   budget. Runtime cancellation of an already executing adapter must be
   implemented by that adapter's OS-level process manager.
-- \`run_until_idle\` is bounded by a finite \`max_waves\` and never counts
+- `run_until_idle` is bounded by a finite `max_waves` and never counts
   a dormant active child as complete.
 - No raw prompts, credentials, retrieved content, command output or artifact
   bytes are persisted by this driver. Return reason codes are bounded and
@@ -74,7 +75,7 @@ increment. Not all providers have the same native tool capabilities.
 
 ## TDD and acceptance checks
 
-\`pytest -q tests/unit/test_task_scheduler.py tests/unit/test_task_dispatch_driver.py\`
+`pytest -q tests/unit/test_task_scheduler.py tests/unit/test_task_dispatch_driver.py`
 
 Regressions cover deterministic diamond waves with real Gateway child leases;
 two simultaneous siblings; restart without replay; independently rejected
