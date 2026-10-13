@@ -24,6 +24,12 @@ from locus_runtime.harness.opencode_pod_preflight import (
     preflight_opencode_pod,
 )
 from locus_runtime.pod_reservations import AdmissionDenied
+from locus_runtime.gateway import BudgetFigures, Capabilities, Gateway, RiskClass
+from locus_runtime.pod_reservations import PodReservationLedger
+from locus_runtime.task_graph_contract import TaskAuthority, TaskBudget, TaskIntent
+from locus_runtime.task_plan_compiler import compile_task_plan
+from locus_runtime.task_scheduler import DurableTaskScheduler
+from tests.gateway_support import FakeEngine
 from tests.unit.test_task_scheduler import REQUEST, build
 
 
@@ -314,4 +320,94 @@ def test_post_hash_mode_change_fails_closed_before_engine_run(tmp_path, monkeypa
             expected_profile_sha256=approved_profile_digest(profile),
             observed_version="1.16.0",
             observed_effective_config=profile.config(),
+        )
+
+
+
+def test_approved_locus_search_grant_is_attenuated_and_allows_only_matching_mcp(tmp_path):
+    ledger = PodReservationLedger(tmp_path / "search-pods.db")
+    gateway = Gateway(FakeEngine(), lambda _: None)
+    parent = gateway.open_session(
+        run_id="locus-mcp-parent", principal="alice", engine="trusted-supervisor",
+        allow_child_delegation=True,
+        capabilities=Capabilities(
+            allowed_tools=frozenset({"search"}),
+            max_actions=4, max_tool_calls=4,
+            budget=BudgetFigures(
+                tokens_used=0, max_tokens=500,
+                duration_used_seconds=0, max_duration_seconds=60,
+                cost_used_usd=0, max_cost_usd=0,
+            ),
+            max_risk_class=RiskClass.R2,
+        ),
+    )
+    plan = compile_task_plan(
+        {
+            "contract_version": "1.0",
+            "nodes": [{
+                "node_id": "search_task",
+                "depends_on": [],
+                "capabilities": ["search"],
+                "risk_ceiling": "R2",
+                "budget": {
+                    "actions": 3, "tokens": 300,
+                    "wall_seconds": 20, "spend_microunits": 0,
+                },
+                "deliverables": ["one bounded search artifact"],
+                "acceptance_criteria": ["independently verified"],
+            }],
+        },
+        intent=TaskIntent(
+            "Perform one authorized search", "business", "alice",
+            ("trusted evidence returned",),
+        ),
+        parent_authority=TaskAuthority(
+            frozenset({"search"}), "R2", TaskBudget(4, 500, 60, 0),
+        ),
+    )
+    scheduler = DurableTaskScheduler(ledger, max_inflight=1)
+    scheduler.bind(plan, parent, max_tool_calls=4)
+    claim = scheduler.claim_next(plan, parent)
+    assert claim is not None
+    scheduler.reserve(plan, parent, claim, budget=REQUEST, lease_seconds=30)
+    lease = scheduler.admit(plan, parent, claim, engine="trusted/opencode")
+    binary_dir = tmp_path / "bin"
+    binary_dir.mkdir()
+    exe = binary_dir / "opencode"
+    binary = b"mock-attestation-does-not-execute"
+    exe.write_bytes(binary)
+    exe.chmod(0o755)
+    profile = compile_opencode_launch(
+        version="1.16.0", executable=str(exe),
+        executable_sha256=hashlib.sha256(binary).hexdigest(),
+        model="ollama/qwen3:8b",
+        workspace=str(tmp_path / "work"),
+        private_root=str(tmp_path / "private"),
+        request_file=str(tmp_path / "private" / "task.md"),
+        mcp_python=str(tmp_path / "bin" / "python3"),
+        mcp_config_file=str(tmp_path / "private" / "mcp.json"),
+        allowed_mcp_tools=("locus_search",),
+    )
+    preflight = preflight_opencode_pod(
+        profile, lease,
+        expected_profile_sha256=approved_profile_digest(profile),
+        observed_version="1.16.0",
+        observed_effective_config=profile.config(),
+    )
+    assert preflight.allowed_mcp_tools == ("locus_search",)
+    assert preflight.result == "verified_preflight_unexecuted"
+    widened = compile_opencode_launch(
+        version="1.16.0", executable=str(exe),
+        executable_sha256=profile.executable_sha256,
+        model=profile.model, workspace=profile.workspace,
+        private_root=profile.private_root, request_file=profile.request_file,
+        mcp_python=profile.mcp_python, mcp_config_file=profile.mcp_config_file,
+        allowed_mcp_tools=("locus_run_tests",),
+    )
+    with pytest.raises(AdmissionDenied, match="grant exceeds"):
+        preflight_opencode_pod(
+            widened, lease,
+            expected_profile_sha256=approved_profile_digest(widened),
+            observed_version="1.16.0",
+            observed_effective_config=widened.config(),
         )
