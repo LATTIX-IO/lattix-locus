@@ -19,6 +19,7 @@ from locus_runtime.harness.opencode_contract import (
 )
 from locus_runtime.harness.opencode_pod_preflight import (
     _validate_observed_version,
+    approved_profile_digest,
     preflight_opencode_pod,
 )
 from locus_runtime.pod_reservations import AdmissionDenied
@@ -58,6 +59,7 @@ def test_pinned_engine_preflight_is_bound_to_real_active_child(tmp_path, version
     profile, lease, ledger, parent = pod(tmp_path, version=version)
     result = preflight_opencode_pod(
         profile, lease,
+        expected_profile_sha256=approved_profile_digest(profile),
         observed_version=f"opencode {version}\n",
         observed_effective_config=profile.config(),
     )
@@ -80,6 +82,7 @@ def test_binary_hash_mismatch_denied_before_any_model_or_worker_execution(tmp_pa
     with pytest.raises(AdmissionDenied, match="digest mismatch"):
         preflight_opencode_pod(
             profile, lease,
+            expected_profile_sha256=approved_profile_digest(profile),
             observed_version="1.16.0",
             observed_effective_config=profile.config(),
         )
@@ -93,6 +96,7 @@ def test_world_or_group_writable_and_nonexecuting_binary_denied(tmp_path, mode):
     with pytest.raises(AdmissionDenied, match="writable by group/other|nonexecuting"):
         preflight_opencode_pod(
             profile, lease,
+            expected_profile_sha256=approved_profile_digest(profile),
             observed_version="1.16.0",
             observed_effective_config=profile.config(),
         )
@@ -107,6 +111,7 @@ def test_symlinked_binary_and_symlinked_parent_denied(tmp_path):
     with pytest.raises(AdmissionDenied, match="symlink"):
         preflight_opencode_pod(
             profile, lease,
+            expected_profile_sha256=approved_profile_digest(profile),
             observed_version="1.16.0",
             observed_effective_config=profile.config(),
         )
@@ -119,6 +124,7 @@ def test_symlinked_binary_and_symlinked_parent_denied(tmp_path):
     with pytest.raises(OpenCodeContractDenied, match="substituted"):
         preflight_opencode_pod(
             substituted, lease,
+            expected_profile_sha256=approved_profile_digest(profile),
             observed_version="1.16.0",
             observed_effective_config=profile.config(),
         )
@@ -134,6 +140,7 @@ def test_unknown_or_spoofed_banner_denied(tmp_path, observed):
     with pytest.raises(OpenCodeContractDenied):
         preflight_opencode_pod(
             profile, lease,
+            expected_profile_sha256=approved_profile_digest(profile),
             observed_version=observed,
             observed_effective_config=profile.config(),
         )
@@ -146,6 +153,7 @@ def test_gateway_revocation_invalidates_preflight_before_fs_access(tmp_path):
     with pytest.raises(AdmissionDenied, match="revoked|not active"):
         preflight_opencode_pod(
             profile, lease,
+            expected_profile_sha256=approved_profile_digest(profile),
             observed_version="1.16.0",
             observed_effective_config=profile.config(),
         )
@@ -164,6 +172,7 @@ def test_unauthorized_mcp_capability_denied_before_executable_measurement(tmp_pa
         with pytest.raises(AdmissionDenied, match="grant exceeds"):
             preflight_opencode_pod(
                 profile, lease,
+                expected_profile_sha256=approved_profile_digest(profile),
                 observed_version="1.16.0",
                 observed_effective_config=profile.config(),
             )
@@ -185,6 +194,7 @@ def test_profile_dataclass_substitution_denied_before_binary_read(tmp_path, subs
     with pytest.raises(OpenCodeContractDenied, match="substituted"):
         preflight_opencode_pod(
             modified, lease,
+            expected_profile_sha256=approved_profile_digest(profile),
             observed_version="1.16.0",
             observed_effective_config=profile.config(),
         )
@@ -203,6 +213,7 @@ def test_effective_config_plugin_and_provider_widening_denied(tmp_path):
         with pytest.raises(OpenCodeContractDenied):
             preflight_opencode_pod(
                 profile, lease,
+                expected_profile_sha256=approved_profile_digest(profile),
                 observed_version="1.16.0",
                 observed_effective_config=config,
             )
