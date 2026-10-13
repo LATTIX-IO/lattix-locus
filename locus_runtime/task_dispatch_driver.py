@@ -17,7 +17,13 @@ from locus_runtime.gateway import GatewaySession
 from locus_runtime.pod_reservations import AdmissionDenied, PodLease, ResourceBudget
 from locus_runtime.task_graph_contract import TaskIntent, TaskNode
 from locus_runtime.task_plan_compiler import CompiledTaskPlan
-from locus_runtime.task_scheduler import DurableTaskScheduler, IndependentVerifier, NodeClaim
+from locus_runtime.task_scheduler import (
+    DurableTaskScheduler,
+    IndependentVerifier,
+    NodeClaim,
+    VerificationRejected,
+    VerificationUnavailable,
+)
 
 _ENGINE_ID = re.compile(r"[A-Za-z][A-Za-z0-9_.:/-]{0,127}\Z", re.ASCII)
 _ARTIFACT = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
@@ -175,7 +181,7 @@ class GatewayTaskDriver:
                 artifact_digest=report.artifact_sha256,
                 verifier=self.verifier,
             )
-        except AdmissionDenied:
+        except VerificationRejected:
             # Closed result is terminal and has been refused by verification;
             # never allow an automatic retry of this potentially effectful pod.
             try:
@@ -185,6 +191,12 @@ class GatewayTaskDriver:
             except Exception:
                 return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "artifact_reconciliation")
             return DispatchOutcome(node.node_id, adapter.engine_id, "blocked", "artifact_not_verified")
+        except VerificationUnavailable:
+            # No verdict: preserve closed evidence for manual reconciliation,
+            # rather than turning a transient outage into a false rejection.
+            return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "verifier_unavailable")
+        except AdmissionDenied:
+            return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "verification_integrity")
         except Exception:
             return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "verifier_error")
         return DispatchOutcome(node.node_id, adapter.engine_id, "verified", "evidence_accepted")
@@ -293,7 +305,10 @@ class GatewayTaskDriver:
             states = self.scheduler.states(plan, parent)
             if all(state == "verified" for state in states.values()):
                 return DispatchSummary("done", index + 1, tuple(outcomes), states)
-            if any(state in {"blocked", "uncertain"} for state in states.values()):
+            if (
+                any(state in {"blocked", "uncertain"} for state in states.values())
+                or any(item.status == "uncertain" for item in outcomes)
+            ):
                 return DispatchSummary("blocked", index + 1, tuple(outcomes), states)
             if not wave.outcomes:
                 return DispatchSummary("waiting", index + 1, tuple(outcomes), states)
