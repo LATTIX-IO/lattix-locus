@@ -184,7 +184,8 @@ def compile_opencode_launch(
         ]
         config = {
             "$schema": "https://opencode.ai/config.json",
-            "autoupdate": False,
+            "update": "disable",
+            "share": "disabled",
             "permissions": rules,
             "experimental": {"policies": hard_rules},
             "mcp": (
@@ -222,7 +223,9 @@ def compile_opencode_launch(
         mcp_config_file=str(mcp_cfg),
         allowed_mcp_tools=tools,
         argv=(
-            str(binary), "run", "--format", "json", "--model", model,
+            str(binary), "run",
+            *(("--standalone",) if parsed.major == 2 else ()),
+            "--format", "json", "--model", model,
             "--file", str(request), _RUN_MESSAGE,
         ),
         env=tuple(sorted(env.items())),
@@ -254,9 +257,12 @@ def validate_effective_opencode_config(
                 "formatter", "lsp", "command", "commands", "skills"):
         if effective.get(key):
             raise OpenCodeContractDenied("untrusted OpenCode extension in effective config")
-    if effective.get("autoupdate", False) is not False:
-        raise OpenCodeContractDenied("OpenCode automatic update must be disabled")
-    if profile.version.major == 1 and effective.get("share", "disabled") != "disabled":
+    if profile.version.major == 1:
+        if effective.get("autoupdate", False) is not False:
+            raise OpenCodeContractDenied("OpenCode automatic update must be disabled")
+    elif effective.get("update") != "disable":
+        raise OpenCodeContractDenied("OpenCode V2 update policy must be disabled")
+    if effective.get("share") != "disabled":
         raise OpenCodeContractDenied("OpenCode public sharing must be disabled")
 
 
