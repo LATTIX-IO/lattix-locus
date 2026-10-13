@@ -199,9 +199,9 @@ def test_foreign_claim_plan_and_out_of_order_node_cannot_be_launched(tmp_path):
             plan, parent, forged, budget=REQUEST, lease_seconds=30,
         )
     bad_plan = replace(plan, digest="f" * 64)
-    with pytest.raises(AdmissionDenied, match="plan"):
+    with pytest.raises(AdmissionDenied, match="graph revision"):
         scheduler.ready(bad_plan, parent)
-    with pytest.raises(AdmissionDenied, match="plan"):
+    with pytest.raises(AdmissionDenied, match="graph revision"):
         scheduler.reserve(
             bad_plan, parent, claim, budget=REQUEST, lease_seconds=30,
         )
