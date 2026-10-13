@@ -120,13 +120,23 @@ def test_symlinked_binary_and_symlinked_parent_denied(tmp_path):
     parent = original.parent
     alias = tmp_path / "alias-bin"
     alias.symlink_to(parent, target_is_directory=True)
-    substituted = replace(profile, executable=str(alias / "opencode"))
-    with pytest.raises(OpenCodeContractDenied, match="substituted"):
+    aliased = compile_opencode_launch(
+        version="1.16.0",
+        executable=str(alias / "opencode"),
+        executable_sha256=profile.executable_sha256,
+        model=profile.model,
+        workspace=profile.workspace,
+        private_root=profile.private_root,
+        request_file=profile.request_file,
+        mcp_python=profile.mcp_python,
+        mcp_config_file=profile.mcp_config_file,
+    )
+    with pytest.raises(AdmissionDenied, match="symlink"):
         preflight_opencode_pod(
-            substituted, lease,
-            expected_profile_sha256=approved_profile_digest(profile),
+            aliased, lease,
+            expected_profile_sha256=approved_profile_digest(aliased),
             observed_version="1.16.0",
-            observed_effective_config=profile.config(),
+            observed_effective_config=aliased.config(),
         )
 
 
@@ -191,7 +201,7 @@ def test_unauthorized_mcp_capability_denied_before_executable_measurement(tmp_pa
 def test_profile_dataclass_substitution_denied_before_binary_read(tmp_path, substitution):
     profile, lease, *_ = pod(tmp_path)
     modified = replace(profile, **dict([substitution]))
-    with pytest.raises(OpenCodeContractDenied, match="substituted"):
+    with pytest.raises(OpenCodeContractDenied, match="not approved|substituted"):
         preflight_opencode_pod(
             modified, lease,
             expected_profile_sha256=approved_profile_digest(profile),
