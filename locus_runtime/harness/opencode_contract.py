@@ -161,6 +161,7 @@ def compile_opencode_launch(
     ):
         raise OpenCodeContractDenied("noncanonical or duplicate Locus MCP grant")
     tools = tuple(sorted(allowed_mcp_tools))
+    provider_id = model.split("/", 1)[0]
     mcp_cmd = [
         str(python), "-m", "locus_runtime.harness.codex_mcp_server",
         "--config", str(mcp_cfg),
@@ -173,6 +174,7 @@ def compile_opencode_launch(
             "model": model,
             "formatter": False,
             "lsp": False,
+            "enabled_providers": [provider_id],
             "permission": {
                 "*": "deny",
                 **{name: "allow" for name in tools},
@@ -199,6 +201,9 @@ def compile_opencode_launch(
             ],
         ]
         hard_rules = [
+            # Providers are a separate trust boundary from tool actions.
+            {"action": "provider.use", "resource": "*", "effect": "deny"},
+            {"action": "provider.use", "resource": provider_id, "effect": "allow"},
             {"action": "permission", "resource": "*", "effect": "deny"},
             *[
                 {"action": "permission", "resource": f"{name}:*", "effect": "allow"}
@@ -291,6 +296,7 @@ def validate_effective_opencode_config(
     for section in (
         "permission", "permissions", "mcp", "experimental",
         "agent", "agents", "default_agent", "formatter", "lsp", "snapshots",
+        "enabled_providers",
     ):
         if effective.get(section) != expected.get(section):
             raise OpenCodeContractDenied("effective OpenCode policy was overridden")
