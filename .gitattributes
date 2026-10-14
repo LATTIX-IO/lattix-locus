@@ -7,3 +7,17 @@ provenance/** text eol=lf
 apps/evals/locus_evals/suite/tasks/** text eol=lf
 # Public held-out-shaped test stub (LOCUS-382): hashed like the private split
 tests/evals/fixtures/heldout_stub/** text eol=lf
+# Design baseline (docs/design): MANIFEST.md hashes files byte for byte, keep LF everywhere
+docs/design/**/*.html text eol=lf
+docs/design/**/*.js text eol=lf
+docs/design/**/*.mjs text eol=lf
+docs/design/**/*.css text eol=lf
+docs/design/**/*.md text eol=lf
+docs/design/**/*.json text eol=lf
+docs/design/**/*.py text eol=lf
+docs/design/**/*.svg text eol=lf
+docs/design/**/*.txt text eol=lf
+# authored with CRLF; stored byte-exact so they match MANIFEST.md
+docs/design/locus-prototype/assets/brand/*.svg -text
+docs/design/locus-prototype/_qa/cdp.mjs -text
+docs/design/locus-prototype/_qa/harden.py -text
