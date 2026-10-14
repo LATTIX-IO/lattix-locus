@@ -168,7 +168,7 @@ def compile_opencode_launch(
     tools = tuple(sorted(allowed_mcp_tools))
     provider_id = model.split("/", 1)[0]
     mcp_cmd = [
-        str(python), "-m", "locus_runtime.harness.codex_mcp_server",
+        str(python), "-m", "locus_runtime.harness.pod_mcp_stdio_proxy",
         "--config", str(mcp_cfg),
     ]
     if parsed.major == 1:
