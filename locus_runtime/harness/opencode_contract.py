@@ -305,7 +305,8 @@ def validate_effective_opencode_config(
     for section in (
         "permission", "permissions", "mcp", "experimental",
         "agent", "agents", "default_agent", "formatter", "lsp", "snapshots",
-        "snapshot", "enabled_providers",
+        "snapshot", "enabled_providers", "policies",
+        "provider", "providers",
     ):
         if effective.get(section) != expected.get(section):
             raise OpenCodeContractDenied("effective OpenCode policy was overridden")
