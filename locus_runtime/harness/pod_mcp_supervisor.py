@@ -17,7 +17,7 @@ import hashlib
 import json
 import re
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 from locus_runtime.action_receipts import ActionReplayDenied
 from locus_runtime.pod_reservations import AdmissionDenied, PodLease
@@ -86,7 +86,7 @@ def decode_mcp_frame(raw: bytes) -> dict[str, object]:
         raise PodMcpContractDenied("malformed MCP frame") from None
     if not isinstance(obj, dict) or any(not isinstance(k, str) for k in obj):
         raise PodMcpContractDenied("MCP envelope must be a JSON object")
-    return obj
+    return cast(dict[str, object], obj)
 
 
 class TrustedPodMcpHandler:
