@@ -129,6 +129,21 @@ Skipped CodeQL/AppSec/SBOM/SCA must be classified **NOT EXECUTED** and cannot
 satisfy release security approval. Changes to CODEOWNERS/protected policy and
 runtime executors are outside this increment.
 
+## MCP execution boundary (2026-10-14)
+
+The legacy `locus_runtime.harness.codex_mcp_server` opens its **own** Gateway
+session from a configuration file and is not bound to the existing durable
+`PodLease` / `PodActionReceipts`. It therefore MUST NOT be used as the
+OpenCode agent MCP target. The launch profile now targets the
+`locus_runtime.harness.pod_mcp_stdio_proxy` entrypoint instead. That proxy
+must be delivered separately with a constrained transport to the trusted
+supervisor-side MCP broker, bound to the actual child lease, gated tools and
+durable receipt ledger. Until that transport is installed and attested, a
+profile requesting MCP tools cannot be considered runnable; intentionally
+missing proxy execution fails closed rather than granting an independent
+Gateway authority. A provider-only worker with no MCP calls is not proof of
+MCP mediation.
+
 ## Follow-on: actual local smoke
 
 A separate LOCUS-416 increment will implement an attested runner that:
