@@ -1,0 +1,3 @@
+IBM Plex Mono — Copyright © 2017 IBM Corp. Licensed under the SIL Open Font License 1.1 (https://openfontlicense.org). Latin subset, weights 400/500/600/700, localized from Google Fonts on 2026-10-08.
+
+IBM Plex Sans woff2, Latin subset, weights 400-700 (SIL Open Font License 1.1), added 2026-10-11 for the blended system. Source: @fontsource/ibm-plex-sans v5.

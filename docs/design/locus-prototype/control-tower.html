@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Control Tower · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+<style>
+  .stat { padding: 12px 14px; border-right: 1px solid var(--border); }
+  .stat:last-child { border-right: 0; }
+  .stat .v { font: 600 20px var(--font-mono); margin-top: 4px; }
+  .topo { width: 100%; height: auto; display: block; }
+  .topo .bnd { fill: none; stroke: var(--border-strong); stroke-dasharray: 4 3; }
+  .topo .bl { font: 500 10px var(--font-mono); fill: var(--muted);  }
+  .topo .nd rect { fill: var(--bg); stroke: var(--fg); }
+  .topo .nd.down rect { stroke: var(--crit-dot); stroke-width: 1.5; }
+  .topo .nd text { font: 11px var(--font-mono); fill: var(--fg); }
+  .topo .nd .s { fill: var(--muted); font-size: 9px; }
+  .topo .ln { stroke: var(--border-strong); }
+  .topo .ln.bad { stroke: var(--crit-dot); stroke-dasharray: 3 3; }
+  .topo .dot-ok { fill: var(--ok-dot); } .topo .dot-crit { fill: var(--crit-dot); } .topo .dot-warn { fill: var(--warn-dot); }
+  .bars { display: grid; gap: 6px; }
+  .bar { display: grid; grid-template-columns: 140px 1fr 40px; gap: 10px; align-items: center; font-size: 12px; }
+  .bar .tr { height: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
+  .bar .tr i { display: block; height: 100%; background: var(--fg); }
+  .bar .tr i.c { background: var(--crit-dot); }
+  .spark { display: flex; align-items: flex-end; gap: 2px; height: 28px; }
+  .spark i { flex: 1; background: var(--fg); min-width: 3px; }
+</style>
+</head>
+<body data-nav="tower" data-crumbs='[["Control Tower","control-tower.html"],["Fleet",""]]'>
+<main id="main">
+  <div class="page">
+    <header class="page-h" data-od-id="tower-header">
+      <div class="t"><h1>Control Tower</h1><p>Where work runs, which models it uses, how policy is behaving, and whether agent quality is holding.</p></div>
+      <div class="acts"><div class="seg" role="group" aria-label="Summary time range" id="range"><button aria-pressed="false" data-h="1">1 h</button><button aria-pressed="true" data-h="24">24 h</button><button aria-pressed="false" data-h="168">7 d</button></div></div>
+    </header>
+
+    <section class="panel" data-od-id="tower-summary" style="margin-bottom:16px" aria-labelledby="sumH">
+      <div class="panel-h"><h2 id="sumH" class="label" style="font-size:12px">Summary · <span id="rangeLbl">last 24 h</span></h2><span class="small muted" id="sumSrc"></span></div>
+      <div class="grid g4" style="gap:0" id="sum"></div>
+    </section>
+    <p class="small muted" style="margin:-8px 0 16px" id="illNote"><span class="st st-sim">Illustrative</span> marks panels that show fixed sample telemetry. They do not change with the time range or with actions in this prototype; the summary above is computed from prototype state.</p>
+
+    <div class="tabs" role="tablist" aria-label="Control Tower sections">
+      <button role="tab" aria-selected="true" aria-controls="c-fleet" id="ct-fleet" data-hash="fleet">Fleet</button>
+      <button role="tab" aria-selected="false" aria-controls="c-route" id="ct-route" tabindex="-1" data-hash="routing">Model routing &amp; engines</button>
+      <button role="tab" aria-selected="false" aria-controls="c-pol" id="ct-pol" tabindex="-1" data-hash="policy">Policy operations</button>
+      <button role="tab" aria-selected="false" aria-controls="c-eval" id="ct-eval" tabindex="-1" data-hash="evals">Evaluations &amp; improvement</button>
+    </div>
+
+    <section role="tabpanel" id="c-fleet" aria-labelledby="ct-fleet" data-od-id="fleet">
+      <div class="grid g21" style="margin-top:16px">
+        <div class="panel"><div class="panel-h"><h2>Execution topology</h2><span class="st st-sim">Illustrative</span><span class="trc trc-pl">Distributed nodes · planned</span></div>
+          <div class="panel-b">
+            <svg class="topo" viewBox="0 0 660 260" role="img" aria-labelledby="topoDesc">
+              <desc id="topoDesc">Control plane in the hosted boundary connects to four edge nodes and one desktop node. edge-sfo-02 is down; its link is broken.</desc>
+              <rect class="bnd" x="230" y="10" width="200" height="80" rx="2"/><text class="bl" x="240" y="26">Hosted · nw-prod</text>
+              <rect class="bnd" x="10" y="140" width="420" height="110" rx="2"/><text class="bl" x="20" y="156">Tenant network · edge</text>
+              <rect class="bnd" x="450" y="140" width="200" height="110" rx="2"/><text class="bl" x="460" y="156">Device · local</text>
+              <line class="ln" x1="330" y1="76" x2="80" y2="180"/><line class="ln bad" x1="330" y1="76" x2="215" y2="180"/><line class="ln" x1="330" y1="76" x2="350" y2="180"/><line class="ln" x1="330" y1="76" x2="550" y2="180"/>
+              <g class="nd"><rect x="270" y="36" width="120" height="40" rx="2"/><circle class="dot-ok" cx="282" cy="50" r="4"/><text x="292" y="54">control-plane</text><text class="s" x="282" y="68">api · opa · nats</text></g>
+              <g class="nd"><rect x="25" y="180" width="110" height="44" rx="2"/><circle class="dot-ok" cx="37" cy="194" r="4"/><text x="47" y="198">edge-sfo-01</text><text class="s" x="37" y="214">12 runs · gpu</text></g>
+              <g class="nd down"><rect x="160" y="180" width="110" height="44" rx="2"/><circle class="dot-crit" cx="172" cy="194" r="4"/><text x="182" y="198">edge-sfo-02</text><text class="s" x="172" y="214">no heartbeat 26m</text></g>
+              <g class="nd"><rect x="295" y="180" width="110" height="44" rx="2"/><circle class="dot-warn" cx="307" cy="194" r="4"/><text x="317" y="198">edge-iad-01</text><text class="s" x="307" y="214">cpu 91%</text></g>
+              <g class="nd"><rect x="490" y="180" width="120" height="44" rx="2"/><circle class="dot-ok" cx="502" cy="194" r="4"/><text x="512" y="198">dana-laptop</text><text class="s" x="502" y="214">desktop · browser</text></g>
+            </svg>
+          </div>
+        </div>
+        <div class="panel"><div class="panel-h"><h2>Needs attention</h2><span class="st st-sim">Illustrative</span></div>
+          <ul class="list">
+            <li><span class="st st-crit"></span><div class="li-b"><b>edge-sfo-02 unreachable</b><span class="small muted">4 runs resumed on edge-sfo-01 from checkpoints</span><div class="row" style="margin-top:8px"><button class="btn btn-sm" data-toast="drain edge-sfo-02 so no new runs schedule on it" data-toast-id="edge-sfo-02">Drain</button><button class="btn btn-sm btn-ghost" data-toast="request a signed diagnostics bundle from the node">Diagnostics</button></div></div></li>
+            <li><span class="st st-warn"></span><div class="li-b"><b>edge-iad-01 CPU above 90% for 18 min</b><span class="small muted">Scheduler is routing new runs elsewhere</span></div></li>
+          </ul>
+        </div>
+      </div>
+      <div class="panel tbl-wrap" style="margin-top:16px"><div class="panel-h"><h2>Nodes</h2><span class="st st-sim">Illustrative</span></div><table class="tbl">
+        <caption class="vh">Nodes, sample telemetry</caption><thead><tr><th>Node</th><th>Profile</th><th>Health</th><th>Runs</th><th>Sandbox</th><th>Version</th><th>Attestation</th></tr></thead>
+        <tbody>
+          <tr><td class="t mono">control-plane</td><td>Hosted</td><td><span class="st st-ok">Healthy</span></td><td class="num">—</td><td class="small">n/a</td><td class="num">0.19.2</td><td><span class="st st-ok">Verified</span></td></tr>
+          <tr><td class="t mono">edge-sfo-01</td><td>Edge</td><td><span class="st st-ok">Healthy</span></td><td class="num">12</td><td class="small">gVisor</td><td class="num">0.19.2</td><td><span class="st st-ok">Verified</span></td></tr>
+          <tr><td class="t mono">edge-sfo-02</td><td>Edge</td><td><span class="st st-crit">Unreachable</span></td><td class="num">0</td><td class="small">gVisor</td><td class="num">0.19.2</td><td><span class="st">Unknown</span></td></tr>
+          <tr><td class="t mono">edge-iad-01</td><td>Edge</td><td><span class="st st-warn">Degraded</span></td><td class="num">9</td><td class="small">gVisor</td><td class="num">0.19.1</td><td><span class="st st-ok">Verified</span></td></tr>
+          <tr><td class="t mono">dana-laptop</td><td>Desktop</td><td><span class="st st-ok">Healthy</span></td><td class="num">2</td><td class="small">OS sandbox</td><td class="num">0.19.2</td><td><span class="st st-ok">Signed shell</span></td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <section role="tabpanel" id="c-route" aria-labelledby="ct-route" hidden data-od-id="model-routing">
+      <div class="panel tbl-wrap" style="margin-top:16px"><div class="panel-h"><h2>Routes</h2><span class="st st-sim">Illustrative</span><span class="trc trc-ex">Provider routing · existing</span><button class="btn btn-sm" data-toast="open the route editor with a policy preview">New route</button></div>
+        <table class="tbl"><thead><tr><th>Route</th><th>Primary</th><th>Fallback</th><th>Allowed data</th><th>p50 latency</th><th>Share (sample)</th></tr></thead><tbody>
+          <tr><td class="t mono">confidential-default</td><td>Anthropic · claude-sonnet-5-5</td><td>Local · llama-3.3-70b</td><td><span class="cls">Conf</span></td><td class="num">2.1 s</td><td><div class="row"><div class="meter" style="width:80px"><i style="width:58%"></i></div><span class="num small">58%</span></div></td></tr>
+          <tr><td class="t mono">local-only</td><td>Local · qwen-2.5-32b</td><td>None (fail closed)</td><td><span class="cls">Secret</span></td><td class="num">3.4 s</td><td><div class="row"><div class="meter" style="width:80px"><i style="width:21%"></i></div><span class="num small">21%</span></div></td></tr>
+          <tr><td class="t mono">vision-default</td><td>Anthropic · claude-opus-5-5</td><td>Anthropic · claude-sonnet-5-5</td><td><span class="cls">Int</span></td><td class="num">4.8 s</td><td><div class="row"><div class="meter" style="width:80px"><i style="width:9%"></i></div><span class="num small">9%</span></div></td></tr>
+          <tr><td class="t mono">fast-cheap</td><td>Anthropic · claude-haiku-4-5</td><td>Local · llama-3.1-8b</td><td><span class="cls">Int</span></td><td class="num">0.6 s</td><td><div class="row"><div class="meter" style="width:80px"><i style="width:12%"></i></div><span class="num small">12%</span></div></td></tr>
+        </tbody></table>
+      </div>
+      <div class="panel tbl-wrap" style="margin-top:16px"><div class="panel-h"><h2>External execution engines</h2><span class="trc trc-fd">Mediation · foundation</span></div>
+        <table class="tbl"><thead><tr><th>Engine</th><th>File access</th><th>Network</th><th>Tool calls</th><th>Trace capture</th><th>State</th></tr></thead><tbody>
+          <tr><td class="t">Claude Code</td><td><span class="st st-ok">Mediated</span></td><td><span class="st st-ok">Mediated</span></td><td><span class="st st-warn">Partial</span></td><td><span class="st st-ok">Full</span></td><td><span class="st st-ok">Enabled</span></td></tr>
+          <tr><td class="t">OpenCode</td><td><span class="st st-ok">Mediated</span></td><td><span class="st st-warn">Partial</span></td><td><span class="st st-warn">Partial</span></td><td><span class="st st-warn">Summary only</span></td><td><span class="st st-ok">Enabled</span></td></tr>
+          <tr><td class="t">Codex</td><td><span class="st st-warn">Partial</span></td><td><span class="st st-crit">Not mediated</span></td><td><span class="st st-crit">Not mediated</span></td><td><span class="st st-warn">Summary only</span></td><td><span class="st">Disabled by policy</span></td></tr>
+        </tbody></table>
+        <div class="panel-f small muted">Engines without full mediation are limited to INTERNAL data and cannot receive capability grants beyond their sandbox.</div>
+      </div>
+    </section>
+
+    <section role="tabpanel" id="c-pol" aria-labelledby="ct-pol" hidden data-od-id="policy-operations">
+      <div class="grid g2" style="margin-top:16px">
+        <div class="panel"><div class="panel-h"><h2>Denials by rule (sample)</h2><span class="st st-sim">Illustrative</span><span class="tag">bundle v41</span></div>
+          <div class="panel-b bars" role="img" aria-label="Denials by rule: scope-02 18, egress-07 11, mcp-04 6, route-11 4, mem-03 2">
+            <div class="bar"><span class="mono">POL-scope-02</span><span class="tr"><i class="c" style="width:100%"></i></span><span class="num">18</span></div>
+            <div class="bar"><span class="mono">POL-egress-07</span><span class="tr"><i style="width:61%"></i></span><span class="num">11</span></div>
+            <div class="bar"><span class="mono">POL-mcp-04</span><span class="tr"><i style="width:33%"></i></span><span class="num">6</span></div>
+            <div class="bar"><span class="mono">POL-route-11</span><span class="tr"><i style="width:22%"></i></span><span class="num">4</span></div>
+            <div class="bar"><span class="mono">POL-mem-03</span><span class="tr"><i style="width:11%"></i></span><span class="num">2</span></div>
+          </div>
+          <div class="panel-f small muted">Egress-07 counts include approvals requested, not only hard denials.</div>
+        </div>
+        <div class="panel"><div class="panel-h"><h2>Pending policy change</h2><span class="st st-sim">Illustrative</span></div>
+          <div class="panel-b stack">
+            <p class="small"><b>v42 draft:</b> allow Research Analyst to send email to verified partner tenants without approval.</p>
+            <dl class="kv"><dt>Replayed</dt><dd>Last 7 days · 1,912 decisions</dd><dt>Would change</dt><dd class="num">23 decisions → permit</dd><dt>Author</dt><dd>Priya Nair · security admin</dd></dl>
+            <div class="row"><button class="btn btn-sm" data-toast="show the v42 policy diff">View diff</button><button class="btn btn-sm btn-primary" data-toast="send the v42 draft for a second approver (two-person rule)" data-toast-id="POL-v42">Request approval</button></div>
+          </div>
+        </div>
+      </div>
+      <p class="small muted" style="margin-top:10px"><span class="trc trc-ex">OPA enforcement · existing</span> <span class="trc trc-pl" style="margin-left:8px">Replay simulation, two-person rule · planned</span></p>
+    </section>
+
+    <section role="tabpanel" id="c-eval" aria-labelledby="ct-eval" hidden data-od-id="evaluations">
+      <div class="panel tbl-wrap" style="margin-top:16px"><div class="panel-h"><h2>Evaluation suites</h2><span class="st st-sim">Illustrative</span><span class="trc trc-fd">Foundation</span></div>
+        <table class="tbl"><thead><tr><th>Suite</th><th>Domain</th><th>Cases</th><th>Score</th><th>Last 8 runs</th><th>Gate</th></tr></thead><tbody>
+          <tr><td class="t">research-core</td><td>Research</td><td class="num">120</td><td class="num">0.91</td><td><div class="spark" aria-label="Stable"><i style="height:70%"></i><i style="height:74%"></i><i style="height:72%"></i><i style="height:80%"></i><i style="height:82%"></i><i style="height:85%"></i><i style="height:88%"></i><i style="height:91%"></i></div></td><td><span class="st st-ok">Passing ≥ 0.85</span></td></tr>
+          <tr><td class="t">contract-review</td><td>Legal ops</td><td class="num">64</td><td class="num">0.87</td><td><div class="spark"><i style="height:84%"></i><i style="height:86%"></i><i style="height:85%"></i><i style="height:87%"></i><i style="height:86%"></i><i style="height:88%"></i><i style="height:87%"></i><i style="height:87%"></i></div></td><td><span class="st st-ok">Passing ≥ 0.80</span></td></tr>
+          <tr><td class="t">computer-use-portals</td><td>Operations</td><td class="num">38</td><td class="num">0.72</td><td><div class="spark"><i style="height:80%"></i><i style="height:78%"></i><i style="height:76%"></i><i style="height:74%"></i><i style="height:75%"></i><i style="height:73%"></i><i style="height:72%"></i><i style="height:72%"></i></div></td><td><span class="st st-crit">Failing ≥ 0.80</span></td></tr>
+        </tbody></table>
+      </div>
+      <div class="panel" style="margin-top:16px" data-od-id="improvement-proposal"><div class="panel-h"><h2>Improvement proposal · IMP-114</h2><span class="st st-sim">Illustrative</span><span class="trc trc-pl">Planned</span></div>
+        <div class="panel-b grid g2">
+          <div class="stack"><p class="small">Writer proposes a revised citation instruction after 9 reviewer corrections on footnote format.</p><dl class="kv"><dt>Target</dt><dd>AGT-0048 Writer · v5 → v6</dd><dt>Eval delta</dt><dd class="num">writing-core 0.83 → 0.88</dd><dt>Regressions</dt><dd>None on 4 suites</dd></dl></div>
+          <pre class="code">- Cite sources inline as [n].
++ Cite sources inline as [n]; list full
++ references at the end with title,
++ publisher and retrieval date.</pre>
+        </div>
+        <div class="panel-f"><span class="small muted">Self-improvement never publishes without review.</span><span style="flex:1"></span><button class="btn btn-sm" data-toast="reject improvement proposal IMP-114" data-toast-id="IMP-114">Reject</button><button class="btn btn-sm btn-primary" data-toast="publish Writer v6 to a 10% canary" data-toast-id="REL-0337">Publish as canary</button></div>
+      </div>
+    </section>
+  </div>
+</main>
+<script src="locus-state.js"></script>
+<script src="locus.js"></script>
+<script>
+  /* summary computed from prototype state for the selected window; everything else on this page is labelled illustrative */
+  const {H} = LocusState, $ = q => document.querySelector(q); let HRS = 24;
+  const ACTIVE = Object.keys(H.RUN_STATES).filter(k => !['terminal', 'attention'].includes(H.RUN_STATES[k].phase));
+  function render() { const S = H.s, since = Date.now() - HRS * 3600000, lbl = HRS === 1 ? 'last 1 h' : HRS === 24 ? 'last 24 h' : 'last 7 d';
+    const inWin = S.runs.filter(r => (r.started || r.created) >= since || ACTIVE.includes(r.status));
+    const denies = S.runs.reduce((n, r) => n + r.events.filter(e => e.t >= since && e.policy && /deny/.test(e.policy.d)).length, 0) + S.approvals.filter(a => a.decidedAt >= since && a.status === 'denied').length;
+    const spend = inWin.reduce((n, r) => n + r.cost, 0), cap = inWin.reduce((n, r) => n + (+r.plan.budget || 0), 0);
+    const act = S.runs.filter(r => ACTIVE.includes(r.status)), wait = H.pending(), failed = S.runs.filter(r => r.status === 'failed' && (r.ended || r.stepStart || r.created) >= since);
+    $('#rangeLbl').textContent = lbl; $('#sumSrc').textContent = `From prototype state · ${inWin.length} run${inWin.length === 1 ? '' : 's'} in window`;
+    H.setH($('#sum'), [
+      ['Active runs · now', act.length, `${act.filter(r => r.status === 'blocked').length} waiting on a decision`, ''],
+      ['Decisions waiting · now', wait.length, wait.length ? `oldest ${H.ago(Math.min(...wait.map(a => a.requested)))}` : 'none', wait.length ? 'st-warn' : ''],
+      ['Policy denials · ' + lbl.replace('last ', ''), denies, `bundle ${H.POLICY.bundle} · failed runs ${failed.length}`, ''],
+      ['Model spend · ' + lbl.replace('last ', ''), '$' + spend.toFixed(2), `of $${cap.toFixed(2)} in run caps`, '']
+    ].map(([l, v, d, c]) => `<div class="stat"><p class="label">${H.esc(l)}</p><p class="v">${H.esc(v)}</p><span class="small ${H.esc(c ? 'st ' + c : 'muted')}">${H.esc(d)}</span></div>`).join('')); }
+  $('#range').addEventListener('click', e => { const b = e.target.closest('[data-h]'); if (!b) return; HRS = +b.dataset.h; render(); });
+  render(); LocusState.on(render);
+</script>
+</body>
+</html>

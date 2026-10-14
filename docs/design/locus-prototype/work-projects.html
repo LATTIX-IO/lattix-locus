@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Projects · Work · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+<style>
+  .split { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 20px; margin-top: 16px; align-items: start; }
+  .plist { position: sticky; top: 16px; }
+  .pitem { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--border); background: none; padding: 12px 14px; }
+  .pitem:last-child { border-bottom: 0; }
+  .pitem:hover { background: var(--hover); }
+  .pitem[aria-current="true"] { background: var(--select); box-shadow: inset 2px 0 0 var(--fg); }
+  .pitem b { display: block; font-weight: 500; font-size: 14px; }
+  .ms { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .ms:last-child { border-bottom: 0; }
+  @media (max-width: 1100px) { .split { grid-template-columns: minmax(0, 1fr); } .plist { position: static; } }
+</style>
+</head>
+<body data-nav="work" data-crumbs='[["Work","work.html"],["Projects","work-projects.html"],["Project",""]]'>
+<main id="main">
+  <div class="page">
+    <header class="page-h" data-od-id="work-header">
+      <div class="t"><h1>Work</h1><p>Projects group tasks, people, agents and a memory namespace around one outcome.</p></div>
+      <div class="acts"><button class="btn btn-primary" data-open="newProj">New project</button></div>
+    </header>
+    <nav class="tabs" aria-label="Work views" data-od-id="work-tabs"><a href="work.html">Tasks</a><a href="work-projects.html" aria-current="page">Projects<span class="count" id="cP"></span></a><a href="work-schedules.html">Schedules</a><a href="work-conversations.html">Conversations</a></nav>
+    <div class="split">
+      <section class="panel plist" data-od-id="project-list" aria-label="Projects"><div class="filters"><input class="input" type="search" placeholder="Filter projects" aria-label="Filter projects" id="pf" style="width:100%"></div><div id="plist"></div></section>
+      <section id="pdetail" data-od-id="project-detail" aria-live="polite"></section>
+    </div>
+  </div>
+  <div class="dialog" id="newProj" role="dialog" aria-labelledby="npH" data-od-id="new-project-dialog">
+    <div class="dialog-h"><h2 id="npH">New project</h2></div>
+    <form class="dialog-b" id="npForm" novalidate>
+      <div class="field"><label for="npName">Name</label><input id="npName" class="input" placeholder="Supplier onboarding — November" aria-describedby="npErr"><p class="err-msg" id="npErr" hidden>Give the project a name.</p></div>
+      <div class="field"><label for="npObj">Outcome</label><textarea id="npObj" class="textarea" rows="3" placeholder="What does done look like?"></textarea></div>
+      <div class="grid g3"><div class="field"><label for="npCls">Classification</label><select id="npCls" class="select"><option>Internal</option><option>Confidential</option><option>Secret</option></select></div><div class="field"><label for="npDue">Target date</label><input id="npDue" class="input" placeholder="Nov 30"></div><div class="field"><label for="npBud">Monthly spend cap ($)</label><input id="npBud" class="input mono" type="number" value="20" min="1"></div></div>
+      <p class="small muted">A memory namespace <span class="mono">tenant · projects/&lt;name&gt;</span> is created inside the tenant scope. Project-scoped namespaces are a proposed backend extension; today they are authorized by project membership within tenant scope.</p>
+    </form>
+    <div class="dialog-f"><button class="btn" type="button" onclick="Locus.close()">Cancel</button><button class="btn btn-primary" type="button" id="npGo">Create project</button></div>
+  </div>
+</main>
+<script src="locus-state.js"></script>
+<script src="locus.js"></script>
+<script>
+  const {H, A} = LocusState, $ = s => document.querySelector(s), esc = H.esc;
+  let cur = new URLSearchParams(location.search).get('prj') || 'PRJ-014';
+  function render() { const s = H.s, q = $('#pf').value.toLowerCase(); if (!H.project(cur)) cur = s.projects[0].id; $('#cP').textContent = s.projects.length;
+    H.setH($('#plist'), s.projects.filter(p => !q || p.name.toLowerCase().includes(q)).map(p => { const n = s.tasks.filter(t => t.project === p.id && !['Done','Canceled'].includes(H.taskStatus(t))).length; return `<button class="pitem" data-prj="${H.esc(p.id)}" aria-current="${p.id === cur}"><b>${esc(p.name)}</b><span class="id">${H.esc(p.id)} · ${esc(H.nameOf(p.owner))}</span><div class="row-b" style="margin-top:6px"><span class="st ${H.esc(p.health === 'On track' ? 'st-ok' : p.health === 'Blocked' ? 'st-crit' : 'st-warn')}">${H.esc(p.health)}</span><span class="id">${n} open · ${esc(p.due)}</span></div></button>`; }).join('') || '<div class="empty">No projects match.</div>');
+    const p = H.project(cur), cr = document.querySelector('.crumbs .cur'); if (cr) cr.textContent = p.name;
+    const tasks = s.tasks.filter(t => t.project === p.id), runs = s.runs.filter(r => tasks.some(t => t.id === r.task)), arts = s.artifacts.filter(a => tasks.some(t => t.id === a.task)), waits = s.approvals.filter(a => a.status === 'pending' && tasks.some(t => t.id === a.task));
+    const spend = runs.reduce((a, r) => a + r.cost, 0), mem = s.memory.filter(m => m.ns === p.ns);
+    const buckets = ['Done','Running','Awaiting approval','Not started'].map(b => [b, tasks.filter(t => { const st = H.taskStatus(t); return b === 'Running' ? ['Running','Queued','Paused','In progress','In review'].includes(st) : b === 'Not started' ? ['Not started','Scheduled','Failed','Canceled'].includes(st) : st === b; }).length]);
+    H.setH($('#pdetail'), `<div class="row-b" style="align-items:flex-start;flex-wrap:wrap;margin-bottom:16px"><div style="flex:1;min-width:260px"><div class="row" style="flex-wrap:wrap"><span class="st ${H.esc(p.health === 'On track' ? 'st-ok' : p.health === 'Blocked' ? 'st-crit' : 'st-warn')}">${H.esc(p.health)}</span><span class="cls">${H.esc(p.cls)}</span><span class="id">${H.esc(p.id)}</span></div><h2 style="font-size:20px;margin-top:8px">${esc(p.name)}</h2><p class="muted" style="margin-top:4px;max-width:70ch">${esc(p.obj)}</p></div><div class="row"><a class="btn btn-primary" href="home.html#compose">Add task</a></div></div>
+      <div class="grid g3" style="margin-bottom:16px"><div class="panel panel-b"><p class="label">Tasks · ${tasks.length}</p><p class="small" style="margin-top:8px">${buckets.map(([b, n]) => `${n} ${b.toLowerCase()}`).join(' · ')}</p></div>
+      <div class="panel panel-b"><p class="label">Decisions waiting</p><p class="num" style="font-size:20px;font-weight:600;margin-top:6px">${waits.length}</p>${waits.length ? '<button class="btn btn-sm" data-open="inbox" style="margin-top:6px">Open inbox</button>' : '<span class="small muted">Nothing needs you</span>'}</div>
+      <div class="panel panel-b"><p class="label">Model spend · runs in this project</p><p class="num" style="font-size:20px;font-weight:600;margin-top:6px">$${spend.toFixed(2)}</p><span class="small muted">of $${H.esc(p.budget)} monthly cap</span></div></div>
+      <div class="grid g21"><div class="stack">
+        <div class="panel tbl-wrap"><div class="panel-h"><h3>Tasks</h3><a class="btn btn-sm btn-ghost" href="work.html">All tasks</a></div><table class="tbl"><thead><tr><th>Task</th><th>Assigned</th><th>Status</th></tr></thead><tbody>${tasks.map(t => `<tr><td><a class="t" href="task.html?task=${H.enc(t.id)}" style="text-decoration:none">${esc(t.title)}</a><br><span class="id">${H.esc(t.id)}</span></td><td>${H.assignee(t.assignee)}</td><td>${H.taskChip(t)}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">No tasks yet. Add one from Home and choose this project.</td></tr>'}</tbody></table></div>
+        <div class="panel"><div class="panel-h"><h3>Milestones</h3></div>${p.ms.map(([n, d]) => `<div class="ms"><span>${esc(n)}</span><span class="id">${esc(d)}</span></div>`).join('') || '<div class="empty">No milestones yet.</div>'}</div>
+        <div class="panel"><div class="panel-h"><h3>History</h3></div><ul class="list">${[...p.history.map(([ts, t]) => [ts, t]), ...s.events.filter(e => tasks.some(t => t.id === e.obj) || runs.some(r => r.id === e.obj)).map(e => [e.t, e.text])].sort((a, b) => b[0] - a[0]).slice(0, 8).map(([ts, t]) => `<li><span class="id num" style="width:64px;flex:none">${H.ago(ts)}</span><div class="li-b small">${esc(t)}</div></li>`).join('') || '<li class="empty" style="display:block">No activity yet.</li>'}</ul></div>
+      </div><div class="stack">
+        <div class="panel"><div class="panel-h"><h3>People and agents</h3></div><ul class="list">${p.members.map(m => `<li><span class="who"><span class="av">${H.esc(m)}</span></span><div class="li-b"><b>${esc(H.nameOf(m))}</b><span class="small muted">${H.esc(m === p.owner ? 'Owner · approver' : 'Member')}</span></div></li>`).join('')}${p.agents.map(a => { const ag = H.agent(a); return `<li>${H.assignee({type:ag ? 'agent' : 'team', id:a})}<div class="li-b"><span class="small muted">${H.esc(ag ? 'Agent · engine ' + esc(H.engine(ag.engine).name) : 'Team · ' + H.team(a).members.length + ' agents')}</span></div></li>`; }).join('')}</ul></div>
+        <div class="panel"><div class="panel-h"><h3>Knowledge and memory</h3></div><div class="panel-b"><dl class="kv"><dt>Scope</dt><dd class="mono small">tenant</dd><dt>Namespace</dt><dd class="mono small">${esc(p.ns)}</dd><dt>Records</dt><dd>${mem.length}</dd><dt>Sources</dt><dd>${p.sources.map(esc).join(', ') || '—'}</dd></dl><p class="small muted" style="margin-top:8px">Project namespaces live inside tenant scope and are authorized by project membership. A dedicated project scope is a proposed backend extension.</p><a class="small" href="memory.html?ns=${encodeURIComponent(p.ns)}" style="display:inline-block;margin-top:6px">Open in Memory</a></div></div>
+        <div class="panel"><div class="panel-h"><h3>Artifacts</h3></div><ul class="list">${arts.map(a => `<li>${Locus.icon('file')}<div class="li-b"><a class="li-link" href="activity-run.html?run=${H.enc(a.run)}#outcome"><b>${esc(a.title)}</b></a><span class="id">${H.esc(a.id)} · ${H.esc(a.version)}</span></div></li>`).join('') || '<li class="empty" style="display:block">No artifacts yet.</li>'}</ul></div>
+      </div></div>`); }
+  document.addEventListener('click', e => { const b = e.target.closest('[data-prj]'); if (b) { cur = b.dataset.prj; history.replaceState(null, '', '?prj=' + cur); render(); } });
+  $('#pf').oninput = render;
+  $('#npGo').onclick = () => { const n = $('#npName').value.trim(); if (!n) { $('#npErr').hidden = false; $('#npName').setAttribute('aria-invalid', 'true'); $('#npName').focus(); return; }
+    const p = A.saveProject({name:n, obj:$('#npObj').value.trim(), cls:$('#npCls').value, due:$('#npDue').value.trim(), budget:+$('#npBud').value || 20}); cur = p.id; history.replaceState(null, '', '?prj=' + cur);
+    $('#npForm').reset(); $('#npErr').hidden = true; $('#npName').removeAttribute('aria-invalid'); Locus.close(); Locus.toast('Project created with namespace tenant · ' + p.ns, p.id); render(); };
+  render(); LocusState.on(render);
+</script>
+</body>
+</html>

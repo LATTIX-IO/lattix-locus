@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+<style>
+  .snip { max-width: 46ch; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .prov { list-style: none; margin: 0; padding: 0; }
+  .prov li { position: relative; padding: 0 0 12px 18px; font-size: 13px; }
+  .prov li::before { content: ""; position: absolute; left: 3px; top: 6px; width: 7px; height: 7px; border: 1.5px solid var(--fg); background: var(--bg); }
+  .prov li::after { content: ""; position: absolute; left: 6.5px; top: 15px; bottom: 0; width: 1px; background: var(--border); }
+  .prov li:last-child::after { display: none; }
+  .vs { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--border); border-radius: var(--r); }
+  .vs > div { padding: 14px; } .vs > div + div { border-left: 1px solid var(--border); }
+  .scope-bar { display: flex; border: 1px solid var(--border); border-radius: var(--r); overflow-x: auto; }
+  .scope-bar > button { flex: 1; min-width: 92px; padding: 10px 12px; border: 0; border-right: 1px solid var(--border); background: var(--bg); text-align: left; }
+  .scope-bar > button:last-child { border-right: 0; }
+  .scope-bar > button:hover { background: var(--hover); }
+  .scope-bar > button[aria-pressed="true"] { background: var(--select); box-shadow: inset 0 -2px 0 var(--fg); }
+  @media (max-width: 860px) { .vs { grid-template-columns: 1fr; } .vs > div + div { border-left: 0; border-top: 1px solid var(--border); } }
+</style>
+</head>
+<body data-nav="memory" data-crumbs='[["Memory","memory.html"],["Records",""]]'>
+<main id="main">
+  <div class="ws has-insp">
+    <div class="page" style="min-width:0">
+      <header class="page-h" data-od-id="memory-header">
+        <div class="t"><h1>Memory</h1><p>What Locus remembers across runs. Every record shows its backend scope, namespace, where it came from, and whether a person has verified it.</p></div>
+      </header>
+      <div class="callout" style="margin-bottom:12px" data-od-id="scope-contract"><span>${''}</span><p class="small"><b>Scopes follow the backend contract:</b> run, session, user, tenant, agent, workflow, global. Project memory is a <span class="mono">projects/&lt;name&gt;</span> namespace inside tenant scope, authorized by project membership. A dedicated project scope is a proposed contract extension, not implemented.</p></div>
+      <div class="scope-bar" id="scopes" role="group" aria-label="Filter by scope" data-od-id="memory-scopes" style="margin-bottom:16px"></div>
+      <div class="tabs" role="tablist" aria-label="Memory views">
+        <button role="tab" aria-selected="true" aria-controls="m-rec" id="mt-rec" data-hash="records">Records</button>
+        <button role="tab" aria-selected="false" aria-controls="m-con" id="mt-con" tabindex="-1" data-hash="contradictions">Contradictions<span class="count" id="cCon"></span></button>
+        <button role="tab" aria-selected="false" aria-controls="m-gov" id="mt-gov" tabindex="-1" data-hash="governance">Governance</button>
+      </div>
+      <section role="tabpanel" id="m-rec" aria-labelledby="mt-rec" data-od-id="memory-records">
+        <div class="panel" style="border-top:0">
+          <div class="filters"><input class="input" type="search" id="mq" placeholder="Search memory" aria-label="Search memory"><span class="small muted" id="nsLbl"></span></div>
+          <div class="tbl-wrap"><table class="tbl" data-select-group="mem"><thead><tr><th>Record</th><th>Scope · namespace</th><th class="hide-narrow">Source</th><th>Trust</th><th class="r hide-narrow">Used</th></tr></thead><tbody id="rows"></tbody></table></div>
+        </div>
+      </section>
+      <section role="tabpanel" id="m-con" aria-labelledby="mt-con" hidden data-od-id="memory-contradictions"><div id="cons" style="margin-top:16px"></div></section>
+      <section role="tabpanel" id="m-gov" aria-labelledby="mt-gov" hidden data-od-id="memory-governance">
+        <div class="grid g2" style="margin-top:16px">
+          <div class="panel"><div class="panel-h"><h3>Write rules in effect</h3><span class="trc trc-pl">Editing planned</span></div><div class="panel-b"><dl class="kv"><dt>Agents</dt><dd>Write run and agent scope directly</dd><dt>Tenant</dt><dd>Agent-written records need human acceptance (outcome review)</dd><dt>User</dt><dd>Inferred preferences stored unverified</dd></dl></div></div>
+          <div class="panel"><div class="panel-h"><h3>Retention defaults</h3><span class="trc trc-pl">Editing planned</span></div><div class="panel-b"><dl class="kv"><dt>Run</dt><dd>7 days</dd><dt>Session</dt><dd>30 days</dd><dt>Agent</dt><dd>30 days unless used</dd><dt>User</dt><dd>180 days</dd><dt>Tenant</dt><dd>Until removed</dd></dl></div></div>
+        </div>
+      </section>
+    </div>
+    <aside class="insp" aria-label="Memory record" data-od-id="memory-inspector"><div id="insp"></div></aside>
+  </div>
+  <div class="dialog" id="forgetDlg" role="dialog" aria-labelledby="fgH" data-od-id="forget-dialog">
+    <div class="dialog-h"><h2 id="fgH">Forget record?</h2></div>
+    <div class="dialog-b"><p class="small">The record is removed from retrieval immediately and purged after the 7-day hold. The audit log keeps that it existed and who removed it, not its content.</p><div class="field"><label for="fgIn">Type FORGET to confirm</label><input id="fgIn" class="input mono" autocomplete="off"></div></div>
+    <div class="dialog-f"><button class="btn" type="button" onclick="Locus.close()">Cancel</button><button class="btn btn-danger" id="fgGo" disabled>Forget record</button></div>
+  </div>
+</main>
+<script src="locus-state.js"></script>
+<script src="locus.js"></script>
+<script>
+  const {H, A} = LocusState, $ = s => document.querySelector(s), esc = H.esc;
+  const Q = new URLSearchParams(location.search); let sel = Q.get('mem') || 'MEM-7781', scope = 'all', ns = Q.get('ns');
+  document.querySelector('[data-od-id="scope-contract"] span').innerHTML = Locus.icon('info');
+  const trustChip = t => `<span class="st ${H.esc(t === 'Verified' ? 'st-ok' : t === 'Disputed' ? 'st-warn' : /Rejected|Forgotten/.test(t) ? 'st-crit' : t === 'Superseded' ? 'st-idle' : '')}">${H.esc(t)}</span>`;
+  function render() { const S = H.s, q = $('#mq').value.toLowerCase();
+    H.setH($('#scopes'), [['all', S.memory.length], ...H.SCOPES.map(s0 => [s0, S.memory.filter(m => m.scope === s0).length])].map(([k, n]) => `<button type="button" data-scope="${k}" aria-pressed="${scope === k}"><span class="label">${H.esc(k === 'all' ? 'All scopes' : k)}</span><span class="num" style="display:block;font-size:16px">${n}</span></button>`).join(''));
+    $('#nsLbl').innerHTML = ns ? `Namespace <span class="mono">${esc(ns)}</span> · <button class="btn btn-sm btn-ghost" id="clrNs">Clear</button>` : '';
+    const rows = S.memory.filter(m => (scope === 'all' || m.scope === scope) && (!ns || m.ns === ns) && (!q || (m.text + m.id + m.ns).toLowerCase().includes(q)));
+    H.setH($('#rows'), rows.map(m => `<tr data-sel="${H.esc(m.id)}" class="${m.id === sel ? 'is-sel' : ''}"><td><div class="snip">${esc(m.text)}</div><span class="id">${H.esc(m.id)}</span></td><td class="mono small">${H.esc(m.scope)} · ${esc(m.ns)}</td><td class="small hide-narrow">${esc(m.src)}</td><td>${trustChip(m.trust)}</td><td class="r num hide-narrow">${H.esc(m.used)}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No records match.</td></tr>');
+    const open = S.contradictions.filter(c => c.status === 'Open').length; $('#cCon').textContent = open || '';
+    H.setH($('#cons'), S.contradictions.map(c => { const a = H.mem(c.a), b = H.mem(c.b); return `<div class="panel" style="margin-bottom:16px" data-od-id="contradiction-${H.esc(c.id.toLowerCase())}"><div class="panel-h"><h2>${esc(c.topic)}</h2>${c.status === 'Open' ? '<span class="st st-warn">Unresolved</span>' : c.status === 'Monitoring' ? '<span class="st st-adv">Kept open · follow-up</span>' : '<span class="st st-ok">Resolved</span>'}<span class="id">${H.esc(c.id)}</span></div><div class="panel-b stack">
+      <div class="vs"><div><p class="label">${H.esc(a.id)} · ${H.esc(a.scope)} · ${esc(a.ns)}</p><p style="margin:6px 0 10px">${esc(a.text)}</p>${trustChip(a.trust)} <span class="small muted">${esc(a.prov[0])}</span></div><div><p class="label">${H.esc(b.id)} · ${H.esc(b.scope)} · ${esc(b.ns)}</p><p style="margin:6px 0 10px">${esc(b.text)}</p>${trustChip(b.trust)} <span class="small muted">${esc(b.prov[0])}</span></div></div>
+      ${c.status === 'Open' ? `<div class="row" style="flex-wrap:wrap"><button class="btn" data-res="${H.esc(c.id)}:newer">Keep newer (${H.esc(a.id)})</button><button class="btn" data-res="${H.esc(c.id)}:older">Keep older (${H.esc(b.id)})</button><button class="btn btn-primary" data-res="${H.esc(c.id)}:both">Keep both until verified</button></div><p class="small muted">Agents see disputed records with a warning and cannot cite them as settled fact.</p>`
+        : `<p class="small">${c.resolution === 'both' ? `Both kept as disputed. Follow-up task <a href="task.html?task=${H.enc(c.followUp)}">${H.esc(c.followUp)}</a> created.` : `Kept ${c.resolution === 'newer' ? a.id : b.id}; ${c.resolution === 'newer' ? b.id + ' superseded' : a.id + ' rejected'}.`} Decided by ${esc(c.by)} at ${H.hm(c.at).slice(0, 5)}.</p>`}</div></div>`; }).join('') || '<p class="empty">No contradictions detected.</p>');
+    const m = H.mem(sel) || S.memory[0]; if (!m) return; sel = m.id;
+    const con = S.contradictions.find(c => (c.a === m.id || c.b === m.id) && c.status === 'Open');
+    H.setH($('#insp'), `<div class="insp-h"><div class="t"><p class="id">${H.esc(m.id)} · ${H.esc(m.scope)} · ${esc(m.ns)}</p><h2 style="margin-top:4px">Memory record</h2></div></div><div class="insp-b"><p>${esc(m.text)}</p>
+      ${con ? `<div class="callout warn"><span>${Locus.icon('alert')}</span><p class="small">Contradicts <b>${H.esc(con.a === m.id ? con.b : con.a)}</b>. Not cited as fact until resolved. <button class="btn btn-sm btn-ghost" onclick="document.getElementById('mt-con').click()">Resolve</button></p></div>` : ''}
+      <dl class="kv"><dt>Scope</dt><dd class="mono">${H.esc(m.scope)}</dd><dt>Namespace</dt><dd class="mono">${esc(m.ns)}</dd><dt>Trust</dt><dd>${trustChip(m.trust)}</dd><dt>Confidence</dt><dd class="num">${m.conf.toFixed(2)}</dd><dt>Retention</dt><dd>${H.esc(m.retention)}</dd></dl>
+      <div><p class="label" style="margin-bottom:8px">Provenance</p><ol class="prov">${m.prov.map(p => `<li>${esc(p)}</li>`).join('')}</ol></div>
+      <div class="row" style="flex-wrap:wrap">${m.trust !== 'Verified' && m.trust !== 'Forgotten' ? `<button class="btn btn-sm" data-verify="${H.esc(m.id)}">Mark verified</button>` : ''}${m.trust !== 'Forgotten' ? `<button class="btn btn-sm btn-ghost" data-forget="${H.esc(m.id)}">Forget</button>` : ''}</div></div>`); }
+  document.addEventListener('locus:select', e => { if (e.detail.group === 'mem') { sel = e.detail.id; render(); } });
+  document.addEventListener('click', e => { const t = e.target.closest('[data-scope],[data-res],[data-verify],[data-forget],#clrNs'); if (!t) return;
+    if (t.id === 'clrNs') { ns = null; history.replaceState(null, '', 'memory.html'); render(); return; }
+    if (t.dataset.scope) { scope = t.dataset.scope; render(); }
+    if (t.dataset.res) { const [id, how] = t.dataset.res.split(':'); const c = A.resolveContradiction(id, how); Locus.toast(how === 'both' ? `Both records kept as disputed; follow-up ${c.followUp} created` : `Resolved: kept the ${how} record. Provenance updated on both.`, id); }
+    if (t.dataset.verify) { A.verifyMemory(t.dataset.verify); Locus.toast('Marked verified by Dana Reyes', t.dataset.verify); }
+    if (t.dataset.forget) { $('#fgIn').value = ''; $('#fgGo').disabled = true; $('#fgH').textContent = 'Forget ' + t.dataset.forget + '?'; Locus.open('forgetDlg'); } });
+  $('#fgIn').oninput = () => { $('#fgGo').disabled = $('#fgIn').value !== 'FORGET'; };
+  $('#fgGo').onclick = () => { A.forgetMemory(sel); Locus.close(); Locus.toast('Removed from retrieval · purge after 7-day hold', sel); };
+  $('#mq').oninput = render;
+  render(); LocusState.on(render);
+</script>
+</body>
+</html>

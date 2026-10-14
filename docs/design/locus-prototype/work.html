@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Work · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+<style>
+  .grp-h td { background: var(--surface); font: 600 12px var(--font-body); color: var(--fg-2); padding: 6px 12px; }
+  .who { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; flex-wrap: wrap; }
+  .who .av { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font: 600 9px var(--font-mono); border: 1px solid var(--border-strong); background: var(--bg); }
+  .who .av.ai { border-radius: var(--r); background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .board { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 12px; padding: 14px; overflow-x: auto; }
+  .lane { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); min-height: 240px; }
+  .lane-h { padding: 8px 10px; display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); }
+  .card { display: block; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r); margin: 8px; padding: 10px; font-size: 13px; text-decoration: none; }
+  .card:hover { border-color: var(--fg); }
+</style>
+</head>
+<body data-nav="work" data-crumbs='[["Work","work.html"],["Tasks",""]]'>
+<main id="main">
+  <div class="ws has-insp">
+    <div class="page" style="min-width:0">
+      <header class="page-h" data-od-id="work-header">
+        <div class="t"><h1>Work</h1><p>Tasks, projects and recurring work, assigned to people and agents. Agents run on execution engines; the engine is shown next to the agent.</p></div>
+        <div class="acts"><a class="btn" href="work-schedules.html?new=1">Schedule</a><a class="btn btn-primary" href="home.html#compose">New task</a></div>
+      </header>
+      <nav class="tabs" aria-label="Work views" data-od-id="work-tabs">
+        <a href="work.html" aria-current="page">Tasks<span class="count" id="cT"></span></a><a href="work-projects.html">Projects</a><a href="work-schedules.html">Schedules</a><a href="work-conversations.html">Conversations</a>
+      </nav>
+      <section data-od-id="task-list">
+        <div class="panel" style="border-top:0;border-radius:0 0 var(--r) var(--r)">
+          <div class="filters" id="filters">
+            <input class="input" type="search" placeholder="Filter tasks" aria-label="Filter tasks" id="tf">
+            <button class="chip-f" data-f="mine" aria-pressed="false">Owned by me</button><button class="chip-f" data-f="agents" aria-pressed="false">Agents</button><button class="chip-f" data-f="blocked" aria-pressed="false">Blocked or failed</button><button class="chip-f" data-f="done" aria-pressed="false">Include done</button>
+            <span style="flex:1"></span>
+            <div class="seg" role="group" aria-label="Layout"><button aria-pressed="true" id="vList">List</button><button aria-pressed="false" id="vBoard">Board</button></div>
+          </div>
+          <div class="tbl-wrap" id="listView"><table class="tbl" data-select-group="tasks"><thead><tr><th>Task</th><th>Assigned</th><th class="hide-narrow">Project</th><th>Status</th><th class="r hide-narrow">Due</th></tr></thead><tbody id="rows"></tbody></table></div>
+          <div class="board" id="boardView" hidden></div>
+        </div>
+      </section>
+    </div>
+    <aside class="insp" aria-label="Task summary" data-od-id="task-inspector"><div id="insp"></div></aside>
+  </div>
+</main>
+<script src="locus-state.js"></script>
+<script src="locus.js"></script>
+<script>
+  const {H, A} = LocusState, $ = s => document.querySelector(s), esc = H.esc;
+  let sel = new URLSearchParams(location.search).get('task') || 'TSK-3318'; const F = {mine:false, agents:false, blocked:false, done:false};
+  const BUCKET = H.taskBucket;
+  function list() { const q = $('#tf').value.toLowerCase(); return H.s.tasks.filter(t => { const s0 = H.taskStatus(t);
+    if (!F.done && ['Done','Canceled'].includes(s0)) return false; if (F.mine && t.owner !== 'DR') return false; if (F.agents && t.assignee.type === 'person') return false; if (F.blocked && !['Failed','Awaiting approval','Blocked'].includes(s0) && !t.deps.some(d => H.task(d) && H.taskStatus(H.task(d)) !== 'Done')) return false;
+    return !q || (t.title + ' ' + t.id + ' ' + H.nameOf(t.assignee.id)).toLowerCase().includes(q); }); }
+  function render() { const ts = list(); $('#cT').textContent = H.s.tasks.length;
+    const groups = ['Needs you','In progress','Planned','Done'];
+    H.setH($('#rows'), groups.map(g => { const gs = ts.filter(t => BUCKET(H.taskStatus(t)) === g); return gs.length ? `<tr class="grp-h"><td colspan="5">${H.esc(g)} · ${gs.length}</td></tr>` + gs.map(t => { const p = t.project && H.project(t.project), blockedBy = t.deps.filter(d => H.task(d) && H.taskStatus(H.task(d)) !== 'Done');
+      return `<tr data-sel="${H.esc(t.id)}" class="${t.id === sel ? 'is-sel' : ''}"><td><a class="t" href="task.html?task=${H.enc(t.id)}" style="text-decoration:none">${esc(t.title)}</a><br><span class="id">${H.esc(t.id)}${H.esc(blockedBy.length ? ' · waits on ' + blockedBy.join(', ') : '')}</span></td><td>${H.assignee(t.assignee)}</td><td class="hide-narrow">${p ? esc(p.name) : '<span class="muted">—</span>'}</td><td>${H.taskChip(t)}</td><td class="r num hide-narrow">${esc(t.due)}</td></tr>`; }).join('') : ''; }).join('') || '<tr><td colspan="5" class="empty">No tasks match. Clear filters or <a href="home.html#compose">start a new task</a>.</td></tr>');
+    H.setH($('#boardView'), groups.map(g => { const gs = ts.filter(t => BUCKET(H.taskStatus(t)) === g); return `<div class="lane"><div class="lane-h"><span class="label">${H.esc(g)}</span><span class="id">${gs.length}</span></div>${gs.map(t => `<a class="card" href="task.html?task=${H.enc(t.id)}"><b>${esc(t.title)}</b><p class="id">${H.esc(t.id)}</p>${H.taskChip(t)}</a>`).join('')}</div>`; }).join(''));
+    const t = H.task(sel); if (!t) { H.setH($('#insp'), '<div class="insp-b"><p class="small muted">Select a task.</p></div>'); return; }
+    const run = t.runs.length ? H.run(t.runs[0]) : null;
+    H.setH($('#insp'), `<div class="insp-h"><div class="t"><p class="id">${H.esc(t.id)}</p><h2 style="margin-top:4px">${esc(t.title)}</h2></div></div><div class="insp-b"><dl class="kv"><dt>Status</dt><dd>${H.taskChip(t)}</dd><dt>Assigned</dt><dd>${H.assignee(t.assignee)}</dd><dt>Owner</dt><dd>${esc(H.nameOf(t.owner))}</dd><dt>Latest run</dt><dd>${run ? `<a class="ent" href="activity-run.html?run=${H.enc(run.id)}"><i>Run</i> ${H.esc(run.id)}</a>` : 'None'}</dd><dt>Depends on</dt><dd>${t.deps.map(d => `<a href="task.html?task=${H.enc(d)}">${H.esc(d)}</a>`).join(', ') || '—'}</dd></dl>
+      ${t.conversation.length ? `<div><p class="label" style="margin-bottom:6px">Latest message</p><p class="small">${esc(t.conversation[t.conversation.length - 1][2])}</p></div>` : ''}
+      <div class="row" style="flex-wrap:wrap"><a class="btn btn-primary btn-sm" href="task.html?task=${H.enc(t.id)}">Open task</a>${run ? `<a class="btn btn-sm" href="activity-run.html?run=${H.enc(run.id)}">Open run</a>` : ''}</div></div>`); }
+  document.addEventListener('locus:select', e => { if (e.detail.group === 'tasks') { sel = e.detail.id; render(); } });
+  $('#filters').addEventListener('click', e => { const b = e.target.closest('[data-f]'); if (!b) return; setTimeout(() => { F[b.dataset.f] = b.getAttribute('aria-pressed') === 'true'; render(); }); });
+  $('#tf').oninput = render;
+  $('#vList').onclick = () => { $('#listView').hidden = false; $('#boardView').hidden = true; };
+  $('#vBoard').onclick = () => { $('#listView').hidden = true; $('#boardView').hidden = false; };
+  render(); LocusState.on(render);
+</script>
+</body>
+</html>

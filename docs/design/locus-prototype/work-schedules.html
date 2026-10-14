@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Schedules · Work · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+<style>
+  .split { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 20px; margin-top: 16px; align-items: start; }
+  .slist { position: sticky; top: 16px; }
+  .sitem { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--border); background: none; padding: 12px 14px; }
+  .sitem:last-child { border-bottom: 0; }
+  .sitem:hover { background: var(--hover); }
+  .sitem[aria-current="true"] { background: var(--select); box-shadow: inset 2px 0 0 var(--fg); }
+  .sitem b { display: block; font-weight: 500; font-size: 14px; }
+  .days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border: 1px solid var(--border); border-radius: var(--r); }
+  .days > div { padding: 8px 4px; text-align: center; border-right: 1px solid var(--border); min-height: 58px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .days > div:last-child { border-right: 0; }
+  .days .dn { font: 10px var(--font-mono); color: var(--muted); }
+  .days .mk { width: 10px; height: 10px; background: var(--fg); border-radius: 2px; }
+  .days .today { background: var(--surface); }
+  @media (max-width: 1100px) { .split { grid-template-columns: minmax(0, 1fr); } .slist { position: static; } }
+</style>
+</head>
+<body data-nav="work" data-crumbs='[["Work","work.html"],["Schedules","work-schedules.html"],["Schedule",""]]'>
+<main id="main">
+  <div class="page">
+    <header class="page-h" data-od-id="work-header">
+      <div class="t"><h1>Work</h1><p>Recurring work that runs without you. Each schedule separates who owns it, which identity executes it, and what it is actually allowed to do.</p></div>
+      <div class="acts"><button class="btn btn-primary" id="newBtn">New schedule</button></div>
+    </header>
+    <nav class="tabs" aria-label="Work views" data-od-id="work-tabs"><a href="work.html">Tasks</a><a href="work-projects.html">Projects</a><a href="work-schedules.html" aria-current="page">Schedules<span class="count" id="cS"></span></a><a href="work-conversations.html">Conversations</a></nav>
+    <div class="split">
+      <section class="panel slist" data-od-id="schedule-list" aria-label="Schedules"><div id="slist"></div><div class="panel-f small muted"><span class="trc trc-fd">Scheduling · foundation</span></div></section>
+      <section id="sdetail" data-od-id="schedule-detail" aria-live="polite"></section>
+    </div>
+  </div>
+  <div class="dialog" id="schedDlg" role="dialog" aria-labelledby="sdH" data-od-id="schedule-dialog">
+    <div class="dialog-h"><h2 id="sdH">New schedule</h2></div>
+    <form class="dialog-b" id="sdForm" novalidate>
+      <div class="field"><label for="sdName">Name</label><input id="sdName" class="input" aria-describedby="sdErr"></div>
+      <div class="field"><label for="sdObj">What should happen</label><textarea id="sdObj" class="textarea" rows="2"></textarea><p class="err-msg" id="sdErr" hidden>Give the schedule a name and describe what should happen.</p></div>
+      <div class="grid g3"><div class="field"><label for="sdCad">Cadence</label><select id="sdCad" class="select"><option>Daily</option><option>Weekdays</option><option>Weekly</option><option>Monthly</option></select></div><div class="field"><label for="sdTime">Time</label><input id="sdTime" class="input" type="time" value="09:00"></div><div class="field"><label for="sdExec">Executes as agent</label><select id="sdExec" class="select"></select></div></div>
+      <div class="grid g2"><div class="field"><label for="sdApr">If approval is needed while unattended</label><select id="sdApr" class="select"><option>Pause and notify the owner</option><option>Skip the action and continue</option><option>Stop the run</option></select></div><div class="field"><label for="sdCap">Spend cap per run ($)</label><input id="sdCap" class="input mono" type="number" min="0.5" step="0.5" value="2"></div></div>
+    </form>
+    <div class="dialog-f"><button class="btn" type="button" onclick="Locus.close()">Cancel</button><button class="btn btn-primary" type="button" id="sdSave">Create schedule</button></div>
+  </div>
+</main>
+<script src="locus-state.js"></script>
+<script src="locus.js"></script>
+<script>
+  const {H, A} = LocusState, $ = s => document.querySelector(s), esc = H.esc;
+  const Q = new URLSearchParams(location.search); let cur = Q.get('sch') || 'SCH-0071', editing = null;
+  const DELEGABLE = {DR:['docstore.read','docs.write','email.draft','email.send','web.read'], PN:['alerts.read','ticket.write','docstore.read'], LG:['browser.assist','docs.write','docstore.read'], SO:['repo.read','repo.write.branch','repo.write.protected','docs.write']};
+  function days(s) { const out = [], d0 = new Date(); for (let i = 0; i < 7; i++) { const d = new Date(d0); d.setDate(d0.getDate() + i); const w = d.getDay();
+    const on = s.active && (s.cadence === 'Daily' || (s.cadence === 'Weekdays' && w >= 1 && w <= 5) || (s.cadence === 'Weekly' && w === 1) || (s.cadence === 'Monthly' && d.getDate() === 1));
+    out.push(`<div class="${H.esc(i === 0 ? 'today' : '')}"><span class="dn">${d.toLocaleDateString('en-US', {weekday:'short'})}</span><span class="mono small">${H.esc(d.getDate())}</span>${on ? `<i class="mk" title="Runs at ${H.esc(s.time)}"></i>` : ''}</div>`); } return out.join(''); }
+  function render() { const S = H.s; if (!S.schedules.find(x => x.id === cur)) cur = S.schedules[0].id; $('#cS').textContent = S.schedules.length;
+    H.setH($('#slist'), S.schedules.map(s => `<button class="sitem" data-sch="${H.esc(s.id)}" aria-current="${s.id === cur}"><b>${esc(s.name)}</b><span class="id">${H.esc(s.cadence)} · ${H.esc(s.time)}</span><div class="row-b" style="margin-top:6px"><span class="st ${H.esc(s.active ? (/Failed/.test((s.history[0] || [])[2] || '') ? 'st-crit' : 'st-ok') : 'st-idle')}">${H.esc(s.active ? ((s.history[0] || [,, 'No runs yet'])[2]) : 'Paused')}</span><span class="id">${esc(H.nameOf(s.owner))}</span></div></button>`).join(''));
+    const s = S.schedules.find(x => x.id === cur), ag = H.agent(s.executor), cr = document.querySelector('.crumbs .cur'); if (cr) cr.textContent = s.name;
+    const eff = s.caps.map(c => { const inDef = ag && ag.caps.includes(c), canDel = (DELEGABLE[s.owner] || []).includes(c), pol = H.evalCap(c, {cls:'Confidential', engine:ag && ag.engine}); const d = !inDef ? {d:'deny', why:'Not in the agent definition'} : !canDel ? {d:'deny', why:`${H.nameOf(s.owner)} cannot delegate this capability`} : pol; return {c, inDef, canDel, d}; });
+    const runs = S.tasks.filter(t => t.source && t.source.id === s.id).flatMap(t => t.runs.map(H.run)).filter(Boolean);
+    H.setH($('#sdetail'), `<div class="row-b" style="align-items:flex-start;flex-wrap:wrap;margin-bottom:16px"><div style="flex:1;min-width:260px"><div class="row"><span class="st ${H.esc(s.active ? 'st-ok' : 'st-idle')}">${H.esc(s.active ? 'Active' : 'Paused')}</span><span class="id">${H.esc(s.id)}</span></div><h2 style="font-size:20px;margin-top:8px">${esc(s.name)}</h2><p class="muted" style="margin-top:4px;max-width:70ch">${esc(s.objective)}</p></div>
+      <div class="row" style="flex-wrap:wrap"><label class="row small"><input type="checkbox" class="toggle" id="actT" ${s.active ? 'checked' : ''} aria-label="Schedule active"> Active</label><button class="btn" id="editBtn">Edit</button><button class="btn btn-primary" id="runNow" ${s.active && !eff.some(x => x.d.d === 'deny') ? '' : 'disabled'}>Run now</button></div></div>
+      ${eff.some(x => x.d.d === 'deny') ? `<div class="callout crit" style="margin-bottom:16px"><span>${Locus.icon('alert')}</span><p class="small"><b>Some requested capabilities would be denied at run time.</b> The run would start without them or fail. Remove them, change the executing agent, or transfer ownership to someone who can delegate them.</p></div>` : ''}
+      <div class="panel" style="margin-bottom:16px"><div class="panel-h"><h3>Next 7 days</h3><span class="mono small">${H.esc(s.cadence)} at ${H.esc(s.time)}</span><span class="id">${esc(s.tz)}</span></div><div class="panel-b"><div class="days" role="img" aria-label="${H.esc(s.cadence)} at ${H.esc(s.time)}${H.esc(s.active ? '' : ', paused')}">${days(s)}</div></div></div>
+      <div class="grid g2" style="margin-bottom:16px">
+        <div class="panel"><div class="panel-h"><h3>Identity and accountability</h3></div><div class="panel-b"><dl class="kv"><dt>Owner</dt><dd>${esc(H.nameOf(s.owner))} · accountable; receives approvals</dd><dt>Executes as</dt><dd>${H.assignee({type:'agent', id:s.executor})}<div class="small muted">via svc:locus-scheduler, delegated by the owner</div></dd><dt>Engine</dt><dd>${H.esc(ag ? esc(H.engine(ag.engine).name) : '—')}</dd><dt>Project</dt><dd>${H.esc(s.project ? esc(H.project(s.project).name) : 'None')}</dd></dl></div></div>
+        <div class="panel"><div class="panel-h"><h3>When nobody is watching</h3></div><div class="panel-b"><dl class="kv"><dt>Approval</dt><dd>${esc(s.onApproval)}</dd><dt>On failure</dt><dd>${esc(s.onFail)}</dd><dt>Missed run</dt><dd>${esc(s.missed)}</dd><dt>Spend cap</dt><dd class="num">$${H.esc(s.cap)} per run</dd><dt>Delivers to</dt><dd>${esc(s.dest)}</dd></dl></div></div>
+      </div>
+      <div class="panel tbl-wrap" style="margin-bottom:16px" data-od-id="effective-permissions"><div class="panel-h"><h3>Effective permissions at run time</h3><span class="small muted">Requested ∩ agent definition ∩ owner can delegate ∩ policy</span></div><table class="tbl"><thead><tr><th>Capability</th><th>In agent definition</th><th>Owner can delegate</th><th>Effective</th></tr></thead><tbody>${eff.map(x => `<tr><td class="t">${esc(H.CAPS[x.c].label)}<br><span class="id">${H.esc(x.c)}</span></td><td>${x.inDef ? 'Yes' : '<span class="st st-crit">No</span>'}</td><td>${x.canDel ? 'Yes' : '<span class="st st-crit">No</span>'}</td><td><span class="decision ${H.esc(x.d.d)}">${H.esc(x.d.d === 'permit' ? 'Permit' : x.d.d === 'approval' ? 'Requires approval' : 'Deny')}</span><div class="small muted">${esc(x.d.why)}</div></td></tr>`).join('')}</tbody></table><div class="panel-f small muted">Re-evaluated at every run. If the owner loses access, the run fails closed.</div></div>
+      <div class="panel tbl-wrap"><div class="panel-h"><h3>Run history</h3></div><table class="tbl"><thead><tr><th>Started</th><th>Duration</th><th>Outcome</th><th>Run</th></tr></thead><tbody>${runs.map(r => `<tr><td class="num">${H.hm(r.created).slice(0, 5)} today</td><td class="num">${H.elapsed(r)}</td><td>${H.runChip(r)}</td><td><a class="mono" href="activity-run.html?run=${H.enc(r.id)}">${H.esc(r.id)}</a></td></tr>`).join('')}${s.history.map(([w, d, o]) => `<tr><td class="num">${esc(w)}</td><td class="num">${esc(d)}</td><td><span class="st ${H.esc(/Failed/.test(o) ? 'st-crit' : /late/.test(o) ? 'st-warn' : 'st-ok')}">${esc(o)}</span></td><td class="id">sample history</td></tr>`).join('') || (runs.length ? '' : '<tr><td colspan="4" class="empty">No runs yet.</td></tr>')}</tbody></table></div>`);
+    $('#actT').onchange = () => { A.toggleSchedule(s.id); Locus.toast(s.active ? 'Schedule resumed' : 'Schedule paused. Running instances finish; no new runs start.', s.id); };
+    $('#editBtn').onclick = () => openDlg(s);
+    $('#runNow').onclick = () => { const plan = H.proposePlan(s.objective, s.project); plan.assignee = {type:'agent', id:s.executor}; plan.steps = plan.steps.map(x => ({...x, agent:s.executor})); plan.caps = eff.filter(x => x.d.d !== 'deny').map(x => x.c); plan.budget = s.cap;
+      const t = A.createTask({title:s.name + ' · manual run', assignee:{type:'agent', id:s.executor}, project:s.project, source:{type:'schedule', id:s.id}, plan, historyText:'Started manually from schedule ' + s.id}); const res = A.startRun(t.id); location.href = res.run ? 'activity-run.html?run=' + res.run : 'plan-review.html?draft=' + encodeURIComponent(res.draft); };
+  }
+  function openDlg(s) { editing = s ? s.id : null; $('#sdH').textContent = s ? 'Edit ' + s.name : 'New schedule'; $('#sdSave').textContent = s ? 'Save changes' : 'Create schedule';
+    $('#sdExec').innerHTML = H.s.agents.filter(a => a.state !== 'Draft').map(a => `<option value="${H.esc(a.id)}">${esc(a.name)} · ${esc(H.engine(a.engine).name)}</option>`).join('');
+    $('#sdName').value = s ? s.name : ''; $('#sdObj').value = s ? s.objective : ''; $('#sdCad').value = s ? s.cadence : 'Weekdays'; $('#sdTime').value = s ? s.time : '09:00'; $('#sdExec').value = s ? s.executor : 'AGT-0048'; $('#sdApr').value = s ? (['Pause and notify the owner','Skip the action and continue','Stop the run'].includes(s.onApproval) ? s.onApproval : 'Pause and notify the owner') : 'Pause and notify the owner'; $('#sdCap').value = s ? s.cap : 2;
+    $('#sdErr').hidden = true; ['#sdName','#sdObj'].forEach(x => $(x).removeAttribute('aria-invalid')); Locus.open('schedDlg'); }
+  $('#sdSave').onclick = () => { const n = $('#sdName').value.trim(), o = $('#sdObj').value.trim(); if (!n || !o) { $('#sdErr').hidden = false; (n ? $('#sdObj') : $('#sdName')).setAttribute('aria-invalid', 'true'); (n ? $('#sdObj') : $('#sdName')).focus(); return; }
+    const ag = H.agent($('#sdExec').value), f = {name:n, objective:o, cadence:$('#sdCad').value, time:$('#sdTime').value, executor:ag.id, onApproval:$('#sdApr').value, cap:+$('#sdCap').value || 2};
+    if (!editing) f.caps = ag.caps.filter(c => !/protected|interactive/.test(c)).slice(0, 3);
+    const s = A.saveSchedule(f, editing); cur = s.id; history.replaceState(null, '', '?sch=' + cur); Locus.close(); Locus.toast(editing ? 'Schedule updated · change recorded' : 'Schedule created · first run ' + f.cadence.toLowerCase() + ' at ' + f.time, s.id); render(); };
+  $('#newBtn').onclick = () => openDlg(null);
+  document.addEventListener('click', e => { const b = e.target.closest('[data-sch]'); if (b) { cur = b.dataset.sch; history.replaceState(null, '', '?sch=' + cur); render(); } });
+  render(); LocusState.on(render); if (Q.get('new')) setTimeout(() => openDlg(null), 100);
+</script>
+</body>
+</html>

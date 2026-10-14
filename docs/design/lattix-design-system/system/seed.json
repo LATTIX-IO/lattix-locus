@@ -1,0 +1,22 @@
+{
+  "colorPrimary": "#1f5fd6",
+  "colorSuccess": "#2f8a50",
+  "colorWarning": "#b87503",
+  "colorError": "#d93036",
+  "colorInfo": "#7c5ce0",
+  "colorLink": "#1a4fb8",
+  "colorTextBase": "#1c1d1b",
+  "colorBgBase": "#ffffff",
+  "fontFamily": "'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+  "fontFamilyCode": "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+  "fontSize": 14,
+  "borderRadius": 6,
+  "sizeUnit": 4,
+  "sizeStep": 4,
+  "controlHeight": 32,
+  "lineWidth": 1,
+  "motionUnit": 0.15,
+  "motionBase": 0,
+  "wireframe": false,
+  "motion": true
+}

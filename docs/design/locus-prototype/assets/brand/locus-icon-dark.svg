@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 320" role="img" aria-labelledby="title desc">
+  <title id="title">Locus icon</title>
+  <desc id="desc">Minimal geometric Locus icon with four locator brackets, a central node, and four outer nodes.</desc>
+
+  <!-- Transparent background -->
+  <g id="mark">
+    <!-- corner brackets -->
+    <g fill="#F4F4F2">
+      <path d="M82 82H142V94H94V142H82Z"/>
+      <path d="M178 82H238V142H226V94H178Z"/>
+      <path d="M82 178H94V226H142V238H82Z"/>
+      <path d="M226 178H238V238H178V226H226Z"/>
+    </g>
+
+    <!-- center node -->
+    <circle cx="160" cy="160" r="19" fill="#F4F4F2"/>
+
+    <!-- distributed nodes -->
+    <g fill="#9B9FA2">
+      <circle cx="160" cy="58" r="16"/>
+      <circle cx="58" cy="160" r="16"/>
+      <circle cx="262" cy="160" r="16"/>
+      <circle cx="160" cy="262" r="16"/>
+    </g>
+  </g>
+</svg>
