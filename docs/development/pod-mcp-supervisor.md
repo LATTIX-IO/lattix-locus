@@ -23,8 +23,10 @@ administrator-created `SandboxedPodToolBroker` (whose existing
 - Exact bounded JSON-RPC 2.0 envelopes and the MCP initialize, ping,
   tools/list and tools/call surface; all other methods fail closed.
 - At most 32 explicit `locus_*` tool grants and exactly the matching
-  administrator tool descriptors. Model-controlled tool names and MCP
-  catalogs never widen the child Gateway capabilities or broker registry.
+  administrator tool descriptors. The endpoint rejects a broker whose receipt
+  ledger, supervising parent or Gateway differs from the admitted child
+  before even exposing the tool catalog. Model-controlled tool names and
+  MCP catalogs never widen child Gateway capabilities or broker registration.
 - `tools/list` is served only for an active, authenticated child and
   emits only approved names with an empty-input, no-extra-arguments schema.
 - `tools/call` takes only an approved name and `arguments: {}`. This
