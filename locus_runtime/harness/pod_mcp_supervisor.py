@@ -85,7 +85,16 @@ class TrustedPodMcpHandler:
                    for name in exposed_tools)
         ):
             raise PodMcpContractDenied("bounded explicit MCP tool grant required")
-        lease._ledger.require_active(lease.reservation_id)
+        reservation = lease._ledger.require_active(lease.reservation_id)
+        receipt_authority = broker._executor._receipts
+        supervisor = receipt_authority._supervisor
+        if (
+            receipt_authority.reservations.path != lease._ledger.path
+            or supervisor is None
+            or supervisor.caller.run_id != reservation.parent_run_id
+            or supervisor.gateway is not lease._session.gateway
+        ):
+            raise PodMcpContractDenied("foreign MCP receipt supervisor or pod")
         allowed = lease._session.capabilities.allowed_tools
         # Existing broker controls the complete exact administrator catalog.
         registry = broker._tools
