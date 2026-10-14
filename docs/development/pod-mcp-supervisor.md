@@ -21,7 +21,10 @@ administrator-created `SandboxedPodToolBroker` (whose existing
 ### Requests and admission
 
 - Exact bounded JSON-RPC 2.0 envelopes and the MCP initialize, ping,
-  tools/list and tools/call surface; all other methods fail closed.
+  tools/list and tools/call surface; all other methods fail closed. A separate
+  strict bytes decoder rejects duplicate JSON keys (including nested tool
+  arguments), non-finite numbers, invalid Unicode, oversized frames and
+  malformed/trailing JSON before any Gateway receipt or tool dispatch.
 - At most 32 explicit `locus_*` tool grants and exactly the matching
   administrator tool descriptors. The endpoint rejects a broker whose receipt
   ledger, supervising parent or Gateway differs from the admitted child
