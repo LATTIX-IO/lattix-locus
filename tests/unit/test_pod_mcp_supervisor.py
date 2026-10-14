@@ -38,7 +38,7 @@ def invoke(name="locus_fixed_tool", ident="request-1", arguments=None):
 
 
 def ready(tmp_path, monkeypatch, *, engine=None):
-    broker, receipts, lease, parent, registry, calls = setup(
+    broker, receipts, lease, parent, _, calls = setup(
         tmp_path, monkeypatch, engine=engine,
     )
     endpoint = TrustedPodMcpHandler(
