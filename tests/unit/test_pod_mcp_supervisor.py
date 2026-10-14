@@ -13,13 +13,12 @@ from pathlib import Path
 import pytest
 
 from locus_runtime import pod_sandbox_broker as broker_module
-from locus_runtime.action_receipts import ActionReplayDenied, PodActionReceipts
-from locus_runtime.gateway import Gateway
+from locus_runtime.action_receipts import PodActionReceipts
 from locus_runtime.harness.pod_mcp_supervisor import (
     PodMcpContractDenied, TrustedPodMcpHandler, _action_key,
 )
-from locus_runtime.pod_reservations import AdmissionDenied, PodReservationLedger
-from locus_runtime.pod_tool_broker import BrokerTool, SandboxedPodToolBroker
+from locus_runtime.pod_reservations import PodReservationLedger
+from locus_runtime.pod_tool_broker import SandboxedPodToolBroker
 from tests.gateway_support import FakeEngine
 from tests.unit.test_pod_tool_broker import setup
 
@@ -49,7 +48,7 @@ def ready(tmp_path, monkeypatch, *, engine=None):
 
 
 def test_mcp_initialize_and_list_exact_admitted_tools(tmp_path, monkeypatch):
-    endpoint, receipts, lease, parent, _, calls = ready(tmp_path, monkeypatch)
+    endpoint, _, _, _, _, calls = ready(tmp_path, monkeypatch)
     intro = endpoint.handle(msg("initialize", "init-1", {
         "protocolVersion": "2025-03-26", "capabilities": {},
         "clientInfo": {"name": "untrusted-engine"},
@@ -72,7 +71,7 @@ def test_mcp_initialize_and_list_exact_admitted_tools(tmp_path, monkeypatch):
 
 
 def test_receipted_mcp_tool_uses_exact_registered_sandbox_and_no_raw_output(tmp_path, monkeypatch):
-    endpoint, receipts, lease, parent, broker, calls = ready(tmp_path, monkeypatch)
+    endpoint, receipts, lease, parent, _, calls = ready(tmp_path, monkeypatch)
     response = endpoint.handle(invoke())
     assert "result" in response
     assert response["result"]["isError"] is False
@@ -99,7 +98,7 @@ def test_receipted_mcp_tool_uses_exact_registered_sandbox_and_no_raw_output(tmp_
 
 
 def test_mcp_same_request_id_cannot_repeat_effect_or_change_action(tmp_path, monkeypatch):
-    endpoint, receipts, lease, parent, _, calls = ready(tmp_path, monkeypatch)
+    endpoint, _, lease, _, _, calls = ready(tmp_path, monkeypatch)
     a = endpoint.handle(invoke())
     b = endpoint.handle(invoke())
     assert "result" in a
@@ -110,7 +109,7 @@ def test_mcp_same_request_id_cannot_repeat_effect_or_change_action(tmp_path, mon
 
 
 def test_mcp_new_id_is_new_bounded_intent_not_an_unlimited_retry(tmp_path, monkeypatch):
-    endpoint, receipts, lease, parent, _, calls = ready(tmp_path, monkeypatch)
+    endpoint, receipts, _, _, _, calls = ready(tmp_path, monkeypatch)
     for i in range(4):
         assert "result" in endpoint.handle(invoke(ident=f"unique-{i}"))
     denied = endpoint.handle(invoke(ident="unique-5"))
@@ -134,7 +133,7 @@ def test_mcp_new_id_is_new_bounded_intent_not_an_unlimited_retry(tmp_path, monke
 def test_extra_tool_payload_cannot_smuggle_argv_or_execution_settings(
     tmp_path, monkeypatch, arguments,
 ):
-    endpoint, receipts, lease, parent, _, calls = ready(tmp_path, monkeypatch)
+    endpoint, receipts, _, _, _, calls = ready(tmp_path, monkeypatch)
     response = endpoint.handle(invoke(arguments=arguments))
     assert response["error"]["code"] == -32602
     assert calls == []
@@ -157,14 +156,14 @@ def test_methods_outside_registered_mcp_surface_denied(tmp_path, monkeypatch, me
     "a" * 97, [], {}, 1.1, -1,
 ])
 def test_invalid_request_ids_denied_before_action(tmp_path, monkeypatch, invalid):
-    endpoint, receipts, lease, _, _, calls = ready(tmp_path, monkeypatch)
+    endpoint, _, _, _, _, calls = ready(tmp_path, monkeypatch)
     response = endpoint.handle(invoke(ident=invalid))
     assert response["error"]["code"] == -32600
     assert calls == []
 
 
 def test_unknown_tool_and_protocol_injection_have_no_receipt(tmp_path, monkeypatch):
-    endpoint, receipts, lease, _, _, calls = ready(tmp_path, monkeypatch)
+    endpoint, receipts, _, _, _, calls = ready(tmp_path, monkeypatch)
     attacks = [
         invoke(name="locus_shell"),
         invoke(name="locus_execute_bash"),
@@ -184,7 +183,7 @@ def test_unknown_tool_and_protocol_injection_have_no_receipt(tmp_path, monkeypat
 
 
 def test_denied_gateway_policy_does_not_dispatch_mcp(tmp_path, monkeypatch):
-    endpoint, receipts, lease, _, _, calls = ready(
+    endpoint, receipts, _, _, _, calls = ready(
         tmp_path, monkeypatch, engine=FakeEngine(allow={"agent_policy": False}),
     )
     response = endpoint.handle(invoke())
@@ -195,7 +194,7 @@ def test_denied_gateway_policy_does_not_dispatch_mcp(tmp_path, monkeypatch):
 
 
 def test_revocation_makes_tool_catalog_and_execution_inaccessible(tmp_path, monkeypatch):
-    endpoint, receipts, lease, parent, _, calls = ready(tmp_path, monkeypatch)
+    endpoint, receipts, _, parent, _, calls = ready(tmp_path, monkeypatch)
     receipts.reservations.revoke_parent(parent)
     assert endpoint.handle(msg("tools/list"))["error"]["code"] == -32001
     assert endpoint.handle(invoke())["error"]["code"] == -32001
@@ -203,7 +202,7 @@ def test_revocation_makes_tool_catalog_and_execution_inaccessible(tmp_path, monk
 
 
 def test_foreign_or_unregistered_child_catalog_cannot_expose_tools(tmp_path, monkeypatch):
-    broker, receipts, lease, _, _, calls = setup(tmp_path, monkeypatch)
+    broker, _, lease, _, _, calls = setup(tmp_path, monkeypatch)
     with pytest.raises(PodMcpContractDenied, match="grant exceeds"):
         TrustedPodMcpHandler(
             lease, broker, exposed_tools=("locus_execute_bash",),
@@ -223,7 +222,7 @@ def test_foreign_or_unregistered_child_catalog_cannot_expose_tools(tmp_path, mon
 
 
 def test_competing_same_id_mcp_calls_dispatch_exactly_once(tmp_path, monkeypatch):
-    endpoint, receipts, lease, _, _, calls = ready(tmp_path, monkeypatch)
+    endpoint, receipts, _, _, _, calls = ready(tmp_path, monkeypatch)
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
         futures = [pool.submit(endpoint.handle, invoke()) for _ in range(10)]
         results = [f.result() for f in futures]
@@ -252,7 +251,7 @@ def test_durable_receipts_reject_retry_after_new_supervisor_broker_object(tmp_pa
 
 
 def test_failed_sandbox_backend_message_is_redacted_and_receipt_uncertain(tmp_path, monkeypatch):
-    endpoint, receipts, lease, _, _, calls = ready(tmp_path, monkeypatch)
+    endpoint, receipts, _, _, _, calls = ready(tmp_path, monkeypatch)
     def corrupt_runner(argv, **kwargs):
         calls.append((argv, kwargs))
         raise RuntimeError("private-token=do-not-expose")
