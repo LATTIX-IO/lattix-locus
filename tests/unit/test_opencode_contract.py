@@ -94,6 +94,8 @@ def test_v1_compile_denies_native_tools_and_grants_only_trusted_locus_mcp(tmp_pa
     assert cfg["mcp"]["locus"]["command"][-2:] == [
         "--config", p.mcp_config_file,
     ]
+    assert "locus_runtime.harness.pod_mcp_stdio_proxy" in cfg["mcp"]["locus"]["command"]
+    assert "locus_runtime.harness.codex_mcp_server" not in cfg["mcp"]["locus"]["command"]
     assert cfg["mcp"]["locus"]["type"] == "local"
     assert cfg["share"] == "disabled"
     assert cfg["autoupdate"] is False
@@ -119,6 +121,7 @@ def test_v2_compile_deny_first_rules_and_non_codemode_mcp(tmp_path):
         "action": "permission", "resource": "locus_search:*", "effect": "allow",
     }
     assert cfg["mcp"]["servers"]["locus"]["codemode"] is False
+    assert "locus_runtime.harness.pod_mcp_stdio_proxy" in cfg["mcp"]["servers"]["locus"]["command"]
     assert "permission" not in cfg
     assert cfg["update"] == "disable"
     assert cfg["share"] == "disabled"
