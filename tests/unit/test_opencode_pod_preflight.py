@@ -247,7 +247,7 @@ def test_version_parser_accepts_only_expected_bounded_banner():
 
     v = OpenCodeVersion.parse("1.16.0")
     assert _validate_observed_version("opencode 1.16.0\n", v) == "1.16.0"
-    for raw in ("1.16.0\n2.0.0", "1.16.0\x00evil", "1.9999.0", b"1.16.0"):
+    for raw in ("1.16.0\n2.0.0", "1.16.0\x00evil", "1.10000.0", b"1.16.0"):
         with pytest.raises(OpenCodeContractDenied):
             _validate_observed_version(raw, v)
 
