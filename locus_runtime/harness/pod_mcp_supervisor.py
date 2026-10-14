@@ -55,6 +55,40 @@ def _action_key(lease: PodLease, value: object) -> str:
     return "mcp-" + hashlib.sha256(content).hexdigest()
 
 
+def _unique_object_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise PodMcpContractDenied("duplicate JSON-RPC field")
+        result[key] = value
+    return result
+
+
+def _invalid_constant(_: str) -> None:
+    raise PodMcpContractDenied("non-finite MCP number denied")
+
+
+def decode_mcp_frame(raw: bytes) -> dict[str, object]:
+    """Decode one bounded JSON-RPC frame; reject ambiguous duplicate fields.
+
+    Only an authenticated per-child transport may call the handler after
+    this decoder. A well-formed frame is not an authentication credential.
+    """
+    if type(raw) is not bytes or not 1 <= len(raw) <= _MAX_MESSAGE:
+        raise PodMcpContractDenied("MCP frame unavailable or oversized")
+    try:
+        obj: object = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=_unique_object_fields,
+            parse_constant=_invalid_constant,
+        )
+    except (ValueError, UnicodeError, RecursionError):
+        raise PodMcpContractDenied("malformed MCP frame") from None
+    if not isinstance(obj, dict) or any(not isinstance(k, str) for k in obj):
+        raise PodMcpContractDenied("MCP envelope must be a JSON object")
+    return obj
+
+
 class TrustedPodMcpHandler:
     """Minimal MCP tools/list + tools/call over one pre-admitted Gateway pod.
 
@@ -125,6 +159,14 @@ class TrustedPodMcpHandler:
         return cls._response(request_id, {
             "error": {"code": code, "message": message},
         })
+
+    def handle_frame(self, raw: bytes) -> dict[str, Any] | None:
+        """Strict frame parser for a separately authenticated supervisor IPC."""
+        try:
+            parsed = decode_mcp_frame(raw)
+        except PodMcpContractDenied:
+            return self._error(None, code=-32700, message="Invalid JSON-RPC frame")
+        return self.handle(parsed)
 
     def handle(self, message: object) -> dict[str, Any] | None:
         """Consume a single already transport-authenticated JSON-RPC envelope."""
