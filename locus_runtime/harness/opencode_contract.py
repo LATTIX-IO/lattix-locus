@@ -13,7 +13,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import PurePath, PurePosixPath, PureWindowsPath
-from typing import Any, Literal, Mapping
+from typing import Any, Literal, Mapping, cast
 
 _VERSION = re.compile(r"v?([12])\.(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,4})\Z", re.ASCII)
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
@@ -80,7 +80,12 @@ class OpenCodeLaunchProfile:
     config_sha256: str
 
     def config(self) -> dict[str, Any]:
-        return json.loads(self.config_json)
+        parsed: object = json.loads(self.config_json)
+        if not isinstance(parsed, dict) or any(
+            not isinstance(key, str) for key in parsed
+        ):
+            raise OpenCodeContractDenied("invalid OpenCode config object")
+        return cast(dict[str, Any], parsed)
 
     def environment(self) -> dict[str, str]:
         return dict(self.env)
