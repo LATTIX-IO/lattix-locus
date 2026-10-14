@@ -280,3 +280,29 @@ def test_mcp_endpoint_has_no_local_subprocess_or_second_gateway():
         "exec(", "eval(", "socket.", "httpx.",
     ):
         assert marker not in source
+
+
+
+def test_foreign_parent_or_different_ledger_broker_cannot_disclose_mcp_catalog(
+    tmp_path, monkeypatch,
+):
+    first = tmp_path / "tenant-a"
+    second = tmp_path / "tenant-b"
+    first.mkdir()
+    second.mkdir()
+    a_broker, a_receipts, a_lease, _, _, a_calls = setup(first, monkeypatch)
+    b_broker, b_receipts, b_lease, _, _, b_calls = setup(second, monkeypatch)
+    with pytest.raises(PodMcpContractDenied, match="foreign MCP receipt supervisor"):
+        TrustedPodMcpHandler(
+            a_lease, b_broker, exposed_tools=("locus_fixed_tool",),
+        )
+    with pytest.raises(PodMcpContractDenied, match="foreign MCP receipt supervisor"):
+        TrustedPodMcpHandler(
+            b_lease, a_broker, exposed_tools=("locus_fixed_tool",),
+        )
+    assert not a_calls and not b_calls
+    for receipts in (a_receipts, b_receipts):
+        with receipts.reservations._connect() as db:
+            assert db.execute(
+                "SELECT count(*) FROM pod_action_receipt"
+            ).fetchone()[0] == 0
