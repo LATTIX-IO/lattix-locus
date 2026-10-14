@@ -15,7 +15,7 @@ import pytest
 from locus_runtime import pod_sandbox_broker as broker_module
 from locus_runtime.action_receipts import PodActionReceipts
 from locus_runtime.harness.pod_mcp_supervisor import (
-    PodMcpContractDenied, TrustedPodMcpHandler, _action_key,
+    PodMcpContractDenied, TrustedPodMcpHandler, _action_key, decode_mcp_frame,
 )
 from locus_runtime.pod_reservations import PodReservationLedger
 from locus_runtime.pod_tool_broker import SandboxedPodToolBroker
@@ -306,3 +306,51 @@ def test_foreign_parent_or_different_ledger_broker_cannot_disclose_mcp_catalog(
             assert db.execute(
                 "SELECT count(*) FROM pod_action_receipt"
             ).fetchone()[0] == 0
+
+
+
+def test_real_bytes_mcp_frame_decodes_then_dispatches_once(tmp_path, monkeypatch):
+    endpoint, receipts, _, _, _, calls = ready(tmp_path, monkeypatch)
+    frame = json.dumps(invoke(ident="wire-1"), separators=(",", ":")).encode("utf-8")
+    result = endpoint.handle_frame(frame)
+    assert result["result"]["isError"] is False
+    assert len(calls) == 1
+    assert "result" in endpoint.handle_frame(
+        json.dumps(msg("tools/list", "query-2")).encode("utf-8")
+    )
+
+
+@pytest.mark.parametrize("invalid", [
+    b"",
+    b"\xff",
+    b"{}{}",
+    b"[]",
+    b"NaN",
+    b"{" + b" " * 65536 + b"}",
+    b'{"jsonrpc":"2.0","jsonrpc":"1.0","id":"x","method":"tools/list"}',
+    (
+        b'{"jsonrpc":"2.0","id":"dup","method":"tools/call","params":'
+        b'{"name":"locus_fixed_tool","name":"locus_shell","arguments":{}}}'
+    ),
+    (
+        b'{"jsonrpc":"2.0","id":"nan","method":"tools/call","params":'
+        b'{"name":"locus_fixed_tool","arguments":{"ratio":NaN}}}'
+    ),
+])
+def test_duplicate_keys_malformed_and_oversized_wire_frames_never_dispatch(
+    tmp_path, monkeypatch, invalid,
+):
+    endpoint, receipts, _, _, _, calls = ready(tmp_path, monkeypatch)
+    response = endpoint.handle_frame(invalid)
+    assert response["error"]["code"] == -32700
+    assert calls == []
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+def test_frame_decoder_does_not_mistake_valid_json_for_authorization():
+    parsed = decode_mcp_frame(
+        b'{"jsonrpc":"2.0","id":"bounded","method":"tools/list","params":{}}'
+    )
+    assert parsed["id"] == "bounded"
+    assert "lease" not in parsed
