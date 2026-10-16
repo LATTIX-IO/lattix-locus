@@ -190,14 +190,19 @@ def test_actions_are_pinned_like_the_rest_of_the_repo() -> None:
         assert used <= PINNED_ACTIONS, (name, used - PINNED_ACTIONS)
 
 
-def test_no_workflow_grants_more_than_contents() -> None:
+def test_no_desktop_build_job_grants_more_than_contents() -> None:
     for name in ("desktop-dev.yml", "desktop-promote.yml", "desktop-release.yml"):
         wf = _load(name)
-        scopes = [wf.get("permissions") or {}] + [
-            job.get("permissions") or {} for job in wf["jobs"].values()
-        ]
-        for scope in scopes:
-            assert set(scope) <= {"contents"}, (name, scope)
+        assert set(wf.get("permissions") or {}) <= {"contents"}, name
+        for job_name, job in wf["jobs"].items():
+            scope = job.get("permissions") or {}
+            if name == "desktop-release.yml" and job_name == "release-security-gates":
+                # Only the strict reusable gate may upload CodeQL findings.
+                assert scope == {"contents": "read", "security-events": "write"}
+                assert job["uses"] == "./.github/workflows/ci.yml"
+                assert job["with"]["require_security"] is True
+            else:
+                assert set(scope) <= {"contents"}, (name, job_name, scope)
 
 
 # --------------------------------------------------------------------------- #

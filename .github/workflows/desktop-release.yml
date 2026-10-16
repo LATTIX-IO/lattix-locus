@@ -45,7 +45,20 @@ permissions:
   contents: read
 
 jobs:
+  release-security-gates:
+    if: github.event_name == 'push' || inputs.create_release == true
+    uses: ./.github/workflows/ci.yml
+    with:
+      require_security: true
+    secrets:
+      LATTIX_CICD_PENTEST_READ_TOKEN: ${{ secrets.LATTIX_CICD_PENTEST_READ_TOKEN }}
+    permissions:
+      contents: read
+      security-events: write
+
   plan:
+    needs: release-security-gates
+    if: always() && (needs.release-security-gates.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.create_release != true && needs.release-security-gates.result == 'skipped'))
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.m.outputs.matrix }}
