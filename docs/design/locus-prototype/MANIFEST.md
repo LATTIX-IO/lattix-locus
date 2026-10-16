@@ -35,7 +35,7 @@ Re-run in the export: `node _qa/cdp.mjs reflow` and `node _qa/cdp.mjs eval proto
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `activity-run.html` | 37580 | `310f8f7b6ae075464f2662ccf062d9774a9a3e59d8f7844cdd16cbb9329542b6` |
+| `activity-run.html` | 37912 | `7d3d967555a5c79a1bac5c2a44ede71545b53495fa7f9fa9d0b82e6f29b6bc6c` |
 | `activity.html` | 7243 | `9cc50186f8a317037cf3502691564b06678e8e870cb0fb20221efd88c930de86` |
 | `auth.html` | 14615 | `e75692dfbc579aa5e3aab6f110a94cd1a058cdc5afc7cbdd4a6c88c3aadf1514` |
 | `control-tower.html` | 19589 | `ab1bf0284ab8b876642eaee6bbd6147909881dbac955ab98634d367c2256cddc` |
@@ -47,15 +47,15 @@ Re-run in the export: `node _qa/cdp.mjs reflow` and `node _qa/cdp.mjs eval proto
 | `memory.html` | 12307 | `a16a51f0d5b691507765661d5749f700a6e579729133a4b65b3df254943e513d` |
 | `plan-review.html` | 15351 | `92ff7279c112e0e0793f5dec566346f95b86fb4ee70ec934c8d65c1c38a32d53` |
 | `prototype-tests.html` | 26421 | `e3f864e2776c9a8a9a9cb011da514028079c704ad74ab6910ac4f80ea77fbc13` |
-| `screen-registry.html` | 29724 | `8b41dcaab774bc566695626e999528db27577b8ca1676047e69ab4597139206b` |
+| `screen-registry.html` | 29725 | `33e2ec221d81dc4a18f8adf298577f6d23a13920cd6c428e20b1235462dc289d` |
 | `settings.html` | 12158 | `da0cff20646155658db86ae5396dc54deec9f45c8bbba0c4ea53d317226d61b2` |
 | `task.html` | 12623 | `c49a46a03369ac690c3a7d37ddf10d3ceb79c4932739fb8287771b83484fb20d` |
 | `work-conversations.html` | 7920 | `97af01c4bc41acb21f28742ec45ea7a0b9eb2d6fb9895165b4c4cfb7ad75eb8e` |
 | `work-projects.html` | 11280 | `4c857251263799da023ca685892a23ffd8a1746e9dde4ed6bbc9682b71d7480e` |
 | `work-schedules.html` | 14199 | `b260562deafa93c1b748f995a0911754b6805fb4c48bcd5e516dfd8e8d3b5a6b` |
 | `work.html` | 7826 | `cc3e92b5d06ddf1c0b964961ef141920d872afb94119a103dd8448e5d786a406` |
-| `locus-state.js` | 97408 | `208d2dbcb9acc2ae08433ce6c2cb78e3c0b8d6b76067ee40d511a30ea59da1ca` |
-| `locus.js` | 40310 | `cc6a087a500897001fc7ca77b78053443480cc0bc19b4f64f0516e7005847564` |
+| `locus-state.js` | 97227 | `d2119fe575c21b60df806146f1e71ecc36d78e92525f8feb505ce7613fdccb00` |
+| `locus.js` | 40277 | `71f37341b363a78a21ee88a537f89c2cc0dd84ae72bb5b3a8e9005146e6e2405` |
 | `locus.css` | 56136 | `ccf9e1bf7601fa23d9dc012b55322c2705bae025f20750cde0d1c73023992572` |
 | `locus-contract.md` | 20710 | `033d19693f4f97db842b5f0cfd8b439fd796409700343b6a95c039ff6a318467` |
 | `assets/brand/locus-icon-dark.svg` | 902 | `9aef6495aed1c72a2aa749968f18f91f1b440cd0cb0f56a49da0a18eb53394fc` |
@@ -70,7 +70,7 @@ Re-run in the export: `node _qa/cdp.mjs reflow` and `node _qa/cdp.mjs eval proto
 | `assets/fonts/ibm-plex-sans-latin-500-normal.woff2` | 24184 | `0717336fb31fcdcde4b8deb3675bb4a0f7f6d484864afcd6751ac29975962203` |
 | `assets/fonts/ibm-plex-sans-latin-600-normal.woff2` | 24252 | `8960851d691c054ed38e259bdcf1a6190d157b4203ed5bb32c632a863fb8ec2f` |
 | `_qa/cdp.mjs` | 8429 | `0bb58ba921bd6d2b6eac1e1832df70fd0e88c18467b217771a7dd02db578d590` |
-| `_qa/store-smoke.js` | 5495 | `5d6f42ad1f95bf9bf80234def15f5363704c8968077677aee597e51ec0a3eea4` |
+| `_qa/store-smoke.js` | 5486 | `edd0f79d29dbe3ae6d7b9346dcc1d958ad74a6625f6924c224ec0934e0d76d72` |
 | `_qa/reflow.json` | 19695 | `4441560ea0616b07f8b70fec42d9d901d1d43bcb478c88a3a7cd2fc56c2e5a6f` |
 | `_qa/scan_interp.py` | 2057 | `2d05991a685d4cb7f4a7e5b60697661cd45d99ca99442401b03375b638c4f6df` |
 | `_qa/harden.py` | 5449 | `5200cf18434157f0a84a4ec9d39b64675b858717ff324e67e7541eb5616a445a` |

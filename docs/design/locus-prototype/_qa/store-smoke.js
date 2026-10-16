@@ -2,7 +2,7 @@ const fs = require('fs'), vm = require('vm'); const mem = {};
 const ctx = {console, Math, Date, JSON, setInterval:()=>0, setTimeout:(f)=>0, localStorage:{getItem:k=>mem[k]??null, setItem:(k,v)=>mem[k]=String(v), removeItem:k=>delete mem[k]}, document:{}, };
 ctx.window = ctx; ctx.window.addEventListener = ()=>{}; vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(__dirname + '/../locus-state.js','utf8'), ctx);
-const {H, A} = ctx.LocusState, S = H.s; let failures = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) failures++; };
+const {H, A} = ctx.LocusState; let failures = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) failures++; };
 const p = H.pending(); ok(p.length === 2, 'two pending approvals: ' + p.map(a => a.id + ':' + a.action + ':stepUp=' + a.stepUp).join(' '));
 const ea = p.find(a => a.action === 'email.send'); console.log(' email item', JSON.stringify(ea.items), ea.data, ea.ns, ea.grant, ea.fp);
 ok(A.decide(ea.id, 'approve', '', 'fp:bad').changed, 'stale fingerprint refused');

@@ -262,12 +262,11 @@ window.LocusBuild = {version:'0.3.1', increment:'Increment 3.1 · design stabili
     const grants = grantSet(plan); grants.forEach((g, i) => { g.id = id.replace('RUN', 'GRT') + '-' + (i + 1); });
     const r = {id, task:task.id, title:task.title, plan, status:'queued', created, started:null, ended:null, stepStart:null, cursor:0, steps:runSteps(plan), events:[], chat:[], checkpoints:[], grants, agentVersions:Object.fromEntries([...new Set(plan.steps.map(x => x.agent))].map(a => [a, (S.agents.find(x => x.id === a) || {}).version || '—'])), artifacts:[], steers:[], cost:0, node:task.cls === 'Secret' ? 'edge-iad-01' : 'edge-sfo-01', waiting:null, error:null, review:null};
     S.runs.unshift(r); task.runs.unshift(id); return r; }
-  function engineOfAssignee(plan) { const a = plan.assignee.type === 'agent' ? S.agents.find(x => x.id === plan.assignee.id) : null; return a ? a.engine : 'ENG-NATIVE'; }
   function ev(r, t, e) { r.seq = (r.seq || 0) + 1; r.events.push({t, seq:r.seq, ...e}); }
   function say(r, t, from, to, text, rationale, kind) { r.chat.push({t, from, to, text, rationale:rationale || null, kind:kind || 'msg'}); }
   function applyStep(r, st, t) {
     const task = S.tasks.find(x => x.id === r.task);
-    if (st.k === 'approval') { if (r.waiting) return; const a = requestApproval(r, st, t); r.status = 'blocked';
+    if (st.k === 'approval') { if (r.waiting) return; requestApproval(r, st, t); r.status = 'blocked';
       return; }
     if (st.fail && !st.retried) { r.status = 'failed'; r.error = st.fail; ev(r, t, {k:'fail', actor:st.actor, title:'Step failed: ' + st.title, detail:st.fail}); log(r.id, 'Run failed · ' + st.fail, 'Locus'); return; }
     ev(r, t, {k:st.k, actor:st.actor, title:st.title, detail:st.detail, policy:st.policy || null, assembly:st.assembly || null});

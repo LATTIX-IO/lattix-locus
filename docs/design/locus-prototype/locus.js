@@ -316,7 +316,7 @@
     // generic: toasts
     // generic: actions without a simulated state transition are labelled as planned, never reported as done
     document.addEventListener('click', e => { const t = e.target.closest('[data-toast]'); if (!t) return; if (t.hasAttribute('data-sim')) return toast(t.dataset.toast, t.dataset.toastId);
-      const lbl = [...t.childNodes].filter(n => !(n.classList && n.classList.contains('vh'))).map(n => n.textContent).join('').trim(); const e2 = D ? D.esc : (x => x); toast(`Planned capability · not simulated. ${lbl ? '“' + lbl + '”' : 'This action'} would: ${t.dataset.toast}`); });
+      const lbl = [...t.childNodes].filter(n => !(n.classList && n.classList.contains('vh'))).map(n => n.textContent).join('').trim(); toast(`Planned capability · not simulated. ${lbl ? '“' + lbl + '”' : 'This action'} would: ${t.dataset.toast}`); });
     // accessible selection: rendered rows stay focusable and expose selection state
     /* rows that already contain a link or button are reached through that control; only link-free rows become focusable. Selection is announced with aria-current, not aria-selected outside a grid. */
     const mark = () => $$('[data-sel]').forEach(r => { const inner = r.querySelector('a[href],button'); if (inner && r !== inner) { if (r.getAttribute('tabindex') === '0' && !r.dataset.keepTab) r.removeAttribute('tabindex'); } else if (!r.hasAttribute('tabindex')) r.tabIndex = 0; if (r.tagName === 'TR') { r.removeAttribute('aria-selected'); if (r.classList.contains('is-sel')) r.setAttribute('aria-current', 'true'); else r.removeAttribute('aria-current'); } });
