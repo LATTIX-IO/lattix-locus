@@ -9,6 +9,7 @@ import { FirstRunWizard } from "@/components/first-run-wizard";
 import { LocusMark } from "@/components/locus-mark";
 import { LeftNav } from "@/components/navigation/left-nav";
 import { Button } from "@/components/ui/button";
+import { OperationalStatus, type OperationalTone } from "@/components/ui/operational-status";
 import {
   PLATFORM_SETTINGS_UPDATED_EVENT,
   getOperatorSession,
@@ -172,16 +173,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const classificationHeight = classificationBannerEnabled ? CLASSIFICATION_HEIGHT : 0;
   const contentTopOffset = classificationHeight + TOP_NAV_HEIGHT;
 
-  const databaseBadge = useMemo(() => {
+  const databaseBadge = useMemo((): { label: string; tone: OperationalTone; title: string } => {
     if (!platformHealth) {
-      return { label: "DB unchecked", dotClassName: "bg-[hsl(var(--state-warning))]", title: "Database health details are unavailable." };
+      return { label: "DB unchecked", tone: "unknown", title: "Database health details are unavailable." };
     }
     if (platformHealth.postgres === "connected") {
-      return { label: "DB OK", dotClassName: "bg-[hsl(var(--state-success))]", title: "Postgres connectivity verified by the backend health endpoint." };
+      return { label: "DB OK", tone: "normal", title: "Postgres connectivity verified by the backend health endpoint." };
     }
     return {
       label: "DB degraded",
-      dotClassName: "bg-[var(--fx-danger)]",
+      tone: "critical",
       title: platformHealth.postgres_reason?.trim() || `Postgres status: ${platformHealth.postgres}`,
     };
   }, [platformHealth]);
@@ -239,13 +240,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="relative flex shrink-0 items-center gap-1.5">
-            <span
-              className="fx-db-chip inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-[3px] text-[10px] font-medium text-[var(--fx-muted)]"
-              title={databaseBadge.title}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${databaseBadge.dotClassName}`} aria-hidden="true" />
-              {databaseBadge.label}
-            </span>
+            <OperationalStatus tone={databaseBadge.tone} label={databaseBadge.label} title={databaseBadge.title} />
             <Button
               variant="secondary"
               size="icon"

@@ -18,7 +18,7 @@ export function Badge({ className, variant = "secondary", ...props }: ComponentP
     <span
       data-slot="badge"
       className={cn(
-        "inline-flex w-fit shrink-0 items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium [&_svg]:size-3",
+        "inline-flex w-fit shrink-0 items-center gap-1 whitespace-nowrap rounded-[4px] border px-2 py-0.5 text-[11px] font-medium [&_svg]:size-3",
         VARIANTS[variant],
         className,
       )}
