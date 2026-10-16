@@ -1,0 +1,211 @@
+{
+  "name": "Lattix",
+  "tagline": "",
+  "description": "Lattix develops advanced Zero Trust, data-centric security infrastructure for enterprises, government, defense, and mission-critical environments. Its platform provides cryptographic data protection, fine-grained policy enforcement, verifiable provenance, secure collaboration, distributed systems management, and AI data governance.\n\nLattix's brand identity is minimalist, precise, and technically sophisticated. It draws on modern defense command-and-control systems and operational intelligence platforms. The intended feel is a precision-engineered mission system: authoritative, controlled, calm, and highly functional.\n\nThe visual foundation is neutral. Black, charcoal, graphite, white, and warm grey carry the hierarchy. Colour is never decoration. It appears for exactly three reasons: to show where the user can act (one interaction colour), to show abnormal operational state (a priority-ordered alarm palette), and to mark things that are not real (simulated, proposal, shadow mode). Do not use yellow as a recurring brand accent.\n\nIBM Plex Sans carries interface and reading text. IBM Plex Mono carries identifiers, numbers, timestamps, telemetry, and code. Layouts favour clean geometry, thin borders, deliberate alignment, layered surfaces, and minimal elevation.\n\nThe brand voice is declarative, concise, technically grounded, and confident without exaggeration. Write like a senior security architect communicating with experienced operators, engineers, analysts, and executives. Use accurate terminology, direct action labels, and precise status descriptions. Avoid marketing hype, unnecessary jargon, playful language, and decorative copy.\n\nCore design philosophy: Maximum operational capability. Minimum visual noise. Minimum cognitive overhead. Unmistakable state.\n\n## Design System Identity\n\n| Property | Value |\n| --- | --- |\n| Brand | Lattix |\n| Legal entity | Lattix Technologies Corp. |\n| Product | Lattix Mesh Dashboard |\n| Design system | Lattix Operational Interface System — blended model (2026-10-11) |\n| Typefaces | IBM Plex Sans (interface, 400–600) · IBM Plex Mono (data, 400–600) |\n| Primary action | Interaction blue — #1F5FD6 on light, #2F62D4 on dark, white label. One per decision point. |\n| Status | ISA-101 priorities: P1 critical, P2 warning, P3 advisory. Normal is grey. |\n| Not real | Violet — simulated, proposal, draft, shadow mode |\n| Radius | 4px tags/status · 6px controls · 8px panels, dialogs, drawers |\n| Controls | 32px compact · 36px comfortable · 44px touch |\n| Spacing | 4px baseline grid |\n| Label case | Sentence case everywhere |\n\n# Lattix Operational Interface System\n## UI/UX design and component generation rules (blended model)\n\nThe system must support conventional administration alongside advanced analytical workspaces: policy decision analysis, knowledge graphs, data lineage, AI execution traces, distributed service topology, cryptographic provenance, and real-time operational monitoring. It combines the information density of command systems with the clarity and predictability of well-designed enterprise software.\n\n## 1. Three Layers\n\nEach layer owns one job. Where they disagree, the operations layer wins on status, the component layer wins on interaction, and the brand layer wins on everything else.\n\n| Layer | Source | Owns |\n| --- | --- | --- |\n| Brand | Lattix | Neutral palette, IBM Plex Sans + Mono, logo, voice, absence of decoration |\n| Components | Kumo-derived component practice | Role-named tokens, control sizes, states, radii, focus, motion, label casing, chart palettes |\n| Operations | ISA-101 high-performance HMI | When colour may appear, alarm priorities, shape redundancy, operating-mode framing |\n\nThe previous monochrome-only rules (neutral primary, uppercase labels, 2px everywhere, Mono for all text) are retired. They made actions, selection, and status indistinguishable and slowed reading. The superseded specification is archived at `_archive/pre-blended-2026-10-11/`.\n\n## 2. Visual Foundations\n\n- Neutral foundation in both themes, built from shared semantic tokens. Dark and light are equally supported.\n- Surfaces layer by role: canvas (`bg`) → panel (`surface`) → raised (`elevated`); tags, tracks, and nested cards use `recess`. A bordered card is never nested inside a bordered card.\n- Light: canvas #F4F4F1, panels #FFFFFF, text #1C1D1B, borders #DCDCD6. Dark: canvas #121312, panels #1B1C1B, raised #232423, text #ECECE6, borders #2F312E.\n- Thin 1px hairlines between flat surfaces; `border-strong` (light #84867E, dark #6E7069) for control boundaries so they meet 3:1.\n- Radii: 4px for tags, chips, and status cells; 6px for controls; 8px for panels, cards, dialogs, drawers. Pills (`radius-pill`) only for toggles and circular icon actions. Nested shapes use concentric radii.\n- Flat surfaces. Shadows only on overlays (drawers, popovers, dialogs).\n- 4px spacing rhythm: 4–8px for related text, 8–12px for control clusters, 16px card interiors, 24–32px between independent task groups.\n\nAvoid gradients (except the simulation mode band hatch), glassmorphism, glow, neon, 3D, ornamental HUD effects, and decorative animation.\n\n## 3. Colour Roles\n\nChoose colour by role, never by hue. Raw hex values live only in the token file.\n\n| Role | Tokens | Means | Never used for |\n| --- | --- | --- | --- |\n| Interaction | `primary-bg`, `link`, `focus`, `selected` | You can act here; this is selected; this has focus | Status |\n| P1 critical | `critical`, `critical-fg`, `critical-bg` | Blocked, failed, denied, restricted, unqualified | Decoration, headings |\n| P2 warning | `warning`, `warning-fg`, `warning-bg` | Degraded, conflict, near threshold | Normal or advisory states |\n| P3 advisory | `advisory`, `advisory-fg` | At risk, stale, idle — watch | Fills |\n| Normal | `normal` | Running, healthy, enforced, qualified | Text blocks, fills, borders — a small dot only |\n| Not real | `sim`, `sim-fg`, `sim-bg` (alias `info`) | Simulated, proposal, draft, shadow mode, demo | Actions |\n| Destructive | `destructive-bg`, `destructive-fg` | Irreversible operations | Status |\n\nRules:\n1. Normal is grey. A screen where everything is healthy shows almost no colour.\n2. Colour scales with priority: P1 gets a tint, a leading bar, and bold text; P2 a tint; P3 an outlined marker only.\n3. Blue is never a status. Informational and not-real states use violet so blue keeps one meaning.\n4. Colour is never the only signal.\n\n## 4. Status Grammar\n\nEvery state is shown with a shape and a word. Status is always paired with text.\n\n| Priority | States | Shape | Treatment |\n| --- | --- | --- | --- |\n| P1 critical | Blocked, failed, denied, restricted | ▲ triangle | Tint + 3px leading bar + 600 weight |\n| P2 warning | Degraded, conflict, near threshold | ◆ filled diamond | Tint |\n| P3 advisory | At risk, stale, idle | ◇ outlined diamond | Neutral surface, outlined marker |\n| Normal | Healthy, enforced, running | ● dot | Neutral text, small dot |\n| Not real | Simulated, proposal, shadow mode, draft | □ outlined square | Violet tint |\n| Unknown | Pending, no data | ◌ dashed circle | Muted text |\n\nAlert summaries count by priority (P1 ▲ n, P2 ◆ n) with an accessible label, rather than a single undifferentiated badge.\n\n## 5. Operating Modes\n\nThe operating mode is a frame, not a tag. It appears on every page through a band on the top edge of the application plus a labelled pill in the top bar that states the mode and what it means.\n\n| Mode | Label | Meaning | Band |\n| --- | --- | --- | --- |\n| Observation | Observation | Read-only telemetry | Neutral (`border-strong`) |\n| Simulation | Simulation | No enforcement or equipment connection | Hatched violet (`sim`) |\n| Governed execution | Governed execution | Commands reach live systems | Solid red (`governed`), 4px |\n\nEntering governed execution requires an explicit confirmation. No page may opt out of the frame.\n\n## 6. Typography\n\n- IBM Plex Sans for all interface and reading text; IBM Plex Mono for IDs, numbers, timestamps, telemetry, and code (inline Mono is optically about 0.9em).\n- Compact density: 13px body, 12px labels. Comfortable density: 14px body, 12px labels. Headings 16 / 20 / 24px.\n- Sentence case everywhere — headings, labels, buttons, table headers, tags, mode names. No uppercase labels and no added letter-spacing.\n- Weight 600 for headings, 500 for emphasis and control labels, 400 for copy. Do not use 700 as the default emphasis.\n\n## 7. Components\n\nRequired component families: navigation (collapsible sidebar, breadcrumbs, tabs, command search), actions, inputs, data display, contextual interaction (inspectors, drawers, popovers, dialogs), feedback, analytical views, and the operational shell (mode frame, priority counts, safety status).\n\n| Component | Rule |\n| --- | --- |\n| Buttons | Secondary (surface + border) is the default. One primary (interaction blue) per decision point. Tertiary for low emphasis. Destructive only for irreversible acts. Disabled keeps its shape and uses muted text, not opacity alone. |\n| Sizes | 32px compact, 36px comfortable, 44px on coarse pointers. Small 26px. |\n| Tags | Borderless recessed pill, 4px radius. Never look like buttons. |\n| Status cells | Flat, no border on normal cells. P1: tint + leading bar. P2: tint. P3: outline. Selection: 2px interaction inset. |\n| Segmented controls | Recessed track, raised pressed segment. |\n| Tabs and navigation | Current item marked with an interaction-colour underline or inset bar; hover is a neutral tint. |\n| Tables | Hairline rows. Selected row: `selected` tint + interaction leading bar. Names in tables read as text and take the link colour on hover. |\n| Links | `link` colour with a soft underline that strengthens on hover. |\n| Focus | 2px `focus` ring, 2px offset, on every interactive element and background. |\n| Inspector / drawers | Right side, 480–520px, shadowed; footer holds exactly one primary. |\n\n## 8. Operational UX Philosophy\n\nDesign for experienced operators performing complex work under time pressure.\n\n**Immediate situational awareness:** current state, abnormal conditions, operating mode, and available actions are recognisable at a glance.\n\n**Progressive disclosure:** essential operational information first; technical metadata, evidence, and analysis through contextual inspection.\n\n**Minimal interaction cost:** common tasks take one or two meaningful interactions when security permits.\n\n**Context preservation:** retain filters, selections, time ranges, expanded views, and scope while investigating.\n\n**Predictable interaction:** every component behaves the same everywhere. Prefer explicit, discoverable controls over hidden gestures.\n\n**Calm hierarchy:** normal stays quiet so abnormal stands out. Reserve strong emphasis for genuinely important conditions.\n\nDo not confuse information density with cognitive overload.\n\n## 9. Tables, Filters, and Operational Data\n\nTables are foundational. Support sorting, filtering, search, column configuration, selection, bulk operations, and contextual inspection. Use compact rows, hairline dividers, Mono for identifiers and numbers, and restrained hover states. Provide access to underlying records and evidence directly from the data. Status cells follow the status grammar.\n\n## 10. Application Layout\n\n- Full-width top bar holding the logo, page tabs, safety status, priority counts, operating-mode pill, and user controls.\n- Collapsible left navigation below it: icons with tooltips (about 52px) or icons with labels (about 200px), remembered per user.\n- Context row for scope, page actions, and the single primary action.\n- Main workspace occupying most of the screen; optional right-side inspector.\n- Below 900px the navigation becomes a bottom bar and page tabs move to their own row.\n\nAvoid generic dashboards of oversized KPI cards. A dashboard exists to support decisions and actions.\n\n## 11. Information Density and Hierarchy\n\nLevel 1 — operational overview: state, abnormal conditions, primary controls.\nLevel 2 — contextual investigation in a drawer or inspector without leaving the workspace.\nLevel 3 — deep analysis: evidence, decision reasoning, provenance, history, configuration.\n\nOffer compact (monitoring) and comfortable (workflows) density, switchable per page type.\n\n## 12. Advanced Analytical Workspaces\n\nGraphs, policy analysis, AI security traces, service topology, audit and provenance, and operational timelines use the same tokens, typography, geometry, and interaction behaviour as administrative screens. Selection uses the interaction colour; health uses the status grammar; failures use P1. Graphs prioritise legibility over spectacle and provide a table alternative.\n\nCharts choose palettes by task: status palette for health or severity, a categorical palette for nominal series (never reusing status colours), and a single-hue sequential ramp for magnitude.\n\n## 13. Interaction and Motion\n\n- Place actions near the entities they affect; make the primary action immediately discoverable.\n- Contextual menus for secondary operations; inline editing when safe.\n- Keyboard shortcuts for frequent expert operations.\n- Confirmation dialogs for destructive or high-impact actions, including entering governed execution.\n- Clear feedback for asynchronous operations; simulated and proposal results are labelled as such.\n- Never sacrifice authorization, security validation, or auditability to reduce clicks.\n- Hover colour changes are instant. Small state changes 150ms; drawers and navigation 250ms on cubic-bezier(0.77, 0, 0.175, 1). Respect prefers-reduced-motion. No pulsing, continuous, or cinematic animation.\n\n## 14. Accessibility and Readability\n\nTarget WCAG 2.2 AA. Every token pair in the canonical file is contrast-checked (4.5:1 text, 3:1 boundaries, markers, and focus). Visible focus on every background. Accessible names for icon-only controls. Never communicate state through colour alone. Graphs and complex visualisations have structured alternative views. Touch targets are 44px on coarse pointers.\n\n## 15. Design Acceptance Criteria\n\nA generated design is acceptable only when:\n\n- The screen's primary purpose and the operating mode are immediately understandable.\n- Abnormal states stand out because normal states are quiet.\n- Each decision point has exactly one primary action, in the interaction colour.\n- Selection and focus are visually distinct from status.\n- Simulated, proposal, and shadow-mode content is violet and never looks actionable.\n- Labels are sentence case; data uses Mono, prose uses Sans.\n- Complex information is organised rather than concealed or dumped.\n- Dark and light modes keep equivalent function and hierarchy.\n- The result feels like a production-grade defense and enterprise security platform, not a generic SaaS dashboard or fictional HUD.\n\n## 16. Screen Generation Rules\n\n1. Identify the primary user task and decision.\n2. Determine the minimum information needed to complete it.\n3. Place the single primary action close to its context.\n4. Present operational state before supplementary information, using the status grammar.\n5. Make deeper detail available through contextual inspection.\n6. Reuse existing tokens, components, and layout conventions.\n7. Keep normal states neutral; apply colour only for interaction, abnormal state, or not-real content.\n8. Show the operating mode frame.\n9. Support both themes and both densities.\n10. Evaluate clicks, visual noise, and cognitive load before finalising.\n\n**Overall objective:** a precision-engineered operational workbench where sophisticated capabilities remain accessible, workflows are efficient, state is unmistakable, and the interface stays calm.\n\n## Theme Token Reference\n\nCanonical semantic tokens live in canonical/lattix-tokens.json and compile to system/lattix-theme.css. Generated --brand-* variables are overridden by that layer after every regeneration.\n\n### Light Mode\n\n| Role | Name | Hex | Usage |\n| --- | --- | --- | --- |\n| bg | Canvas | `#f4f4f1` | page canvas |\n| surface | Surface | `#ffffff` | panels and cards |\n| recess | Recess | `#ececE8` | tags, tracks, nested cards |\n| fg | Foreground | `#1c1d1b` | body text and headings |\n| muted | Muted | `#5e6059` | secondary text and metadata |\n| border | Border | `#dcdcd6` | hairlines |\n| border-strong | Control border | `#84867e` | control boundaries (3:1) |\n| primary-bg | Interaction | `#1f5fd6` | primary actions, selection, focus |\n| link | Link | `#1a4fb8` | inline links |\n\n### Dark Mode\n\n| Role | Name | Hex | Usage |\n| --- | --- | --- | --- |\n| bg | Canvas | `#121312` | page canvas |\n| surface | Surface | `#1b1c1b` | panels and cards |\n| elevated | Raised | `#232423` | overlays |\n| fg | Foreground | `#ecece6` | body text and headings |\n| muted | Muted | `#9c9d94` | secondary text and metadata |\n| border | Border | `#2f312e` | hairlines |\n| border-strong | Control border | `#6e7069` | control boundaries (3:1) |\n| primary-bg | Interaction | `#2f62d4` | primary actions (white label) |\n| focus / link | Interaction text | `#8fb4ff` | focus ring, links |\n\n### Status and Not-real Colours\n\n| Role | Light base / text / tint | Dark base / text / tint |\n| --- | --- | --- |\n| P1 critical | `#d93036` / `#b4232a` / `#fbe8e8` | `#e5484d` / `#ff8a84` / `#3a1c1d` |\n| P2 warning | `#b87503` / `#8a5300` / `#fcf1dc` | `#e09b1b` / `#f5b546` / `#33280f` |\n| P3 advisory | marker `#b87503`, text `#3d3f3a` | marker `#e09b1b`, text `#c4c5bd` |\n| Normal | dot `#2f8a50` | dot `#6fbf8a` |\n| Not real (sim / info) | `#7c5ce0` / `#5b3cc4` / `#f1edfc` | `#8b6cf0` / `#b49cff` / `#221b3a` |\n| Destructive | `#b91c1c` fill, white text | `#ef4444` fill, `#101010` text |\n\n### Accessibility derivations\n\nBase hexes are for markers, bars, and tints; status text always uses the `-fg` token. All 49 token pairs per theme in `contrastPairs` are verified by canonical/validate.mjs (4.5:1 for text, 3:1 for control boundaries, markers, and focus).",
+  "sourceUrl": "designmd://lattix-technologies-corp-develops",
+  "seed": {
+    "colorPrimary": "#1f5fd6",
+    "colorSuccess": "#2f8a50",
+    "colorWarning": "#b87503",
+    "colorError": "#d93036",
+    "colorInfo": "#7c5ce0",
+    "colorLink": "#1a4fb8",
+    "colorTextBase": "#1c1d1b",
+    "colorBgBase": "#ffffff",
+    "fontFamily": "'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+    "fontFamilyCode": "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+    "fontSize": 14,
+    "borderRadius": 6,
+    "sizeUnit": 4,
+    "sizeStep": 4,
+    "controlHeight": 32,
+    "lineWidth": 1,
+    "motionUnit": 0.15,
+    "motionBase": 0,
+    "wireframe": false,
+    "motion": true
+  },
+  "logo": {
+    "primary": "Lattix-Logo---Mono-Black.svg",
+    "alternates": [
+      "Lattix-Logo---White.svg",
+      "Lattix-Logo---Mono-Gray.svg",
+      "logo-only-dark.svg",
+      "logo-only-light.svg"
+    ],
+    "notes": "Official Lattix logo assets supplied. Primary: mono-black for light backgrounds. White variant for dark backgrounds. Gray variant for subtle applications. Logo-only marks for constrained spaces."
+  },
+  "colors": [
+    {
+      "role": "background",
+      "hex": "#f4f4f1",
+      "oklch": "0.965 0.003 100",
+      "name": "Canvas",
+      "usage": "page canvas (light); dark #121312"
+    },
+    {
+      "role": "foreground",
+      "hex": "#1c1d1b",
+      "oklch": "0.22 0.004 120",
+      "name": "Foreground",
+      "usage": "body text and headings (light); dark #ecece6"
+    },
+    {
+      "role": "accent",
+      "hex": "#1f5fd6",
+      "oklch": "0.53 0.19 262",
+      "name": "Interaction",
+      "usage": "primary action (one per decision), selection, focus, links — never a status"
+    },
+    {
+      "role": "surface",
+      "hex": "#ffffff",
+      "oklch": "1 0 0",
+      "name": "Surface",
+      "usage": "panels and cards (light); dark #1b1c1b"
+    },
+    {
+      "role": "muted",
+      "hex": "#5e6059",
+      "oklch": "0.47 0.008 110",
+      "name": "Muted",
+      "usage": "secondary text and metadata (light); dark #9c9d94"
+    },
+    {
+      "role": "border",
+      "hex": "#dcdcd6",
+      "oklch": "0.89 0.005 100",
+      "name": "Border",
+      "usage": "hairlines (light); control boundaries use #84867e; dark #2f312e / #6e7069"
+    }
+  ],
+  "typography": {
+    "display": {
+      "family": "IBM Plex Sans",
+      "fallbacks": [
+        "system-ui",
+        "-apple-system",
+        "Segoe UI",
+        "Roboto",
+        "sans-serif"
+      ],
+      "weights": [
+        400,
+        500,
+        600
+      ]
+    },
+    "body": {
+      "family": "IBM Plex Sans",
+      "fallbacks": [
+        "system-ui",
+        "-apple-system",
+        "Segoe UI",
+        "Roboto",
+        "sans-serif"
+      ],
+      "weights": [
+        400,
+        500,
+        600
+      ]
+    },
+    "mono": {
+      "family": "IBM Plex Mono",
+      "fallbacks": [
+        "ui-monospace",
+        "SFMono-Regular",
+        "Menlo",
+        "Monaco",
+        "Consolas",
+        "Liberation Mono",
+        "Courier New",
+        "monospace"
+      ],
+      "weights": [
+        400,
+        500,
+        600
+      ]
+    }
+  },
+  "voice": {
+    "adjectives": [
+      "declarative",
+      "concise",
+      "technically grounded",
+      "confident",
+      "precise"
+    ],
+    "tone": "Senior security architect communicating with experienced operators",
+    "messagingPillars": [
+      "Lattix develops advanced Zero Trust, data-centric security infrastructure for enterprises, government, defense, and mission-critical environments.",
+      "Platform provides cryptographic data protection, fine-grained policy enforcement, verifiable provenance, secure collaboration, distributed systems management, and AI data governance.",
+      "Visual identity: minimalist, precise, technically sophisticated; neutral foundation with colour reserved for interaction, abnormal state, and simulated content.",
+      "Core philosophy: Maximum operational capability. Minimum visual noise. Minimum cognitive overhead."
+    ],
+    "vocabulary": {
+      "use": [
+        "operational",
+        "enforcement",
+        "provenance",
+        "topology",
+        "trace",
+        "evidence",
+        "policy",
+        "subject",
+        "resource",
+        "action",
+        "decision",
+        "verification",
+        "cryptographic",
+        "distributed",
+        "governance"
+      ],
+      "avoid": [
+        "marketing hype",
+        "playful language",
+        "decorative copy",
+        "unnecessary jargon",
+        "generic SaaS terminology",
+        "dashboard as a catch-all",
+        "insights without evidence"
+      ]
+    }
+  },
+  "imagery": {
+    "style": "Technical photography, architectural documentation, schematic diagrams, operational screenshots",
+    "subjects": [
+      "Infrastructure",
+      "data centers",
+      "network topology",
+      "cryptographic hardware",
+      "mission control environments",
+      "technical documentation"
+    ],
+    "treatment": "High contrast, neutral, documentary aesthetic",
+    "avoid": [
+      "Illustrations",
+      "abstract gradients",
+      "stock photography",
+      "decorative imagery",
+      "fictional HUD elements"
+    ]
+  },
+  "layout": {
+    "radius": "6px (4px tags/status, 8px panels and dialogs)",
+    "borderWeight": "1px",
+    "spacing": "4px baseline grid",
+    "postureRules": [
+      "Blended model: Lattix brand layer, Kumo-style component layer, ISA-101 operational status layer.",
+      "Component kit covers: Sidebar (collapsible), Command Search, Data Table, Status Label, Inspector Panel, Policy Decision Trace, Topology Graph, Evidence Panel, Timeline, Form, Button (Primary/Secondary/Tertiary/Destructive), Toggle, Select, Breadcrumbs, Tabs, Dialog, Toast, Operating-mode frame, Priority counts.",
+      "Primary actions: interaction blue, exactly one per decision point; secondary is the default button.",
+      "Selection and focus: interaction colour, distinct from status.",
+      "Status: ISA-101 priorities with shape + text; normal states are neutral (dot only); colour only when abnormal.",
+      "Not-real states (simulated, proposal, shadow mode): violet.",
+      "Sentence case everywhere; IBM Plex Sans for interface text, IBM Plex Mono for data.",
+      "Controls 32px compact, 36px comfortable, 44px on touch.",
+      "No marketing templates (landing, deck, poster, newsletter, email, form) in the operational component library."
+    ]
+  }
+}

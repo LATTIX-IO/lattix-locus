@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lattix Locus · Target-state application design</title>
+<link rel="stylesheet" href="locus.css">
+<script>try { if (localStorage.getItem('locus.theme') === 'dark') document.documentElement.dataset.theme = 'dark'; } catch {}</script>
+<style>
+  .doc { max-width: 1120px; margin: 0 auto; padding: 40px 28px 80px; }
+  .doc-h { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font: 600 15px var(--font-body); padding-bottom: 20px; border-bottom: 1px solid var(--border); }
+  .doc-h .sp { flex: 1; }
+  .hero { padding: 40px 0 32px; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 40px; align-items: end; }
+  .hero h1 { font-size: 34px; line-height: 1.15; max-width: 20ch; }
+  .hero p { color: var(--muted); font-size: 15px; max-width: 58ch; margin-top: 12px; }
+  .sec { padding: 32px 0; border-top: 1px solid var(--border); }
+  .sec > .row-b { margin-bottom: 16px; }
+  .screens { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; border: 1px solid var(--border); border-radius: var(--r); }
+  .scr { padding: 16px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); text-decoration: none; display: flex; flex-direction: column; gap: 6px; min-height: 150px; }
+  .scr:nth-child(4n) { border-right: 0; }
+  .scr:nth-last-child(-n+4) { border-bottom: 0; }
+  .scr:hover { background: var(--hover); }
+  .scr:hover h3 { text-decoration: underline; }
+  .scr .n { font: 11px var(--font-mono); color: var(--muted); }
+  .scr p { font-size: 13px; color: var(--muted); flex: 1; }
+  .ia { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border: 1px solid var(--border); border-radius: var(--r); }
+  .ia > div { padding: 12px; border-right: 1px solid var(--border); font-size: 12px; }
+  .ia > div:last-child { border-right: 0; }
+  .ia h3 { margin-bottom: 8px; }
+  .ia ul { list-style: none; margin: 0; padding: 0; color: var(--muted); display: grid; gap: 3px; }
+  .ia .new { border-top: 2px solid var(--fg); }
+  @media (max-width: 980px) { .screens { grid-template-columns: 1fr 1fr; } .scr:nth-child(4n) { border-right: 1px solid var(--border); } .scr:nth-child(2n) { border-right: 0; } .scr:nth-last-child(-n+4) { border-bottom: 1px solid var(--border); } .ia { grid-template-columns: repeat(2, 1fr); } .ia > div { border-bottom: 1px solid var(--border); } .hero { grid-template-columns: 1fr; } }
+  @media (max-width: 560px) { .screens { grid-template-columns: minmax(0, 1fr); } .scr { border-right: 0 !important; } .scr .n { overflow-wrap: anywhere; } }
+</style>
+</head>
+<body>
+<div class="doc">
+  <header class="doc-h"><img class="mark-l" src="assets/brand/locus-logo-light.svg" alt="Lattix Locus" style="height:20px"><img class="mark-d" src="assets/brand/locus-logo-dark.svg" alt="" aria-hidden="true" style="height:20px"><span class="sp"></span><span class="label" id="buildMeta">Target-state design</span></header>
+
+  <section class="hero" data-od-id="overview">
+    <div>
+      <h1>One application for delegating any digital work to governed AI.</h1>
+      <p>A clickable prototype covering the seven primary areas, the global shell and onboarding. Each surface is marked with its implementation status against the current Locus repository so that target-state design never reads as shipped capability.</p>
+    </div>
+    <div class="panel panel-s"><div class="panel-b stack">
+      <p class="label">Implementation traceability</p>
+      <div class="row-b"><span class="trc trc-ex">Existing capability</span><span class="small muted">implemented, verifiable</span></div>
+      <div class="row-b"><span class="trc trc-fd">Existing foundation</span><span class="small muted">partial, needs hardening</span></div>
+      <div class="row-b"><span class="trc trc-pl">Planned capability</span><span class="small muted">target state, not shipped</span></div>
+      <a class="btn btn-primary" href="home.html" style="margin-top:8px">Open the prototype</a>
+      <a class="btn" href="screen-registry.html">Screen registry and scorecard</a>
+      <a class="btn" href="prototype-tests.html">Acceptance tests</a>
+      <a class="btn" href="locus-contract.md">Implementation contract (Markdown)</a>
+      <p class="small muted">Simulated demo · not connected to the Locus backend. v0.3.1 stabilizes the design baseline: one run-state contract, complete agent definitions with evaluation and rollback, handoff checks, and untrusted-data rendering on every screen. Reset state from the command palette.</p>
+    </div></div>
+  </section>
+
+  <section class="sec" data-od-id="screen-inventory">
+    <div class="row-b"><h2>Screens in this prototype</h2><span class="small muted">Shortcuts: Ctrl K search · I inbox · G then H/W/A/L/M/C/S to navigate · [ collapse nav</span></div>
+    <div class="screens">
+      <a class="scr" href="auth.html"><span class="n">00 · /auth, /onboarding</span><h3>Sign in &amp; setup</h3><p>Verified local identity, tenant session, reauthentication and step-up as separate steps; then runtime choice with live checks, available models, default autonomy.</p><span class="trc trc-fd">Foundation</span></a>
+      <a class="scr" href="home.html"><span class="n">01 · /home</span><h3>Home</h3><p>Task composer that infers a plan: who, what data, which tools, when you'll be asked. Decisions, running work, outcomes.</p><span class="trc trc-ex">Existing, extended</span></a>
+      <a class="scr" href="work.html"><span class="n">02 · /work/*</span><h3>Work</h3><p>Tasks (list, board, dependencies), projects (milestones, people and agents, memory scope), schedules (14-day calendar, unattended rules, history), conversations.</p><span class="trc trc-pl">Planned area</span></a>
+      <a class="scr" href="activity.html"><span class="n">03 · /activity/runs</span><h3>Activity · live run</h3><p>Conversation between you and agents with steering, agent-to-agent threads and reasoning summaries. Trace with event inspector, reasoning (goal, evidence, assembly, commitment), policy decisions, approval, checkpoints.</p><span class="trc trc-ex">Existing, extended</span></a>
+      <a class="scr" href="library.html"><span class="n">04 · /library</span><h3>Library</h3><p>Agents and teams, workflows, MCP lifecycle, A2A peers, skills. Each entity defined distinctly with its own governance.</p><span class="trc trc-ex">Existing, extended</span></a>
+      <a class="scr" href="library-agent.html?agent=AGT-0063"><span class="n">04a · /library/agents/:id</span><h3>Agent builder</h3><p>Engine, model route, ceiling, skills, permissions and limits; draft, publish checks, versions.</p><span class="trc trc-pl">Planned</span></a>
+      <a class="scr" href="library-team.html?team=TEAM-07"><span class="n">04b · /library/teams/:id</span><h3>Team composer</h3><p>Members, lead, per-member delegated authority, handoffs and limits. Authority never widens through a team.</p><span class="trc trc-pl">Planned</span></a>
+      <a class="scr" href="memory.html"><span class="n">05 · /memory</span><h3>Memory</h3><p>Scoped records with provenance and trust, collections, contradiction resolution, write and retention governance.</p><span class="trc trc-fd">Foundation</span></a>
+      <a class="scr" href="control-tower.html"><span class="n">06 · /control-tower</span><h3>Control Tower</h3><p>Fleet topology and node health, model routes, engine mediation, policy operations, evaluations, improvement proposals.</p><span class="trc trc-pl">Planned area</span></a>
+      <a class="scr" href="settings.html"><span class="n">07 · /settings</span><h3>Settings</h3><p>Preferences, members and roles, identity, secrets, computer-use tiers, deployment, audit export.</p><span class="trc trc-ex">Existing, extended</span></a>
+    </div>
+  </section>
+
+  <section class="sec" data-od-id="information-architecture">
+    <div class="row-b"><h2>Information architecture</h2><span class="small muted">Heavy top border marks a new primary destination</span></div>
+    <div class="ia">
+      <div><h3>Home</h3><ul><li>Composer</li><li>Waiting on you</li><li>Running now</li><li>Outcomes</li><li>Scheduled</li></ul></div>
+      <div class="new"><h3>Work</h3><ul><li>Tasks</li><li>Projects</li><li>Schedules</li><li>Conversations</li><li>Plans</li></ul></div>
+      <div><h3>Activity</h3><ul><li>Runs · traces</li><li>Approvals</li><li>Artifacts</li><li>Checkpoints</li><li>Investigations</li></ul></div>
+      <div><h3>Library</h3><ul><li>Agents · teams</li><li>Workflows · playbooks</li><li>Tools · MCP</li><li>A2A peers</li><li>Skills · mods</li><li>Templates · releases</li></ul></div>
+      <div><h3>Memory</h3><ul><li>Records</li><li>Collections</li><li>Knowledge graph</li><li>Contradictions</li><li>Governance</li></ul></div>
+      <div class="new"><h3>Control Tower</h3><ul><li>Fleet · nodes</li><li>Model routing</li><li>Engines</li><li>Policy operations</li><li>Evaluations</li><li>Usage</li></ul></div>
+      <div><h3>Settings</h3><ul><li>Account</li><li>Members · identity</li><li>Secrets</li><li>Computer use</li><li>Deployment</li><li>Audit export</li></ul></div>
+    </div>
+  </section>
+
+  <section class="sec" data-od-id="route-migration">
+    <div class="row-b"><h2>Route migration</h2><span class="small muted">Current routes from apps/frontend · old links keep redirecting</span></div>
+    <div class="panel tbl-wrap"><table class="tbl">
+      <thead><tr><th>Current route</th><th>Target route</th><th>Change</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">/home</td><td class="mono">/home</td><td>Unchanged. Composer gains plan preview; adds scheduled and outcomes.</td></tr>
+        <tr><td class="mono">/activity?session=</td><td class="mono">/activity/runs/:id</td><td>Query parameter becomes a path; 301 from the old form.</td></tr>
+        <tr><td class="mono">/activity/traces, /artifacts</td><td class="mono">/activity/runs/:id#trace, /activity/artifacts</td><td>Artifacts move under Activity.</td></tr>
+        <tr><td class="mono">/tasks/:id (redirect today)</td><td class="mono">/work/tasks/:id</td><td>Tasks become first class in Work.</td></tr>
+        <tr><td class="mono">/library/connections</td><td class="mono">/library/tools, /library/a2a</td><td>Split: MCP tools and A2A peers are different entities.</td></tr>
+        <tr><td class="mono">/library/guardrails</td><td class="mono">/control-tower/policy</td><td>Guardrail definitions stay in Library; operations move to Control Tower.</td></tr>
+        <tr><td class="mono">/library/knowledge</td><td class="mono">/memory/collections</td><td>Knowledge sources join governed memory.</td></tr>
+        <tr><td class="mono">/settings?section=engines</td><td class="mono">/control-tower/routing</td><td>Operational routing and engine mediation move; credentials stay in Settings.</td></tr>
+        <tr><td class="mono">/settings?section=observability</td><td class="mono">/control-tower/fleet</td><td>Health becomes operational, not configuration.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section class="sec" data-od-id="maturity-traceability">
+    <div class="row-b"><h2>Maturity areas and where they are designed</h2></div>
+    <div class="panel tbl-wrap"><table class="tbl">
+      <thead><tr><th>Area</th><th>Status</th><th>Designed in</th></tr></thead>
+      <tbody>
+        <tr><td>Uniform mediation of external engines</td><td><span class="trc trc-fd">Foundation</span></td><td>Control Tower · engines matrix; Library · engine row</td></tr>
+        <tr><td>MCP server, tool, credential lifecycle</td><td><span class="trc trc-fd">Foundation</span></td><td>Library · Tools &amp; MCP; Settings · Secrets</td></tr>
+        <tr><td>External A2A discovery and federation</td><td><span class="trc trc-pl">Planned</span></td><td>Library · A2A peers</td></tr>
+        <tr><td>Memory governance, provenance, contradictions</td><td><span class="trc trc-pl">Planned</span> on <span class="trc trc-ex">scoped memory</span></td><td>Memory · all tabs</td></tr>
+        <tr><td>Long-running, resumable orchestration</td><td><span class="trc trc-fd">Foundation</span></td><td>Activity · checkpoints; Work · schedules</td></tr>
+        <tr><td>Secure browser and desktop computer use</td><td><span class="trc trc-fd">Foundation</span></td><td>Settings · tiers; approval inbox widening</td></tr>
+        <tr><td>Cross-domain evaluation</td><td><span class="trc trc-fd">Foundation</span></td><td>Control Tower · evaluations</td></tr>
+        <tr><td>Controlled self-improvement</td><td><span class="trc trc-pl">Planned</span></td><td>Control Tower · IMP-114</td></tr>
+        <tr><td>Distributed execution-node management</td><td><span class="trc trc-pl">Planned</span></td><td>Control Tower · fleet</td></tr>
+        <tr><td>Identity, authorization, audit, multi-tenancy</td><td><span class="trc trc-fd">Foundation</span></td><td>Settings · members, identity, audit export; shell workspace selector</td></tr>
+      </tbody>
+    </table></div>
+    <p class="small muted" style="margin-top:12px">Statuses are design-time assessments from the repository README and FRONTEND.md, and should be confirmed with engineering before external use. Every figure in the prototype is sample data.</p>
+  </section>
+</div>
+<script src="locus-state.js"></script>
+<script>document.getElementById('buildMeta').textContent = `Target-state design · v${LocusBuild.version} · ${LocusBuild.increment} · ${LocusBuild.date}`;</script>
+</body>
+</html>

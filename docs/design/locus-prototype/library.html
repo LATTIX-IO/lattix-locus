@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+<style>
+  .def { display: flex; gap: 12px; align-items: baseline; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--surface); font-size: 13px; }
+  .def .label { flex: none; }
+  .wf { width: 100%; height: auto; display: block; }
+  .wf .n rect { fill: var(--bg); stroke: var(--border-strong); }
+  .wf .n.hl rect { stroke: var(--fg); stroke-width: 1.5; }
+  .wf text { font: 11px var(--font-mono); fill: var(--fg); }
+  .wf .k { fill: var(--muted); font-size: 9px;  }
+  .wf path { stroke: var(--border-strong); fill: none; }
+  .grant { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; align-items: center; }
+  .grant:last-child { border-bottom: 0; }
+</style>
+</head>
+<body data-nav="library" data-crumbs='[["Library","library.html"],["Agents & teams",""]]'>
+<main id="main">
+  <div class="ws has-insp">
+    <div class="page" style="min-width:0">
+      <header class="page-h" data-od-id="library-header">
+        <div class="t"><h1>Library</h1><p>Everything agents can be, use and call. Each kind is governed separately; a tool is not an agent, and a model provider is not an engine.</p></div>
+        <div class="acts"><button class="btn" data-toast="import signed agent and workflow bundles after signature and policy checks">Import</button><button class="btn" data-icon="plus" data-open="teamDlg">New team</button><button class="btn btn-primary" data-icon="plus" data-open="newDlg">New agent</button></div>
+      </header>
+      <div class="tabs" role="tablist" aria-label="Library sections">
+        <button role="tab" aria-selected="true" aria-controls="l-agents" id="lt-agents" data-hash="agents">Agents &amp; teams<span class="count" id="cAg"></span></button>
+        <button role="tab" aria-selected="false" aria-controls="l-eng" id="lt-eng" tabindex="-1" data-hash="engines">Execution engines<span class="count">4</span></button>
+        <button role="tab" aria-selected="false" aria-controls="l-wf" id="lt-wf" tabindex="-1" data-hash="workflows">Workflows<span class="count">8</span></button>
+        <button role="tab" aria-selected="false" aria-controls="l-mcp" id="lt-mcp" tabindex="-1" data-hash="mcp">Tools &amp; MCP<span class="count">6</span></button>
+        <button role="tab" aria-selected="false" aria-controls="l-a2a" id="lt-a2a" tabindex="-1" data-hash="a2a">A2A peers<span class="count">3</span></button>
+        <button role="tab" aria-selected="false" aria-controls="l-skills" id="lt-skills" tabindex="-1" data-hash="skills">Skills &amp; mods<span class="count">19</span></button>
+      </div>
+
+      <section role="tabpanel" id="l-agents" aria-labelledby="lt-agents" data-od-id="agent-list">
+        <div class="panel" style="border-top:0">
+          <div class="def"><span class="label">Agent</span><span>An identity with instructions, an execution engine, a model route and requested capabilities. A <b>team</b> composes agents with handoffs; each member receives an independently authorized subset of its own capabilities.</span></div>
+          <div class="filters"><input class="input" type="search" placeholder="Filter agents and teams" aria-label="Filter agents"><button class="chip-f">Teams only</button><button class="chip-f">Owned by me</button><button class="chip-f">Needs review</button></div>
+          <div class="tbl-wrap"><table class="tbl" data-select-group="agents">
+            <thead><tr><th>Name</th><th>Kind</th><th>Execution engine</th><th class="hide-narrow">Model route</th><th>Ceiling</th><th class="hide-narrow">Eval</th><th>Version</th><th>State</th></tr></thead>
+            <tbody id="agRows"></tbody>
+          </table></div>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="l-eng" aria-labelledby="lt-eng" hidden data-od-id="engine-list">
+        <div class="panel" style="border-top:0">
+          <div class="def"><span class="label">Execution engine</span><span>The runtime that executes an agent. An engine is not an agent: tasks are assigned to agents, and each agent definition names the engine it runs on. Mediation level limits the data classes an engine may receive.</span></div>
+          <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Engine</th><th>Kind</th><th>File access</th><th>Network</th><th>Tool calls</th><th>Trace capture</th><th>Max data</th><th>Agents using it</th><th>State</th></tr></thead><tbody id="engRows"></tbody></table></div>
+          <div class="panel-f small muted">Mediation details are maintained in Control Tower. External engines without full tool mediation are limited to Internal data.</div>
+        </div>
+      </section>
+      <section role="tabpanel" id="l-wf" aria-labelledby="lt-wf" hidden data-od-id="workflow-list">
+        <div class="panel" style="border-top:0">
+          <div class="def"><span class="label">Workflow</span><span>A deterministic graph of nodes. Use it when the steps must run the same way every time.</span></div>
+          <div class="grid g21" style="padding:14px">
+            <div class="panel"><div class="panel-h"><h3>Supplier questionnaire intake</h3><span class="id">WF-0031 · v5</span><span class="st st-ok">Published</span></div>
+              <div class="panel-b">
+                <svg class="wf" viewBox="0 0 640 180" role="img" aria-label="Workflow graph: trigger, retrieval, agent, guardrail, human review, output">
+                  <path d="M110 50h30M250 50h30M390 50h30M500 70v40M480 130h-30M340 130h-30"/>
+                  <g class="n"><rect x="10" y="30" width="100" height="40" rx="2"/><text x="20" y="46" class="k">Trigger</text><text x="20" y="62">New upload</text></g>
+                  <g class="n"><rect x="140" y="30" width="110" height="40" rx="2"/><text x="150" y="46" class="k">Retrieval</text><text x="150" y="62">Policy COL-019</text></g>
+                  <g class="n hl"><rect x="280" y="30" width="110" height="40" rx="2"/><text x="290" y="46" class="k">Agent</text><text x="290" y="62">Research Analyst</text></g>
+                  <g class="n"><rect x="420" y="30" width="110" height="40" rx="2"/><text x="430" y="46" class="k">Guardrail</text><text x="430" y="62">PII redaction</text></g>
+                  <g class="n"><rect x="340" y="110" width="140" height="40" rx="2"/><text x="350" y="126" class="k">Human review</text><text x="350" y="142">Score ≥ high risk</text></g>
+                  <g class="n"><rect x="200" y="110" width="110" height="40" rx="2"/><text x="210" y="126" class="k">Output</text><text x="210" y="142">Risk register</text></g>
+                </svg>
+              </div>
+              <div class="panel-f"><span class="small muted">6 nodes · 41 runs this month</span><span style="flex:1"></span><button class="btn btn-sm" data-toast="open the workflow studio for WF-0031">Open editor</button><button class="btn btn-sm" data-toast="start a run of WF-0031" data-toast-id="RUN-48230">Run now</button></div>
+            </div>
+            <ul class="list panel">
+              <li><div class="li-b"><b>Monthly invoice reconciliation</b><span class="id">WF-0027 · v3</span></div><span class="st st-ok">Published</span></li>
+              <li><div class="li-b"><b>SOC alert enrichment</b><span class="id">WF-0019 · v9</span></div><span class="st st-ok">Published</span></li>
+              <li><div class="li-b"><b>Release notes from merged PRs</b><span class="id">WF-0035 · v1</span></div><span class="st">Draft</span></li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="l-mcp" aria-labelledby="lt-mcp" hidden data-od-id="mcp-list">
+        <div class="panel" style="border-top:0">
+          <div class="def"><span class="label">MCP server</span><span>An external tool provider. Servers are reviewed, pinned to a version, and run with their own credentials and network scope.</span></div>
+          <div class="tbl-wrap"><table class="tbl">
+            <thead><tr><th>Server</th><th>Tools</th><th>Credential</th><th>Network scope</th><th>Version</th><th>Lifecycle</th><th></th></tr></thead>
+            <tbody>
+              <tr><td class="t">web-research</td><td class="num">4</td><td class="mono small">vault:mcp/web</td><td class="small">allowlist · 38 hosts</td><td class="num">1.8.2 · pinned</td><td><span class="st st-ok">Approved</span></td><td class="r"><button class="btn btn-sm btn-ghost" data-toast="open MCP server management: version pinning, credential rotation and tool scopes">Manage</button></td></tr>
+              <tr><td class="t">docstore</td><td class="num">6</td><td class="mono small">vault:mcp/docstore</td><td class="small">tenant only</td><td class="num">3.1.0 · pinned</td><td><span class="st st-ok">Approved</span></td><td class="r"><button class="btn btn-sm btn-ghost" data-toast="open MCP server management: version pinning, credential rotation and tool scopes">Manage</button></td></tr>
+              <tr><td class="t">gmail</td><td class="num">5</td><td class="mono small">oauth · dana@</td><td class="small">googleapis.com</td><td class="num">0.9.4 · pinned</td><td><span class="st st-ok">Approved · send gated</span></td><td class="r"><button class="btn btn-sm btn-ghost" data-toast="open MCP server management: version pinning, credential rotation and tool scopes">Manage</button></td></tr>
+              <tr><td class="t">jira-cloud</td><td class="num">11</td><td class="mono small">pending</td><td class="small">atlassian.net</td><td class="num">2.0.0</td><td><span class="st st-adv">In review</span></td><td class="r"><button class="btn btn-sm btn-ghost" data-toast="open the MCP onboarding review: tools, network scope, credentials and policy">Review</button></td></tr>
+              <tr><td class="t">shell-exec-community</td><td class="num">2</td><td class="mono small">none</td><td class="small">unrestricted requested</td><td class="num">0.3.1</td><td><span class="st st-crit">Quarantined</span></td><td class="r"><button class="btn btn-sm btn-ghost" data-toast="show why this server is quarantined and the evidence behind it">Details</button></td></tr>
+            </tbody>
+          </table></div>
+          <div class="panel-f"><span class="trc trc-fd">Approved connections · foundation</span><span class="trc trc-pl">Version pinning, credential rotation · planned</span></div>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="l-a2a" aria-labelledby="lt-a2a" hidden data-od-id="a2a-list">
+        <div class="panel planned-zone" style="border-top-style:dashed">
+          <div class="def"><span class="label">A2A peer</span><span>An agent run by another system. Locus delegates to it over signed A2A; it never inherits your grants.</span></div>
+          <div class="tbl-wrap"><table class="tbl">
+            <thead><tr><th>Peer</th><th>Operator</th><th>Advertised skills</th><th>Trust</th><th>Max classification</th><th>Last delegation</th></tr></thead>
+            <tbody>
+              <tr><td class="t">contoso-legal-intake</td><td>Contoso (partner)</td><td class="small">contract.clause-extract</td><td><span class="st st-ok">Verified · mTLS</span></td><td><span class="cls">Int</span></td><td class="num">Oct 8</td></tr>
+              <tr><td class="t">northwind-finance-bot</td><td>Northwind Finance</td><td class="small">ledger.lookup, po.match</td><td><span class="st st-ok">Verified</span></td><td><span class="cls">Conf</span></td><td class="num">Today</td></tr>
+              <tr><td class="t">unknown-peer-7f2</td><td>Unverified</td><td class="small">“general assistant”</td><td><span class="st st-crit">Rejected · bad signature</span></td><td class="muted">—</td><td class="muted">Never</td></tr>
+            </tbody>
+          </table></div>
+          <div class="panel-f"><span class="trc trc-ex">Internal A2A messaging · existing</span><span class="trc trc-pl">External discovery &amp; federation · planned</span></div>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="l-skills" aria-labelledby="lt-skills" hidden data-od-id="skill-list">
+        <div class="panel" style="border-top:0">
+          <div class="def"><span class="label">Skill</span><span>Packaged instructions and resources an agent can load. Skills add know-how, not permissions.</span></div>
+          <ul class="list">
+            <li><div class="li-b"><b>Vendor security scoring</b><span class="small muted">Rubric and question bank for supplier risk · used by 2 agents</span></div><span class="tag">org</span><span class="id">v4</span></li>
+            <li><div class="li-b"><b>Northwind writing style</b><span class="small muted">Tone, terminology and formatting rules</span></div><span class="tag">org</span><span class="id">v2</span></li>
+            <li><div class="li-b"><b>My meeting summary format</b><span class="small muted">Personal skill · Dana Reyes</span></div><span class="tag">personal</span><span class="id">v1</span></li>
+          </ul>
+        </div>
+      </section>
+    </div>
+
+    <aside class="insp" aria-label="Agent detail" data-od-id="agent-inspector"><div id="agInsp"></div></aside>
+  </div>
+
+  <div class="dialog" id="newDlg" role="dialog" aria-labelledby="ndH" data-od-id="new-agent-dialog">
+    <div class="dialog-h"><h2 id="ndH">New agent</h2></div>
+    <div class="dialog-b">
+      <div class="field"><label for="naName">Name</label><input id="naName" class="input" placeholder="Board Pack Writer"></div>
+      <div class="field"><label for="naJob">What does it do?</label><textarea id="naJob" class="textarea" rows="3" placeholder="Turns monthly metrics and notes into a board pack draft in our house style."></textarea><span class="hint">Creates an unpublished draft and opens the builder. Choose its engine, model, skills, permissions and limits there; nothing can use it until it is published.</span></div>
+    </div>
+    <div class="dialog-f"><button class="btn" onclick="Locus.close()">Cancel</button><button class="btn btn-primary" id="naGo">Create draft and configure</button></div>
+  </div>
+  <div class="dialog" id="teamDlg" role="dialog" aria-labelledby="ntH" data-od-id="new-team-dialog">
+    <div class="dialog-h"><h2 id="ntH">New team</h2></div>
+    <div class="dialog-b"><div class="field"><label for="ntName">Name</label><input id="ntName" class="input" placeholder="Board Pack Team"></div><p class="small muted">Creates an unpublished draft and opens the composer, where you choose members, a lead, handoffs and what each member may do.</p></div>
+    <div class="dialog-f"><button class="btn" onclick="Locus.close()">Cancel</button><button class="btn btn-primary" id="ntGo">Create draft and compose</button></div>
+  </div>
+</main>
+<script src="locus-state.js"></script>
+<script src="locus.js"></script>
+<script>
+  const {H, A: ACT} = LocusState, $ = q => document.querySelector(q), esc = H.esc; let sel = 'AGT-0042';
+  function render() { const S = H.s; $('#cAg').textContent = S.agents.length + S.teams.length;
+    H.setH($('#agRows'), [...S.teams.map(t => `<tr data-sel="${H.esc(t.id)}" class="${t.id === sel ? 'is-sel' : ''}"><td><span class="t">${esc(t.name)}</span><br><span class="id">${H.esc(t.id)} · ${t.members.length} members</span></td><td>Team</td><td class="muted">Per member</td><td class="muted hide-narrow">Per member</td><td><span class="cls">${esc(H.teamCeiling(t).slice(0, 4))}</span></td><td class="num hide-narrow">—</td><td class="num">${esc(t.version)}</td><td><span class="st ${H.esc(t.state === 'Published' ? 'st-ok' : 'st-adv')}">${esc(t.state)}</span></td></tr>`),
+      ...S.agents.map(a => { const e = H.engine(a.engine); return `<tr data-sel="${H.esc(a.id)}" class="${a.id === sel ? 'is-sel' : ''}"><td><span class="t">${esc(a.name)}</span><br><span class="id">${H.esc(a.id)}</span></td><td>Agent</td><td>${esc(e.name)}${e.tools !== 'Full' ? ` <span class="tag">${H.esc(e.tools)} mediation</span>` : ''}</td><td class="mono small hide-narrow">${H.esc(a.route)}</td><td><span class="cls">${H.esc(a.ceiling.slice(0, 4))}</span></td><td class="num hide-narrow">${H.esc(a.eval == null ? '—' : a.eval.toFixed(2))}</td><td class="num">${esc(a.version)}</td><td><span class="st ${H.esc(a.state === 'Published' ? 'st-ok' : 'st-adv')}">${esc(a.state)}</span></td></tr>`; })].join(''));
+    H.setH($('#engRows'), H.ENGINES.map(e => `<tr><td class="t">${esc(e.name)}<br><span class="id">${H.esc(e.id)}</span></td><td class="small">${H.esc(e.kind)}</td><td>${H.esc(e.file)}</td><td>${H.esc(e.net)}</td><td>${e.tools === 'Full' ? 'Full' : `<span class="st st-warn">${H.esc(e.tools)}</span>`}</td><td>${H.esc(e.trace)}</td><td><span class="cls">${H.esc(e.maxCls)}</span></td><td class="small">${S.agents.filter(a => a.engine === e.id).map(a => esc(a.name)).join(', ') || '—'}</td><td><span class="st ${H.esc(e.state === 'Enabled' ? 'st-ok' : 'st-crit')}">${H.esc(e.state)}</span></td></tr>`).join(''));
+    const t = H.team(sel), a = H.agent(sel);
+    if (t) { H.setH($('#agInsp'), `<div class="insp-h"><div class="t"><p class="id">${esc(t.id)} · ${esc(t.version)}</p><h2 style="margin-top:4px">${esc(t.name)}</h2></div><a class="btn btn-sm" href="library-team.html?team=${encodeURIComponent(t.id)}">Open composer</a></div><div class="insp-b">
+      <p class="small">Delegation receives an independently authorized subset of capabilities; authority cannot widen transitively through a team or execution engine.</p>
+      <div><p class="label" style="margin-bottom:6px">Members and delegated authority</p><ul class="list">${t.members.map(m => { const x = H.agent(m); if (!x) return ''; const au = ((t.authority || {})[m] || []).filter(c => x.caps.includes(c)); return `<li><div class="li-b"><b>${esc(x.name)}${m === t.lead ? ' <span class="tag">lead</span>' : ''}</b><span class="small muted">${esc(H.engine(x.engine).name)} · <span class="mono">${esc(au.join(', ') || 'no capabilities')}</span></span></div></li>`; }).join('')}</ul></div>
+      <div><p class="label" style="margin-bottom:6px">Handoffs</p><ul class="list">${(t.handoffs || []).map(h => `<li><div class="li-b"><b>${esc(H.nameOf(h.from))} → ${esc(H.nameOf(h.to))}</b><span class="small muted">${esc(h.what)}</span></div></li>`).join('') || '<li class="empty" style="display:block">None</li>'}</ul></div>
+      <dl class="kv"><dt>Ceiling</dt><dd><span class="cls">${esc(H.teamCeiling(t))}</span></dd><dt>Spend per run</dt><dd>$${(+((t.limits || {}).perRun || 0)).toFixed(2)}</dd></dl></div>`); return; }
+    if (!a) return; const e = H.engine(a.engine);
+    H.setH($('#agInsp'), `<div class="insp-h"><div class="t"><p class="id">${H.esc(a.id)} · ${H.esc(a.version)}</p><h2 style="margin-top:4px">${esc(a.name)}</h2></div><a class="btn btn-sm" href="library-agent.html?agent=${encodeURIComponent(a.id)}">${H.esc(a.state === 'Published' ? 'Edit' : 'Continue draft')}</a></div><div class="insp-b">
+      <p class="small">${esc(a.desc)}</p>
+      <dl class="kv"><dt>Owner</dt><dd>${esc(H.nameOf(a.owner))}</dd><dt>Engine</dt><dd>${esc(e.name)} · ${esc(e.tools)} tool mediation</dd><dt>Model route</dt><dd class="mono small">${esc(a.route)}</dd><dt>Ceiling</dt><dd><span class="cls">${esc(a.ceiling)}</span></dd><dt>Skills</dt><dd>${esc((a.skills || []).map(k => (H.SKILLS.find(x => x.id === k) || {name:k}).name).join(', ') || 'None')}</dd><dt>Limits</dt><dd>${a.limits ? `$${H.esc(a.limits.perRun)} per run · ${H.esc(a.limits.maxSteps)} steps · ${H.esc(a.limits.maxMinutes)} min per step` : '—'}</dd><dt>Memory</dt><dd>${esc(a.mem)}</dd></dl>
+      <div><div class="row-b" style="margin-bottom:4px"><p class="label">Requested capabilities</p><span class="small muted">Granted per run</span></div>${a.caps.map(c => { const d = H.evalCap(c, {cls:a.ceiling, engine:a.engine}); return `<div class="grant"><span><span class="mono">${H.esc(c)}</span> <span class="muted small">· ${esc(H.CAPS[c].via)}</span></span><span class="decision ${H.esc(d.d)}">${H.esc(d.d === 'approval' ? 'Ask first' : d.d === 'permit' ? 'Allowed' : 'Denied')}</span></div>`; }).join('') || '<p class="small muted">None yet.</p>'}</div>
+      <div class="callout"><span>${Locus.icon('shield')}</span><p class="small">Effective permissions are resolved by the backend at run time from this definition, the requester and tenant policy. This panel shows the definition only.</p></div>
+      ${a.state !== 'Published' ? `<div class="callout warn"><span class="st st-adv"></span><p class="small">${H.esc(a.state === 'Draft' ? 'Never published. Plans cannot use this agent until it passes publish checks.' : 'Unpublished draft changes. Runs use ' + esc(a.version) + ' until the draft is published.')}</p></div>` : ''}</div>`); }
+  document.addEventListener('locus:select', e => { if (e.detail.group === 'agents') { sel = e.detail.id; render(); } });
+  $('#naGo').onclick = () => { const n = $('#naName').value.trim(); if (!n) { $('#naName').setAttribute('aria-invalid', 'true'); $('#naName').focus(); Locus.toast('Give the agent a name'); return; } const ag = ACT.createAgent(n, $('#naJob').value.trim() || '—'); location.href = 'library-agent.html?agent=' + encodeURIComponent(ag.id); };
+  $('#ntGo').onclick = () => { const n = $('#ntName').value.trim(); if (!n) { $('#ntName').setAttribute('aria-invalid', 'true'); $('#ntName').focus(); Locus.toast('Give the team a name'); return; } const t = ACT.createTeam(n); location.href = 'library-team.html?team=' + encodeURIComponent(t.id); };
+  render(); LocusState.on(render);
+</script>
+</body>
+</html>

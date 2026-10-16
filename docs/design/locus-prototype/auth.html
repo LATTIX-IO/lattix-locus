@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+<script>try { if (localStorage.getItem('locus.theme') === 'dark') document.documentElement.dataset.theme = 'dark'; } catch {}</script>
+<style>
+  body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); min-height: 100vh; }
+  .side { background: var(--surface); border-right: 1px solid var(--border); padding: 40px; display: flex; flex-direction: column; justify-content: space-between; gap: 24px; }
+  .side .brand img { height: 22px; width: auto; }
+  .side h1 { font-size: 28px; line-height: 1.2; max-width: 18ch; }
+  .idm { list-style: none; padding: 0; margin: 20px 0 0; display: grid; gap: 14px; max-width: 46ch; }
+  .idm li { display: grid; grid-template-columns: 28px 1fr; gap: 8px; font-size: 13px; }
+  .idm li > span:first-child { font: 12px/20px var(--font-mono); color: var(--muted); }
+  .idm b { display: block; font-weight: 600; }
+  .flow { padding: 40px; display: flex; flex-direction: column; justify-content: center; max-width: 580px; width: 100%; margin: 0 auto; }
+  .step[hidden] { display: none; }
+  .opt { display: flex; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: var(--r); cursor: pointer; align-items: flex-start; }
+  .opt:hover { border-color: var(--border-strong); }
+  .opt:has(input:checked) { border-color: var(--accent, var(--fg)); background: var(--select); }
+  .opt input { margin-top: 3px; }
+  .opt b { display: block; }
+  .check { display: grid; grid-template-columns: 18px 1fr auto; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); align-items: center; font-size: 13px; }
+  .txn { border: 1px solid var(--border); border-radius: var(--r); margin-top: 16px; }
+  .txn .check { padding: 8px 12px; }
+  .txn .check:last-child { border-bottom: 0; }
+  .claims { margin-top: 12px; }
+  .variant { display: inline-flex; margin-bottom: 18px; }
+  @media (max-width: 860px) { body { grid-template-columns: 1fr; } .side { border-right: 0; border-bottom: 1px solid var(--border); padding: 20px 16px; } .side h1 { font-size: 22px; } .idm { display: none; } .flow { padding: 24px 16px; } .steps li { padding: 8px 4px; font-size: 11px; } }
+</style>
+</head>
+<body>
+  <aside class="side" data-od-id="auth-context">
+    <div class="brand"><img class="mark-l" src="assets/brand/locus-logo-light.svg" alt="Lattix Locus"><img class="mark-d" src="assets/brand/locus-logo-dark.svg" alt="" aria-hidden="true"></div>
+    <div>
+      <h1>Delegate the work. Keep the authority.</h1>
+      <ul class="idm" aria-label="How identity works in Locus">
+        <li><span>01</span><span><b>Verified local identity</b>Windows Hello or a passkey proves who is at this device and unlocks its local keys. On its own it grants nothing in Northwind.</span></li>
+        <li><span>02</span><span><b>Tenant session</b>Northwind SSO issues an 8-hour session for one tenant. Locus asks the server for every permission; the session is the identity it checks.</span></li>
+        <li><span>03</span><span><b>Reauthentication</b>After 30 minutes idle, at session expiry, or when an administrator revokes it, you sign in again. Runs keep their own grants and continue.</span></li>
+        <li><span>04</span><span><b>Step-up authorization</b>Approving an external send, a production change or Confidential data asks you to confirm again. The confirmation is valid for 5 minutes and for decisions only.</span></li>
+      </ul>
+    </div>
+    <p class="small muted">Prototype · sample data · simulated identity provider · <a href="index.html">Screen inventory</a></p>
+  </aside>
+
+  <main class="flow" data-od-id="onboarding-flow">
+    <div class="seg variant" role="group" aria-label="Client" id="variant"><button type="button" aria-pressed="true" data-v="desktop">Desktop app</button><button type="button" aria-pressed="false" data-v="web">Web browser</button></div>
+    <ol class="steps" aria-label="Setup progress" id="steps" style="margin-bottom:28px"></ol>
+
+    <section class="step" data-step="device" data-od-id="verify-local-identity">
+      <h2 style="font-size:20px">Unlock Locus on this device</h2>
+      <p class="muted" style="margin:6px 0 16px">Confirms you are the person signed in to <span class="mono">NW-LT-0417</span>. This unlocks the device's local keys and local runtime. It does not sign you in to Northwind; that is the next step.</p>
+      <button class="btn btn-primary btn-lg" style="width:100%" id="devGo">Verify with Windows Hello</button>
+      <div class="txn" id="devTxn" hidden></div>
+    </section>
+
+    <section class="step" data-step="tenant" hidden data-od-id="tenant-sign-in">
+      <h2 style="font-size:20px" id="tenH">Sign in to Northwind</h2>
+      <p class="muted" style="margin:6px 0 20px">Hosted workspace · <span class="mono">nw-prod.locus.northwind.example</span> · tenant <span class="mono">nw-prod</span></p>
+      <div id="tenStart">
+        <button class="btn btn-primary btn-lg" style="width:100%" data-sso="sso">Continue with Northwind SSO</button>
+        <div class="row" style="margin:16px 0;gap:12px"><hr class="hr" style="flex:1"><span class="label">or</span><hr class="hr" style="flex:1"></div>
+        <button class="btn btn-lg" style="width:100%" data-sso="passkey">Use a Northwind passkey</button>
+        <p class="small muted" style="margin-top:16px">Device sign-in does not replace this. Locus opens a tenant session with your identity provider on every client, including the desktop app.</p>
+      </div>
+      <div class="txn" id="tenTxn" hidden aria-live="polite"></div>
+      <div id="tenDone" hidden></div>
+    </section>
+
+    <section class="step" data-step="runtime" hidden data-od-id="choose-runtime">
+      <h2 style="font-size:20px">Where should work run?</h2>
+      <p class="muted" style="margin:6px 0 16px">You can add nodes later from Control Tower.</p>
+      <div class="stack">
+        <label class="opt"><input type="radio" name="rt" checked><span><b>Hosted, with this device as a node</b><span class="small muted">Recommended. Runs on Northwind infrastructure; computer use runs here.</span></span></label>
+        <label class="opt"><input type="radio" name="rt"><span><b>Hosted only</b><span class="small muted">No local execution from this device.</span></span></label>
+        <label class="opt"><input type="radio" name="rt"><span><b>This device only</b><span class="small muted">Local-first. Nothing leaves the machine unless you allow it.</span></span></label>
+      </div>
+      <div style="margin-top:16px">
+        <div class="check"><span class="st st-ok"></span><span>Control plane reachable</span><span class="id">42 ms</span></div>
+        <div class="check"><span class="st st-ok"></span><span>Signed runtime headers verified</span><span class="id">ok</span></div>
+        <div class="check"><span class="st st-adv"></span><span>Local GPU not detected; local models will be slower</span><span class="id">cpu</span></div>
+      </div>
+      <div class="row-b" style="margin-top:20px"><button class="btn btn-ghost" data-back>Back</button><button class="btn btn-primary" data-next>Continue</button></div>
+    </section>
+
+    <section class="step" data-step="models" hidden data-od-id="connect-models">
+      <h2 style="font-size:20px">Models available to you</h2>
+      <p class="muted" style="margin:6px 0 16px">Your administrator configured these. Routing picks the right one per task and data classification.</p>
+      <div class="panel"><ul class="list">
+        <li><span class="st st-ok"></span><div class="li-b"><b>Anthropic · Claude</b><span class="small muted">Up to Confidential · org key in Vault</span></div></li>
+        <li><span class="st st-ok"></span><div class="li-b"><b>Local models on edge nodes</b><span class="small muted">Up to Secret · never leaves the tenant</span></div></li>
+        <li><span class="st st-idle"></span><div class="li-b"><b>Local model on this device</b><span class="small muted">Optional · 4.1 GB download</span></div><button class="btn btn-sm" data-dl data-toast="queue a 4.1 GB local model download on this device">Download</button></li>
+      </ul></div>
+      <div class="row-b" style="margin-top:20px"><button class="btn btn-ghost" data-back>Back</button><button class="btn btn-primary" data-next>Continue</button></div>
+    </section>
+
+    <section class="step" data-step="defaults" hidden data-od-id="set-defaults">
+      <h2 style="font-size:20px">How much should Locus do on its own?</h2>
+      <p class="muted" style="margin:6px 0 16px">Applies to new tasks. Organization policy always takes precedence.</p>
+      <div class="stack">
+        <label class="opt"><input type="radio" name="au"><span><b>Plan only</b><span class="small muted">Locus proposes; you start each step.</span></span></label>
+        <label class="opt"><input type="radio" name="au" checked><span><b>Act within policy</b><span class="small muted">Works independently and asks when policy requires a person.</span></span></label>
+        <label class="opt"><input type="radio" name="au"><span><b>Ask before acting</b><span class="small muted">Confirms every action that changes or sends something.</span></span></label>
+      </div>
+      <div class="row-b" style="margin-top:20px"><button class="btn btn-ghost" data-back>Back</button><a class="btn btn-primary" href="home.html">Go to Home</a></div>
+    </section>
+  </main>
+<script src="locus-state.js"></script>
+<script>
+  const {H, A} = LocusState, $ = s => document.querySelector(s), esc = H.esc, Q = new URLSearchParams(location.search);
+  const REAUTH = Q.get('reauth') === '1', RET = (Q.get('return') || '').replace(/[^\w.\-?=&%#]/g, '');
+  const back = /^[\w\-]+\.html/.test(RET) ? RET : 'home.html';
+  let variant = 'desktop', cur = 0;
+  const flow = () => (variant === 'desktop' ? ['device', 'tenant'] : ['tenant']).concat(REAUTH ? [] : ['runtime', 'models', 'defaults']);
+  const LBL = {device:'This device', tenant:'Northwind', runtime:'Runtime', models:'Models', defaults:'Defaults'};
+  function go(n, quiet) { const f = flow(); cur = Math.max(0, Math.min(n, f.length - 1)); document.querySelectorAll('.step').forEach(x => x.hidden = x.dataset.step !== f[cur]);
+    $('#steps').innerHTML = f.map((k, i) => `<li class="${i < cur ? 'done' : i === cur ? 'cur' : ''}" ${i === cur ? 'aria-current="step"' : ''}>${LBL[k]}</li>`).join('');
+    const h = document.querySelector(`.step[data-step="${f[cur]}"] h2`); if (h && !quiet) { h.tabIndex = -1; h.focus({preventScroll:true}); } }
+  const row = (st, t, id) => `<div class="check"><span class="st ${st}"></span><span>${t}</span><span class="id">${id || ''}</span></div>`;
+
+  if (REAUTH) { $('#tenH').textContent = 'Sign in to Northwind again'; const ss = H.sessionState(); const p = document.createElement('div'); p.className = 'callout warn'; p.style.marginBottom = '16px';
+    p.innerHTML = `<span></span><p class="small"><b>${ss === 'expired' ? 'Your Northwind session expired.' : ss === 'signed-out' ? 'You signed out of Northwind.' : 'Confirm your Northwind session.'}</b> Runs you started keep their own grants and continue. Decisions and new work wait until you sign in. You will return to where you were.</p>`; $('#tenStart').before(p); }
+
+  $('#variant').onclick = e => { const b = e.target.closest('[data-v]'); if (!b) return; variant = b.dataset.v; document.querySelectorAll('#variant button').forEach(x => x.setAttribute('aria-pressed', x === b)); go(0); };
+  $('#devGo').onclick = () => { const t = $('#devTxn'); t.hidden = false; $('#devGo').disabled = true; t.innerHTML = row('st-run', 'Waiting for Windows Hello on this device…', 'local');
+    setTimeout(() => { A.verifyDevice(); const d = H.s.session.device; t.innerHTML = row('st-ok', `Verified ${esc(H.nameOf(H.s.session.user))} · ${esc(d.method)}`, esc(d.id)) + row('st-ok', 'Local keys unlocked · local runtime available', 'device') + row('st-idle', 'Northwind tenant: not signed in yet', '—');
+      $('#devGo').textContent = 'Continue to Northwind sign-in'; $('#devGo').disabled = false; $('#devGo').onclick = () => go(cur + 1); $('#devGo').focus(); }, 900); };
+  document.querySelectorAll('[data-sso]').forEach(b => b.onclick = () => { const m = b.dataset.sso, t = $('#tenTxn'); $('#tenStart').hidden = true; t.hidden = false;
+    const steps = m === 'passkey' ? [['Requesting a WebAuthn challenge from Northwind', 'nw-prod'], ['Waiting for your passkey', 'user verification'], ['Verifying the assertion and issuing a session', 'server']] : [['Redirecting to Northwind SSO · Entra ID', 'OIDC + PKCE'], ['Password and MFA at your identity provider', 'external'], ['Exchanging the code for a tenant session', 'server']];
+    let i = 0; const tick = () => { t.innerHTML = steps.map((s, k) => row(k < i ? 'st-ok' : k === i ? 'st-run' : 'st-idle', s[0], s[1])).join(''); if (i++ < steps.length) setTimeout(tick, 700); else done(m); }; tick(); });
+  function done(m) { const tn = A.signIn(m); $('#tenTxn').hidden = true; const box = $('#tenDone'); box.hidden = false;
+    box.innerHTML = `<div class="callout"><span class="st st-ok"></span><p class="small"><b>Signed in to ${esc(tn.name)}.</b> The server issued this session; Locus checks it on every request.</p></div>
+      <dl class="kv claims"><dt>User</dt><dd>${esc(H.nameOf(H.s.session.user))} · dana.reyes@northwind.example</dd><dt>Tenant</dt><dd class="mono">${esc(tn.id)}</dd><dt>Method</dt><dd>${esc(tn.idp)} · ${esc(tn.amr.join(' + '))}</dd><dt>Session</dt><dd class="mono">${esc(tn.sid)}</dd><dt>Expires</dt><dd>in ${H.left(tn.expires)} · ends after 30 min idle</dd><dt>Step-up</dt><dd>Asked again when you approve consequential actions</dd></dl>
+      <div class="row-b" style="margin-top:20px"><button class="btn btn-ghost" id="tenBack">Back</button>${REAUTH ? `<a class="btn btn-primary" href="${esc(back)}">Return to where you were</a>` : '<button class="btn btn-primary" id="tenNext">Continue</button>'}</div>`;
+    const n = $('#tenNext'); if (n) n.onclick = () => go(cur + 1); $('#tenBack').onclick = () => { box.hidden = true; $('#tenStart').hidden = false; go(cur - 1); }; (n || box.querySelector('a.btn')).focus(); }
+  document.querySelectorAll('[data-next]').forEach(b => b.onclick = () => go(cur + 1));
+  document.querySelectorAll('[data-back]').forEach(b => b.onclick = () => go(cur - 1));
+  document.querySelector('[data-dl]').onclick = e => { e.target.textContent = 'Planned · not simulated'; e.target.disabled = true; };
+  go(0, true);
+</script>
+</body>
+</html>
