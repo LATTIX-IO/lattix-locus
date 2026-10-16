@@ -54,7 +54,7 @@ Re-run in the export: `node _qa/cdp.mjs reflow` and `node _qa/cdp.mjs eval proto
 | `work-projects.html` | 11280 | `4c857251263799da023ca685892a23ffd8a1746e9dde4ed6bbc9682b71d7480e` |
 | `work-schedules.html` | 14199 | `b260562deafa93c1b748f995a0911754b6805fb4c48bcd5e516dfd8e8d3b5a6b` |
 | `work.html` | 7826 | `cc3e92b5d06ddf1c0b964961ef141920d872afb94119a103dd8448e5d786a406` |
-| `locus-state.js` | 97417 | `a098fa077b2ee9101dae53a949b813030072e890211e8f047a327efa865895a5` |
+| `locus-state.js` | 97408 | `208d2dbcb9acc2ae08433ce6c2cb78e3c0b8d6b76067ee40d511a30ea59da1ca` |
 | `locus.js` | 40310 | `cc6a087a500897001fc7ca77b78053443480cc0bc19b4f64f0516e7005847564` |
 | `locus.css` | 56136 | `ccf9e1bf7601fa23d9dc012b55322c2705bae025f20750cde0d1c73023992572` |
 | `locus-contract.md` | 20710 | `033d19693f4f97db842b5f0cfd8b439fd796409700343b6a95c039ff6a318467` |
@@ -72,8 +72,8 @@ Re-run in the export: `node _qa/cdp.mjs reflow` and `node _qa/cdp.mjs eval proto
 | `_qa/cdp.mjs` | 8429 | `0bb58ba921bd6d2b6eac1e1832df70fd0e88c18467b217771a7dd02db578d590` |
 | `_qa/store-smoke.js` | 5495 | `5d6f42ad1f95bf9bf80234def15f5363704c8968077677aee597e51ec0a3eea4` |
 | `_qa/reflow.json` | 19695 | `4441560ea0616b07f8b70fec42d9d901d1d43bcb478c88a3a7cd2fc56c2e5a6f` |
-| `_qa/scan_interp.py` | 1879 | `f1ad926778b0fc0d56ee350af5a9389cc4458c8ca7714b34083bd89fe8ba28d6` |
-| `_qa/harden.py` | 4504 | `69e581d5b28def68342a25a7864f1475df0e408d8a413e1cde97c9a112d7da75` |
+| `_qa/scan_interp.py` | 2057 | `2d05991a685d4cb7f4a7e5b60697661cd45d99ca99442401b03375b638c4f6df` |
+| `_qa/harden.py` | 5466 | `7a479b6568dd8074d53ec04c98c1f7c2fe1d87e1e03f7a2f8e1725ecfa7d40d0` |
 | `exports/screenshots-v0.3.1/agent-builder-1280-light.png` | 252474 | `bd6524107d97b581953191c2155cfbc419d0312f5e8bd6c2c1491d975087677c` |
 | `exports/screenshots-v0.3.1/control-tower-1280-dark.png` | 134307 | `10e6f7a6bbd8893c8f4fe3254fb0a0f6423b653381122097ae293041ab2d44cf` |
 | `exports/screenshots-v0.3.1/control-tower-390-light.png` | 56015 | `e4d5cb71f4fb663f2b42e5a50eb0f4dbe58fc3dd9d4bd9f772cfdc133437f82d` |

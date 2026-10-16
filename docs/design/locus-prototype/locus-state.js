@@ -402,7 +402,7 @@ window.LocusBuild = {version:'0.3.1', increment:'Increment 3.1 · design stabili
       S.tasks.unshift(t); log(id, 'Task created · ' + t.title); if (t.project) { const p = S.projects.find(x => x.id === t.project); if (p) p.history.unshift([now(), 'Task ' + id + ' added']); } return t; },
     launch(draftId, plan, start) { const ik = 'launch:' + draftId; if (S.idem[ik]) return {...S.idem[ik], duplicate:true};
       const d = S.drafts.find(x => x.id === draftId); const auth = authorize(plan); if (auth.blockers.length) return {error:auth.blockers};
-      const ex = d && d.taskId ? S.tasks.find(x => x.id === d.taskId) : null, lr = ex && start ? liveRunOf(ex) : null; if (lr) return {error:[`Run ${lr.id} on ${ex.id} is ${RUN_STATES[lr.status].label.toLowerCase()}. Finish or stop it before starting another.`], run:lr.id};
+      const ex = d && d.taskId ? S.tasks.find(x => x.id === d.taskId) : null, lr = ex ? liveRunOf(ex) : null; if (lr) return {error:[`Run ${lr.id} on ${ex.id} is ${RUN_STATES[lr.status].label.toLowerCase()}. Finish or stop it before starting another.`], run:lr.id};
       plan.reviewedAt = now(); plan.reviewedBy = ME; let t = d && d.taskId ? S.tasks.find(x => x.id === d.taskId) : null;
       if (t) { t.plan = plan; t.cls = plan.cls; t.history.unshift([now(), 'Plan reviewed and authorized', nameOf(ME)]); if (!start) t.status = 'Not started'; }
       else t = A.createTask({title:plan.title || plan.objective.slice(0, 80), kind:plan.template, assignee:plan.assignee, project:plan.project, cls:plan.cls, plan, status:start ? 'Queued' : 'Not started', historyText:'Created from Home with a reviewed plan', conversation:[[now(), ME, plan.objective]]});
