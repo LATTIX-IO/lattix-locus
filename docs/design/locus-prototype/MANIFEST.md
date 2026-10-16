@@ -15,6 +15,9 @@ Every shell page loads `locus-state.js` (build metadata, shared state, simulator
 
 ## Verification at export time
 
+Note: the original export-time browser results predate the post-review security hardening. Re-run the acceptance suite and store smoke tests on this commit before asserting a current pass. The smoke test now exits nonzero on any failed check.
+
+
 | Check | Result |
 | --- | --- |
 | Acceptance suite in headless Chrome (`prototype-tests.html`) | 20 of 20 passed |
@@ -45,14 +48,14 @@ Re-run in the export: `node _qa/cdp.mjs reflow` and `node _qa/cdp.mjs eval proto
 | `plan-review.html` | 15351 | `92ff7279c112e0e0793f5dec566346f95b86fb4ee70ec934c8d65c1c38a32d53` |
 | `prototype-tests.html` | 26421 | `e3f864e2776c9a8a9a9cb011da514028079c704ad74ab6910ac4f80ea77fbc13` |
 | `screen-registry.html` | 29724 | `8b41dcaab774bc566695626e999528db27577b8ca1676047e69ab4597139206b` |
-| `settings.html` | 11492 | `32052966322e99306fadee084057953761697d94ec1dd87009a7486137f8c7bf` |
+| `settings.html` | 12158 | `da0cff20646155658db86ae5396dc54deec9f45c8bbba0c4ea53d317226d61b2` |
 | `task.html` | 12623 | `c49a46a03369ac690c3a7d37ddf10d3ceb79c4932739fb8287771b83484fb20d` |
 | `work-conversations.html` | 7920 | `97af01c4bc41acb21f28742ec45ea7a0b9eb2d6fb9895165b4c4cfb7ad75eb8e` |
 | `work-projects.html` | 11280 | `4c857251263799da023ca685892a23ffd8a1746e9dde4ed6bbc9682b71d7480e` |
 | `work-schedules.html` | 14199 | `b260562deafa93c1b748f995a0911754b6805fb4c48bcd5e516dfd8e8d3b5a6b` |
 | `work.html` | 7826 | `cc3e92b5d06ddf1c0b964961ef141920d872afb94119a103dd8448e5d786a406` |
-| `locus-state.js` | 95860 | `8c618b8c7e3207071250a500d0421cda1d3e6af775e17aff06f868446b107f0a` |
-| `locus.js` | 40317 | `0e8e5329a8d7ab92ed8fa81f4b4393a6dd1af1419d5345a315c62271165beda8` |
+| `locus-state.js` | 97417 | `a098fa077b2ee9101dae53a949b813030072e890211e8f047a327efa865895a5` |
+| `locus.js` | 40310 | `cc6a087a500897001fc7ca77b78053443480cc0bc19b4f64f0516e7005847564` |
 | `locus.css` | 56136 | `ccf9e1bf7601fa23d9dc012b55322c2705bae025f20750cde0d1c73023992572` |
 | `locus-contract.md` | 20710 | `033d19693f4f97db842b5f0cfd8b439fd796409700343b6a95c039ff6a318467` |
 | `assets/brand/locus-icon-dark.svg` | 902 | `9aef6495aed1c72a2aa749968f18f91f1b440cd0cb0f56a49da0a18eb53394fc` |
@@ -67,7 +70,7 @@ Re-run in the export: `node _qa/cdp.mjs reflow` and `node _qa/cdp.mjs eval proto
 | `assets/fonts/ibm-plex-sans-latin-500-normal.woff2` | 24184 | `0717336fb31fcdcde4b8deb3675bb4a0f7f6d484864afcd6751ac29975962203` |
 | `assets/fonts/ibm-plex-sans-latin-600-normal.woff2` | 24252 | `8960851d691c054ed38e259bdcf1a6190d157b4203ed5bb32c632a863fb8ec2f` |
 | `_qa/cdp.mjs` | 8429 | `0bb58ba921bd6d2b6eac1e1832df70fd0e88c18467b217771a7dd02db578d590` |
-| `_qa/store-smoke.js` | 3547 | `1b32fed9b22f7d335c3f5d012cbd79be587ce3d0de586f61012f90883451d3b6` |
+| `_qa/store-smoke.js` | 5495 | `5d6f42ad1f95bf9bf80234def15f5363704c8968077677aee597e51ec0a3eea4` |
 | `_qa/reflow.json` | 19695 | `4441560ea0616b07f8b70fec42d9d901d1d43bcb478c88a3a7cd2fc56c2e5a6f` |
 | `_qa/scan_interp.py` | 1879 | `f1ad926778b0fc0d56ee350af5a9389cc4458c8ca7714b34083bd89fe8ba28d6` |
 | `_qa/harden.py` | 4504 | `69e581d5b28def68342a25a7864f1475df0e408d8a413e1cde97c9a112d7da75` |

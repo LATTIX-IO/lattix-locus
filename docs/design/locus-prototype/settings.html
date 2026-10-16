@@ -40,9 +40,9 @@
       <div>
         <section class="set-sec" id="s-account" data-od-id="settings-account">
           <h2>Account &amp; preferences</h2>
-          <div class="set-row"><div><b>Default autonomy for new tasks</b><p class="d">Applies when you start work from Home.</p></div><select class="select" style="width:200px" aria-label="Default autonomy"><option>Act within policy</option><option>Plan only</option><option>Ask before acting</option></select></div>
-          <div class="set-row"><div><b>Show technical detail by default</b><p class="d">Model routes, token counts and raw events in run views.</p></div><input type="checkbox" class="toggle" aria-label="Show technical detail"></div>
-          <div class="set-row"><div><b>Notify me when a run needs a decision</b><p class="d">Desktop notification and inbox badge.</p></div><input type="checkbox" class="toggle" checked aria-label="Notify on decisions"></div>
+          <div class="set-row"><div><b>Default autonomy for new tasks</b><p class="d">Applies when you start work from Home.</p></div><select class="select" style="width:200px" aria-label="Default autonomy" disabled aria-disabled="true" title="Illustrative setting; not connected"><option>Act within policy</option><option>Plan only</option><option>Ask before acting</option></select></div>
+          <div class="set-row"><div><b>Show technical detail by default</b><p class="d">Model routes, token counts and raw events in run views.</p></div><input type="checkbox" class="toggle" aria-label="Show technical detail" disabled aria-disabled="true" title="Illustrative setting; not connected"></div>
+          <div class="set-row"><div><b>Notify me when a run needs a decision</b><p class="d">Desktop notification and inbox badge.</p></div><input type="checkbox" class="toggle" checked aria-label="Notify on decisions" disabled aria-disabled="true" title="Illustrative setting; not connected"></div>
         </section>
 
         <section class="set-sec" id="s-appearance" hidden data-od-id="settings-appearance">
@@ -65,8 +65,8 @@
         <section class="set-sec" id="s-identity" hidden data-od-id="settings-identity">
           <h2>Identity &amp; sign-in</h2>
           <div class="set-row"><div><b>OIDC provider</b><p class="d">login.northwind.example · groups claim mapped</p></div><span class="st st-ok">Connected</span></div>
-          <div class="set-row"><div><b>Require phishing-resistant MFA</b><p class="d">Passkeys or hardware keys for admins and approvers.</p></div><input type="checkbox" class="toggle" checked aria-label="Require MFA"></div>
-          <div class="set-row"><div><b>Session lifetime</b></div><select class="select" style="width:160px" aria-label="Session lifetime"><option>8 hours</option><option>12 hours</option><option>24 hours</option></select></div>
+          <div class="set-row"><div><b>Require phishing-resistant MFA</b><p class="d">Passkeys or hardware keys for admins and approvers.</p></div><input type="checkbox" class="toggle" checked aria-label="Require MFA" disabled aria-disabled="true" title="Illustrative setting; not connected"></div>
+          <div class="set-row"><div><b>Session lifetime</b></div><select class="select" style="width:160px" aria-label="Session lifetime" disabled aria-disabled="true" title="Illustrative setting; not connected"><option>8 hours</option><option>12 hours</option><option>24 hours</option></select></div>
         </section>
 
         <section class="set-sec" id="s-secrets" hidden data-od-id="settings-secrets">
@@ -82,9 +82,9 @@
           <h2>Computer use</h2>
           <p class="small muted" style="margin:4px 0 14px">The highest tier an agent may request. Widening on desktop always needs a native confirmation, even for admins.</p>
           <div class="stack">
-            <label class="tier"><input type="radio" name="tier"><div><b>Observe</b><p class="small muted">Screenshots and page text only. No clicks or typing.</p></div></label>
-            <label class="tier"><input type="radio" name="tier" checked><div><b>Assist</b><p class="small muted">Navigate and fill forms in an isolated browser. Downloads quarantined until scanned.</p></div></label>
-            <label class="tier"><input type="radio" name="tier"><div><b>Interactive</b><p class="small muted">Full browser control including sign-in with stored credentials. Recorded and reviewable.</p></div></label>
+            <label class="tier"><input type="radio" name="tier" disabled aria-disabled="true" title="Illustrative setting; not connected"><div><b>Observe</b><p class="small muted">Screenshots and page text only. No clicks or typing.</p></div></label>
+            <label class="tier"><input type="radio" name="tier" checked disabled aria-disabled="true" title="Illustrative setting; not connected"><div><b>Assist</b><p class="small muted">Navigate and fill forms in an isolated browser. Downloads quarantined until scanned.</p></div></label>
+            <label class="tier"><input type="radio" name="tier" disabled aria-disabled="true" title="Illustrative setting; not connected"><div><b>Interactive</b><p class="small muted">Full browser control including sign-in with stored credentials. Recorded and reviewable.</p></div></label>
           </div>
           <p class="small" style="margin-top:12px"><span class="trc trc-fd">Browser tiers · foundation</span> <span class="trc trc-pl" style="margin-left:8px">Desktop app control · planned</span></p>
         </section>
@@ -93,7 +93,7 @@
           <h2>Deployment &amp; updates</h2>
           <div class="set-row"><div><b>Runtime profile</b><p class="d">Hosted · HTTPS required · signed runtime headers</p></div><span class="tag tag-strong">hosted</span></div>
           <div class="set-row"><div><b>Version</b><p class="d">0.19.2 · 0.19.3 available (security fixes)</p></div><button class="btn btn-sm" data-toast="schedule the update for the Sun 02:00 maintenance window">Schedule update</button></div>
-          <div class="set-row"><div><b>Maintenance window</b></div><select class="select" style="width:180px" aria-label="Maintenance window"><option>Sun 02:00–04:00</option><option>Sat 22:00–00:00</option></select></div>
+          <div class="set-row"><div><b>Maintenance window</b></div><select class="select" style="width:180px" aria-label="Maintenance window" disabled aria-disabled="true" title="Illustrative setting; not connected"><option>Sun 02:00–04:00</option><option>Sat 22:00–00:00</option></select></div>
         </section>
 
         <section class="set-sec" id="s-audit" hidden data-od-id="settings-audit">

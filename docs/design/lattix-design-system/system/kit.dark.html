@@ -235,7 +235,7 @@ dialog::backdrop{background:var(--overlay)}
 .toast{position:fixed;right:340px;bottom:16px;display:flex;align-items:center;gap:12px;padding:10px 14px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--elevated);font-size:var(--text-small);transform:translateY(8px);opacity:0;pointer-events:none;transition:opacity var(--dur) var(--ease),transform var(--dur) var(--ease)}
 .toast.on{opacity:1;transform:none;pointer-events:auto}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
-@media (max-width:1100px){.status-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.modes{grid-template-columns:1fr}.shell{grid-template-columns:200px minmax(0,1fr)}.inspector{display:none}.top{grid-column:2/3}.toast{right:16px}}
+@media (max-width:1100px){.status-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.modes{grid-template-columns:1fr}.shell{grid-template-columns:200px minmax(0,1fr)}.inspector{display:block;grid-column:2/3;grid-row:3;max-height:42vh;border-top:1px solid var(--border);border-left:0}.shell{grid-template-rows:44px minmax(0,1fr) minmax(220px,auto)}.top{grid-column:2/3}.toast{right:16px}}
 </style>
 </head>
 <body>
@@ -472,7 +472,7 @@ function inspectPolicy(id){const p=P.find(x=>x.id===id);if(!p)return;
  $('#inspector').innerHTML=`<div class="insp-head"><div class="label">Policy · ${p.id}</div><h3>${esc(p.name)}</h3>${status(p.status)}</div>
  <div class="insp-body">
   <div class="insp-actions"><button class="btn btn-primary btn-sm" id="i-sim">Simulate</button><button class="btn btn-secondary btn-sm" id="i-trace">Open last decision</button><button class="btn btn-tertiary btn-sm" id="i-revoke" style="color:var(--critical-fg)">Revoke</button></div>
-  <div><div class="label" style="margin-bottom:6px">Definition</div>${kv({Effect:status(p.effect),Subject:esc(p.subject),Resource:esc(p.resource),Version:p.version,Owner:esc(p.owner),Updated:p.updated+' UTC'})}</div>
+  <div><div class="label" style="margin-bottom:6px">Definition</div>${kv({Effect:status(p.effect),Subject:esc(p.subject),Resource:esc(p.resource),'Cache TTL':p.cacheTtl == null ? 'Default' : String(p.cacheTtl)+' s',Attestation:p.requireAttestation == null ? 'Default' : p.requireAttestation ? 'Required' : 'Not required',Version:p.version,Owner:esc(p.owner),Updated:p.updated+' UTC'})}</div>
   <div><div class="label" style="margin-bottom:6px">Integrity</div>${kv({'Bundle hash':'sha256:9be1…44c0','Signed by':'kms/keys/policy-signer','Ledger entry':'#418 220'})}</div>
  </div>`;
  $('#i-sim').onclick=()=>toast(`Simulation queued for ${p.id} against the last 24 h of requests.`);
@@ -529,7 +529,7 @@ function check(sel){const el=$(sel),ok=rules.find(r=>r[0]===sel)[1](el);el.setAt
 rules.forEach(([s])=>$(s).addEventListener('blur',()=>{if($(s).value!=='')check(s);}));
 F.onsubmit=e=>{e.preventDefault();const bad=rules.map(([s])=>check(s)?null:s).filter(Boolean);
  if(bad.length){$(bad[0]).focus();return;}
- const id='POL-0'+(154+P.length-8);P.push({id,name:$('#f-name').value.trim(),effect:F.effect.value,resource:$('#f-res').value,subject:$('#f-subj').value.trim(),status:$('#f-shadow').checked?'Shadow mode':'Draft',updated:'2026-10-08 15:45',version:'v0',owner:'you'});
+ const id='POL-0'+(154+P.length-8);P.push({id,name:$('#f-name').value.trim(),effect:F.effect.value,resource:$('#f-res').value,subject:$('#f-subj').value.trim(),cacheTtl:+$('#f-ttl').value,requireAttestation:$('#f-attest').checked,status:$('#f-shadow').checked?'Shadow mode':'Draft',updated:'2026-10-08 15:45',version:'v0',owner:'you'});
  renderRows();F.reset();rules.forEach(([s])=>{$(s).removeAttribute('aria-invalid');$(s).closest('.field').classList.remove('invalid');});toast(`${id} saved as draft. Run a simulation before enforcing.`);};
 F.onreset=()=>rules.forEach(([s])=>{$(s).removeAttribute('aria-invalid');$(s).closest('.field').classList.remove('invalid');});
 

@@ -237,7 +237,7 @@ A generated design is acceptable only when:
 
 ## Theme Token Reference
 
-Canonical semantic tokens live in canonical/lattix-tokens.json and compile to system/lattix-theme.css. Generated --brand-* variables are overridden by that layer after every regeneration.
+Canonical semantic tokens live in canonical/lattix-tokens.json (not included here; original design build required) and compile to system/lattix-theme.css. Generated --brand-* variables are overridden by that layer after every regeneration.
 
 ### Light Mode
 

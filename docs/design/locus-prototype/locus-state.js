@@ -28,7 +28,7 @@ window.LocusBuild = {version:'0.3.1', increment:'Increment 3.1 · design stabili
   ];
   /* policy bundle that every decision in this prototype cites; the backend stamps the real version on each PolicyDecision */
   const POLICY = {bundle:'v41', id:'POL-BUNDLE-41', published:'9 Oct 2026'};
-  const APR_TTL = 30 * MIN, STEPUP_TTL = 5 * MIN, SESSION_TTL = 8 * 60 * MIN;
+  const APR_TTL = 30 * MIN, STEPUP_TTL = 5 * MIN, SESSION_TTL = 8 * 60 * MIN, SESSION_IDLE_TTL = 30 * MIN;
   const SKILLS = [
     {id:'SKL-014', name:'Vendor security scoring', v:'v4', scope:'org', desc:'Rubric and question bank for supplier risk'},
     {id:'SKL-009', name:'Northwind writing style', v:'v2', scope:'org', desc:'Tone, terminology and formatting rules'},
@@ -74,13 +74,22 @@ window.LocusBuild = {version:'0.3.1', increment:'Increment 3.1 · design stabili
   function resourceOf(cap, plan) { const p = plan.project && S && S.projects.find(x => x.id === plan.project), ns = 'tenant/' + (p ? p.ns : 'shared');
     return ({'web.read':'research allowlist · 38 hosts', 'docstore.read':ns, 'docs.write':ns + '/drafts', 'email.draft':'mailbox drafts', 'email.send':plan.recipientExternal ? 'external recipients' : 'tenant recipients', 'repo.read':'locus-docs', 'repo.write.branch':'locus-docs:fix/*', 'repo.write.protected':'locus-docs:main', 'alerts.read':'SOC alert queue', 'ticket.write':'OT-3 containment', 'browser.assist':'supplier portals', 'browser.interactive':'supplier portals'})[cap] || ns; }
   function floorOf(plan) { const p = plan.project && S && S.projects.find(x => x.id === plan.project); return p ? p.cls : 'Internal'; }
+  function namespaceInfo(ns) { return NAMESPACES.find(x => x.ns === ns) || (S && S.projects.find(x => x.ns === ns)) || null; }
   /* delegation: a team never passes the run's authority down. Each member receives an independently authorized subset:
      the intersection of its own definition and the authority the team grants it. Nothing widens through a team or an engine. */
   function teamOf(plan) { return plan.assignee && plan.assignee.type === 'team' ? S.teams.find(x => x.id === plan.assignee.id) : null; }
+  /* Data capabilities require the assigned agent to hold the project's exact namespace;
+     a team grant cannot widen an agent's definition. Production must verify each resource authoritatively. */
   function grantSet(plan) { const agents = [...new Set(plan.steps.map(x => x.agent))], out = [], tm = teamOf(plan);
-    plan.caps.forEach(c => { const holders = agents.filter(a => { const ag = S.agents.find(x => x.id === a); return ag && ag.caps.includes(c) && (!tm || ((tm.authority || {})[a] || []).includes(c)); });
-      if (!holders.length) out.push({agent:null, cap:c, resource:resourceOf(c, plan), d:'deny', rule:tm ? 'POL-team-02' : 'POL-def-01', why:tm ? 'No member holds this capability in both its own definition and the team authority' : 'No assigned agent definition requests this capability', status:'pending'});
-      holders.forEach(a => { const ag = S.agents.find(x => x.id === a); out.push({agent:a, cap:c, resource:resourceOf(c, plan), ...evalCap(c, {cls:plan.cls, external:plan.recipientExternal, engine:ag.engine}), status:'pending'}); }); });
+    const project = plan.project && S.projects.find(p => p.id === plan.project);
+    plan.caps.forEach(c => {
+      const eligible = agents.filter(a => { const ag = S.agents.find(x => x.id === a); return ag && ag.caps.includes(c) && (!tm || ((tm.authority || {})[a] || []).includes(c)); });
+      const needsScope = c === 'docstore.read' || c === 'docs.write';
+      const holders = eligible.filter(a => !needsScope || !project || (S.agents.find(x => x.id === a).scopes || []).includes(project.ns));
+      if (!holders.length) out.push({agent:null, cap:c, resource:resourceOf(c, plan), d:'deny', rule:needsScope && project && eligible.length ? 'POL-scope-02' : tm ? 'POL-team-02' : 'POL-def-01',
+        why:needsScope && project && eligible.length ? 'No eligible agent has a read scope on project namespace ' + project.ns : tm ? 'No member holds this capability in both its own definition and the team authority' : 'No assigned agent definition requests this capability', status:'pending'});
+      holders.forEach(a => { const ag = S.agents.find(x => x.id === a); out.push({agent:a, cap:c, resource:resourceOf(c, plan), ...evalCap(c, {cls:plan.cls, external:plan.recipientExternal, engine:ag.engine}), status:'pending'}); });
+    });
     return out; }
   function estimate(plan) { const r = ROUTES.find(x => x.id === plan.route); return +((plan.steps.length + 4) * (r ? r.costPerStep : .1) * 2.2).toFixed(2); }
   function authorize(plan) { const b = [], floor = floorOf(plan);
@@ -191,7 +200,7 @@ window.LocusBuild = {version:'0.3.1', increment:'Increment 3.1 · design stabili
     const s = {v:5, idem:{}, seq:{TSK:3330, RUN:48230, APR:2300, ART:9930, MEM:7800, SCH:100, PRJ:20, CNV:420, CON:3, AGT:80, CKP:1}, me:ME,
       /* identity is three separate facts: who is at this device, which tenant session is open, and how recently the person re-proved it */
       session:{user:ME, state:'active', device:{id:'NW-LT-0417', name:'Dana Reyes · NW-LT-0417', method:'Windows Hello · TPM-bound key', at:t0 - 3 * 60 * MIN},
-        tenant:{id:'nw-prod', name:'Northwind · Operations', idp:'Northwind SSO · Entra ID', sid:'ses_8f2c41a', amr:['pwd','mfa'], issued:t0 - 2 * 60 * MIN, expires:t0 + 6 * 60 * MIN}, stepUp:null},
+        tenant:{id:'nw-prod', name:'Northwind · Operations', idp:'Northwind SSO · Entra ID', sid:'ses_8f2c41a', amr:['pwd','mfa'], issued:t0 - 2 * 60 * MIN, lastActivity:t0 - 2 * MIN, expires:t0 + 6 * 60 * MIN}, stepUp:null},
       agents:JSON.parse(JSON.stringify(AGENTS0)).map(a => ({...a, ...JSON.parse(JSON.stringify(AGENT_DEF[a.id] || {}))})), teams:JSON.parse(JSON.stringify(TEAMS0)), drafts:[], tasks:[], runs:[], approvals:[], artifacts:[], events:[],
       projects:[
         {id:'PRJ-014', name:'Vendor risk review — Q4', owner:'DR', due:'Oct 14', cls:'Confidential', health:'On track', obj:'Select one logistics vendor for the 2027 contract with documented security and contract risk, approved by procurement.', ns:'projects/vendor-q4', members:['DR','LG'], agents:['TEAM-07','AGT-0048'], sources:['Procurement policy · COL-019','Vendor questionnaires · COL-022'], budget:40, ms:[['Shortlist three vendors','Done · Sep 30'],['Collect questionnaires and MSAs','Done · Oct 6'],['Recommendation to procurement','Oct 14'],['Contract signature','Oct 31']], history:[]},
@@ -290,7 +299,8 @@ window.LocusBuild = {version:'0.3.1', increment:'Increment 3.1 · design stabili
       const g = r.grants.find(x => x.id === a.grant); if (g && g.status !== 'revoked') g.status = ok ? 'used once · approved' : 'denied';
       r.cursor++; r.status = 'running'; r.stepStart = t; const task = S.tasks.find(x => x.id === r.task); if (task) { task.status = 'Running'; task.history.unshift([t, (ok ? 'Approved ' : decision === 'withdraw' ? 'Withdrew ' : 'Denied ') + a.id, nameOf(actor)]); }
       if (r.cursor >= r.steps.length) finish(r, t); } }
-  function sessionState() { const ss = S.session; if (!ss || ss.state === 'signed-out' || !ss.tenant) return 'signed-out'; if (now() > ss.tenant.expires) return 'expired'; return 'active'; }
+  function sessionState() { const ss = S.session; if (!ss || ss.state === 'signed-out' || !ss.tenant) return 'signed-out'; if (now() >= ss.tenant.expires || now() - (ss.tenant.lastActivity || ss.tenant.issued) >= SESSION_IDLE_TTL) return 'expired'; return 'active'; }
+  function touchSession() { if (sessionState() === 'active') S.session.tenant.lastActivity = now(); }
   function stepUpFresh() { const u = S.session && S.session.stepUp; return !!(u && now() - u.at < STEPUP_TTL); }
   function finish(r, t, st) { r.status = 'completed'; r.ended = t; r.grants.forEach(g => { if (g.status.startsWith('active')) g.status = 'expired'; });
     r.review = {status:'pending', memory:(st && st.memory ? st.memory : []).map(m => ({...m, state:'proposed', from:r.id}))};
@@ -332,7 +342,7 @@ window.LocusBuild = {version:'0.3.1', increment:'Increment 3.1 · design stabili
     if ((f.constraints || []).some(c => !String(c).trim())) e.push('Remove empty behavioral constraints');
     if (!(f.constraints || []).length) w.push('No behavioral constraints; prompt-injection probes will fail');
     if (!(f.scopes || []).length) e.push('Grant at least one resource scope');
-    (f.scopes || []).forEach(ns => { const n = NAMESPACES.find(x => x.ns === ns); if (!n) e.push('Unknown resource scope ' + ns); else if (CLS.indexOf(n.cls) > CLS.indexOf(f.ceiling)) e.push(`Scope ${ns} holds ${n.cls} data, above this agent's ${f.ceiling} ceiling`); });
+    (f.scopes || []).forEach(ns => { const n = namespaceInfo(ns); if (!n) e.push('Unknown resource scope ' + ns); else if (CLS.indexOf(n.cls) > CLS.indexOf(f.ceiling)) e.push(`Scope ${ns} holds ${n.cls} data, above this agent's ${f.ceiling} ceiling`); });
     if (!(f.skills || []).length) w.push('No skills attached; the agent relies on its instructions only');
     if (eng && eng.tools !== 'Full') w.push(`${eng.name} tool calls are ${eng.tools.toLowerCase()} mediated; its trace shows what Locus can observe`);
     return {errors:e, warnings:w}; }
@@ -411,14 +421,14 @@ window.LocusBuild = {version:'0.3.1', increment:'Increment 3.1 · design stabili
       if (fp !== a.fp) return {error:'The request changed after you opened it. Review it again.', changed:true};
       const ss = sessionState(); if (ss !== 'active') return {needsReauth:true, error:ss === 'expired' ? 'Your Northwind session expired. Sign in again to decide.' : 'You are signed out of Northwind.'};
       if (decision === 'approve' && a.stepUp && !stepUpFresh()) return {needsStepUp:true, error:'Confirm it is you before approving.'};
-      applyDecision(a, decision, note, ME); commit(); return {ok:true, decision:a.decision}; },
+      touchSession(); applyDecision(a, decision, note, ME); commit(); return {ok:true, decision:a.decision}; },
     rerequest(aprId) { const a = S.approvals.find(x => x.id === aprId); if (!a || a.status !== 'expired') return; const r = S.runs.find(x => x.id === a.run); if (!r || r.waiting !== a.id) return; r.waiting = null;
       const n = requestApproval(r, r.steps[r.cursor], now()); a.replacedBy = n.id; commit(); return n.id; },
-    signIn(method) { const t = now(); S.session = {...S.session, state:'active', tenant:{id:'nw-prod', name:'Northwind · Operations', idp:'Northwind SSO · Entra ID', sid:'ses_' + Math.abs(hash(String(t))).toString(16).slice(0, 7), amr:method === 'passkey' ? ['hwk','uv'] : ['pwd','mfa'], issued:t, expires:t + SESSION_TTL}, stepUp:null}; log('session', 'Tenant session opened · ' + (method === 'passkey' ? 'passkey' : 'SSO with MFA'), nameOf(ME)); commit(); return S.session.tenant; },
+    signIn(method) { const t = now(); S.session = {...S.session, state:'active', tenant:{id:'nw-prod', name:'Northwind · Operations', idp:'Northwind SSO · Entra ID', sid:'ses_' + Math.abs(hash(String(t))).toString(16).slice(0, 7), amr:method === 'passkey' ? ['hwk','uv'] : ['pwd','mfa'], issued:t, lastActivity:t, expires:t + SESSION_TTL}, stepUp:null}; log('session', 'Tenant session opened · ' + (method === 'passkey' ? 'passkey' : 'SSO with MFA'), nameOf(ME)); commit(); return S.session.tenant; },
     verifyDevice() { S.session.device = {...S.session.device, at:now()}; commit(); },
     signOut() { S.session = {...S.session, state:'signed-out', tenant:null, stepUp:null}; log('session', 'Signed out of Northwind', nameOf(ME)); commit(); },
     expireSession() { if (S.session.tenant) S.session.tenant.expires = now() - 1000; S.session.stepUp = null; commit(); },
-    stepUp(method) { if (sessionState() !== 'active') return {needsReauth:true}; S.session.stepUp = {at:now(), method:method || 'Passkey · Windows Hello'}; log('session', 'Step-up verified · ' + S.session.stepUp.method, nameOf(ME)); commit(); return {ok:true}; },
+    stepUp(method) { if (sessionState() !== 'active') return {needsReauth:true}; touchSession(); S.session.stepUp = {at:now(), method:method || 'Passkey · Windows Hello'}; log('session', 'Step-up verified · ' + S.session.stepUp.method, nameOf(ME)); commit(); return {ok:true}; },
     pause(runId) { const r = S.runs.find(x => x.id === runId); if (!r || r.status !== 'running') return; const st = r.steps[r.cursor]; r.pauseRemain = Math.max(300, st.dur - (now() - r.stepStart)); r.status = 'paused'; ev(r, now(), {k:'sys', actor:'DR', title:'Paused by Dana Reyes', detail:'Paused at the current step; grants stay active'}); log(r.id, 'Run paused'); const t = S.tasks.find(x => x.id === r.task); if (t) t.status = 'Paused'; commit(); },
     resume(runId) { const r = S.runs.find(x => x.id === runId); if (!r || r.status !== 'paused') return; const st = r.steps[r.cursor]; r.status = 'running'; r.stepStart = now() - (st.dur - (r.pauseRemain || st.dur)); ev(r, now(), {k:'sys', actor:'DR', title:'Resumed by Dana Reyes', detail:'Continuing from step ' + (r.cursor + 1)}); log(r.id, 'Run resumed'); const t = S.tasks.find(x => x.id === r.task); if (t) t.status = 'Running'; commit(); },
     /* cancel revokes authority first, then waits for the worker to acknowledge; a lost worker cannot act after revocation */
@@ -451,7 +461,7 @@ window.LocusBuild = {version:'0.3.1', increment:'Increment 3.1 · design stabili
       [a, b].forEach(m => m.prov.push(`Contradiction ${id} ${how === 'both' ? 'kept open with follow-up' : 'resolved'} by ${nameOf(ME)}`)); log(id, 'Contradiction ' + (how === 'both' ? 'kept open with follow-up task' : 'resolved: kept ' + how)); commit(); return c; },
     forgetMemory(id) { const m = S.memory.find(x => x.id === id); m.trust = 'Forgotten'; m.prov.push('Removed from retrieval by ' + nameOf(ME) + ' · purge after 7-day hold'); log(id, 'Memory removed from retrieval'); commit(); },
     verifyMemory(id) { const m = S.memory.find(x => x.id === id); m.trust = 'Verified'; m.prov.push('Verified by ' + nameOf(ME)); log(id, 'Memory verified'); commit(); },
-    saveProject(fields) { const p = {id:nextId('PRJ'), name:fields.name, owner:ME, due:fields.due || '—', cls:fields.cls, health:'On track', obj:fields.obj || '—', ns:'projects/' + fields.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 24), members:[ME], agents:[], sources:[], budget:fields.budget || 10, ms:[], history:[[now(), 'Project created']]}; S.projects.unshift(p); log(p.id, 'Project created · ' + p.name); commit(); return p; },
+    saveProject(fields) { const projectId = nextId('PRJ'), slug = (String(fields.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'untitled'); const p = {id:projectId, name:fields.name, owner:ME, due:fields.due || '—', cls:fields.cls, health:'On track', obj:fields.obj || '—', ns:'projects/' + slug + '-' + projectId.toLowerCase(), members:[ME], agents:[], sources:[], budget:fields.budget || 10, ms:[], history:[[now(), 'Project created']]}; S.projects.unshift(p); log(p.id, 'Project created · ' + p.name); commit(); return p; },
     saveSchedule(fields, id) { let s = id && S.schedules.find(x => x.id === id);
       if (s) { Object.assign(s, fields); log(s.id, 'Schedule updated'); } else { s = {id:nextId('SCH'), active:true, tz:'America/Los_Angeles', owner:ME, project:null, caps:['docstore.read','docs.write'], onFail:'Retry once, then notify', missed:'Skip and notify', cap:2, dest:'Draft for Dana Reyes to review', history:[], ...fields}; S.schedules.unshift(s); log(s.id, 'Schedule created · ' + s.name); }
       commit(); return s; },
@@ -460,7 +470,20 @@ window.LocusBuild = {version:'0.3.1', increment:'Increment 3.1 · design stabili
     sendMessage(cid, text) { const c = S.conversations.find(x => x.id === cid); c.msgs.push(['DR', text]); c.t = now(); commit(); setTimeout(() => { c.msgs.push([c.with, 'Here is a first answer from sources you can access. To act on it, I will propose a task so it runs under policy.', {summary:'Read-only answer; no grants requested.', basis:['Your permissions · tenant read']}]); commit(); }, 1200); },
     newConversation() { const c = {id:nextId('CNV'), title:'New conversation', with:'LO', link:null, project:null, cls:'Internal', t:now(), msgs:[]}; S.conversations.unshift(c); commit(); return c.id; },
     updateTask(id, f) { const t = S.tasks.find(x => x.id === id); const ch = Object.keys(f).filter(k => JSON.stringify(t[k]) !== JSON.stringify(f[k])); Object.assign(t, f); if (ch.length) { t.history.unshift([now(), 'Edited: ' + ch.join(', '), nameOf(ME)]); log(id, 'Task edited · ' + ch.join(', ')); } commit(); },
-    addDep(id, dep) { const t = S.tasks.find(x => x.id === id); if (!dep || dep === id || t.deps.includes(dep)) return; const d = S.tasks.find(x => x.id === dep); if (d && d.deps.includes(id)) return 'cycle'; t.deps.push(dep); t.history.unshift([now(), 'Now depends on ' + dep, nameOf(ME)]); log(id, 'Dependency added on ' + dep); commit(); },
+    addDep(id, dep) { const t = S.tasks.find(x => x.id === id), d = S.tasks.find(x => x.id === dep);
+      if (!t || !d) return 'missing';
+      if (dep === id) return 'cycle';
+      if (t.deps.includes(dep)) return;
+      const open = [dep], seen = new Set();
+      while (open.length) {
+        const current = open.pop();
+        if (current === id) return 'cycle';
+        if (seen.has(current)) continue;
+        seen.add(current);
+        const node = S.tasks.find(x => x.id === current);
+        if (node) open.push(...(node.deps || []));
+      }
+      t.deps.push(dep); t.history.unshift([now(), 'Now depends on ' + dep, nameOf(ME)]); log(id, 'Dependency added on ' + dep); commit(); },
     removeDep(id, dep) { const t = S.tasks.find(x => x.id === id); t.deps = t.deps.filter(x => x !== dep); t.history.unshift([now(), 'Dependency on ' + dep + ' removed', nameOf(ME)]); commit(); },
     taskReply(id, text) { const t = S.tasks.find(x => x.id === id); t.conversation.push([now(), ME, text]); const r = t.runs.length ? S.runs.find(x => x.id === t.runs[0]) : null; if (r && ['running','paused','blocked','queued'].includes(r.status)) { A.steer(r.id, 'team', 'Message', text); return 'run'; } commit(); return 'task'; },
     setTaskStatus(id, status) { const t = S.tasks.find(x => x.id === id); t.status = status; t.history.unshift([now(), 'Status set to ' + status, nameOf(ME)]); log(id, 'Task ' + status.toLowerCase()); commit(); },

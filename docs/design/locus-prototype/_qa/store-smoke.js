@@ -2,7 +2,7 @@ const fs = require('fs'), vm = require('vm'); const mem = {};
 const ctx = {console, Math, Date, JSON, setInterval:()=>0, setTimeout:(f)=>0, localStorage:{getItem:k=>mem[k]??null, setItem:(k,v)=>mem[k]=String(v), removeItem:k=>delete mem[k]}, document:{}, };
 ctx.window = ctx; ctx.window.addEventListener = ()=>{}; vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(__dirname + '/../locus-state.js','utf8'), ctx);
-const {H, A} = ctx.LocusState, S = H.s, ok = (c, m) => console.log((c ? 'PASS ' : 'FAIL ') + m);
+const {H, A} = ctx.LocusState, S = H.s; let failures = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) failures++; };
 const p = H.pending(); ok(p.length === 2, 'two pending approvals: ' + p.map(a => a.id + ':' + a.action + ':stepUp=' + a.stepUp).join(' '));
 const ea = p.find(a => a.action === 'email.send'); console.log(' email item', JSON.stringify(ea.items), ea.data, ea.ns, ea.grant, ea.fp);
 ok(A.decide(ea.id, 'approve', '', 'fp:bad').changed, 'stale fingerprint refused');
@@ -20,3 +20,26 @@ f.engine = 'ENG-NATIVE'; f.caps = ['docstore.read','docs.write']; f.skills = ['S
 const run = H.run('RUN-48201'); A.simulate(run.id, 'worker'); ok(run.status === 'recovering', 'worker loss → recovering');
 A.cancel('RUN-48201'); ok(run.status === 'canceling' && run.grants.every(x => x.status === 'revoked'), 'cancel → canceling, grants revoked');
 const r1 = H.run('RUN-48213'); console.log(' r1 status', r1.status, 'seq', r1.events.slice(-2).map(e => e.seq));
+
+/* Security regressions added after the v0.3.1 review. Exit nonzero on failures. */
+A.reset();
+const fresh = H.s, approval = H.pending()[0];
+fresh.session.tenant.lastActivity = Date.now() - 31 * 60000;
+ok(H.sessionState() === 'expired', 'tenant idle session expires after 30 minutes');
+ok(A.decide(approval.id, 'deny', '', approval.fp).needsReauth, 'idle session cannot decide approval');
+A.signIn('passkey');
+ok(H.sessionState() === 'active', 'sign-in issues a fresh session after idle expiry');
+const proj1 = A.saveProject({name:'A/B', cls:'Internal'});
+const proj2 = A.saveProject({name:'A B', cls:'Confidential'});
+const proj3 = A.saveProject({name:'///', cls:'Internal'});
+ok(proj1.ns !== proj2.ns && proj1.ns !== proj3.ns && proj2.ns !== proj3.ns && !proj3.ns.endsWith('/'), 'project namespace contains immutable project id; normalization collisions impossible');
+const plan = JSON.parse(JSON.stringify(H.task('TSK-3318').plan)); plan.project = proj1.id; plan.cls = 'Internal';
+const denied = H.grantSet(plan).filter(g => g.d === 'deny' && (g.cap === 'docstore.read' || g.cap === 'docs.write'));
+ok(denied.length > 0 && denied.every(g => g.rule === 'POL-scope-02'), 'unscoped project data grant denied for all agents');
+ok(H.authorize(plan).blockers.some(b => /read scope on project namespace/.test(b)), 'project scope denial blocks plan launch');
+const aa = A.createTask({title:'cycle A', assignee:{type:'agent',id:'AGT-0042'}});
+const bb = A.createTask({title:'cycle B', assignee:{type:'agent',id:'AGT-0042'}});
+const cc = A.createTask({title:'cycle C', assignee:{type:'agent',id:'AGT-0042'}});
+A.addDep(bb.id,aa.id); A.addDep(cc.id,bb.id);
+ok(A.addDep(aa.id,cc.id) === 'cycle' && aa.deps.length === 0, 'transitive dependency cycle A -> C -> B -> A denied without mutation');
+console.log(failures ? failures + ' FAILURE(S)' : 'ALL STORE CHECKS PASSED'); if (failures) process.exitCode = 1;

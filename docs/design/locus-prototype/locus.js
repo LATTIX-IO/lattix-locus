@@ -172,7 +172,7 @@
   const sessLine = () => { const ss = D.s.session, st = D.sessionState(); return st === 'active' ? `Tenant session ${D.esc(ss.tenant.sid)} · ${D.esc(ss.tenant.amr.join(' + '))} · expires in ${D.left(ss.tenant.expires)}` : st === 'expired' ? 'Tenant session expired' : 'Signed out of Northwind'; };
   function decHtml(a) { const ag = D.agent(a.agent), cap = D.CAPS[a.action] || {label:a.action, via:'—'}, e = D.esc, fresh = D.stepUpFresh(), st = D.sessionState(), pol = a.policy || {bundle:'unknown'};
     const stTag = a.status === 'pending' ? `<span class="st ${D.esc(a.risk === 'crit' ? 'st-crit' : 'st-warn')}">${D.esc(a.risk === 'crit' ? 'High impact' : 'Needs decision')}</span>` : `<span class="st st-idle">${e(String(a.status).replace(/^./, c => c.toUpperCase()))}</span>`;
-    return `<div class="row" style="flex-wrap:wrap;margin-bottom:12px">${D.esc(stTag)}<span class="cls">${e(a.cls)}</span><span class="id">${e(a.id)} · ${e(a.fp || 'no fingerprint')}</span></div>
+    return `<div class="row" style="flex-wrap:wrap;margin-bottom:12px">${stTag}<span class="cls">${e(a.cls)}</span><span class="id">${e(a.id)} · ${e(a.fp || 'no fingerprint')}</span></div>
       ${decMsg ? `<div class="callout warn" style="margin-bottom:12px"><span>${icon('alert')}</span><p class="small">${e(decMsg)}</p></div>` : ''}
       <p class="dec-act"><b>${e(a.title)}</b></p>
       <dl class="kv dec-kv">
