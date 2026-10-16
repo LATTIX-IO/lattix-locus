@@ -71,7 +71,6 @@ def parse(i, end):
         if c == chr(96): i = template(i + 1); continue  # noqa: E701, E702
         i += 1
 
-import re as _re
 if path.endswith('.js'): parse(0, len(src))  # noqa: E701, E702
 else:
     # This scanner is a local developer aid, not an HTML sanitization boundary.

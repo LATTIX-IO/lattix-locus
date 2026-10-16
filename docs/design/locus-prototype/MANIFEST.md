@@ -73,7 +73,7 @@ Re-run in the export: `node _qa/cdp.mjs reflow` and `node _qa/cdp.mjs eval proto
 | `_qa/store-smoke.js` | 5495 | `5d6f42ad1f95bf9bf80234def15f5363704c8968077677aee597e51ec0a3eea4` |
 | `_qa/reflow.json` | 19695 | `4441560ea0616b07f8b70fec42d9d901d1d43bcb478c88a3a7cd2fc56c2e5a6f` |
 | `_qa/scan_interp.py` | 2057 | `2d05991a685d4cb7f4a7e5b60697661cd45d99ca99442401b03375b638c4f6df` |
-| `_qa/harden.py` | 5466 | `7a479b6568dd8074d53ec04c98c1f7c2fe1d87e1e03f7a2f8e1725ecfa7d40d0` |
+| `_qa/harden.py` | 5449 | `5200cf18434157f0a84a4ec9d39b64675b858717ff324e67e7541eb5616a445a` |
 | `exports/screenshots-v0.3.1/agent-builder-1280-light.png` | 252474 | `bd6524107d97b581953191c2155cfbc419d0312f5e8bd6c2c1491d975087677c` |
 | `exports/screenshots-v0.3.1/control-tower-1280-dark.png` | 134307 | `10e6f7a6bbd8893c8f4fe3254fb0a0f6423b653381122097ae293041ab2d44cf` |
 | `exports/screenshots-v0.3.1/control-tower-390-light.png` | 56015 | `e4d5cb71f4fb663f2b42e5a50eb0f4dbe58fc3dd9d4bd9f772cfdc133437f82d` |
