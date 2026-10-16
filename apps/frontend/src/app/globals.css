@@ -670,5 +670,6 @@ input[data-no-focus-ring]:focus-visible {
 @media (pointer: coarse) {
   [data-slot="button"] { min-height: 44px; }
   [data-slot="button"][aria-label] { min-width: 44px; }
+  [data-slot="dialog-close"] { min-height: 44px; min-width: 44px; }
   .fx-nav-item { min-height: 44px; }
 }
