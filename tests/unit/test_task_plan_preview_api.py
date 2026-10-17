@@ -184,3 +184,7 @@ def test_local_bootstrap_is_explicit_tenant_and_identity(tmp_path):
     )
     assert result["tenant_id"] == "local"
     assert result["requester_id"] == "user:local/operator"
+
+def test_static_shared_bearer_without_principal_binding_is_refused(tmp_path):
+    with pytest.raises(PlanPreviewUnavailable, match="signed_user_session_required"):
+        _preview(tmp_path, identity=_identity(kind="static"))
