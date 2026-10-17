@@ -4832,14 +4832,14 @@ def test_run_mutations_require_owner_or_builder_when_auth_required() -> None:
 
         denied_approval = client.post(
             "/approvals",
-            json={"run_id": run_id, "decision": "approved"},
+            json={"run_id": run_id, "decision": "approved", "artifact_id": artifact_id, "version": 1},
             headers=MEMBER_AUTH_HEADERS,
         )
         assert denied_approval.status_code == 403
 
         allowed_approval = client.post(
             "/approvals",
-            json={"run_id": run_id, "decision": "approved"},
+            json={"run_id": run_id, "decision": "approved", "artifact_id": artifact_id, "version": 1},
             headers=AUTH_HEADERS,
         )
         assert allowed_approval.status_code == 200

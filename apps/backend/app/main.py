@@ -62,6 +62,8 @@ from app import cron as app_cron
 from app import knowledge as app_knowledge
 from app import local_models, mcp_client, policy_gateway, skills_catalog
 from app import user_browser as app_user_browser
+from app.run_approvals import bind_legacy_compiled_reviews, decide_run_approval
+from locus_runtime.run_approval_contract import InvalidApprovalTransition
 from app.control_status import (
     build_control_status_report,
     collect_posture_facts,
@@ -15990,6 +15992,11 @@ def _startup_initialize_state() -> None:
         except Exception:  # noqa: BLE001 - audit hydration is best-effort
             pass
 
+    for migrated_run_id in bind_legacy_compiled_reviews(store):
+        _append_audit_event(
+            "approval.binding_migrated", "system", "allowed",
+            {"run_id": migrated_run_id, "schema": "compiled_handback_v1"},
+        )
     _merge_missing_bootstrap_content()
     # Memory is on by default (LOCUS-387): the Personal collection exists, and
     # entries written before an embedding model was available get embedded.
@@ -26290,63 +26297,48 @@ def create_artifact_version(
     return {"ok": True, "artifactId": artifact_id}
 
 
+_RUN_APPROVAL_TRANSITION_LOCK = Lock()
+
+
 @app.post("/approvals")
 def submit_approval(
     request: Request, _payload: dict[str, Any] = Body(default_factory=dict)
 ) -> dict[str, bool]:
     actor = _enforce_request_authn(request, payload=_payload, action="approval.submit")
     _enforce_emergency_write_policy("approval.submit", actor)
-    run_id = str(_payload.get("run_id") or "")
-    decision = str(_payload.get("decision") or "")
-    if run_id:
-        _enforce_run_access(request, actor, run_id, action="approval.submit")
-    feedback = str(_payload.get("feedback") or "").strip()
-    if run_id and run_id in store.run_details:
-        details = store.run_details[run_id]
-        approvals = details.get("approvals") if isinstance(details.get("approvals"), dict) else {}
-        if decision == "approved":
-            approvals["pending"] = False
-            details["status"] = "Done"
-            if run_id in store.runs:
-                store.runs[run_id].status = "Done"
-                store.runs[run_id].progressLabel = "Complete"
-                store.runs[run_id].updatedAt = "just now"
-            store.inbox = [item for item in store.inbox if item.runId != run_id]
-        elif decision == "changes_requested":
-            approvals["pending"] = True
-            details["status"] = "Needs Review"
-            if run_id in store.runs:
-                store.runs[run_id].status = "Needs Review"
-                store.runs[run_id].progressLabel = "Awaiting updates"
-                store.runs[run_id].updatedAt = "just now"
-        details["approvals"] = approvals
-        store.run_details[run_id] = details
-        if decision in {"approved", "changes_requested"}:
-            decision_summary = (
-                "Run approved by operator."
-                if decision == "approved"
-                else "Operator requested changes before approval."
+    run_id = str(_payload.get("run_id") or "").strip()
+    if not run_id:
+        _append_audit_event("approval.submit", actor, "blocked", {"reason": "missing_run_id"})
+        raise HTTPException(status_code=400, detail="run_id is required")
+    _enforce_run_access(request, actor, run_id, action="approval.submit")
+    # Lock serializes approval calls only in this Python process. Durable
+    # cross-worker CAS and other writers require a separate storage contract.
+    with _RUN_APPROVAL_TRANSITION_LOCK:
+        try:
+            decision_event = decide_run_approval(store, run_id, _payload, actor=actor)
+        except InvalidApprovalTransition as exc:
+            _append_audit_event(
+                "approval.submit", actor, "blocked",
+                {"reason": exc.code, "run_id": run_id},
             )
-            if feedback:
-                decision_summary = f"{decision_summary} Feedback: {feedback[:500]}"
-            store.run_events.setdefault(run_id, []).append(
-                WorkflowRunEvent(
-                    id=f"evt-{uuid4()}",
-                    type="approval_decision",
-                    title="Approval decision recorded",
-                    summary=decision_summary,
-                    createdAt=_now_iso(),
-                    metadata={
-                        "decision": decision,
-                        "artifact_id": str(_payload.get("artifact_id") or ""),
-                        "actor": actor,
-                    },
-                )
+            raise HTTPException(
+                status_code=409, detail="No matching pending artifact approval"
+            ) from exc
+        store.run_events.setdefault(run_id, []).append(
+            WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="approval_decision",
+                title="Approval decision recorded",
+                summary=decision_event["summary"],
+                createdAt=_now_iso(),
+                metadata=decision_event["metadata"],
             )
-    _persist_store_state()
-    _append_audit_event(
-        "approval.submit", actor, "allowed", {"run_id": run_id, "decision": decision}
-    )
+        )
+        _append_audit_event(
+            "approval.submit", actor, "allowed",
+            {"run_id": run_id, **decision_event["metadata"]},
+        )
+        _persist_store_state()
     return {"ok": True}
 
 
@@ -30233,7 +30225,13 @@ def _run_compiled_workflow_run(
         "response_text": response_text,
         "node_results": node_results,
         "changed_files": changed_files,
-        "approvals": {"required": True, "pending": True},
+        "approvals": {
+            "required": True,
+            "pending": True,
+            "artifact_id": main_artifact.id,
+            "version": main_artifact.version,
+            "scope": "final send/export",
+        },
         "access": access_context,
     }
     _persist_store_state()
