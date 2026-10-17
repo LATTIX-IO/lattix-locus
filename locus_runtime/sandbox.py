@@ -54,6 +54,70 @@ DEFAULT_TOOL_TIMEOUT_SECONDS = 60
 SANDBOX_SECURITY_ROOT = Path(__file__).resolve().parent.parent / "docker" / "sandbox"
 DEFAULT_SECCOMP_PROFILE_PATH = SANDBOX_SECURITY_ROOT / "seccomp-strict.json"
 
+def _docker_protected_workspace_mounts(
+    writable_roots: set[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Existing read-only binds and masks for absent protected directories.
+
+    Validate the original lexical path BEFORE resolving symlink aliases.
+    Any absent protected path is masked by read-only tmpfs at its first absent
+    ancestor so a container cannot create it after admission.
+    """
+    readonly: set[str] = set()
+    masked: set[str] = set()
+    for raw_root in writable_roots:
+        lexical = Path(raw_root).expanduser()
+        root = lexical.resolve()
+        # Nonexistent writable bind sources must not be created by Docker.
+        if not lexical.exists() or not root.is_dir():
+            raise ValueError("Docker writable workspace root does not exist")
+        for sensitive in ALWAYS_READONLY_SUBPATHS:
+            parts = Path(sensitive).parts
+            target_parts = tuple(part.casefold() for part in parts)
+            for name in (lexical, root):
+                name_parts = tuple(part.casefold() for part in name.parts)
+                if any(
+                    name_parts[i:i + len(parts)] == target_parts
+                    for i in range(len(name_parts) - len(parts) + 1)
+                ) or any(
+                    name_parts[-prefix:] == target_parts[:prefix]
+                    for prefix in range(1, len(parts))
+                ):
+                    raise ValueError("protected control path may not be writable")
+            cursor = root
+            for component in parts:
+                if cursor.is_symlink():
+                    raise ValueError("protected control path symlink denied")
+                if not cursor.exists():
+                    masked.add(str(cursor))
+                    break
+                if not cursor.is_dir():
+                    raise ValueError("protected control path parent is not a directory")
+                try:
+                    with os.scandir(cursor) as siblings:
+                        for sibling in siblings:
+                            if sibling.name.casefold() == component.casefold():
+                                if sibling.name != component or sibling.is_symlink():
+                                    raise ValueError("protected control path alias denied")
+                except OSError as exc:
+                    raise ValueError("protected control path cannot be inspected") from exc
+                cursor = cursor / component
+            else:
+                if cursor.is_symlink():
+                    raise ValueError("protected control path symlink denied")
+                if cursor.exists():
+                    if root not in cursor.resolve(strict=True).parents:
+                        raise ValueError("protected control path escapes writable root")
+                    readonly.add(str(cursor))
+                else:
+                    masked.add(str(cursor))
+    return tuple(sorted(readonly)), tuple(sorted(masked))
+
+
+def _docker_protected_readonly_mounts(writable_roots: set[str]) -> tuple[str, ...]:
+    """Existing read-only overlays, retained for compatibility."""
+    return _docker_protected_workspace_mounts(writable_roots)[0]
+
 
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
@@ -476,10 +540,42 @@ class _HardenedDockerStrategy:
         # symlink aliases, without ever widening the supplied scope.
         writable = {str(Path(path).expanduser().resolve()) for path in policy.allowed_write_paths}
         readable = {str(Path(path).expanduser().resolve()) for path in policy.allowed_read_paths}
+        # Docker --mount uses comma-separated options; never allow a pathname
+        # to inject flags such as "readonly" or "bind-recursive=disabled".
+        for path in writable | readable:
+            if any(ord(char) in (0, 10, 13, 44) for char in path):
+                raise ValueError("Docker mount source path denied")
         for resolved in sorted(writable):
-            args += ["-v", f"{resolved}:{resolved}:rw"]
-        for resolved in sorted(readable - writable):
-            args += ["-v", f"{resolved}:{resolved}:ro"]
+            args += [
+                "--mount",
+                f"type=bind,source={resolved},target={resolved}",
+            ]
+        readonly = readable - writable
+        for resolved in sorted(readonly):
+            # Docker -v silently creates missing host sources as directories.
+            # Never allow a read-only grant to manufacture host paths.
+            if not Path(resolved).exists():
+                raise ValueError("Docker read mount source does not exist")
+            args += [
+                "--mount",
+                f"type=bind,source={resolved},target={resolved},readonly,bind-recursive=readonly",
+            ]
+        # Compute masks from raw lexical paths BEFORE canonicalization.
+        # Existing control paths use a bind; absent paths must not be creatable.
+        overlays, missing = _docker_protected_workspace_mounts(
+            set(policy.allowed_write_paths)
+        )
+        for protected in overlays:
+            if protected not in readonly:
+                args += [
+                    "--mount",
+                    f"type=bind,source={protected},target={protected},readonly,bind-recursive=readonly",
+                ]
+        for protected in missing:
+            args += [
+                "--tmpfs",
+                f"{protected}:ro,nosuid,nodev,noexec,size=4k,mode=0555",
+            ]
 
         # Working directory
         if spec.cwd:

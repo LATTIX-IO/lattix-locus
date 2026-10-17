@@ -30,6 +30,7 @@ from locus_runtime.sandbox import (
     SandboxManager,
     SandboxPolicy,
     _validated_seccomp_profile_path,
+    _docker_protected_workspace_mounts,
     detect_host_platform,
     minimal_agent_env,
     sandbox_runner_image,
@@ -163,6 +164,17 @@ def _expected_docker_launch_contract(
         str(Path(path).expanduser().resolve())
         for path in policy.allowed_read_paths
     }
+    # Source path strings become comma-delimited Docker --mount options.
+    # Reject ambiguity before any policy decision, receipt or process launch.
+    for path in writable | readable:
+        if any(ord(char) in (0, 10, 13, 44) for char in path):
+            raise AdmissionDenied("Docker mount source path denied")
+    try:
+        sensitive_readonly, missing_protected = _docker_protected_workspace_mounts(
+            set(policy.allowed_write_paths)
+        )
+    except (OSError, RuntimeError, ValueError):
+        raise AdmissionDenied("Docker protected workspace path denied") from None
     expected = [
         "docker", "run", "--rm",
         "--cap-drop=ALL", "--security-opt=no-new-privileges",
@@ -175,9 +187,26 @@ def _expected_docker_launch_contract(
         "--tmpfs", "/tmp:rw,noexec,nosuid,size=100m",
     ]
     for path in sorted(writable):
-        expected.extend(("-v", f"{path}:{path}:rw"))
-    for path in sorted(readable - writable):
-        expected.extend(("-v", f"{path}:{path}:ro"))
+        expected.extend((
+            "--mount", f"type=bind,source={path},target={path}",
+        ))
+    readonly = readable - writable
+    for path in sorted(readonly):
+        # Match the planner's no-auto-create contract before Gateway/receipts.
+        if not Path(path).exists():
+            raise AdmissionDenied("Docker read mount source denied")
+        expected.extend((
+            "--mount", f"type=bind,source={path},target={path},readonly,bind-recursive=readonly",
+        ))
+    for protected in sensitive_readonly:
+        if protected not in readonly:
+            expected.extend((
+                "--mount", f"type=bind,source={protected},target={protected},readonly,bind-recursive=readonly",
+            ))
+    for protected in missing_protected:
+        expected.extend((
+            "--tmpfs", f"{protected}:ro,nosuid,nodev,noexec,size=4k,mode=0555",
+        ))
     if spec.cwd:
         expected.extend(("-w", spec.cwd))
     expected.extend((image, *spec.command))

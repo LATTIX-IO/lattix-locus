@@ -349,10 +349,18 @@ def test_docker_mounts_deduplicated_when_scopes_overlap(tmp_path, monkeypatch):
     app, _, lease, _ = fixture(tmp_path)
     app.execute(lease, cmd(tmp_path))
     args = invocations[0][0]
-    mounts = [args[index + 1] for index, value in enumerate(args[:-1]) if value == "-v"]
+    mounts = [
+        args[index + 1]
+        for index, value in enumerate(args[:-1])
+        if value == "--mount"
+    ]
     root = str(tmp_path.resolve())
-    assert mounts.count(f"{root}:{root}:rw") == 1
-    assert f"{root}:{root}:ro" not in mounts
+    assert mounts.count(f"type=bind,source={root},target={root}") == 1
+    assert not any(
+        mount.startswith(f"type=bind,source={root},target={root},readonly")
+        for mount in mounts
+    )
+    assert "-v" not in args
 
 
 def test_failed_docker_cleanup_retains_timeout_and_nonreplayability(tmp_path, monkeypatch):
