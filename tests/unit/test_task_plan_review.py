@@ -1,6 +1,6 @@
 """LOCUS-459 A: backend-owned, non-executable TaskPlan review projection."""
 
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
@@ -215,3 +215,25 @@ def test_cross_domain_task_does_not_depend_on_software_engine():
     review = build_plan_review(_proposal(), context=personal).to_dict()
     assert review["area"] == "personal"
     assert all(node["engine"] is None for node in review["nodes"])
+
+def test_projection_is_deeply_immutable_and_json_output_is_detached():
+    view = build_plan_review(_proposal(), context=_context())
+    with pytest.raises(FrozenInstanceError):
+        view.nodes[0].node_id = "forged"
+    with pytest.raises(FrozenInstanceError):
+        view.requested_budget.actions = 9000
+    raw = view.to_dict()
+    raw["nodes"][0]["requested_capabilities"].append("admin")
+    raw["nodes"][0]["requested_budget"]["actions"] = 9999
+    raw["requested_reservations"]["tokens"] = 7777
+    unchanged = view.to_dict()
+    assert unchanged["nodes"][0]["requested_capabilities"] == ["document.write"]
+    assert unchanged["nodes"][0]["requested_budget"]["actions"] == 2
+    assert unchanged["requested_reservations"]["tokens"] == 2500
+
+
+def test_external_provider_subject_preserves_exact_actor_identity():
+    intent = replace(_context().intent, requester_id="oidc|sub:alice@example.com")
+    context = _context(intent=intent, actor_id="oidc|sub:alice@example.com")
+    projection = build_plan_review(_proposal(), context=context).to_dict()
+    assert projection["requester_id"] == "oidc|sub:alice@example.com"

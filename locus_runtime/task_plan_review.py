@@ -14,7 +14,7 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from locus_runtime.task_graph_contract import TaskAuthority, TaskIntent
+from locus_runtime.task_graph_contract import TaskAuthority, TaskBudget, TaskIntent
 from locus_runtime.task_plan_compiler import compile_task_plan
 
 REVIEW_SCHEMA_VERSION = "locus.task-plan-review/1.0"
@@ -35,6 +35,19 @@ def _identifier(value: str, label: str) -> None:
 def _fingerprint(value: str, label: str) -> None:
     if not isinstance(value, str) or not _DIGEST.fullmatch(value):
         raise InvalidPlanReviewContext(f"invalid {label}")
+
+
+def _principal(value: str) -> None:
+    # Principal subjects are opaque provider strings (e.g. OIDC sub), not
+    # filesystem components. Preserve their exact identity instead of slugging.
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value != value.strip()
+        or len(value) > 255
+        or any(ord(ch) < 32 or ord(ch) == 127 for ch in value)
+    ):
+        raise InvalidPlanReviewContext("invalid actor_id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,12 +73,9 @@ class TrustedReviewContext:
     def __post_init__(self) -> None:
         if not isinstance(self.intent, TaskIntent) or not isinstance(self.parent_authority, TaskAuthority):
             raise InvalidPlanReviewContext("trusted intent and parent envelope are required")
-        for value, label in (
-            (self.actor_id, "actor_id"),
-            (self.tenant_id, "tenant_id"),
-            (self.project_id, "project_id"),
-        ):
-            _identifier(value, label)
+        _principal(self.actor_id)
+        _identifier(self.tenant_id, "tenant_id")
+        _identifier(self.project_id, "project_id")
         if self.intent.requester_id != self.actor_id:
             raise InvalidPlanReviewContext("authenticated actor differs from task requester")
         for value, label in (
@@ -89,17 +99,51 @@ class TrustedReviewContext:
 
 
 @dataclass(frozen=True, slots=True)
+class RequestedReservations:
+    actions: int
+    tokens: int
+    spend_microunits: int
+
+
+@dataclass(frozen=True, slots=True)
+class PlanReviewNode:
+    node_id: str
+    depends_on: tuple[str, ...]
+    requested_capabilities: tuple[str, ...]
+    requested_risk_ceiling: str
+    requested_budget: TaskBudget
+    deliverables: tuple[str, ...]
+    acceptance_criteria: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "node_id": self.node_id,
+            "depends_on": list(self.depends_on),
+            "requested_capabilities": list(self.requested_capabilities),
+            "requested_risk_ceiling": self.requested_risk_ceiling,
+            "requested_budget": asdict(self.requested_budget),
+            "deliverables": list(self.deliverables),
+            "acceptance_criteria": list(self.acceptance_criteria),
+            "agent_definition": None,
+            "engine": None,
+            "policy_decision": "not_evaluated",
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PlanReviewProjection:
-    """Immutable structural preview. No field carries execution authority."""
+    """Deeply immutable structural preview. No field carries execution authority."""
 
     review_digest: str
     plan_digest: str
     context: TrustedReviewContext
     waves: tuple[tuple[str, ...], ...]
-    nodes: tuple[dict[str, Any], ...]
-    requested_budget: dict[str, int]
+    nodes: tuple[PlanReviewNode, ...]
+    requested_budget: RequestedReservations
 
     def to_dict(self) -> dict[str, Any]:
+        # Return newly materialized JSON structures; a consumer changing an
+        # array cannot change the frozen, digest-bound source projection.
         return {
             "schema_version": REVIEW_SCHEMA_VERSION,
             "revision": self.context.revision,
@@ -121,9 +165,9 @@ class PlanReviewProjection:
                 "requested_risk_ceiling": self.context.parent_authority.risk_ceiling,
                 "budget": asdict(self.context.parent_authority.budget),
             },
-            "requested_reservations": dict(self.requested_budget),
+            "requested_reservations": asdict(self.requested_budget),
             "waves": [list(wave) for wave in self.waves],
-            "nodes": [dict(node) for node in self.nodes],
+            "nodes": [node.to_dict() for node in self.nodes],
             "admission": {
                 "structural_validation": "passed",
                 "policy_evaluation": "not_performed",
@@ -148,28 +192,26 @@ def build_plan_review(
     compiled = compile_task_plan(
         proposal, intent=context.intent, parent_authority=context.parent_authority
     )
-    nodes: list[dict[str, Any]] = []
-    requested_budget = {
-        "actions": 0,
-        "tokens": 0,
-        "spend_microunits": 0,
-    }
+    nodes: list[PlanReviewNode] = []
+    actions = 0
+    tokens = 0
+    spend_microunits = 0
     for node in compiled.plan.nodes:
-        budget = asdict(node.authority.budget)
-        for key in requested_budget:
-            requested_budget[key] += budget[key]
-        nodes.append({
-            "node_id": node.node_id,
-            "depends_on": list(node.depends_on),
-            "requested_capabilities": sorted(node.authority.capabilities),
-            "requested_risk_ceiling": node.authority.risk_ceiling,
-            "requested_budget": budget,
-            "deliverables": list(node.deliverables),
-            "acceptance_criteria": list(node.acceptance_criteria),
-            "agent_definition": None,
-            "engine": None,
-            "policy_decision": "not_evaluated",
-        })
+        budget = node.authority.budget
+        actions += budget.actions
+        tokens += budget.tokens
+        spend_microunits += budget.spend_microunits
+        nodes.append(
+            PlanReviewNode(
+                node_id=node.node_id,
+                depends_on=node.depends_on,
+                requested_capabilities=tuple(sorted(node.authority.capabilities)),
+                requested_risk_ceiling=node.authority.risk_ceiling,
+                requested_budget=budget,
+                deliverables=node.deliverables,
+                acceptance_criteria=node.acceptance_criteria,
+            )
+        )
     # A review digest binds immutable, trusted server context and a monotonically
     # allocated revision to the full compiled plan. It is NOT a MAC/signature.
     review_binding = {
@@ -196,7 +238,9 @@ def build_plan_review(
         context=context,
         waves=compiled.waves,
         nodes=tuple(nodes),
-        requested_budget=requested_budget,
+        requested_budget=RequestedReservations(
+            actions=actions, tokens=tokens, spend_microunits=spend_microunits
+        ),
     )
 
 
