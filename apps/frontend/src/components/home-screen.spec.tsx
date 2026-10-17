@@ -24,14 +24,16 @@ beforeEach(() => {
 
 describe("HomeScreen", () => {
   it("shows the composer and the runs that are active now, from the backend only", async () => {
-    getWorkflowRunsMock.mockResolvedValue([run("a", "Running"), run("b", "Needs Review"), run("c", "Done")]);
+    getWorkflowRunsMock.mockResolvedValue([run("a", "Running"), run("b", "Needs Review"), run("c", "Done"), run("d", "Blocked")]);
     render(<HomeScreen />);
 
     expect(screen.getByText("task composer")).toBeInTheDocument();
     const active = await screen.findByRole("list", { name: "Running now" });
-    expect(within(active).getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual([
-      "/activity?session=a",
+    expect(within(active).getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual(["/activity?session=a"]);
+    const attention = screen.getByRole("list", { name: "Needs attention" });
+    expect(within(attention).getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual([
       "/activity?session=b",
+      "/activity?session=d",
     ]);
     expect(within(screen.getByRole("list", { name: "Recent runs" })).getByText("Run c")).toBeInTheDocument();
     // The old demo pipeline and placeholder health figures are gone.

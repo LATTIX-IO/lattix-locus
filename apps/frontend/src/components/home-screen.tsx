@@ -18,7 +18,8 @@ const KIND_LABEL: Record<RunKind, string> = {
   playbook: "Playbook",
 };
 
-const ACTIVE_STATUSES = new Set(["Running", "Needs Review", "Blocked"]);
+const RUNNING_STATUSES = new Set(["Running"]);
+const ATTENTION_STATUSES = new Set(["Needs Review", "Blocked"]);
 
 function RunList({ runs, label }: { runs: WorkflowRunSummary[]; label: string }) {
   return (
@@ -67,8 +68,9 @@ export function HomeScreen() {
     return () => window.removeEventListener("locus:runs-changed", onChanged);
   }, [refresh]);
 
-  const active = useMemo(() => (runs ?? []).filter((run) => ACTIVE_STATUSES.has(run.status)), [runs]);
-  const recent = useMemo(() => (runs ?? []).filter((run) => !ACTIVE_STATUSES.has(run.status)).slice(0, 5), [runs]);
+  const active = useMemo(() => (runs ?? []).filter((run) => RUNNING_STATUSES.has(run.status)), [runs]);
+  const attention = useMemo(() => (runs ?? []).filter((run) => ATTENTION_STATUSES.has(run.status)), [runs]);
+  const recent = useMemo(() => (runs ?? []).filter((run) => !RUNNING_STATUSES.has(run.status) && !ATTENTION_STATUSES.has(run.status)).slice(0, 5), [runs]);
 
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 py-2">
@@ -103,6 +105,16 @@ export function HomeScreen() {
           <p className="text-[13px] text-muted-foreground">Nothing is running. Start a task above.</p>
         ) : null}
       </Card>
+
+      {attention.length ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Needs attention</CardTitle>
+            <CardDescription>Pending outcome reviews and runs blocked by policy. A blocked run cannot be approved into completion.</CardDescription>
+          </CardHeader>
+          <RunList runs={attention} label="Needs attention" />
+        </Card>
+      ) : null}
 
       {recent.length ? (
         <Card>
