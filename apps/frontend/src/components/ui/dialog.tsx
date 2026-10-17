@@ -28,7 +28,7 @@ export function DialogContent({
       >
         {children}
         {showClose ? (
-          <DialogPrimitive.Close className="absolute right-3 top-3 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground">
+          <DialogPrimitive.Close data-slot="dialog-close" className="absolute right-3 top-3 inline-flex items-center justify-center rounded-[var(--lattix-radius-control)] p-1 text-muted-foreground hover:bg-muted hover:text-foreground">
             <XIcon aria-hidden="true" className="size-4" />
             <span className="sr-only">Close</span>
           </DialogPrimitive.Close>

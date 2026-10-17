@@ -3,7 +3,7 @@ import type { ComponentProps } from "react";
 import { cn } from "@/lib/utils";
 
 const BASE =
-  "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-[10px] text-[13px] font-medium no-underline transition-colors disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0";
+  "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-[6px] text-[13px] font-medium no-underline transition-colors disabled:pointer-events-none disabled:cursor-not-allowed disabled:text-muted-foreground [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0";
 
 const VARIANTS = {
   default: "border border-primary bg-primary text-primary-foreground shadow-xs hover:bg-primary/90",
