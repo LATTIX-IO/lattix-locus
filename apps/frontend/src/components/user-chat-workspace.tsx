@@ -24,6 +24,7 @@ import {
   type RunStreamDisconnect,
   type WorkflowRunDetail,
 } from "@/lib/api";
+import { getOutcomeReviewGate } from "@/lib/run-outcome-review";
 import {
   isTerminalRunStatus,
   RUN_STREAM_MAX_RECONNECT_ATTEMPTS,
@@ -512,7 +513,7 @@ export function UserChatWorkspace({
     };
 
     const settleIfTerminal = (runDetail: WorkflowRunDetail | null): boolean => {
-      if (!runDetail || !isTerminalRunStatus(runDetail.status) || runDetail.approvals?.pending) {
+      if (!runDetail || !isTerminalRunStatus(runDetail.status)) {
         return false;
       }
       setStreamedResponse("");
@@ -727,6 +728,7 @@ export function UserChatWorkspace({
     return buildExecutionGraph(selectedRunId ?? "session", displayedRunTitle, selectedRun, ordered);
   }, [displayedRunTitle, ordered, selectedRun, selectedRunId]);
   const approvals = selectedRun?.approvals ?? { required: false, pending: false };
+  const outcomeGate = getOutcomeReviewGate(selectedRun);
   // New agent requests arrive as approval_required events: reload them then.
   const approvalRequestCount = ordered.filter((event: WorkflowRunEvent) => event.type === "approval_required").length;
   const guardrailEvents = ordered.filter((event: WorkflowRunEvent) => event.type === "guardrail_result");
@@ -741,14 +743,14 @@ export function UserChatWorkspace({
     for (const inboxItem of relatedInboxItems) {
       items.push(inboxItem.reason);
     }
-    if (approvals.pending) {
+    if (outcomeGate.canDecide) {
       items.push("Approval decision is still pending.");
     }
     for (const event of guardrailEvents) {
       items.push(event.summary);
     }
     return [...new Set(items)].slice(0, 6);
-  }, [approvals.pending, guardrailEvents, relatedInboxItems]);
+  }, [outcomeGate.canDecide, guardrailEvents, relatedInboxItems]);
 
   useEffect(() => {
     const timeline = timelineRef.current;
@@ -759,7 +761,9 @@ export function UserChatWorkspace({
   }, [ordered]);
 
   async function handleApproval(decision: "approved" | "changes_requested") {
-    if (!selectedRunId || !approvals.required) {
+    if (!selectedRunId) return;
+    if (!outcomeGate.canDecide) {
+      setApprovalMessage("No current, reviewable artifact is available. Refresh the run.");
       return;
     }
     if (decision === "changes_requested" && !approvalFeedback.trim()) {
@@ -773,11 +777,18 @@ export function UserChatWorkspace({
       await submitApproval({
         run_id: selectedRunId,
         decision,
-        artifact_id: approvals.artifact_id ?? selectedRun?.artifacts[0]?.id ?? "",
-        version: approvals.version ?? 1,
+        artifact_id: outcomeGate.artifactId,
+        version: outcomeGate.version,
         feedback: decision === "changes_requested" ? approvalFeedback.trim() : undefined,
       });
-      setApprovalMessage(decision === "approved" ? "Approval submitted." : "Change request submitted.");
+      setApprovalMessage(decision === "approved" ? "Outcome accepted; checking the current run state." : "Changes requested; the outcome remains under review.");
+      try {
+        const current = await getWorkflowRunLive(selectedRunId);
+        setSelectedRun(current);
+      } catch {
+        setApprovalMessage("Decision submitted, but the latest run state could not be fetched. Refresh before further action.");
+      }
+      window.dispatchEvent(new CustomEvent("locus:runs-changed"));
       router.refresh();
     } catch {
       setApprovalMessage("Unable to submit decision right now.");
@@ -1086,31 +1097,38 @@ export function UserChatWorkspace({
                 ) : null}
 
                 {drawerTab === "approvals" ? (
-                  <DetailSection title="Approvals">
-                    {approvals.required ? (
+                  <DetailSection title="Outcome review">
+                    {outcomeGate.canDecide ? (
                       <div className="space-y-3">
                         <DetailMessage tone="muted">
-                          {approvals.pending ? "A human decision is required before the run can continue." : "No pending approval decision right now."}
+                          This run has a pending review for artifact {outcomeGate.artifactId} (revision {outcomeGate.version}). Accepting it closes the outcome; it does not grant new execution permissions.
                         </DetailMessage>
                         <textarea
                           value={approvalFeedback}
                           onChange={(event) => setApprovalFeedback(event.target.value)}
                           placeholder="Leave guidance for the next pass"
+                          aria-label="Outcome review feedback"
                           className="fx-input min-h-28 w-full px-3 py-3 text-sm"
                         />
                         <div className="flex gap-2">
                           <button type="button" onClick={() => void handleApproval("approved")} disabled={approvalBusy !== null} className="fx-btn-success px-3 py-2 text-xs font-medium">
-                            {approvalBusy === "approved" ? "Approving…" : "Approve"}
+                            {approvalBusy === "approved" ? "Accepting…" : "Accept outcome"}
                           </button>
                           <button type="button" onClick={() => void handleApproval("changes_requested")} disabled={approvalBusy !== null} className="fx-btn-warning px-3 py-2 text-xs font-medium">
                             {approvalBusy === "changes_requested" ? "Sending…" : "Request changes"}
                           </button>
                         </div>
-                        {approvalMessage ? <p className="text-xs text-[var(--fx-muted)]">{approvalMessage}</p> : null}
                       </div>
                     ) : (
-                      <DetailMessage tone="muted">This session does not currently require approval.</DetailMessage>
+                      <DetailMessage tone="muted">
+                        {outcomeGate.reason === "blocked"
+                          ? "This run was blocked by policy. A blocked run cannot be accepted as a completed outcome."
+                          : outcomeGate.reason === "missing-artifact"
+                            ? "The current approval request does not match a reviewable artifact revision. Refresh the run."
+                            : "No current outcome-review decision is available for this run."}
+                      </DetailMessage>
                     )}
+                    {approvalMessage ? <p role="status" className="mt-2 text-xs text-[var(--fx-muted)]">{approvalMessage}</p> : null}
                   </DetailSection>
                 ) : null}
 
