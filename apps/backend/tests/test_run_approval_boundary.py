@@ -93,4 +93,6 @@ def test_changes_requested_requires_feedback_and_does_not_complete(run_state):
     result = request(run_id, artifact_id, decision="changes_requested", feedback="Recheck citations")
     assert result.status_code == 200, result.text
     assert store.runs[run_id].status == "Needs Review"
-    assert store.run_details[run_id]["approvals"]["pending"] is True
+    assert store.run_details[run_id]["approvals"]["pending"] is False
+    assert store.run_details[run_id]["artifacts"][0]["status"] == "Draft"
+    assert request(run_id, artifact_id).status_code == 409

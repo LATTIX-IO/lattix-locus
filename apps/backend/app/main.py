@@ -62,7 +62,7 @@ from app import cron as app_cron
 from app import knowledge as app_knowledge
 from app import local_models, mcp_client, policy_gateway, skills_catalog
 from app import user_browser as app_user_browser
-from app.run_approvals import decide_run_approval
+from app.run_approvals import bind_legacy_compiled_reviews, decide_run_approval
 from locus_runtime.run_approval_contract import InvalidApprovalTransition
 from app.control_status import (
     build_control_status_report,
@@ -15992,6 +15992,11 @@ def _startup_initialize_state() -> None:
         except Exception:  # noqa: BLE001 - audit hydration is best-effort
             pass
 
+    for migrated_run_id in bind_legacy_compiled_reviews(store):
+        _append_audit_event(
+            "approval.binding_migrated", "system", "allowed",
+            {"run_id": migrated_run_id, "schema": "compiled_handback_v1"},
+        )
     _merge_missing_bootstrap_content()
     # Memory is on by default (LOCUS-387): the Personal collection exists, and
     # entries written before an embedding model was available get embedded.
@@ -26306,8 +26311,8 @@ def submit_approval(
         _append_audit_event("approval.submit", actor, "blocked", {"reason": "missing_run_id"})
         raise HTTPException(status_code=400, detail="run_id is required")
     _enforce_run_access(request, actor, run_id, action="approval.submit")
-    # The lock prevents concurrent decisions/replay from racing between
-    # validation and the single durable state transition.
+    # Lock serializes approval calls only in this Python process. Durable
+    # cross-worker CAS and other writers require a separate storage contract.
     with _RUN_APPROVAL_TRANSITION_LOCK:
         try:
             decision_event = decide_run_approval(store, run_id, _payload, actor=actor)
@@ -26329,11 +26334,11 @@ def submit_approval(
                 metadata=decision_event["metadata"],
             )
         )
+        _append_audit_event(
+            "approval.submit", actor, "allowed",
+            {"run_id": run_id, **decision_event["metadata"]},
+        )
         _persist_store_state()
-    _append_audit_event(
-        "approval.submit", actor, "allowed",
-        {"run_id": run_id, **decision_event["metadata"]},
-    )
     return {"ok": True}
 
 
@@ -30220,7 +30225,13 @@ def _run_compiled_workflow_run(
         "response_text": response_text,
         "node_results": node_results,
         "changed_files": changed_files,
-        "approvals": {"required": True, "pending": True},
+        "approvals": {
+            "required": True,
+            "pending": True,
+            "artifact_id": main_artifact.id,
+            "version": main_artifact.version,
+            "scope": "final send/export",
+        },
         "access": access_context,
     }
     _persist_store_state()

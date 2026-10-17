@@ -241,7 +241,16 @@ def test_run_approval_needs_the_proof_but_requesting_changes_does_not(desktop: N
 
     changes = call("POST", "/approvals", {"run_id": run_id, "decision": "changes_requested", "artifact_id": "art-357-1", "version": 1, "feedback": "Revise the evidence"})
     assert changes.status_code == 200, changes.text
+    assert store.run_details[run_id]["approvals"]["pending"] is False
+    # The old version cannot later be accepted, even with fresh proof.
+    old_proof = shell_proof("POST", "/approvals", approve)
+    assert call("POST", "/approvals", approve, old_proof).status_code == 409
 
+    # Simulate a separately produced and versioned revised deliverable.
+    review = store.run_details[run_id]["approvals"]
+    review.update({"pending": True, "version": 2})
+    store.run_details[run_id]["artifacts"][0].update({"version": 2, "status": "Needs Review"})
+    approve = {**approve, "version": 2}
     proof = shell_proof("POST", "/approvals", approve)
     assert call("POST", "/approvals", approve, proof).status_code == 200
     assert store.run_details[run_id]["status"] == "Done"

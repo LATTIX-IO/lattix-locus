@@ -50,6 +50,10 @@ def validate_approval_transition(
         raise InvalidApprovalTransition("artifact_mismatch")
     if type(version) is not int or version <= 0 or type(expected_version) is not int or version != expected_version:
         raise InvalidApprovalTransition("revision_mismatch")
+    if review.get("last_decision") in ("approved", "changes_requested") and review.get(
+        "last_decision_version", expected_version
+    ) == version:
+        raise InvalidApprovalTransition("revision_already_decided")
     artifacts = details.get("artifacts")
     if not isinstance(artifacts, list) or not any(
         isinstance(a, Mapping)

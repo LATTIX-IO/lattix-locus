@@ -69,6 +69,21 @@ def test_artifact_must_still_be_reviewable_not_just_mentioned_by_approval():
             validate_approval_transition("Needs Review", details, approved())
 
 
+def test_decided_revision_cannot_be_reopened_by_toggling_pending():
+    details = pending()
+    details["approvals"].update({
+        "last_decision": "changes_requested",
+        "last_decision_version": 2,
+    })
+    with pytest.raises(InvalidApprovalTransition, match="revision_already_decided"):
+        validate_approval_transition("Needs Review", details, approved())
+    details["approvals"]["version"] = 3
+    details["artifacts"][0]["version"] = 3
+    assert validate_approval_transition(
+        "Needs Review", details, {**approved(), "version": 3}
+    ).version == 3
+
+
 def test_request_changes_is_narrowing_but_requires_feedback_and_exact_revision():
     target = validate_approval_transition("Needs Review", pending(), approved() | {"decision": "changes_requested", "feedback": "  Fix citations  "})
     assert target.feedback == "Fix citations"
