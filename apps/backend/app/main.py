@@ -62,6 +62,7 @@ from app import cron as app_cron
 from app import knowledge as app_knowledge
 from app import local_models, mcp_client, policy_gateway, skills_catalog
 from app import user_browser as app_user_browser
+from app.task_plan_preview import PlanPreviewUnavailable, build_authenticated_preview
 from app.control_status import (
     build_control_status_report,
     collect_posture_facts,
@@ -22516,6 +22517,77 @@ def _shutdown_run_executor() -> None:
     with _RUN_EXECUTOR_LOCK:
         _RUN_EXECUTOR.shutdown(wait=False, cancel_futures=True)
         _RUN_EXECUTOR_SHUT_DOWN = True
+
+
+@app.post("/task-plans/preview")
+async def preview_task_plan(request: Request) -> dict[str, Any]:
+    """Authenticated, server-scoped and never executable TaskPlan preview."""
+    actor = _enforce_request_authn(
+        request, action="task.plan.preview", required=True
+    )
+    if not _env_flag("LOCUS_TASK_PLAN_PREVIEW_ENABLED", False):
+        _append_audit_event(
+            "task.plan.preview", actor, "blocked",
+            {"reason": "preview_feature_disabled"},
+        )
+        raise HTTPException(status_code=503, detail="TaskPlan preview unavailable")
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+        raise HTTPException(status_code=415, detail="JSON content type required")
+    auth = getattr(request.state, "locus_auth_context", None)
+    auth_context = auth if isinstance(auth, dict) else {}
+    catalog = {
+        str(agent_id): (
+            int(getattr(definition, "version", 0)),
+            str(getattr(definition, "status", "unknown")),
+        )
+        for agent_id, definition in store.agent_definitions.items()
+    }
+    policy_metadata = {
+        "require_authenticated_requests": bool(
+            store.platform_settings.require_authenticated_requests
+        ),
+        "require_human_approval_for_high_risk_tools": bool(
+            store.platform_settings.require_human_approval_for_high_risk_tools
+        ),
+        "guardrail_rulesets": sorted(
+            (
+                str(rule_id),
+                int(getattr(ruleset, "version", 0)),
+                str(getattr(ruleset, "status", "unknown")),
+            )
+            for rule_id, ruleset in store.guardrail_rulesets.items()
+        ),
+    }
+    try:
+        preview = build_authenticated_preview(
+            await request.body(),
+            auth_context=auth_context,
+            registry_path=str(
+                os.getenv("LOCUS_TASK_PLAN_REVIEW_REGISTRY_PATH", "")
+            ).strip(),
+            catalog_versions=catalog,
+            policy_snapshot=policy_metadata,
+        )
+    except PlanPreviewUnavailable as exc:
+        _append_audit_event(
+            "task.plan.preview", actor, "blocked", {"reason": exc.code}
+        )
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "code": exc.code,
+                "message": "TaskPlan preview is not available for this request",
+            },
+        ) from exc
+    _append_audit_event(
+        "task.plan.preview", actor, "allowed",
+        {
+            "review_digest": preview["review_digest"],
+            "project_namespace": preview["project_namespace"],
+            "execution_admitted": False,
+        },
+    )
+    return preview
 
 
 @app.post("/workflow-runs")

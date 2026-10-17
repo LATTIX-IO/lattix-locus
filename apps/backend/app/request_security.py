@@ -381,6 +381,10 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         "workflow.definition.active.read",
     ),
     RouteAccessRule(
+        ("POST",), "/task-plans/preview", RouteAccessCategory.AUTHENTICATED_READ,
+        "task.plan.preview",
+    ),
+    RouteAccessRule(
         ("POST",), "/workflow-runs", RouteAccessCategory.AUTHENTICATED_MUTATE, "workflow.run.create"
     ),
     RouteAccessRule(
@@ -1419,6 +1423,8 @@ _SHELL_PROOF_RULES: tuple[ShellProofRule, ...] = (
     _neutral("POST", "/internal/cognition/assemblies/run"),
     _neutral("POST", "/internal/cognition/messages/admit"),
     # --- runs (every action is checked by the gateway) ------------------------
+    # Pure read-only preview: no authorization or capability widening.
+    _neutral("POST", "/task-plans/preview"),
     _neutral("POST", "/workflow-runs"),
     _neutral("POST", "/workflow-runs/{run_id}/messages"),
     _neutral("POST", "/workflow-runs/{run_id}/rename"),

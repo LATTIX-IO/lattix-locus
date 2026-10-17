@@ -114,14 +114,6 @@ def _strict_config_project(row: Any) -> dict[str, Any]:
         or len(members) != len(set(members))
     ):
         raise PlanPreviewUnavailable("invalid_server_memberships")
-    try:
-        TaskAuthority(
-            capabilities=frozenset(row["capabilities"]),
-            risk_ceiling=row["risk_ceiling"],
-            budget=TaskBudget(**row["budget"]),
-        )
-    except (TypeError, ValueError, InvalidTaskPlan) as exc:
-        raise PlanPreviewUnavailable("invalid_server_envelope") from exc
     if (
         not isinstance(row["capabilities"], list)
         or not row["capabilities"]
@@ -131,8 +123,19 @@ def _strict_config_project(row: Any) -> dict[str, Any]:
         raise PlanPreviewUnavailable("invalid_server_capabilities")
     if not isinstance(row["budget"], dict) or set(row["budget"]) != _BUDGET_FIELDS:
         raise PlanPreviewUnavailable("invalid_server_budget")
+    try:
+        TaskAuthority(
+            capabilities=frozenset(row["capabilities"]),
+            risk_ceiling=row["risk_ceiling"],
+            budget=TaskBudget(**row["budget"]),
+        )
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise PlanPreviewUnavailable("invalid_server_envelope") from exc
     for key in ("tenant_id", "project_id", "area", "classification_floor", "effective_classification"):
-        _bounded_text(row[key], label=f"server_{key}", limit=128)
+        try:
+            _bounded_text(row[key], label=f"server_{key}", limit=128)
+        except PlanPreviewUnavailable as exc:
+            raise PlanPreviewUnavailable("invalid_server_project_registry") from exc
     if (
         type(row["policy_epoch"]) is not int or row["policy_epoch"] < 1
         or type(row["revision"]) is not int or row["revision"] < 1
@@ -155,8 +158,8 @@ def load_project_registry(path: str) -> tuple[dict[str, Any], ...]:
         if os.name == "posix" and metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
             raise PlanPreviewUnavailable("unsafe_registry_permissions")
         payload = json.loads(source.read_text(encoding="utf-8"), object_pairs_hook=_duplicate_keys)
-    except PlanPreviewUnavailable:
-        raise
+    except PlanPreviewUnavailable as exc:
+        raise PlanPreviewUnavailable("project_registry_unavailable") from exc
     except (OSError, UnicodeError, ValueError, TypeError) as exc:
         raise PlanPreviewUnavailable("project_registry_unavailable") from exc
     if not isinstance(payload, dict) or set(payload) != _ALLOWED_REGISTRY_KEYS:
