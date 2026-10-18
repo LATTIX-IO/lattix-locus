@@ -265,11 +265,14 @@ def _choose_strategy() -> IsolationStrategy:
 def _bounded_dir(path: str, permitted: Sequence[str]) -> str:
     try:
         actual = Path(path).expanduser().resolve(strict=True)
-        roots = [Path(p).expanduser().resolve(strict=True) for p in permitted]
     except (OSError, RuntimeError) as exc:
-        raise AdmissionDenied("working directory or read scope unavailable") from exc
+        raise AdmissionDenied("working directory is unavailable") from exc
     if not actual.is_dir() or not permitted:
         raise AdmissionDenied("working directory has no authorized scope")
+    try:
+        roots = [Path(p).expanduser().resolve(strict=True) for p in permitted]
+    except (OSError, RuntimeError) as exc:
+        raise AdmissionDenied("working directory read scope unavailable") from exc
     if not any(actual == root or root in actual.parents for root in roots):
         raise AdmissionDenied("working directory exceeds pod read scope")
     return str(actual)
