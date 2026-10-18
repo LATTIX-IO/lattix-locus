@@ -415,7 +415,7 @@ class PodSandboxBroker:
         authorized_launch_argv = (
             _noncreating_docker_readonly_mounts(
                 expected_docker, read_roots=policy.allowed_read_paths,
-                command=spec.command,
+                command=command.argv,
             )
             if strategy == IsolationStrategy.HARDENED_DOCKER
             and expected_docker is not None
