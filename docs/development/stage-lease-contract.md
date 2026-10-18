@@ -54,7 +54,12 @@ device/inode identity, lifecycle state, optional prepared action receipt
 reference, and timestamp. The original full DAG graph/pin revision is immutable across StageLease reads even when every current scheduler row is changed consistently. The reservation and action each have UNIQUE bindings;
 no executable grant is recorded or inferred from the row.
 
-The audit table records only stage ID, lifecycle event and timestamp.
+The audit table records stage ID, lifecycle event, timestamp and, for the
+single `receipt-linked` event, a SHA-256 seal over the stage ID, action ID,
+action fingerprint and Gateway audit ID. The seal is an application-level
+integrity check inside the supervisor-controlled SQLite database; it is not
+independent cryptographic proof against an attacker who can rewrite both the
+binding and audit records.
 Device/inode identity is additionally fenced by the stage root's admission-time ctime/mtime to detect immediate inode reuse at the same path; only still-existing historical stage paths block parallel sharing of the same live inode. StageLease objects are not bearer capabilities. The on-disk database contains
 local source/staging path metadata; protect the SQLite file under the
 supervisor's operating-system ACL. No raw model prompts, tool arguments,
@@ -67,10 +72,16 @@ credentials or staged file contents are stored here.
   WorkspaceSnapshot object and must not be exposed as an untrusted RPC
   payload. A later launch worker must independently attest the stage's exact
   contents and immutable workspace state at dispatch.
-- Stable inode checks guard absent, renamed, symlinked or reused stage paths;
-  they do not prevent a privileged daemon or hostile same-UID host process
-  from mutating directory *contents* after inspection. Container launch must
-  own and enforce its OS-level mount boundary.
+- Stable inode and root ctime/mtime checks guard absent, renamed, symlinked
+  or reused stage paths **before execution**. This StageLease V1 contract
+  intentionally becomes invalid if a pod creates or removes entries in the
+  staged root (directory timestamps change). It is therefore NOT a post-write
+  artifact-verification contract. The follow-on executable StageLease must
+  replace this pre-dispatch generation check with a mutation-tolerant,
+  independently verified generation identity before authorizing legitimate
+  stage writes. These checks do not prevent a privileged daemon or hostile
+  same-UID host process from mutating directory *contents* after inspection.
+  Container launch must own and enforce its OS-level mount boundary.
 - A prepared action receipt is *not* a launch permit. Before any subprocess,
   the next broker increment must atomically verify the stage, authenticated
   receipt, immutable command and PodLease while entering the existing
