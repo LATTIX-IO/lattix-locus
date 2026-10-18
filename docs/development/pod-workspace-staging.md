@@ -85,3 +85,24 @@ the previously missing control paths. The prelaunch denial does not need a
 Docker daemon to be evaluated; any future path that actually mounts staged
 writable directories **does** require supported daemon/kernel tests before
 the block is lifted. No container writable mount is introduced by this PR.
+
+
+## Read-only host bind hardening
+
+The broker's legacy Docker planner also emits host read-only binds with
+Docker -v, which can create missing host source directories if another process
+renames a checked source. After the existing independent **exact argv check**,
+the trusted broker now rewrites verified read-only source mounts to
+--mount type=bind,source=...,target=...,readonly,bind-recursive=readonly.
+Missing sources, unsafe mount characters or unverified bind destinations are
+refused before Gateway/receipts/launch. Only verified Docker launcher options
+are rewritten, never user tool arguments following the pinned image.
+
+Docker explicitly fails on a missing --mount bind source rather than creating
+a directory as -v does. Explicit recursive read-only requires supported
+Engine/kernel semantics; unsupported installations fail rather than
+silently leaving nested submounts writable. This is a defense-in-depth
+change to PodSandboxBroker; **SandboxManager direct callers remain separately
+in scope for LOCUS-432**. CI tests validate rewritten argv and denial before
+receipts, not a live daemon's mount behavior. A supported Docker Engine smoke
+is still a prerequisite for declaring the full path release-ready.
