@@ -341,7 +341,10 @@ class PodStageBindings:
             or (row["state"] == "retired" and not allow_retired)
         ):
             raise AdmissionDenied("stage binding is stale, foreign or revoked")
-        if (row["state"] == "receipt-linked") != (row["action_id"] is not None):
+        if (
+            (row["state"] == "receipt-linked" and row["action_id"] is None)
+            or (row["state"] == "bound" and row["action_id"] is not None)
+        ):
             raise AdmissionDenied("stage receipt linkage integrity changed")
         if row["action_id"] is not None:
             action = db.execute(
