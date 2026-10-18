@@ -108,6 +108,76 @@ def _open_anchored_directory(path: Path) -> int:
         raise WorkspaceStagingDenied("workspace contains an unsafe ancestor") from exc
 
 
+def _assert_parent_outside_workspace(source_fd: int, parent_fd: int) -> None:
+    """Reject source aliases at each destination ancestor by inode identity."""
+    src = os.fstat(source_fd)
+    source_id = (src.st_dev, src.st_ino)
+    fd = os.dup(parent_fd)
+    try:
+        for _ in range(512):
+            current = os.fstat(fd)
+            current_id = (current.st_dev, current.st_ino)
+            if current_id == source_id:
+                raise WorkspaceStagingDenied(
+                    "staging parent must be outside workspace"
+                )
+            try:
+                up_fd = os.open("..", _DIR_FLAGS | os.O_NOFOLLOW, dir_fd=fd)
+            except OSError as exc:
+                raise WorkspaceStagingDenied(
+                    "staging parent ancestry cannot be verified"
+                ) from exc
+            try:
+                ancestor = os.fstat(up_fd)
+            except BaseException:
+                os.close(up_fd)
+                raise
+            ancestor_id = (ancestor.st_dev, ancestor.st_ino)
+            if current_id == ancestor_id:
+                os.close(up_fd)
+                return
+            os.close(fd)
+            fd = up_fd
+        raise WorkspaceStagingDenied("staging parent ancestry exceeds bound")
+    finally:
+        os.close(fd)
+
+
+def _remove_stage(stage: Path) -> None:
+    """Recover owner access inside the disposable tree before retrying cleanup."""
+    def recover(_func: object, path: str, exc: BaseException) -> None:
+        if not isinstance(exc, PermissionError):
+            raise exc
+        try:
+            parts = Path(path).relative_to(stage).parts
+        except ValueError:
+            raise exc
+        candidates = [stage] + [
+            stage.joinpath(*parts[:i]) for i in range(1, len(parts) + 1)
+        ]
+        for candidate in candidates:
+            try:
+                entry = os.lstat(candidate)
+                if not stat.S_ISDIR(entry.st_mode):
+                    break
+                os.chmod(candidate, 0o700, follow_symlinks=False)
+            except (OSError, NotImplementedError):
+                break
+        # Restart shutil.rmtree with its fd-safe traversal after chmod.
+        raise exc
+
+    last_error: PermissionError | None = None
+    for _ in range(DEFAULT_MAX_DEPTH * 4):
+        try:
+            shutil.rmtree(stage, onexc=recover)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError as exc:
+            last_error = exc
+    raise WorkspaceStagingDenied("staging cleanup failed") from last_error
+
+
 def _excluded_name(name: str, parents: tuple[str, ...]) -> bool:
     folded = name.casefold()
     # Treat control paths at every depth as protected. Match case variants even
@@ -280,18 +350,27 @@ def staged_workspace(
         raise WorkspaceStagingDenied("positive integer staging limits required")
     _require_no_follow()
     root = Path(source).expanduser().absolute()
-    parent = Path(staging_parent or tempfile.gettempdir()).expanduser().absolute()
+    if staging_parent is None:
+        # The trusted macOS default tmpdir may be reached via /var symlink.
+        parent = Path(tempfile.gettempdir()).resolve()
+    else:
+        parent = Path(staging_parent).expanduser().absolute()
     _components(root)
     _components(parent)
     if parent.is_relative_to(root):
         raise WorkspaceStagingDenied("staging parent must be outside workspace")
-    # Verify the staging destination root is a real, non-symlink directory.
-    parent_fd = _open_anchored_directory(parent)
-    os.close(parent_fd)
     source_fd = _open_anchored_directory(root)
+    parent_fd: int | None = None
     stage: Path | None = None
     try:
+        parent_fd = _open_anchored_directory(parent)
+        _assert_parent_outside_workspace(source_fd, parent_fd)
         stage = Path(tempfile.mkdtemp(prefix=".locus-pod-stage-", dir=parent))
+        # Verify the new stage is still under the opened staging parent.
+        by_path = os.stat(stage, follow_symlinks=False)
+        by_fd = os.stat(stage.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (by_path.st_dev, by_path.st_ino) != (by_fd.st_dev, by_fd.st_ino):
+            raise WorkspaceStagingDenied("staging parent changed during creation")
         os.chmod(stage, 0o700)
         limits = _Limits(max_files, max_bytes, max_depth)
         manifest = hashlib.sha256(b"locus.workspace-snapshot.v1\x00")
@@ -302,5 +381,7 @@ def staged_workspace(
         )
     finally:
         os.close(source_fd)
+        if parent_fd is not None:
+            os.close(parent_fd)
         if stage is not None:
-            shutil.rmtree(stage)
+            _remove_stage(stage)
