@@ -216,3 +216,103 @@ def test_too_many_directory_entries_bounded_before_staging(tmp_path):
             pass
     assert sorted(p.name for p in src.iterdir()) == ["a", "b", "c"]
     assert not list(tmp_path.glob(".locus-pod-stage-*"))
+
+
+
+def test_default_temp_symlink_is_only_resolved_for_trusted_default(
+    tmp_path, monkeypatch,
+):
+    from locus_runtime import pod_workspace_staging as staging
+
+    src = tmp_path / "workspace"
+    src.mkdir()
+    (src / "file.txt").write_text("safe")
+    actual = tmp_path / "real-temp"
+    actual.mkdir()
+    alias = tmp_path / "symlinked-temp"
+    alias.symlink_to(actual, target_is_directory=True)
+    monkeypatch.setattr(staging.tempfile, "gettempdir", lambda: str(alias))
+
+    with staged_workspace(src) as snapshot:
+        assert snapshot.staged.parent == actual
+        assert (snapshot.staged / "file.txt").read_text() == "safe"
+    assert not list(actual.iterdir())
+    with pytest.raises(WorkspaceStagingDenied, match="unsafe ancestor"):
+        with staged_workspace(src, staging_parent=alias):
+            pass
+
+
+def test_parent_fd_alias_of_source_refused_before_any_stage(tmp_path, monkeypatch):
+    from locus_runtime import pod_workspace_staging as staging
+
+    src = tmp_path / "workspace"
+    src.mkdir()
+    apparent_parent = tmp_path / "independent-parent"
+    apparent_parent.mkdir()
+    original_open = staging._open_anchored_directory
+
+    def aliased_open(path):
+        # Model a case-insensitive alias or bind mount: apparent parent is
+        # outside source, but its directory descriptor opens source inode.
+        if path == apparent_parent:
+            return original_open(src)
+        return original_open(path)
+
+    monkeypatch.setattr(staging, "_open_anchored_directory", aliased_open)
+    with pytest.raises(WorkspaceStagingDenied, match="outside workspace"):
+        with staged_workspace(src, staging_parent=apparent_parent):
+            pass
+    assert list(src.iterdir()) == []
+    assert list(apparent_parent.iterdir()) == []
+
+
+def test_parent_ancestor_fd_alias_refused_before_any_stage(tmp_path, monkeypatch):
+    from locus_runtime import pod_workspace_staging as staging
+
+    src = tmp_path / "workspace"
+    src.mkdir()
+    nested = src / "nested"
+    nested.mkdir()
+    apparent_parent = tmp_path / "independent-parent"
+    apparent_parent.mkdir()
+    original_open = staging._open_anchored_directory
+
+    def aliased_open(path):
+        if path == apparent_parent:
+            return original_open(nested)
+        return original_open(path)
+
+    monkeypatch.setattr(staging, "_open_anchored_directory", aliased_open)
+    with pytest.raises(WorkspaceStagingDenied, match="outside workspace"):
+        with staged_workspace(src, staging_parent=apparent_parent):
+            pass
+    assert list(src.iterdir()) == [nested]
+    assert not list(nested.iterdir())
+
+
+def test_caller_restrictive_directory_permissions_do_not_leave_stage(tmp_path):
+    src = tmp_path / "workspace"
+    src.mkdir()
+    (src / "file.txt").write_text("safe")
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        stage = snapshot.staged
+        nested = stage / "nested"
+        nested.mkdir()
+        (nested / "file").write_text("temporary")
+        nested.chmod(0o000)
+        stage.chmod(0o500)
+    assert not stage.exists()
+    assert (src / "file.txt").read_text() == "safe"
+
+
+def test_caller_error_survives_permission_recovery(tmp_path):
+    src = tmp_path / "workspace"
+    src.mkdir()
+    (src / "file.txt").write_text("safe")
+    with pytest.raises(RuntimeError, match="caller failure"):
+        with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+            stage = snapshot.staged
+            (stage / "nested").mkdir(mode=0o000)
+            raise RuntimeError("caller failure")
+    assert not stage.exists()
+    assert (src / "file.txt").read_text() == "safe"
