@@ -86,6 +86,9 @@ def test_stage_lease_is_durable_bound_to_engine_and_prepared_receipt(tmp_path):
         assert bound.state == "bound" and bound.action_id is None
         assert bound.capability_sha256 and bound.binding_sha256
         assert stages.bind(lease, snapshot) == bound
+        # Usage counters advance during a pod's normal lifetime. Stage identity
+        # is a pin of capability ceilings, not volatile consumed budget.
+        lease.settle(ResourceBudget(1, 1, 25, 5, 0))
         assert stages.inspect(lease, bound.stage_id) == bound
         # Same DB, independent wrapper after restart: no new authority granted.
         reopened = PodStageBindings(ledger, receipts)
@@ -292,3 +295,46 @@ def test_stage_schema_rejects_unknown_version_without_migration(tmp_path):
         db.execute("UPDATE pod_stage_schema SET version=9")
     with pytest.raises(RuntimeError, match="unsupported stage-lease schema"):
         PodStageBindings(ledger, receipts)
+
+
+
+def test_staging_inode_reuse_at_new_path_does_not_blacklist_future_pod(
+    tmp_path, monkeypatch,
+):
+    from locus_runtime import pod_stage_bindings as module
+
+    scheduler, _, plan, parent, _, stages = rig(tmp_path)
+    _, first = child(scheduler, plan, parent)
+    _, second = child(scheduler, plan, parent)
+    src = workspace(tmp_path)
+    with staged_workspace(src, staging_parent=tmp_path) as first_snapshot:
+        old = stages.bind(first, first_snapshot)
+        old_stage_path = old.staged_path
+    assert not os.path.exists(old_stage_path)
+
+    # Filesystems may immediately recycle device/inode after rmtree. Force
+    # that identity for a distinct newly created stage while its old path
+    # stays absent; a past record must not prevent normal future workloads.
+    with staged_workspace(src, staging_parent=tmp_path) as second_snapshot:
+        with stages.ledger._connect() as db:
+            old_row = db.execute(
+                "SELECT source_dev,source_ino,stage_dev,stage_ino "
+                "FROM pod_stage_binding WHERE id=?", (old.stage_id,),
+            ).fetchone()
+        real_identity = module._snapshot_identity
+
+        def recycled_source_stage(source, stage):
+            orig_source, orig_stage = real_identity(source, stage)
+            if stage == second_snapshot.staged:
+                return (
+                    orig_source,
+                    (old_row["stage_dev"], old_row["stage_ino"],
+                     orig_stage[2], orig_stage[3]),
+                )
+            return orig_source, orig_stage
+
+        monkeypatch.setattr(module, "_snapshot_identity", recycled_source_stage)
+        next_stage = stages.bind(second, second_snapshot)
+        assert next_stage.stage_id != old.stage_id
+        assert next_stage.staged_path != old.staged_path
+        assert stages.inspect(second, next_stage.stage_id) == next_stage
