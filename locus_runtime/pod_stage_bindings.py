@@ -15,7 +15,7 @@ import sqlite3
 import stat
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from locus_runtime.action_receipts import PodActionReceipts
 from locus_runtime.pod_reservations import AdmissionDenied, PodLease, PodReservationLedger
@@ -333,7 +333,7 @@ class PodStageBindings:
         expected = self._fingerprint(row)
         if expected != row["binding_sha256"]:
             raise AdmissionDenied("stage durable binding integrity mismatch")
-        return row
+        return cast(sqlite3.Row, row)
 
     @staticmethod
     def _fingerprint(row: sqlite3.Row | dict[str, Any]) -> str:
