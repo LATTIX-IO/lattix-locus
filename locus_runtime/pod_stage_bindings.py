@@ -46,6 +46,8 @@ class StageLease:
     plan_digest: str
     pod_revision: str
     engine_id: str
+    graph_fingerprint: str
+    engine_pins_sha256: str
     source_sha256: str
     capability_sha256: str
     binding_sha256: str
@@ -188,6 +190,8 @@ class PodStageBindings:
                 plan_digest TEXT NOT NULL,
                 pod_revision TEXT NOT NULL,
                 engine_id TEXT NOT NULL,
+                graph_fingerprint TEXT NOT NULL,
+                engine_pins_sha256 TEXT NOT NULL,
                 source_sha256 TEXT NOT NULL,
                 capability_sha256 TEXT NOT NULL,
                 binding_sha256 TEXT NOT NULL,
@@ -211,7 +215,8 @@ class PodStageBindings:
                 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                 stage_id TEXT NOT NULL REFERENCES pod_stage_binding(id),
                 event TEXT NOT NULL,
-                stamp INTEGER NOT NULL
+                stamp INTEGER NOT NULL,
+                receipt_seal_sha256 TEXT
             )""")
 
     @staticmethod
@@ -226,6 +231,8 @@ class PodStageBindings:
             plan_digest=row["plan_digest"],
             pod_revision=row["pod_revision"],
             engine_id=row["engine_id"],
+            graph_fingerprint=row["graph_fingerprint"],
+            engine_pins_sha256=row["engine_pins_sha256"],
             source_sha256=row["source_sha256"],
             capability_sha256=row["capability_sha256"],
             binding_sha256=row["binding_sha256"],
@@ -256,7 +263,7 @@ class PodStageBindings:
     @staticmethod
     def _sealed_engine(
         db: sqlite3.Connection, pod: sqlite3.Row, lease: PodLease,
-    ) -> None:
+    ) -> tuple[str, str]:
         run_id, node_id = pod["parent_id"], pod["node_id"]
         parent = db.execute(
             "SELECT plan_digest,graph_fingerprint,engine_pins_json FROM task_dispatch_parent "
@@ -316,13 +323,23 @@ class PodStageBindings:
             or bound["attempt_key"] != pod["attempt_key"]
         ):
             raise AdmissionDenied("stage attempt is not the claimed engine-bound node")
+        # Caller-supplied engine and self-consistent live DB rows are not an
+        # immutable historical revision: retain both exact original hashes.
+        encoded = parent["engine_pins_json"]
+        canonical = json.dumps(pins, sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=True)
+        if encoded != canonical:
+            raise AdmissionDenied("durable scheduler engine pins were recoded")
+        return str(parent["graph_fingerprint"]), hashlib.sha256(
+            encoded.encode("utf-8")
+        ).hexdigest()
 
     def _require(
         self, db: sqlite3.Connection, lease: PodLease, stage_id: str,
         *, allow_retired: bool = False,
     ) -> sqlite3.Row:
         pod = self._active(db, lease)
-        self._sealed_engine(db, pod, lease)
+        graph_digest, pins_digest = self._sealed_engine(db, pod, lease)
         row = db.execute(
             "SELECT * FROM pod_stage_binding WHERE id=?", (stage_id,)
         ).fetchone()
@@ -336,6 +353,8 @@ class PodStageBindings:
             or row["pod_revision"] != pod["revision"]
             or row["plan_digest"] != pod["plan_digest"]
             or row["engine_id"] != lease._session.caller.engine
+            or row["graph_fingerprint"] != graph_digest
+            or row["engine_pins_sha256"] != pins_digest
             or row["capability_sha256"] != _capability_sha256(lease)
             or row["state"] not in _STATES
             or (row["state"] == "retired" and not allow_retired)
@@ -381,6 +400,7 @@ class PodStageBindings:
             key: row[key] for key in (
                 "reservation_id", "parent_run_id", "child_run_id", "node_id",
                 "attempt_key", "plan_digest", "pod_revision", "engine_id",
+                "graph_fingerprint", "engine_pins_sha256",
                 "source_sha256", "capability_sha256", "source_path", "staged_path",
                 "source_dev", "source_ino", "stage_dev", "stage_ino",
                 "stage_ctime_ns", "stage_mtime_ns",
@@ -408,7 +428,7 @@ class PodStageBindings:
         with self.ledger._connect() as db:
             self.ledger._tx(db)
             pod = self._active(db, lease)
-            self._sealed_engine(db, pod, lease)
+            graph_digest, pins_digest = self._sealed_engine(db, pod, lease)
             data: dict[str, Any] = {
                 "reservation_id": pod["id"],
                 "parent_run_id": pod["parent_id"],
@@ -418,6 +438,8 @@ class PodStageBindings:
                 "plan_digest": pod["plan_digest"],
                 "pod_revision": pod["revision"],
                 "engine_id": lease._session.caller.engine,
+                "graph_fingerprint": graph_digest,
+                "engine_pins_sha256": pins_digest,
                 "source_sha256": snapshot.sha256,
                 "capability_sha256": scope,
                 "source_path": str(source),
@@ -477,15 +499,17 @@ class PodStageBindings:
             db.execute(
                 "INSERT INTO pod_stage_binding "
                 "(id,reservation_id,parent_run_id,child_run_id,node_id,attempt_key,"
-                "plan_digest,pod_revision,engine_id,source_sha256,capability_sha256,"
+                "plan_digest,pod_revision,engine_id,graph_fingerprint,"
+                "engine_pins_sha256,source_sha256,capability_sha256,"
                 "binding_sha256,source_path,staged_path,source_dev,source_ino,"
                 "stage_dev,stage_ino,stage_ctime_ns,stage_mtime_ns,state,created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'bound',?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'bound',?)",
                 (
                     stage_id, data["reservation_id"], data["parent_run_id"],
                     data["child_run_id"], data["node_id"], data["attempt_key"],
                     data["plan_digest"], data["pod_revision"], data["engine_id"],
-                    data["source_sha256"], data["capability_sha256"],
+                    graph_digest, pins_digest, data["source_sha256"],
+                    data["capability_sha256"],
                     binding_hash, data["source_path"], data["staged_path"],
                     source_dev, source_ino, stage_dev, stage_ino,
                     ctime_ns, mtime_ns, self.ledger._now(),
