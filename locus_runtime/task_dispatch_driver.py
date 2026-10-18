@@ -29,7 +29,7 @@ _ENGINE_ID = re.compile(r"[A-Za-z][A-Za-z0-9_.:/-]{0,127}\Z", re.ASCII)
 _ARTIFACT = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 
 
-_NODE_PIN_ID = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}\\Z", re.ASCII)
+_NODE_PIN_ID = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}\Z", re.ASCII)
 
 
 @dataclass(frozen=True, slots=True)
