@@ -34,3 +34,17 @@ engine refusal, direct child-admission fencing, unpinned route denial, and
 tampered ledger records. No Docker or vendor CLI execution is claimed.
 
 Release-Impact: patch
+
+## Review correction: atomic preflight-to-claim fencing
+
+An independent reviewer identified a TOCTOU if an unpinned legacy supervisor
+passed a preliminary check before a concurrently pinned supervisor committed
+its mapping. The subsequent unpinned claim could hold capacity or pick the
+same engine by coincidence.
+
+The claim and recovery transactions now accept the caller's expected mapping,
+checking it **under the exact BEGIN IMMEDIATE transaction** used to claim or
+reconcile attempts. A sealed graph refuses unpinned claims, while an unsealed
+graph refuses claims asserting nonexistent pins. This closes the check/claim
+race without depending on the caller's earlier preflight. The authoritative
+child admission also retains its per-node engine match.

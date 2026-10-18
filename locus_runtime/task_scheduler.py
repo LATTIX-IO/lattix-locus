@@ -346,6 +346,45 @@ class DurableTaskScheduler:
             if row["engine_pins_json"] is not None:
                 raise AdmissionDenied("sealed task graph requires exact engine pins")
 
+    @staticmethod
+    def _check_claim_engine_binding(
+        db: sqlite3.Connection, run_id: str,
+        expected_engine_pins: tuple[tuple[str, str], ...] | None,
+    ) -> None:
+        """Assert the caller's binding inside the same write tx as claim/recovery.
+
+        A preflight read is not enough: another supervisor can seal the graph
+        between that check and a claim. No unpinned process may claim a node
+        from a sealed DAG; no pinned process may claim from an unsealed DAG.
+        """
+        row = db.execute(
+            "SELECT engine_pins_json FROM task_dispatch_parent WHERE parent_run_id=?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise AdmissionDenied("durable task parent missing")
+        stored = row["engine_pins_json"]
+        if expected_engine_pins is None:
+            if stored is not None:
+                raise AdmissionDenied("sealed graph requires engine pins at claim")
+            return
+        try:
+            if (
+                not isinstance(expected_engine_pins, tuple)
+                or not expected_engine_pins
+                or len(set(node for node, _ in expected_engine_pins))
+                != len(expected_engine_pins)
+            ):
+                raise ValueError("invalid pins")
+            expected = json.dumps(
+                sorted(expected_engine_pins),
+                separators=(",", ":"), ensure_ascii=True,
+            )
+        except (ValueError, TypeError):
+            raise AdmissionDenied("invalid expected engine pins") from None
+        if stored is None or stored != expected:
+            raise AdmissionDenied("engine binding changed before claim")
+
     def ready(
         self, plan: CompiledTaskPlan, parent: GatewaySession,
     ) -> tuple[str, ...]:
@@ -355,11 +394,15 @@ class DurableTaskScheduler:
 
     def claim_next(
         self, plan: CompiledTaskPlan, parent: GatewaySession,
+        *, expected_engine_pins: tuple[tuple[str, str], ...] | None = None,
     ) -> NodeClaim | None:
         """Claim exactly one eligible node across concurrent supervisor processes."""
         with self.ledger._connect() as db:
             self.ledger._tx(db)
             rows = self._check(db, plan, parent)
+            self._check_claim_engine_binding(
+                db, parent.caller.run_id, expected_engine_pins,
+            )
             if sum(row["state"] in _BUSY for row in rows.values()) >= self.max_inflight:
                 return None
             ready = self._ready_nodes(plan, rows)
@@ -379,6 +422,7 @@ class DurableTaskScheduler:
 
     def recover_unstarted(
         self, plan: CompiledTaskPlan, parent: GatewaySession,
+        *, expected_engine_pins: tuple[tuple[str, str], ...] | None = None,
     ) -> tuple[NodeClaim, ...]:
         """Reconstruct safe claims and requeue definitively unexecuted holds.
 
@@ -392,6 +436,9 @@ class DurableTaskScheduler:
         with self.ledger._connect() as db:
             self.ledger._tx(db)
             rows = self._check(db, plan, parent)
+            self._check_claim_engine_binding(
+                db, parent.caller.run_id, expected_engine_pins,
+            )
             for node_id in sorted(rows):
                 row = rows[node_id]
                 if row["state"] not in {"claimed", "reserved"}:

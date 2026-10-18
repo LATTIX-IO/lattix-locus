@@ -288,8 +288,11 @@ class GatewayTaskDriver:
         if type(recover_unstarted) is not bool:
             raise ValueError("recovery flag must be boolean")
         self._preflight_engine_pins(plan, parent)
+        expected = self.engine_pins.node_engines if self.engine_pins is not None else None
         resumable = (
-            list(self.scheduler.recover_unstarted(plan, parent))
+            list(self.scheduler.recover_unstarted(
+                plan, parent, expected_engine_pins=expected,
+            ))
             if recover_unstarted else []
         )
         nodes = {node.node_id: node for node in plan.plan.nodes}
@@ -304,7 +307,9 @@ class GatewayTaskDriver:
                     break
             claim = (
                 resumable.pop(0) if resumable
-                else self.scheduler.claim_next(plan, parent)
+                else self.scheduler.claim_next(
+                    plan, parent, expected_engine_pins=expected,
+                )
             )
             if claim is None:
                 break

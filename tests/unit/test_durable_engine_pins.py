@@ -53,7 +53,9 @@ def test_engine_pins_survive_restart_and_refuse_substitution(tmp_path):
 def test_mismatched_engine_rejected_at_authoritative_child_admission(tmp_path):
     scheduler, ledger, plan, parent = build(tmp_path)
     scheduler.bind_engine_pins(plan, parent, pins(plan.digest).node_engines)
-    claim = scheduler.claim_next(plan, parent)
+    claim = scheduler.claim_next(
+        plan, parent, expected_engine_pins=pins(plan.digest).node_engines,
+    )
     assert claim is not None and claim.node_id == "research"
     held = scheduler.reserve(
         plan, parent, claim,
@@ -145,6 +147,45 @@ def test_incomplete_direct_pin_mapping_is_denied_before_claim(tmp_path):
         scheduler.bind_engine_pins(
             plan, parent,
             (("research", "native/deep-agents"),),
+        )
+    assert scheduler.ready(plan, parent) == ("research", "triage")
+    assert ledger.snapshot(parent.caller.run_id).held.actions == 0
+
+
+def test_unpinned_preflight_race_cannot_claim_after_concurrent_seal(tmp_path):
+    scheduler, ledger, plan, parent = build(tmp_path)
+    # Legacy adapter completes its preflight on the unsealed graph, then a
+    # competing supervisor seals the graph before the legacy claim.
+    scheduler.refuse_unpinned_on_sealed_run(plan, parent)
+    selector = pins(plan.digest).node_engines
+    scheduler.bind_engine_pins(plan, parent, selector)
+    with pytest.raises(AdmissionDenied, match="sealed graph requires"):
+        scheduler.claim_next(plan, parent)
+    with pytest.raises(AdmissionDenied, match="sealed graph requires"):
+        scheduler.recover_unstarted(plan, parent)
+    assert scheduler.ready(plan, parent) == ("research", "triage")
+    assert ledger.snapshot(parent.caller.run_id).held.actions == 0
+
+
+def test_stale_or_unsealed_engine_expectation_denied_atomically(tmp_path):
+    scheduler, ledger, plan, parent = build(tmp_path)
+    selector = pins(plan.digest).node_engines
+    with pytest.raises(AdmissionDenied, match="engine binding changed before claim"):
+        scheduler.claim_next(
+            plan, parent, expected_engine_pins=selector,
+        )
+    scheduler.bind_engine_pins(plan, parent, selector)
+    changed = tuple(
+        (node, "cli/codex" if node == "research" else engine)
+        for node, engine in selector
+    )
+    with pytest.raises(AdmissionDenied, match="engine binding changed before claim"):
+        scheduler.claim_next(
+            plan, parent, expected_engine_pins=changed,
+        )
+    with pytest.raises(AdmissionDenied, match="engine binding changed before claim"):
+        scheduler.recover_unstarted(
+            plan, parent, expected_engine_pins=changed,
         )
     assert scheduler.ready(plan, parent) == ("research", "triage")
     assert ledger.snapshot(parent.caller.run_id).held.actions == 0
