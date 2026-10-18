@@ -466,3 +466,19 @@ def test_original_receipt_audit_cannot_be_removed_silently(tmp_path):
             )
         with pytest.raises(AdmissionDenied, match="original stage receipt seal"):
             stages.inspect(lease, stage.stage_id)
+
+
+
+def test_prelaunch_stage_root_mutation_invalidates_v1_binding(tmp_path):
+    """V1 holds before execution; runtime-write version requires new attestation."""
+    scheduler, _, plan, parent, _, stages = rig(tmp_path)
+    _, lease = child(scheduler, plan, parent)
+    src = workspace(tmp_path)
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        bound = stages.bind(lease, snapshot)
+        assert stages.inspect(lease, bound.stage_id) == bound
+        (snapshot.staged / "new-output").write_text("a future pod result")
+        with pytest.raises(AdmissionDenied, match="workspace identity changed"):
+            stages.inspect(lease, bound.stage_id)
+    assert (src / "work.txt").read_text() == "original"
+    assert not (src / "new-output").exists()
