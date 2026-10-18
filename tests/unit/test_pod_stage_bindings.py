@@ -379,3 +379,90 @@ def test_linked_receipt_substitution_is_detected_on_inspect(tmp_path):
             )
         with pytest.raises(AdmissionDenied, match="receipt linkage was substituted"):
             stages.inspect(lease, bound.stage_id)
+
+
+
+def test_consistent_sibling_engine_map_change_is_not_original_stage_revision(tmp_path):
+    import json
+
+    scheduler, ledger, plan, parent, _, stages = rig(tmp_path)
+    _, lease = child(scheduler, plan, parent)
+    src = workspace(tmp_path)
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        bound = stages.bind(lease, snapshot)
+        # Keep the entire scheduler pin set internally consistent while
+        # changing a sibling's engine. Node-level checks would miss this.
+        changed = sorted([
+            (node, "native/deep-agents" if node == "triage" else engine)
+            for node, engine in ENGINES
+        ])
+        with ledger._connect() as db:
+            db.execute(
+                "UPDATE task_dispatch_parent SET engine_pins_json=? "
+                "WHERE parent_run_id=?",
+                (json.dumps(changed, separators=(",", ":"), ensure_ascii=True),
+                 parent.caller.run_id),
+            )
+            db.execute(
+                "UPDATE task_dispatch_node SET pinned_engine_id='native/deep-agents' "
+                "WHERE parent_run_id=? AND node_id='triage'",
+                (parent.caller.run_id,),
+            )
+        with pytest.raises(AdmissionDenied, match="stale, foreign or revoked"):
+            stages.inspect(lease, bound.stage_id)
+
+
+def test_consistent_graph_fingerprint_change_cannot_replace_stage_revision(tmp_path):
+    scheduler, ledger, plan, parent, _, stages = rig(tmp_path)
+    _, lease = child(scheduler, plan, parent)
+    src = workspace(tmp_path)
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        bound = stages.bind(lease, snapshot)
+        with ledger._connect() as db:
+            db.execute(
+                "UPDATE task_dispatch_parent SET graph_fingerprint=? "
+                "WHERE parent_run_id=?", ("b" * 64, parent.caller.run_id),
+            )
+            db.execute(
+                "UPDATE task_dispatch_node SET graph_fingerprint=? "
+                "WHERE parent_run_id=?", ("b" * 64, parent.caller.run_id),
+            )
+        with pytest.raises(AdmissionDenied, match="stale, foreign or revoked"):
+            stages.inspect(lease, bound.stage_id)
+
+
+def test_two_valid_same_child_receipts_cannot_swap_one_use_stage_identity(tmp_path):
+    scheduler, ledger, plan, parent, receipts, stages = rig(tmp_path)
+    _, lease = child(scheduler, plan, parent)
+    src = workspace(tmp_path)
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        stage = stages.bind(lease, snapshot)
+        first = action(receipts, lease, key="stage-first")
+        second = action(receipts, lease, key="stage-second")
+        stages.link_prepared_receipt(lease, stage.stage_id, first.action_id)
+        with ledger._connect() as db:
+            # Both receipts are valid FKs with the same parent and child.
+            # The recorded original receipt-seal audit must disambiguate.
+            db.execute(
+                "UPDATE pod_stage_binding SET action_id=? WHERE id=?",
+                (second.action_id, stage.stage_id),
+            )
+        with pytest.raises(AdmissionDenied, match="original stage receipt seal"):
+            stages.inspect(lease, stage.stage_id)
+
+
+def test_original_receipt_audit_cannot_be_removed_silently(tmp_path):
+    scheduler, ledger, plan, parent, receipts, stages = rig(tmp_path)
+    _, lease = child(scheduler, plan, parent)
+    src = workspace(tmp_path)
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        stage = stages.bind(lease, snapshot)
+        linked = action(receipts, lease)
+        stages.link_prepared_receipt(lease, stage.stage_id, linked.action_id)
+        with ledger._connect() as db:
+            db.execute(
+                "DELETE FROM pod_stage_audit "
+                "WHERE stage_id=? AND event='receipt-linked'", (stage.stage_id,),
+            )
+        with pytest.raises(AdmissionDenied, match="original stage receipt seal"):
+            stages.inspect(lease, stage.stage_id)
