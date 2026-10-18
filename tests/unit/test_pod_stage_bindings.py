@@ -338,3 +338,40 @@ def test_staging_inode_reuse_at_new_path_does_not_blacklist_future_pod(
         assert next_stage.stage_id != old.stage_id
         assert next_stage.staged_path != old.staged_path
         assert stages.inspect(second, next_stage.stage_id) == next_stage
+
+
+
+def test_durable_graph_fingerprint_drift_is_not_an_engine_authority(
+    tmp_path,
+):
+    scheduler, ledger, plan, parent, _, stages = rig(tmp_path)
+    _, lease = child(scheduler, plan, parent)
+    src = workspace(tmp_path)
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        bound = stages.bind(lease, snapshot)
+        with ledger._connect() as db:
+            db.execute(
+                "UPDATE task_dispatch_node SET graph_fingerprint=? "
+                "WHERE parent_run_id=? AND node_id='research'",
+                ("b" * 64, parent.caller.run_id),
+            )
+        with pytest.raises(AdmissionDenied, match="engine binding differs"):
+            stages.inspect(lease, bound.stage_id)
+
+
+def test_linked_receipt_substitution_is_detected_on_inspect(tmp_path):
+    scheduler, ledger, plan, parent, receipts, stages = rig(tmp_path)
+    _, lease = child(scheduler, plan, parent)
+    src = workspace(tmp_path)
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        bound = stages.bind(lease, snapshot)
+        receipt = action(receipts, lease)
+        linked = stages.link_prepared_receipt(lease, bound.stage_id, receipt.action_id)
+        assert linked.state == "receipt-linked"
+        with ledger._connect() as db:
+            db.execute(
+                "UPDATE pod_stage_binding SET action_id=? WHERE id=?",
+                ("nonexistent-synthetic-receipt", bound.stage_id),
+            )
+        with pytest.raises(AdmissionDenied, match="receipt linkage was substituted"):
+            stages.inspect(lease, bound.stage_id)
