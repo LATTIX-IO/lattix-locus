@@ -102,7 +102,7 @@ def test_pinned_engine_cannot_silently_fallback_after_worker_failure(tmp_path):
         ("triage", "cli/codex", "uncertain"),
     }
     assert [row[0] for row in native.calls] == ["research"]
-    assert not codex.calls  # The test adapter fails before appending the call.
+    assert [row[0] for row in codex.calls] == ["triage"]  # Invocation occurred, but no fallback.
     assert ledger.snapshot(parent.caller.run_id).held.actions > 0
     assert scheduler.ready(plan, parent) == ()
 
