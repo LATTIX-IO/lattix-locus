@@ -367,7 +367,8 @@ class PodStageBindings:
             raise AdmissionDenied("stage receipt linkage integrity changed")
         if row["action_id"] is not None:
             action = db.execute(
-                "SELECT reservation_id,child_run_id,supervisor_token_digest "
+                "SELECT reservation_id,child_run_id,supervisor_token_digest,"
+                "fingerprint,gateway_audit_id "
                 "FROM pod_action_receipt WHERE id=?", (row["action_id"],)
             ).fetchone()
             parent = self.receipts._supervisor
@@ -380,6 +381,27 @@ class PodStageBindings:
                 ).hexdigest()
             ):
                 raise AdmissionDenied("stage prepared receipt linkage was substituted")
+            first_seal = db.execute(
+                "SELECT receipt_seal_sha256 FROM pod_stage_audit "
+                "WHERE stage_id=? AND event='receipt-linked'", (stage_id,),
+            ).fetchall()
+            seal_digest = _sha({
+                "stage_id": stage_id, "action_id": row["action_id"],
+                "action_fingerprint": action["fingerprint"],
+                "gateway_audit_id": action["gateway_audit_id"],
+            })
+            if (
+                len(first_seal) != 1
+                or first_seal[0]["receipt_seal_sha256"] != seal_digest
+            ):
+                raise AdmissionDenied("original stage receipt seal was substituted")
+        else:
+            if db.execute(
+                "SELECT 1 FROM pod_stage_audit "
+                "WHERE stage_id=? AND event='receipt-linked' LIMIT 1",
+                (stage_id,),
+            ).fetchone() is not None:
+                raise AdmissionDenied("stage receipt audit disagrees with binding")
         (source_dev, source_ino), (stage_dev, stage_ino, ctime_ns, mtime_ns) = (
             _snapshot_identity(Path(row["source_path"]), Path(row["staged_path"]))
         )
@@ -561,9 +583,15 @@ class PodStageBindings:
                 "WHERE id=? AND state='bound'",
                 (action_id, stage_id),
             )
+            seal_digest = _sha({
+                "stage_id": stage_id, "action_id": action_id,
+                "action_fingerprint": action["fingerprint"],
+                "gateway_audit_id": action["gateway_audit_id"],
+            })
             db.execute(
-                "INSERT INTO pod_stage_audit(stage_id,event,stamp) VALUES (?,?,?)",
-                (stage_id, "receipt-linked", self.ledger._now()),
+                "INSERT INTO pod_stage_audit"
+                "(stage_id,event,stamp,receipt_seal_sha256) VALUES (?,?,?,?)",
+                (stage_id, "receipt-linked", self.ledger._now(), seal_digest),
             )
             return self._record(self._require(db, lease, stage_id))
 
