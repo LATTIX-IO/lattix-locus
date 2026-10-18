@@ -200,15 +200,22 @@ def _scan(
     if len(parents) > limits.max_depth:
         raise WorkspaceStagingDenied("workspace snapshot depth exceeded")
     try:
+        names: list[str] = []
         with os.scandir(parent_fd) as it:
-            names = sorted((entry.name for entry in it), key=os.fsencode)
+            for entry in it:
+                # Bound the inventory *before* sorting or allocating the full
+                # directory: a single giant directory must not exhaust memory.
+                if limits.entries + len(names) >= limits.max_files * 2:
+                    raise WorkspaceStagingDenied(
+                        "workspace snapshot resource bounds exceeded"
+                    )
+                names.append(entry.name)
+        names.sort(key=os.fsencode)
     except OSError as exc:
         raise WorkspaceStagingDenied("workspace directory cannot be enumerated") from exc
     folded: set[str] = set()
     for name in names:
         limits.entries += 1
-        if limits.entries > limits.max_files * 2:
-            raise WorkspaceStagingDenied("workspace snapshot resource bounds exceeded")
         if name.casefold() in folded:
             raise WorkspaceStagingDenied("case-aliased sibling in workspace")
         folded.add(name.casefold())
