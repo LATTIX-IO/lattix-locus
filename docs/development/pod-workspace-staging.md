@@ -106,3 +106,27 @@ change to PodSandboxBroker; **SandboxManager direct callers remain separately
 in scope for LOCUS-432**. CI tests validate rewritten argv and denial before
 receipts, not a live daemon's mount behavior. A supported Docker Engine smoke
 is still a prerequisite for declaring the full path release-ready.
+
+
+## Staging ancestry and cleanup review gate
+
+Only the trusted host default temporary directory is resolved to account for
+macOS /var aliases. An explicitly selected staging parent must pass a
+component-by-component O_NOFOLLOW directory-open check.
+
+Textual containment is insufficient for case-insensitive filesystems and
+bind aliases. Source and destination roots are pinned by open descriptors.
+The entire destination ancestor chain is compared to the source directory's
+device/inode identity before stage creation; the resulting stage is checked
+against the pinned parent. Alias matches deny before source mutation.
+
+Cleanup retries after restoring directory-owner access only *inside the
+disposable stage*, never chmod-following symlinks or touching external
+ancestors. This covers caller-modified 000/0500 permissions. Cleanup failures
+are propagated, not counted as successful.
+
+Threat boundary: privileged host daemons or hostile same-UID processes that
+concurrently rename/rebind the staging parent after verification are not
+handled by these path-based preflight controls. Executable pods require a
+trusted staging root plus supported OS runtime isolation. No real Docker
+daemon or macOS security attestation is claimed by this incremental PR.
