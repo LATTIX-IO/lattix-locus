@@ -20,7 +20,7 @@ from locus_runtime.task_plan_compiler import compile_task_plan
 from tests.gateway_support import FakeEngine
 
 
-def fixture(tmp_path, *, engine=None):
+def fixture(tmp_path, *, engine=None, write_roots=()):
     ledger = PodReservationLedger(tmp_path / "pods.db")
     gateway = Gateway(engine or FakeEngine(), lambda _: None)
     parent = gateway.open_session(
@@ -29,7 +29,7 @@ def fixture(tmp_path, *, engine=None):
         capabilities=Capabilities(
             allowed_tools=frozenset({"run_command"}),
             read_roots=(str(tmp_path),),
-            write_roots=(str(tmp_path),),
+            write_roots=write_roots,
             allowed_executables=("echo",),
             max_risk_class=RiskClass.R2,
             max_actions=12, max_tool_calls=12,
@@ -344,15 +344,28 @@ def test_relative_launcher_working_directory_denied(tmp_path, monkeypatch):
     assert not executions
 
 
-def test_docker_mounts_deduplicated_when_scopes_overlap(tmp_path, monkeypatch):
+def test_docker_non_mutating_readonly_workspace_mount(tmp_path, monkeypatch):
     invocations = docker(monkeypatch)
     app, _, lease, _ = fixture(tmp_path)
     app.execute(lease, cmd(tmp_path))
     args = invocations[0][0]
     mounts = [args[index + 1] for index, value in enumerate(args[:-1]) if value == "-v"]
     root = str(tmp_path.resolve())
-    assert mounts.count(f"{root}:{root}:rw") == 1
-    assert f"{root}:{root}:ro" not in mounts
+    assert mounts.count(f"{root}:{root}:ro") == 1
+    assert f"{root}:{root}:rw" not in mounts
+
+
+def test_docker_original_writable_workspace_fails_before_receipts(tmp_path, monkeypatch):
+    invocations = docker(monkeypatch)
+    app, receipts, lease, _ = fixture(tmp_path, write_roots=(str(tmp_path),))
+    assert not (tmp_path / ".git").exists()
+    with pytest.raises(AdmissionDenied, match="until staged pod isolation"):
+        app.execute(lease, cmd(tmp_path, key="deny-direct-writable-host"))
+    assert invocations == []
+    assert not (tmp_path / ".git").exists()
+    assert not (tmp_path / ".aws").exists()
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
 
 
 def test_failed_docker_cleanup_retains_timeout_and_nonreplayability(tmp_path, monkeypatch):
