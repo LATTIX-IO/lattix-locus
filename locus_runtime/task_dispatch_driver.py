@@ -29,6 +29,43 @@ _ENGINE_ID = re.compile(r"[A-Za-z][A-Za-z0-9_.:/-]{0,127}\Z", re.ASCII)
 _ARTIFACT = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 
 
+_NODE_PIN_ID = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}\Z", re.ASCII)
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedEnginePins:
+    """Supervisor-owned engine choices for one immutable DAG revision.
+
+    This is not an authorization grant or a model-supplied plan field. Only
+    trusted control-plane code may construct and pass it to the dispatcher.
+    The Gateway still owns all execution and tool authority.
+    """
+
+    plan_digest: str
+    node_engines: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.plan_digest, str) or _ARTIFACT.fullmatch(self.plan_digest) is None:
+            raise ValueError("engine pins require a canonical plan digest")
+        if not isinstance(self.node_engines, tuple) or not self.node_engines:
+            raise ValueError("engine pins require a nonempty immutable node mapping")
+        nodes: set[str] = set()
+        for entry in self.node_engines:
+            if not isinstance(entry, tuple) or len(entry) != 2:
+                raise ValueError("engine pin entries must be immutable node/engine pairs")
+            node_id, engine_id = entry
+            if (
+                not isinstance(node_id, str)
+                or _NODE_PIN_ID.fullmatch(node_id) is None
+                or not isinstance(engine_id, str)
+                or _ENGINE_ID.fullmatch(engine_id) is None
+            ):
+                raise ValueError("invalid trusted engine pin identifier")
+            if node_id in nodes:
+                raise ValueError("duplicate trusted engine pin")
+            nodes.add(node_id)
+
+
 @dataclass(frozen=True, slots=True)
 class WorkReport:
     """Worker output is an assertion until a separate trusted verifier passes."""
@@ -109,6 +146,7 @@ class GatewayTaskDriver:
         engines: tuple[EngineBinding, ...],
         verifier: IndependentVerifier,
         max_parallel: int = 2,
+        engine_pins: TrustedEnginePins | None = None,
     ) -> None:
         if type(max_parallel) is not int or not 1 <= max_parallel <= scheduler.max_inflight:
             raise ValueError("parallelism must fit the durable supervisor limit")
@@ -116,14 +154,46 @@ class GatewayTaskDriver:
             raise ValueError("registered engine IDs must be nonempty and distinct")
         if not callable(getattr(verifier, "verify", None)):
             raise ValueError("independent verifier must be supplied by trusted supervisor")
+        if engine_pins is not None and not isinstance(engine_pins, TrustedEnginePins):
+            raise ValueError("engine pins require a trusted immutable contract")
         self.scheduler = scheduler
         self.engines = engines
         self.verifier = verifier
         self.max_parallel = max_parallel
+        self.engine_pins = engine_pins
+
+    def _preflight_engine_pins(
+        self, plan: CompiledTaskPlan, parent: GatewaySession,
+    ) -> None:
+        """Validate and durably seal engine selection before any node claim."""
+        pins = self.engine_pins
+        if pins is None:
+            self.scheduler.refuse_unpinned_on_sealed_run(plan, parent)
+            return  # Legacy internal runs stay unpinned only if never sealed.
+        if pins.plan_digest != plan.digest:
+            raise AdmissionDenied("trusted engine pins target a stale task revision")
+        node_by_id = {node.node_id: node for node in plan.plan.nodes}
+        assigned = dict(pins.node_engines)
+        if set(assigned) != set(node_by_id):
+            raise AdmissionDenied("trusted engine pins do not cover exact DAG nodes")
+        registered = {binding.engine_id: binding for binding in self.engines}
+        for node_id, engine_id in assigned.items():
+            binding = registered.get(engine_id)
+            if (
+                binding is None
+                or not node_by_id[node_id].authority.capabilities.issubset(
+                    binding.supported_tools
+                )
+            ):
+                raise AdmissionDenied("trusted engine pin is unavailable or incapable")
+        self.scheduler.bind_engine_pins(plan, parent, pins.node_engines)
 
     def _select(self, node: TaskNode) -> EngineBinding | None:
-        # Explicit registration order is the supervisor's tier preference.
-        # No model-supplied arbitrary executable or engine string is accepted.
+        if self.engine_pins is not None:
+            pinned = dict(self.engine_pins.node_engines)[node.node_id]
+            # No fallback, including to another engine with identical tools.
+            return next((b for b in self.engines if b.engine_id == pinned), None)
+        # Existing registration order is retained for unpinned callers.
         return next(
             (binding for binding in self.engines
              if node.authority.capabilities.issubset(binding.supported_tools)),
@@ -217,8 +287,12 @@ class GatewayTaskDriver:
         """
         if type(recover_unstarted) is not bool:
             raise ValueError("recovery flag must be boolean")
+        self._preflight_engine_pins(plan, parent)
+        expected = self.engine_pins.node_engines if self.engine_pins is not None else None
         resumable = (
-            list(self.scheduler.recover_unstarted(plan, parent))
+            list(self.scheduler.recover_unstarted(
+                plan, parent, expected_engine_pins=expected,
+            ))
             if recover_unstarted else []
         )
         nodes = {node.node_id: node for node in plan.plan.nodes}
@@ -233,7 +307,9 @@ class GatewayTaskDriver:
                     break
             claim = (
                 resumable.pop(0) if resumable
-                else self.scheduler.claim_next(plan, parent)
+                else self.scheduler.claim_next(
+                    plan, parent, expected_engine_pins=expected,
+                )
             )
             if claim is None:
                 break
