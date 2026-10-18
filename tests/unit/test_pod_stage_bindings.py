@@ -362,16 +362,20 @@ def test_durable_graph_fingerprint_drift_is_not_an_engine_authority(
 def test_linked_receipt_substitution_is_detected_on_inspect(tmp_path):
     scheduler, ledger, plan, parent, receipts, stages = rig(tmp_path)
     _, lease = child(scheduler, plan, parent)
+    _, sibling = child(scheduler, plan, parent)
     src = workspace(tmp_path)
     with staged_workspace(src, staging_parent=tmp_path) as snapshot:
         bound = stages.bind(lease, snapshot)
         receipt = action(receipts, lease)
         linked = stages.link_prepared_receipt(lease, bound.stage_id, receipt.action_id)
         assert linked.state == "receipt-linked"
+        # A valid receipt FK owned by a different live sibling is still
+        # unauthorized for this StageLease and must fail relational attestation.
+        stolen = action(receipts, sibling, key="sibling-action")
         with ledger._connect() as db:
             db.execute(
                 "UPDATE pod_stage_binding SET action_id=? WHERE id=?",
-                ("nonexistent-synthetic-receipt", bound.stage_id),
+                (stolen.action_id, bound.stage_id),
             )
         with pytest.raises(AdmissionDenied, match="receipt linkage was substituted"):
             stages.inspect(lease, bound.stage_id)
