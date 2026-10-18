@@ -503,3 +503,20 @@ def test_planner_mutating_mutable_policy_cannot_strip_trusted_readonly_mount(
         in argv
     )
     assert "--privileged" not in argv
+
+
+
+def test_nonexistent_approved_read_scope_fails_before_receipt(
+    tmp_path, monkeypatch,
+):
+    invocations = docker(monkeypatch)
+    missing = tmp_path / "removed-read-root"
+    app, receipts, lease, _ = fixture(
+        tmp_path, read_roots=(str(tmp_path), str(missing)),
+    )
+    with pytest.raises(AdmissionDenied, match="read scope unavailable"):
+        app.execute(lease, cmd(tmp_path, key="never-open-missing-root"))
+    assert not missing.exists()
+    assert invocations == []
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
