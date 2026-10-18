@@ -37,7 +37,7 @@ Neither invariant is relaxed.
 5. A separately prepared, Gateway-authorized PodActionReceipt may be linked
    via link_prepared_receipt, but only when it is in prepared state, belongs
    to this reservation/child, and matches the trusted supervising principal
-   token digest. This link is durable and one-use; it does *not* dispatch
+   token digest. The first action ID, action fingerprint and Gateway audit ID are sealed in a separate append-only stage-audit receipt event. Later inspection recomputes and verifies the original seal, blocking substitution even by a second valid receipt for the same child. This link is durable and one-use; it does *not* dispatch
    the action or provide tool authorization by itself.
 6. inspect rechecks active child and stage identity. retire marks the binding
    unusable without deleting or promoting stage contents. The snapshot
@@ -51,7 +51,7 @@ reservation, parent run, child run, task node/attempt key, plan digest,
 PodSpec revision, pinned engine, initial snapshot SHA-256, Gateway scope
 SHA-256, canonical binding digest, source/staged paths, source and stage
 device/inode identity, lifecycle state, optional prepared action receipt
-reference, and timestamp. The reservation and action each have UNIQUE bindings;
+reference, and timestamp. The original full DAG graph/pin revision is immutable across StageLease reads even when every current scheduler row is changed consistently. The reservation and action each have UNIQUE bindings;
 no executable grant is recorded or inferred from the row.
 
 The audit table records only stage ID, lifecycle event and timestamp.
