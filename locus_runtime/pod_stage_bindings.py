@@ -13,7 +13,7 @@ import re
 import secrets
 import sqlite3
 import stat
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -83,7 +83,16 @@ def _capability_sha256(lease: PodLease) -> str:
             "risk": caps.max_risk_class.name if caps.max_risk_class is not None else None,
             "max_actions": caps.max_actions,
             "max_tool_calls": caps.max_tool_calls,
-            "budget": asdict(caps.budget) if caps.budget is not None else None,
+            # Usage counters advance after PodLease.settle; only the immutable
+            # *ceilings* define what the child is authorized to consume.
+            "budget_limits": (
+                {
+                    "max_tokens": caps.budget.max_tokens,
+                    "max_duration_seconds": caps.budget.max_duration_seconds,
+                    "max_cost_usd": caps.budget.max_cost_usd,
+                }
+                if caps.budget is not None else None
+            ),
             "autonomy": caps.autonomy_tier,
             "classification": caps.data_classification,
             "profile": caps.runtime_profile,
@@ -189,9 +198,12 @@ class PodStageBindings:
                 stage_ino INTEGER NOT NULL,
                 state TEXT NOT NULL CHECK(state IN ('bound','receipt-linked','retired')),
                 action_id TEXT UNIQUE REFERENCES pod_action_receipt(id),
-                created_at INTEGER NOT NULL,
-                UNIQUE(stage_dev, stage_ino)
+                created_at INTEGER NOT NULL
             )""")
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS pod_stage_inode_lookup "
+                "ON pod_stage_binding(stage_dev,stage_ino)"
+            )
             db.execute("""CREATE TABLE IF NOT EXISTS pod_stage_audit (
                 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                 stage_id TEXT NOT NULL REFERENCES pod_stage_binding(id),
@@ -394,12 +406,35 @@ class PodStageBindings:
                     raise AdmissionDenied("stage lease cannot replace an existing binding")
                 return self._record(self._require(db, lease, previous["id"]))
             # Prevent a different child from claiming the same mutable stage.
+            # Device/inode values can be recycled by the filesystem after
+            # a prior stage is deleted. Refuse only a still-existing live
+            # directory with this identity, including another textual alias.
+            # Historical tombstones must not permanently blacklist new stages.
             reused = db.execute(
-                "SELECT id FROM pod_stage_binding WHERE stage_dev=? AND stage_ino=?",
+                "SELECT staged_path FROM pod_stage_binding "
+                "WHERE stage_dev=? AND stage_ino=?",
                 (stage_dev, stage_ino),
-            ).fetchone()
-            if reused:
-                raise AdmissionDenied("stage directory already bound to a pod")
+            ).fetchall()
+            for previous_stage in reused:
+                old_fd: int | None = None
+                try:
+                    old_fd = _open_anchored_directory(Path(previous_stage["staged_path"]))
+                    old_stat = os.fstat(old_fd)
+                    if (old_stat.st_dev, old_stat.st_ino) == (stage_dev, stage_ino):
+                        raise AdmissionDenied("stage directory already bound to a pod")
+                except FileNotFoundError:
+                    # Previously cleaned stage; the historical identity is not
+                    # the newly allocated directory. Avoid any effectful replay.
+                    continue
+                except PermissionError as exc:
+                    if isinstance(exc, AdmissionDenied):
+                        raise
+                    # Stage existing but now inaccessible is ambiguous:
+                    # refuse, rather than incorrectly treating it as cleaned.
+                    raise AdmissionDenied("historical stage identity is inaccessible") from exc
+                finally:
+                    if old_fd is not None:
+                        os.close(old_fd)
             stage_id = secrets.token_urlsafe(24)
             db.execute(
                 "INSERT INTO pod_stage_binding "
