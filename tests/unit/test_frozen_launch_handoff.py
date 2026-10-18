@@ -70,7 +70,15 @@ def test_planner_retained_mutable_plan_cannot_change_fenced_dispatch(
     # CLI bytes must equal the previously validated immutable snapshot.
     assert argv[:3] == ["docker", "run", "--rm"]
     assert argv[3] == "--name" and argv[4].startswith("locus-pod-")
-    assert tuple(argv[:3] + argv[5:]) == seen[0]
+    # After exact contract validation, the trusted broker strengthens the
+    # readonly source binds using Docker's non-creating recursive form. This
+    # authorized post-validation transform is not a planner mutation.
+    expected = broker_module._noncreating_docker_readonly_mounts(
+        list(seen[0]), read_roots=(str(tmp_path),), command=cmd(tmp_path).argv,
+    )
+    assert tuple(argv[:3] + argv[5:]) == expected
+    assert "-v" not in argv
+    assert "--mount" in argv
     assert "--privileged" not in argv
     assert "--network=host" not in argv
     assert "unauthorized-host-exec" not in argv

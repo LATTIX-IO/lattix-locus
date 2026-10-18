@@ -184,6 +184,59 @@ def _expected_docker_launch_contract(
     return expected
 
 
+def _noncreating_docker_readonly_mounts(
+    verified_argv: list[str],
+    *,
+    read_roots: Sequence[str],
+    command: Sequence[str],
+) -> tuple[str, ...]:
+    """Rewrite only independently verified *read-only* host binds.
+
+    This runs after the exact planner/independent broker argv comparison, but
+    before action receipts and subprocess. Docker -v silently creates missing
+    host sources during a rename race; --mount type=bind refuses them instead.
+    Explicit bind-recursive=readonly also denies unsupported old daemon/kernel
+    recursive-readonly semantics rather than exposing nested submount writes.
+    Do not transform any tool-supplied arguments after the image.
+    """
+    readable = {str(Path(raw).expanduser().resolve()) for raw in read_roots}
+    for source in readable:
+        if any(ord(ch) in (0, 10, 13, 44) for ch in source):
+            raise AdmissionDenied("Docker read-only mount source path denied")
+        if not Path(source).exists():
+            raise AdmissionDenied("Docker read-only mount source unavailable")
+    prefix_end = len(verified_argv) - len(command) - 1
+    if prefix_end < 3:
+        raise AdmissionDenied("invalid verified Docker argv boundary")
+    rewritten: list[str] = []
+    mounted: set[str] = set()
+    i = 0
+    while i < prefix_end:
+        if verified_argv[i] == "-v":
+            if i + 1 >= prefix_end:
+                raise AdmissionDenied("invalid Docker bind mount argument")
+            mount = verified_argv[i + 1]
+            mounted_source = next(
+                (root for root in readable if mount == f"{root}:{root}:ro"),
+                None,
+            )
+            if mounted_source is None or mounted_source in mounted:
+                raise AdmissionDenied("unverified Docker writable or duplicate bind")
+            rewritten.extend((
+                "--mount",
+                f"type=bind,source={mounted_source},target={mounted_source},readonly,bind-recursive=readonly",
+            ))
+            mounted.add(mounted_source)
+            i += 2
+            continue
+        rewritten.append(verified_argv[i])
+        i += 1
+    if mounted != readable:
+        raise AdmissionDenied("Docker readonly mount set changed")
+    rewritten.extend(verified_argv[prefix_end:])
+    return tuple(rewritten)
+
+
 def _validate_docker_launch_contract(
     argv: list[str], expected: list[str],
 ) -> None:
@@ -216,7 +269,10 @@ def _bounded_dir(path: str, permitted: Sequence[str]) -> str:
         raise AdmissionDenied("working directory is unavailable") from exc
     if not actual.is_dir() or not permitted:
         raise AdmissionDenied("working directory has no authorized scope")
-    roots = [Path(p).expanduser().resolve(strict=True) for p in permitted]
+    try:
+        roots = [Path(p).expanduser().resolve(strict=True) for p in permitted]
+    except (OSError, RuntimeError) as exc:
+        raise AdmissionDenied("working directory read scope unavailable") from exc
     if not any(actual == root or root in actual.parents for root in roots):
         raise AdmissionDenied("working directory exceeds pod read scope")
     return str(actual)
@@ -265,6 +321,14 @@ class PodSandboxBroker:
         strategy = _choose_strategy()
         if strategy not in CONFINING_STRATEGIES:
             raise AdmissionDenied("unsupported unconfined strategy")
+        # Docker mount-target preparation can mutate an ORIGINAL writable host
+        # bind, even if readonly tmpfs submounts mask credential directories.
+        # Until the verified per-pod staging mount contract is integrated, do
+        # not create a receipt or launch any writable Docker host bind.
+        if strategy == IsolationStrategy.HARDENED_DOCKER and caps.write_roots:
+            raise AdmissionDenied(
+                "Docker writable host workspace denied until staged pod isolation"
+            )
         # Strict image admission is meaningful only if Docker actually runs
         # the selected digest. Never silently substitute Seatbelt,
         # AppContainer, or another confinement backend when the supervisor
@@ -351,7 +415,15 @@ class PodSandboxBroker:
         # performs durable preparation/fencing before invoke(), so never read
         # the planner-owned argv or backend again after this validation point.
         # A post-validation mutation must not change the dispatched command.
-        authorized_launch_argv = tuple(plan.command)
+        authorized_launch_argv = (
+            _noncreating_docker_readonly_mounts(
+                expected_docker, read_roots=caps.read_roots,
+                command=command.argv,
+            )
+            if strategy == IsolationStrategy.HARDENED_DOCKER
+            and expected_docker is not None
+            else tuple(plan.command)
+        )
         authorized_backend = strategy.value
         audit_command = shlex.join(command.argv)
         facts = _jail_facts(strategy)

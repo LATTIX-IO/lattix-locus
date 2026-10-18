@@ -20,7 +20,7 @@ from locus_runtime.task_plan_compiler import compile_task_plan
 from tests.gateway_support import FakeEngine
 
 
-def fixture(tmp_path, *, engine=None):
+def fixture(tmp_path, *, engine=None, write_roots=(), read_roots=None):
     ledger = PodReservationLedger(tmp_path / "pods.db")
     gateway = Gateway(engine or FakeEngine(), lambda _: None)
     parent = gateway.open_session(
@@ -28,8 +28,8 @@ def fixture(tmp_path, *, engine=None):
         allow_child_delegation=True,
         capabilities=Capabilities(
             allowed_tools=frozenset({"run_command"}),
-            read_roots=(str(tmp_path),),
-            write_roots=(str(tmp_path),),
+            read_roots=(str(tmp_path),) if read_roots is None else read_roots,
+            write_roots=write_roots,
             allowed_executables=("echo",),
             max_risk_class=RiskClass.R2,
             max_actions=12, max_tool_calls=12,
@@ -344,15 +344,29 @@ def test_relative_launcher_working_directory_denied(tmp_path, monkeypatch):
     assert not executions
 
 
-def test_docker_mounts_deduplicated_when_scopes_overlap(tmp_path, monkeypatch):
+def test_docker_non_mutating_readonly_workspace_mount(tmp_path, monkeypatch):
     invocations = docker(monkeypatch)
     app, _, lease, _ = fixture(tmp_path)
     app.execute(lease, cmd(tmp_path))
     args = invocations[0][0]
-    mounts = [args[index + 1] for index, value in enumerate(args[:-1]) if value == "-v"]
+    mounts = [args[index + 1] for index, value in enumerate(args[:-1]) if value == "--mount"]
     root = str(tmp_path.resolve())
-    assert mounts.count(f"{root}:{root}:rw") == 1
-    assert f"{root}:{root}:ro" not in mounts
+    expected = f"type=bind,source={root},target={root},readonly,bind-recursive=readonly"
+    assert mounts.count(expected) == 1
+    assert "-v" not in args
+
+
+def test_docker_original_writable_workspace_fails_before_receipts(tmp_path, monkeypatch):
+    invocations = docker(monkeypatch)
+    app, receipts, lease, _ = fixture(tmp_path, write_roots=(str(tmp_path),))
+    assert not (tmp_path / ".git").exists()
+    with pytest.raises(AdmissionDenied, match="until staged pod isolation"):
+        app.execute(lease, cmd(tmp_path, key="deny-direct-writable-host"))
+    assert invocations == []
+    assert not (tmp_path / ".git").exists()
+    assert not (tmp_path / ".aws").exists()
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
 
 
 def test_failed_docker_cleanup_retains_timeout_and_nonreplayability(tmp_path, monkeypatch):
@@ -423,3 +437,86 @@ def test_docker_missing_isolation_controls_does_not_dispatch(tmp_path, monkeypat
     assert not invocations
     with receipts.reservations._connect() as db:
         assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+
+def test_docker_disappearing_readonly_source_never_auto_created(
+    tmp_path, monkeypatch,
+):
+    invocations = docker(monkeypatch)
+    disappearing = tmp_path / "readable-then-renamed"
+    disappearing.mkdir()
+    original = broker_module.SandboxManager.plan
+
+    def concurrent_rename(self, spec, policy):
+        plan = original(self, spec, policy)
+        # Simulate a competing host writer removing the already-admitted
+        # read-only source after broker and planner snapshots.
+        disappearing.rmdir()
+        return plan
+
+    monkeypatch.setattr(broker_module.SandboxManager, "plan", concurrent_rename)
+    app, receipts, lease, _ = fixture(
+        tmp_path, read_roots=(str(tmp_path), str(disappearing)),
+    )
+    with pytest.raises(AdmissionDenied, match="source unavailable"):
+        app.execute(lease, cmd(tmp_path, key="missing-ro-source"))
+    assert not disappearing.exists()
+    assert invocations == []
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+def test_docker_user_argument_named_dash_v_is_not_mistaken_for_mount(
+    tmp_path, monkeypatch,
+):
+    executions = docker(monkeypatch)
+    app, _, lease, _ = fixture(tmp_path)
+    app.execute(lease, cmd(tmp_path, args=("echo", "-v"), key="dash-v-arg"))
+    assert executions[0][0][-2:] == ["echo", "-v"]
+    assert "--mount" in executions[0][0]
+
+
+
+def test_planner_mutating_mutable_policy_cannot_strip_trusted_readonly_mount(
+    tmp_path, monkeypatch,
+):
+    invocations = docker(monkeypatch)
+    original = broker_module.SandboxManager.plan
+
+    def mutated_plan(self, spec, policy):
+        plan = original(self, spec, policy)
+        # Planner-owned mutable inputs are untrusted AFTER independent
+        # validation. Neither edit may alter the broker's approved launch.
+        policy.allowed_read_paths.clear()
+        spec.command.append("--privileged")
+        return plan
+
+    monkeypatch.setattr(broker_module.SandboxManager, "plan", mutated_plan)
+    app, _, lease, _ = fixture(tmp_path)
+    result = app.execute(lease, cmd(tmp_path, key="immutable-mount-roots"))
+    assert result.receipt.state == "succeeded"
+    argv = invocations[0][0]
+    root = str(tmp_path.resolve())
+    assert (
+        f"type=bind,source={root},target={root},readonly,bind-recursive=readonly"
+        in argv
+    )
+    assert "--privileged" not in argv
+
+
+
+def test_nonexistent_approved_read_scope_fails_before_receipt(
+    tmp_path, monkeypatch,
+):
+    invocations = docker(monkeypatch)
+    missing = tmp_path / "removed-read-root"
+    app, receipts, lease, _ = fixture(
+        tmp_path, read_roots=(str(tmp_path), str(missing)),
+    )
+    with pytest.raises(AdmissionDenied, match="read scope unavailable"):
+        app.execute(lease, cmd(tmp_path, key="never-open-missing-root"))
+    assert not missing.exists()
+    assert invocations == []
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
