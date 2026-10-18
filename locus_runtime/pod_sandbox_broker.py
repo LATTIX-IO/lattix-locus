@@ -414,7 +414,7 @@ class PodSandboxBroker:
         # A post-validation mutation must not change the dispatched command.
         authorized_launch_argv = (
             _noncreating_docker_readonly_mounts(
-                expected_docker, read_roots=policy.allowed_read_paths,
+                expected_docker, read_roots=caps.read_roots,
                 command=command.argv,
             )
             if strategy == IsolationStrategy.HARDENED_DOCKER
