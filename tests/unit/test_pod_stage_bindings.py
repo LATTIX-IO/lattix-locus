@@ -15,7 +15,7 @@ import pytest
 from locus_runtime.action_receipts import PodActionReceipts
 from locus_runtime.pod_reservations import AdmissionDenied, ResourceBudget
 from locus_runtime.pod_stage_bindings import PodStageBindings
-from locus_runtime.pod_workspace_staging import WorkspaceSnapshot, staged_workspace
+from locus_runtime.pod_workspace_staging import staged_workspace
 from tests.unit.test_task_scheduler import REQUEST, build
 
 pytestmark = pytest.mark.skipif(
