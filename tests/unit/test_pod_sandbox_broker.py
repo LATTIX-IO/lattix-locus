@@ -440,17 +440,28 @@ def test_docker_missing_isolation_controls_does_not_dispatch(tmp_path, monkeypat
 
 
 
-def test_docker_disappearing_or_absent_readonly_source_never_auto_created(
+def test_docker_disappearing_readonly_source_never_auto_created(
     tmp_path, monkeypatch,
 ):
     invocations = docker(monkeypatch)
-    missing = tmp_path / "not-present"
+    disappearing = tmp_path / "readable-then-renamed"
+    disappearing.mkdir()
+    original = broker_module.SandboxManager.plan
+
+    def concurrent_rename(self, spec, policy):
+        plan = original(self, spec, policy)
+        # Simulate a competing host writer removing the already-admitted
+        # read-only source after broker and planner snapshots.
+        disappearing.rmdir()
+        return plan
+
+    monkeypatch.setattr(broker_module.SandboxManager, "plan", concurrent_rename)
     app, receipts, lease, _ = fixture(
-        tmp_path, read_roots=(str(tmp_path), str(missing)),
+        tmp_path, read_roots=(str(tmp_path), str(disappearing)),
     )
     with pytest.raises(AdmissionDenied, match="source unavailable"):
         app.execute(lease, cmd(tmp_path, key="missing-ro-source"))
-    assert not missing.exists()
+    assert not disappearing.exists()
     assert invocations == []
     with receipts.reservations._connect() as db:
         assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
