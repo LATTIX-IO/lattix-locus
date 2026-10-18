@@ -162,11 +162,14 @@ class GatewayTaskDriver:
         self.max_parallel = max_parallel
         self.engine_pins = engine_pins
 
-    def _preflight_engine_pins(self, plan: CompiledTaskPlan) -> None:
-        """Refuse stale, incomplete or unavailable pins before any node claim."""
+    def _preflight_engine_pins(
+        self, plan: CompiledTaskPlan, parent: GatewaySession,
+    ) -> None:
+        """Validate and durably seal engine selection before any node claim."""
         pins = self.engine_pins
         if pins is None:
-            return  # Existing unpinned internal callers keep their behavior.
+            self.scheduler.refuse_unpinned_on_sealed_run(plan, parent)
+            return  # Legacy internal runs stay unpinned only if never sealed.
         if pins.plan_digest != plan.digest:
             raise AdmissionDenied("trusted engine pins target a stale task revision")
         node_by_id = {node.node_id: node for node in plan.plan.nodes}
@@ -183,6 +186,7 @@ class GatewayTaskDriver:
                 )
             ):
                 raise AdmissionDenied("trusted engine pin is unavailable or incapable")
+        self.scheduler.bind_engine_pins(plan, parent, pins.node_engines)
 
     def _select(self, node: TaskNode) -> EngineBinding | None:
         if self.engine_pins is not None:
@@ -283,9 +287,12 @@ class GatewayTaskDriver:
         """
         if type(recover_unstarted) is not bool:
             raise ValueError("recovery flag must be boolean")
-        self._preflight_engine_pins(plan)
+        self._preflight_engine_pins(plan, parent)
+        expected = self.engine_pins.node_engines if self.engine_pins is not None else None
         resumable = (
-            list(self.scheduler.recover_unstarted(plan, parent))
+            list(self.scheduler.recover_unstarted(
+                plan, parent, expected_engine_pins=expected,
+            ))
             if recover_unstarted else []
         )
         nodes = {node.node_id: node for node in plan.plan.nodes}
@@ -300,7 +307,9 @@ class GatewayTaskDriver:
                     break
             claim = (
                 resumable.pop(0) if resumable
-                else self.scheduler.claim_next(plan, parent)
+                else self.scheduler.claim_next(
+                    plan, parent, expected_engine_pins=expected,
+                )
             )
             if claim is None:
                 break

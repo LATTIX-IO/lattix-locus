@@ -31,6 +31,7 @@ from locus_runtime.task_graph_contract import validate_task_plan
 from locus_runtime.task_plan_compiler import CompiledTaskPlan
 
 _PROOF_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_ENGINE_ID = re.compile(r"[A-Za-z][A-Za-z0-9_.:/-]{0,127}\Z", re.ASCII)
 _BUSY = frozenset({"claimed", "reserved", "active", "uncertain"})
 _MAX_UNSTARTED_RECLAIMS = 3
 
@@ -105,6 +106,18 @@ class DurableTaskScheduler:
                     "ALTER TABLE task_dispatch_node ADD COLUMN "
                     "attempt_epoch INTEGER NOT NULL DEFAULT 0"
                 )
+            if "pinned_engine_id" not in columns:
+                db.execute(
+                    "ALTER TABLE task_dispatch_node ADD COLUMN pinned_engine_id TEXT"
+                )
+            parent_columns = {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(task_dispatch_parent)")
+            }
+            if "engine_pins_json" not in parent_columns:
+                db.execute(
+                    "ALTER TABLE task_dispatch_parent ADD COLUMN engine_pins_json TEXT"
+                )
 
     @staticmethod
     def _fingerprint(plan: CompiledTaskPlan) -> str:
@@ -172,7 +185,26 @@ class DurableTaskScheduler:
             for row in rows
         ):
             raise AdmissionDenied("scheduler graph revision changed")
-        return {str(row["node_id"]): row for row in rows}
+        indexed = {str(row["node_id"]): row for row in rows}
+        encoded = supervisor["engine_pins_json"]
+        if encoded is not None:
+            try:
+                pairs = json.loads(encoded)
+                expected = dict(pairs)
+                if not isinstance(pairs, list) or len(pairs) != len(expected):
+                    raise ValueError("duplicated or invalid durable pin")
+            except (ValueError, TypeError):
+                raise AdmissionDenied("scheduler engine binding integrity changed") from None
+            if set(expected) != set(indexed) or any(
+                not isinstance(engine, str)
+                or _ENGINE_ID.fullmatch(engine) is None
+                or indexed[node]["pinned_engine_id"] != engine
+                for node, engine in expected.items()
+            ):
+                raise AdmissionDenied("scheduler engine binding integrity changed")
+        elif any(row["pinned_engine_id"] is not None for row in rows):
+            raise AdmissionDenied("scheduler engine binding integrity changed")
+        return indexed
 
     @staticmethod
     def _key(run_id: str, digest: str, node_id: str, epoch: int = 0) -> str:
@@ -238,6 +270,121 @@ class DurableTaskScheduler:
                     (run_id, node.node_id, plan.digest, fingerprint),
                 )
 
+    def bind_engine_pins(
+        self, plan: CompiledTaskPlan, parent: GatewaySession,
+        node_engines: tuple[tuple[str, str], ...],
+    ) -> None:
+        """Seal the exact trusted node->engine choice for this parent run.
+
+        The binding happens in the scheduler's BEGIN IMMEDIATE transaction,
+        *before* the first claim. It is idempotent across restarts, immutable
+        after first binding and independently checked again at child admission.
+        Caller controls are not granted execution authority by this record.
+        """
+        if not isinstance(node_engines, tuple) or not node_engines:
+            raise AdmissionDenied("durable engine binding requires immutable pins")
+        mapping: dict[str, str] = {}
+        for pair in node_engines:
+            if not isinstance(pair, tuple) or len(pair) != 2:
+                raise AdmissionDenied("durable engine binding requires immutable pairs")
+            node_id, engine_id = pair
+            if (
+                not isinstance(node_id, str)
+                or not isinstance(engine_id, str)
+                or _ENGINE_ID.fullmatch(engine_id) is None
+                or node_id in mapping
+            ):
+                raise AdmissionDenied("duplicate or invalid durable engine assignment")
+            mapping[node_id] = engine_id
+        encoded = json.dumps(
+            sorted(mapping.items()), separators=(",", ":"), ensure_ascii=True,
+        )
+        with self.ledger._connect() as db:
+            self.ledger._tx(db)
+            rows = self._check(db, plan, parent)
+            if set(mapping) != set(rows):
+                raise AdmissionDenied("durable engine binding node set mismatch")
+            record = db.execute(
+                "SELECT engine_pins_json FROM task_dispatch_parent WHERE parent_run_id=?",
+                (parent.caller.run_id,),
+            ).fetchone()
+            existing = record["engine_pins_json"]
+            if existing is not None:
+                if existing != encoded:
+                    raise AdmissionDenied("durable engine binding cannot change")
+                return
+            if any(
+                row["state"] != "pending"
+                or row["attempt_key"] is not None
+                or row["reservation_id"] is not None
+                or row["artifact_digest"] is not None
+                for row in rows.values()
+            ):
+                raise AdmissionDenied("cannot pin an already started task graph")
+            db.execute(
+                "UPDATE task_dispatch_parent SET engine_pins_json=? "
+                "WHERE parent_run_id=? AND engine_pins_json IS NULL",
+                (encoded, parent.caller.run_id),
+            )
+            for node_id, engine_id in mapping.items():
+                db.execute(
+                    "UPDATE task_dispatch_node SET pinned_engine_id=? "
+                    "WHERE parent_run_id=? AND node_id=? AND state='pending'",
+                    (engine_id, parent.caller.run_id, node_id),
+                )
+
+    def refuse_unpinned_on_sealed_run(
+        self, plan: CompiledTaskPlan, parent: GatewaySession,
+    ) -> None:
+        """Prevent legacy registry-order routing on a pinned DAG."""
+        with self.ledger._connect() as db:
+            self._check(db, plan, parent)
+            row = db.execute(
+                "SELECT engine_pins_json FROM task_dispatch_parent WHERE parent_run_id=?",
+                (parent.caller.run_id,),
+            ).fetchone()
+            if row["engine_pins_json"] is not None:
+                raise AdmissionDenied("sealed task graph requires exact engine pins")
+
+    @staticmethod
+    def _check_claim_engine_binding(
+        db: sqlite3.Connection, run_id: str,
+        expected_engine_pins: tuple[tuple[str, str], ...] | None,
+    ) -> None:
+        """Assert the caller's binding inside the same write tx as claim/recovery.
+
+        A preflight read is not enough: another supervisor can seal the graph
+        between that check and a claim. No unpinned process may claim a node
+        from a sealed DAG; no pinned process may claim from an unsealed DAG.
+        """
+        row = db.execute(
+            "SELECT engine_pins_json FROM task_dispatch_parent WHERE parent_run_id=?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise AdmissionDenied("durable task parent missing")
+        stored = row["engine_pins_json"]
+        if expected_engine_pins is None:
+            if stored is not None:
+                raise AdmissionDenied("sealed graph requires engine pins at claim")
+            return
+        try:
+            if (
+                not isinstance(expected_engine_pins, tuple)
+                or not expected_engine_pins
+                or len(set(node for node, _ in expected_engine_pins))
+                != len(expected_engine_pins)
+            ):
+                raise ValueError("invalid pins")
+            expected = json.dumps(
+                sorted(expected_engine_pins),
+                separators=(",", ":"), ensure_ascii=True,
+            )
+        except (ValueError, TypeError):
+            raise AdmissionDenied("invalid expected engine pins") from None
+        if stored is None or stored != expected:
+            raise AdmissionDenied("engine binding changed before claim")
+
     def ready(
         self, plan: CompiledTaskPlan, parent: GatewaySession,
     ) -> tuple[str, ...]:
@@ -247,11 +394,15 @@ class DurableTaskScheduler:
 
     def claim_next(
         self, plan: CompiledTaskPlan, parent: GatewaySession,
+        *, expected_engine_pins: tuple[tuple[str, str], ...] | None = None,
     ) -> NodeClaim | None:
         """Claim exactly one eligible node across concurrent supervisor processes."""
         with self.ledger._connect() as db:
             self.ledger._tx(db)
             rows = self._check(db, plan, parent)
+            self._check_claim_engine_binding(
+                db, parent.caller.run_id, expected_engine_pins,
+            )
             if sum(row["state"] in _BUSY for row in rows.values()) >= self.max_inflight:
                 return None
             ready = self._ready_nodes(plan, rows)
@@ -271,6 +422,7 @@ class DurableTaskScheduler:
 
     def recover_unstarted(
         self, plan: CompiledTaskPlan, parent: GatewaySession,
+        *, expected_engine_pins: tuple[tuple[str, str], ...] | None = None,
     ) -> tuple[NodeClaim, ...]:
         """Reconstruct safe claims and requeue definitively unexecuted holds.
 
@@ -284,6 +436,9 @@ class DurableTaskScheduler:
         with self.ledger._connect() as db:
             self.ledger._tx(db)
             rows = self._check(db, plan, parent)
+            self._check_claim_engine_binding(
+                db, parent.caller.run_id, expected_engine_pins,
+            )
             for node_id in sorted(rows):
                 row = rows[node_id]
                 if row["state"] not in {"claimed", "reserved"}:
@@ -414,6 +569,9 @@ class DurableTaskScheduler:
             reservation_id = str(record["reservation_id"] or "")
             if not reservation_id:
                 raise AdmissionDenied("task has no reservation")
+            pinned_engine = record["pinned_engine_id"]
+            if pinned_engine is not None and pinned_engine != engine:
+                raise AdmissionDenied("child engine does not match durable pin")
         # If the process dies after Gateway admission but before the state
         # update, retry is denied by ledger.admit. NEVER reissue this attempt.
         lease = self.ledger.admit(plan, parent, reservation_id, engine=engine)
