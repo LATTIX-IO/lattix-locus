@@ -29,8 +29,7 @@ Neither invariant is relaxed.
    reservation ledger and supervisor-bound PodActionReceipts. Under one
    BEGIN IMMEDIATE transaction it rechecks live parent and child identity,
    parent plan revision, exact node attempt key and reservation, complete
-   scheduler engine pin set, current child engine, Gateway-derived capability
-   fingerprint, initial source manifest, and stage filesystem ownership,
+   scheduler engine pin set, current child engine, Gateway-derived *immutable capability limits* fingerprint (not volatile usage counters), initial source manifest, and stage filesystem ownership,
    inode identity and outside-source ancestry. It persists one unique
    stage/reservation mapping. A duplicate exact bind returns the same record;
    attempts to substitute a different stage or reuse the stage for another
@@ -52,11 +51,11 @@ reservation, parent run, child run, task node/attempt key, plan digest,
 PodSpec revision, pinned engine, initial snapshot SHA-256, Gateway scope
 SHA-256, canonical binding digest, source/staged paths, source and stage
 device/inode identity, lifecycle state, optional prepared action receipt
-reference, and timestamp. The stage and action both have UNIQUE bindings;
+reference, and timestamp. The reservation and action each have UNIQUE bindings;
 no executable grant is recorded or inferred from the row.
 
 The audit table records only stage ID, lifecycle event and timestamp.
-StageLease objects are not bearer capabilities. The on-disk database contains
+Device/inode identity is additionally fenced by the stage root's admission-time ctime/mtime to detect immediate inode reuse at the same path; only still-existing historical stage paths block parallel sharing of the same live inode. StageLease objects are not bearer capabilities. The on-disk database contains
 local source/staging path metadata; protect the SQLite file under the
 supervisor's operating-system ACL. No raw model prompts, tool arguments,
 credentials or staged file contents are stored here.
