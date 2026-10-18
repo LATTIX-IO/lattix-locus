@@ -1,6 +1,6 @@
 # LOCUS-433 — disposable pod workspace snapshot (stage-0)
 
-Status: **supervisor staging primitive, not yet a Docker/CLI runner**.
+Status: **supervisor staging primitive plus fail-closed Docker pod-broker hold; not yet a live writable Docker/CLI runner**.
 
 ## Scope
 
@@ -60,3 +60,28 @@ staging filesystem itself. No production Docker control is claimed.
     pytest -q tests/unit/test_pod_workspace_staging.py
 
 Release-Impact: patch
+
+
+## Immediate fail-closed broker policy
+
+This PR also closes the known writable-host-bind hazard **on the trusted
+PodSandboxBroker launch path** before the staged mount controller exists:
+when the selected backend is HARDENED_DOCKER and the admitted child carries
+any writable roots, the broker refuses execution *before* invoking a planner,
+opening an action receipt or spawning a process. Docker read-only commands
+remain available. Supported non-Docker sandbox tiers keep existing behavior.
+
+This is an intentional compatibility restriction: Docker-backed coding tools
+with writable host workspaces are **disabled** until a separate trusted
+per-pod staging lifecycle, mount contract, and verified artifact promotion
+are installed. No environment variable or model-supplied tool setting bypasses
+this restriction. It is not a claim that all older SandboxManager callers or
+harness entrypoints have been converted to PodSandboxBroker; LOCUS-432 must
+audit and mediate those separately.
+
+The negative test exercises the actual Gateway-backed broker setup and
+verifies zero Docker spawns, zero durable action receipts and no creation of
+the previously missing control paths. The prelaunch denial does not need a
+Docker daemon to be evaluated; any future path that actually mounts staged
+writable directories **does** require supported daemon/kernel tests before
+the block is lifted. No container writable mount is introduced by this PR.
