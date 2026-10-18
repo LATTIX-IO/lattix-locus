@@ -417,20 +417,25 @@ class PodStageBindings:
             ).fetchall()
             for previous_stage in reused:
                 old_fd: int | None = None
+                old_path = Path(previous_stage["staged_path"])
                 try:
-                    old_fd = _open_anchored_directory(Path(previous_stage["staged_path"]))
+                    # Do not confuse missing with the staging reader's
+                    # generic O_NOFOLLOW permission denial.
+                    os.lstat(old_path)
+                except FileNotFoundError:
+                    # Proven absent tombstone: filesystem may reuse its inode.
+                    continue
+                except OSError as exc:
+                    raise AdmissionDenied("historical stage identity is unavailable") from exc
+                try:
+                    old_fd = _open_anchored_directory(old_path)
                     old_stat = os.fstat(old_fd)
                     if (old_stat.st_dev, old_stat.st_ino) == (stage_dev, stage_ino):
                         raise AdmissionDenied("stage directory already bound to a pod")
-                except FileNotFoundError:
-                    # Previously cleaned stage; the historical identity is not
-                    # the newly allocated directory. Avoid any effectful replay.
-                    continue
                 except PermissionError as exc:
                     if isinstance(exc, AdmissionDenied):
                         raise
-                    # Stage existing but now inaccessible is ambiguous:
-                    # refuse, rather than incorrectly treating it as cleaned.
+                    # Ambiguously present or inaccessible: fail closed.
                     raise AdmissionDenied("historical stage identity is inaccessible") from exc
                 finally:
                     if old_fd is not None:
