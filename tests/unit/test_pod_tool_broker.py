@@ -33,7 +33,9 @@ def setup(tmp_path: Path, monkeypatch, *, engine=None, exec_path=None):
         allow_child_delegation=True,
         capabilities=Capabilities(
             allowed_tools=frozenset({"fixed_tool"}),
-            read_roots=(str(tmp_path),), write_roots=(str(tmp_path),),
+            # The fixed test executable is non-mutating. Docker writable
+            # host binds must now be refused until a staged workspace is wired.
+            read_roots=(str(tmp_path),), write_roots=(),
             allowed_executables=(str(exe),),
             max_risk_class=RiskClass.R2,
             max_actions=12, max_tool_calls=12,
