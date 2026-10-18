@@ -188,3 +188,33 @@ def test_reject_casefolded_sibling_aliases(tmp_path):
         with staged_workspace(src, staging_parent=tmp_path):
             pass
     assert not list(tmp_path.glob(".locus-pod-stage-*"))
+
+
+
+def test_empty_protected_paths_remain_absent_in_original(tmp_path):
+    src = tmp_path / "workspace"
+    src.mkdir()
+    (src / "main.txt").write_text("content")
+    before = tuple(p.name for p in src.iterdir())
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        assert snapshot.files == 1
+        assert not (src / ".git").exists()
+        assert not (src / ".aws").exists()
+        assert not (src / ".config").exists()
+        assert not (snapshot.staged / ".git").exists()
+    assert tuple(p.name for p in src.iterdir()) == before
+    assert not list(tmp_path.glob(".locus-pod-stage-*"))
+
+
+def test_too_many_directory_entries_bounded_before_staging(tmp_path):
+    src = tmp_path / "workspace"
+    src.mkdir()
+    for name in ("a", "b", "c"):
+        (src / name).write_text("tiny")
+    # With one allowed file, no directory may even be fully inventoried when
+    # it has more than two entries. The temporary staging root is cleaned.
+    with pytest.raises(WorkspaceStagingDenied, match="resource bounds"):
+        with staged_workspace(src, staging_parent=tmp_path, max_files=1):
+            pass
+    assert sorted(p.name for p in src.iterdir()) == ["a", "b", "c"]
+    assert not list(tmp_path.glob(".locus-pod-stage-*"))
