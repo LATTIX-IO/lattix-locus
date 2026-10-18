@@ -216,17 +216,17 @@ def _noncreating_docker_readonly_mounts(
             if i + 1 >= prefix_end:
                 raise AdmissionDenied("invalid Docker bind mount argument")
             mount = verified_argv[i + 1]
-            source = next(
+            mounted_source = next(
                 (root for root in readable if mount == f"{root}:{root}:ro"),
                 None,
             )
-            if source is None or source in mounted:
+            if mounted_source is None or mounted_source in mounted:
                 raise AdmissionDenied("unverified Docker writable or duplicate bind")
             rewritten.extend((
                 "--mount",
-                f"type=bind,source={source},target={source},readonly,bind-recursive=readonly",
+                f"type=bind,source={mounted_source},target={mounted_source},readonly,bind-recursive=readonly",
             ))
-            mounted.add(source)
+            mounted.add(mounted_source)
             i += 2
             continue
         rewritten.append(verified_argv[i])
