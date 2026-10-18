@@ -15,7 +15,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Protocol
 
 from locus_runtime.sandbox import ALWAYS_READONLY_SUBPATHS
 
@@ -23,9 +23,9 @@ DEFAULT_MAX_FILES = 4096
 DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_DEPTH = 24
 _CHUNK_BYTES = 256 * 1024
-_BLOCKED_COMPONENTS = frozenset({
-    ".git", ".locus", ".ssh", ".gnupg", ".aws", ".azure", ".kube",
-})
+_BLOCKED_COMPONENTS = frozenset(
+    part.casefold() for part in ALWAYS_READONLY_SUBPATHS if "/" not in part
+)
 _SECRET_NAMES = frozenset({
     ".env", ".envrc", ".netrc", ".npmrc", ".pypirc", ".git-credentials",
     "id_rsa", "id_ed25519", "secrets.json", "secrets.yaml",
@@ -36,6 +36,10 @@ _FILE_FLAGS = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
 
 class WorkspaceStagingDenied(PermissionError):
     """The supervisor cannot safely snapshot this untrusted workspace."""
+
+
+class _Hasher(Protocol):
+    def update(self, data: bytes) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +62,7 @@ class _Limits:
     files: int = 0
     bytes: int = 0
     excluded: int = 0
+    entries: int = 0
 
 
 def _require_no_follow() -> None:
@@ -118,7 +123,7 @@ def _excluded_name(name: str, parents: tuple[str, ...]) -> bool:
     return False
 
 
-def _hash_path(hasher: object, kind: bytes, parts: tuple[str, ...]) -> None:
+def _hash_path(hasher: _Hasher, kind: bytes, parts: tuple[str, ...]) -> None:
     try:
         raw = "/".join(parts).encode("utf-8", errors="strict")
     except UnicodeEncodeError as exc:
@@ -129,7 +134,7 @@ def _hash_path(hasher: object, kind: bytes, parts: tuple[str, ...]) -> None:
 def _copy_file(
     parent_fd: int, name: str, dst: Path,
     before: os.stat_result, parts: tuple[str, ...],
-    limits: _Limits, manifest: object,
+    limits: _Limits, manifest: _Hasher,
 ) -> None:
     if before.st_nlink != 1:
         raise WorkspaceStagingDenied("hardlinked files cannot enter a pod snapshot")
@@ -190,7 +195,7 @@ def _copy_file(
 
 def _scan(
     parent_fd: int, dst: Path, parents: tuple[str, ...],
-    limits: _Limits, manifest: object,
+    limits: _Limits, manifest: _Hasher,
 ) -> None:
     if len(parents) > limits.max_depth:
         raise WorkspaceStagingDenied("workspace snapshot depth exceeded")
@@ -201,6 +206,9 @@ def _scan(
         raise WorkspaceStagingDenied("workspace directory cannot be enumerated") from exc
     folded: set[str] = set()
     for name in names:
+        limits.entries += 1
+        if limits.entries > limits.max_files * 2:
+            raise WorkspaceStagingDenied("workspace snapshot resource bounds exceeded")
         if name.casefold() in folded:
             raise WorkspaceStagingDenied("case-aliased sibling in workspace")
         folded.add(name.casefold())
