@@ -172,7 +172,45 @@ def test_two_pinned_siblings_have_distinct_gateway_tool_scopes(tmp_path):
     from locus_runtime.task_scheduler import DurableTaskScheduler
     from tests.unit.test_task_scheduler import build as existing_build
 
-    _, _, baseline, parent = existing_build(tmp_path)
+    from locus_runtime.gateway import BudgetFigures, Capabilities, Gateway, RiskClass
+    from locus_runtime.policy_engine import Decision
+    from tests.gateway_support import FakeEngine
+
+    # The baseline FakeEngine allows every policy evaluation and deliberately
+    # cannot test tool intersection. Install a *test-only* policy double that
+    # evaluates the Gateway's actual child allowed_tools input instead.
+    class CapabilityPolicy(FakeEngine):
+        def decide(self, policy, input):
+            if (
+                policy == "agent_policy"
+                and input["action"] not in input["allowed_tools"]
+            ):
+                return Decision(
+                    allow=False,
+                    reasons=["test.child_capability_denied"],
+                    policy_version="sha256:scoped-test",
+                    backend=self.name,
+                )
+            return super().decide(policy, input)
+
+    _, _, baseline, _ = existing_build(tmp_path)
+    parent = Gateway(CapabilityPolicy(), lambda _: None).open_session(
+        run_id="scoped-parent-001",
+        principal="alice",
+        engine="trusted-supervisor",
+        allow_child_delegation=True,
+        capabilities=Capabilities(
+            allowed_tools=frozenset({"list_issues", "read_file"}),
+            max_actions=16,
+            max_tool_calls=12,
+            budget=BudgetFigures(
+                tokens_used=0, max_tokens=1600,
+                duration_used_seconds=0, max_duration_seconds=120,
+                cost_used_usd=0, max_cost_usd=0,
+            ),
+            max_risk_class=RiskClass.R2,
+        ),
+    )
     proposal = {
         "contract_version": "1.0",
         "nodes": [
