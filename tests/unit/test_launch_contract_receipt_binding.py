@@ -200,7 +200,10 @@ def test_changed_read_mount_cannot_reuse_action_key(tmp_path, monkeypatch):
         return policy
 
     monkeypatch.setattr(broker_module, "SandboxPolicy", added_mount)
-    with pytest.raises(ActionReplayDenied, match="different action"):
+    # An injected mutable SandboxPolicy read grant cannot add a new Docker
+    # mount outside the immutable Gateway child scope. Refuse before receipts
+    # or launch instead of accepting the old policy-driven identity.
+    with pytest.raises(AdmissionDenied, match="unverified Docker"):
         broker.execute(lease, cmd(tmp_path, key="mount-key"))
     assert len(calls) == 1
     assert _receipt_count(receipts) == 1
