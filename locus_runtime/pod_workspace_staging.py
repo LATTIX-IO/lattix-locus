@@ -211,6 +211,10 @@ def _scan(
                     )
                 names.append(entry.name)
         names.sort(key=os.fsencode)
+    except WorkspaceStagingDenied:
+        # WorkspaceStagingDenied derives from PermissionError/OSError.
+        # Preserve the deliberate budget denial, not a generic I/O reason.
+        raise
     except OSError as exc:
         raise WorkspaceStagingDenied("workspace directory cannot be enumerated") from exc
     folded: set[str] = set()
