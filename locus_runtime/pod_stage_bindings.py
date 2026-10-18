@@ -103,7 +103,7 @@ def _capability_sha256(lease: PodLease) -> str:
 
 def _snapshot_identity(
     source: Path, stage: Path,
-) -> tuple[tuple[int, int], tuple[int, int]]:
+) -> tuple[tuple[int, int], tuple[int, int, int, int]]:
     """Pin root inodes and establish that stage is outside original source.
 
     Use O_NOFOLLOW *at every ancestor*, not just a preflight path comparison.
@@ -140,7 +140,8 @@ def _snapshot_identity(
             raise AdmissionDenied("stage is not a private isolated directory")
         return (
             (source_root.st_dev, source_root.st_ino),
-            (staging_root.st_dev, staging_root.st_ino),
+            (staging_root.st_dev, staging_root.st_ino,
+             staging_root.st_ctime_ns, staging_root.st_mtime_ns),
         )
     except (OSError, ValueError) as exc:
         raise AdmissionDenied("stage path cannot be independently verified") from exc
@@ -196,6 +197,8 @@ class PodStageBindings:
                 source_ino INTEGER NOT NULL,
                 stage_dev INTEGER NOT NULL,
                 stage_ino INTEGER NOT NULL,
+                stage_ctime_ns INTEGER NOT NULL,
+                stage_mtime_ns INTEGER NOT NULL,
                 state TEXT NOT NULL CHECK(state IN ('bound','receipt-linked','retired')),
                 action_id TEXT UNIQUE REFERENCES pod_action_receipt(id),
                 created_at INTEGER NOT NULL
@@ -334,12 +337,13 @@ class PodStageBindings:
             or (row["state"] == "retired" and not allow_retired)
         ):
             raise AdmissionDenied("stage binding is stale, foreign or revoked")
-        (source_dev, source_ino), (stage_dev, stage_ino) = _snapshot_identity(
-            Path(row["source_path"]), Path(row["staged_path"])
+        (source_dev, source_ino), (stage_dev, stage_ino, ctime_ns, mtime_ns) = (
+            _snapshot_identity(Path(row["source_path"]), Path(row["staged_path"]))
         )
         if (
-            (source_dev, source_ino, stage_dev, stage_ino) !=
-            (row["source_dev"], row["source_ino"], row["stage_dev"], row["stage_ino"])
+            (source_dev, source_ino, stage_dev, stage_ino, ctime_ns, mtime_ns) !=
+            (row["source_dev"], row["source_ino"], row["stage_dev"], row["stage_ino"],
+             row["stage_ctime_ns"], row["stage_mtime_ns"])
         ):
             raise AdmissionDenied("stage workspace identity changed after binding")
         expected = self._fingerprint(row)
@@ -355,6 +359,7 @@ class PodStageBindings:
                 "attempt_key", "plan_digest", "pod_revision", "engine_id",
                 "source_sha256", "capability_sha256", "source_path", "staged_path",
                 "source_dev", "source_ino", "stage_dev", "stage_ino",
+                "stage_ctime_ns", "stage_mtime_ns",
             )
         })
 
@@ -372,7 +377,9 @@ class PodStageBindings:
         ):
             raise AdmissionDenied("invalid source snapshot metadata")
         source, stage = snapshot.source, snapshot.staged
-        (source_dev, source_ino), (stage_dev, stage_ino) = _snapshot_identity(source, stage)
+        (source_dev, source_ino), (stage_dev, stage_ino, ctime_ns, mtime_ns) = (
+            _snapshot_identity(source, stage)
+        )
         scope = _capability_sha256(lease)
         with self.ledger._connect() as db:
             self.ledger._tx(db)
@@ -395,6 +402,8 @@ class PodStageBindings:
                 "source_ino": source_ino,
                 "stage_dev": stage_dev,
                 "stage_ino": stage_ino,
+                "stage_ctime_ns": ctime_ns,
+                "stage_mtime_ns": mtime_ns,
             }
             binding_hash = self._fingerprint(data)
             previous = db.execute(
@@ -446,15 +455,16 @@ class PodStageBindings:
                 "(id,reservation_id,parent_run_id,child_run_id,node_id,attempt_key,"
                 "plan_digest,pod_revision,engine_id,source_sha256,capability_sha256,"
                 "binding_sha256,source_path,staged_path,source_dev,source_ino,"
-                "stage_dev,stage_ino,state,created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'bound',?)",
+                "stage_dev,stage_ino,stage_ctime_ns,stage_mtime_ns,state,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'bound',?)",
                 (
                     stage_id, data["reservation_id"], data["parent_run_id"],
                     data["child_run_id"], data["node_id"], data["attempt_key"],
                     data["plan_digest"], data["pod_revision"], data["engine_id"],
                     data["source_sha256"], data["capability_sha256"],
                     binding_hash, data["source_path"], data["staged_path"],
-                    source_dev, source_ino, stage_dev, stage_ino, self.ledger._now(),
+                    source_dev, source_ino, stage_dev, stage_ino,
+                    ctime_ns, mtime_ns, self.ledger._now(),
                 ),
             )
             db.execute(
