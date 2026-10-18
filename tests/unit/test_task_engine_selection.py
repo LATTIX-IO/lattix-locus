@@ -208,9 +208,11 @@ def test_two_pinned_siblings_have_distinct_gateway_tool_scopes(tmp_path):
             self.calls = []
 
         def run(self, lease, *, node, intent):
-            assert lease.authorize(kind="tool_call", tool=self.allowed).outcome == "allow"
-            assert lease.authorize(kind="tool_call", tool=self.denied).outcome == "deny"
-            self.calls.append((lease.run_id, node.node_id))
+            allowed = lease.authorize(kind="tool_call", tool=self.allowed).outcome
+            refused = lease.authorize(kind="tool_call", tool=self.denied).outcome
+            self.calls.append((lease.run_id, node.node_id, allowed, refused))
+            assert allowed == "allow", (node.node_id, "own_tool", allowed)
+            assert refused == "deny", (node.node_id, "sibling_tool", refused)
             return WorkReport(
                 hashlib.sha256(node.node_id.encode()).hexdigest(),
                 ResourceBudget(1, 1, 25, 5, 0),
@@ -238,7 +240,7 @@ def test_two_pinned_siblings_have_distinct_gateway_tool_scopes(tmp_path):
     )
 
     result = dispatcher.run_until_idle(plan, parent)
-    assert result.status == "done"
+    assert result.status == "done", (result.outcomes, native.calls, codex.calls)
     assert result.waves == 1
     assert {n for _, n in native.calls} == {"native_research"}
     assert {n for _, n in codex.calls} == {"codex_triage"}
