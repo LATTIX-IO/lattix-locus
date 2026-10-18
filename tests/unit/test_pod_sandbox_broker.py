@@ -20,7 +20,7 @@ from locus_runtime.task_plan_compiler import compile_task_plan
 from tests.gateway_support import FakeEngine
 
 
-def fixture(tmp_path, *, engine=None, write_roots=()):
+def fixture(tmp_path, *, engine=None, write_roots=(), read_roots=None):
     ledger = PodReservationLedger(tmp_path / "pods.db")
     gateway = Gateway(engine or FakeEngine(), lambda _: None)
     parent = gateway.open_session(
@@ -28,7 +28,7 @@ def fixture(tmp_path, *, engine=None, write_roots=()):
         allow_child_delegation=True,
         capabilities=Capabilities(
             allowed_tools=frozenset({"run_command"}),
-            read_roots=(str(tmp_path),),
+            read_roots=(str(tmp_path),) if read_roots is None else read_roots,
             write_roots=write_roots,
             allowed_executables=("echo",),
             max_risk_class=RiskClass.R2,
@@ -349,10 +349,11 @@ def test_docker_non_mutating_readonly_workspace_mount(tmp_path, monkeypatch):
     app, _, lease, _ = fixture(tmp_path)
     app.execute(lease, cmd(tmp_path))
     args = invocations[0][0]
-    mounts = [args[index + 1] for index, value in enumerate(args[:-1]) if value == "-v"]
+    mounts = [args[index + 1] for index, value in enumerate(args[:-1]) if value == "--mount"]
     root = str(tmp_path.resolve())
-    assert mounts.count(f"{root}:{root}:ro") == 1
-    assert f"{root}:{root}:rw" not in mounts
+    expected = f"type=bind,source={root},target={root},readonly,bind-recursive=readonly"
+    assert mounts.count(expected) == 1
+    assert "-v" not in args
 
 
 def test_docker_original_writable_workspace_fails_before_receipts(tmp_path, monkeypatch):
@@ -436,3 +437,30 @@ def test_docker_missing_isolation_controls_does_not_dispatch(tmp_path, monkeypat
     assert not invocations
     with receipts.reservations._connect() as db:
         assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+
+def test_docker_disappearing_or_absent_readonly_source_never_auto_created(
+    tmp_path, monkeypatch,
+):
+    invocations = docker(monkeypatch)
+    missing = tmp_path / "not-present"
+    app, receipts, lease, _ = fixture(
+        tmp_path, read_roots=(str(tmp_path), str(missing)),
+    )
+    with pytest.raises(AdmissionDenied, match="source unavailable"):
+        app.execute(lease, cmd(tmp_path, key="missing-ro-source"))
+    assert not missing.exists()
+    assert invocations == []
+    with receipts.reservations._connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM pod_action_receipt").fetchone()[0] == 0
+
+
+def test_docker_user_argument_named_dash_v_is_not_mistaken_for_mount(
+    tmp_path, monkeypatch,
+):
+    executions = docker(monkeypatch)
+    app, _, lease, _ = fixture(tmp_path)
+    app.execute(lease, cmd(tmp_path, args=("echo", "-v"), key="dash-v-arg"))
+    assert executions[0][0][-2:] == ["echo", "-v"]
+    assert "--mount" in executions[0][0]
