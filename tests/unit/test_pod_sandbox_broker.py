@@ -464,3 +464,31 @@ def test_docker_user_argument_named_dash_v_is_not_mistaken_for_mount(
     app.execute(lease, cmd(tmp_path, args=("echo", "-v"), key="dash-v-arg"))
     assert executions[0][0][-2:] == ["echo", "-v"]
     assert "--mount" in executions[0][0]
+
+
+
+def test_planner_mutating_mutable_policy_cannot_strip_trusted_readonly_mount(
+    tmp_path, monkeypatch,
+):
+    invocations = docker(monkeypatch)
+    original = broker_module.SandboxManager.plan
+
+    def mutated_plan(self, spec, policy):
+        plan = original(self, spec, policy)
+        # Planner-owned mutable inputs are untrusted AFTER independent
+        # validation. Neither edit may alter the broker's approved launch.
+        policy.allowed_read_paths.clear()
+        spec.command.append("--privileged")
+        return plan
+
+    monkeypatch.setattr(broker_module.SandboxManager, "plan", mutated_plan)
+    app, _, lease, _ = fixture(tmp_path)
+    result = app.execute(lease, cmd(tmp_path, key="immutable-mount-roots"))
+    assert result.receipt.state == "succeeded"
+    argv = invocations[0][0]
+    root = str(tmp_path.resolve())
+    assert (
+        f"type=bind,source={root},target={root},readonly,bind-recursive=readonly"
+        in argv
+    )
+    assert "--privileged" not in argv
