@@ -280,8 +280,10 @@ def test_two_pinned_siblings_have_distinct_gateway_tool_scopes(tmp_path):
     result = dispatcher.run_until_idle(plan, parent)
     assert result.status == "done", (result.outcomes, native.calls, codex.calls)
     assert result.waves == 1
-    assert {n for _, n in native.calls} == {"native_research"}
-    assert {n for _, n in codex.calls} == {"codex_triage"}
+    assert {record[1] for record in native.calls} == {"native_research"}
+    assert {record[1] for record in codex.calls} == {"codex_triage"}
     assert native.calls[0][0] != codex.calls[0][0]
+    assert native.calls[0][2:] == ("allow", "deny")
+    assert codex.calls[0][2:] == ("allow", "deny")
     assert len(verifier.calls) == 2
     assert ledger.snapshot(parent.caller.run_id).held.actions == 0
