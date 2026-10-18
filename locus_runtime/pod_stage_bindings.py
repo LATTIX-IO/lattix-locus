@@ -259,15 +259,18 @@ class PodStageBindings:
     ) -> None:
         run_id, node_id = pod["parent_id"], pod["node_id"]
         parent = db.execute(
-            "SELECT plan_digest,engine_pins_json FROM task_dispatch_parent "
+            "SELECT plan_digest,graph_fingerprint,engine_pins_json FROM task_dispatch_parent "
             "WHERE parent_run_id=?", (run_id,)
         ).fetchone()
         nodes = db.execute(
-            "SELECT node_id,pinned_engine_id,plan_digest FROM task_dispatch_node "
+            "SELECT node_id,pinned_engine_id,plan_digest,graph_fingerprint "
+            "FROM task_dispatch_node "
             "WHERE parent_run_id=?", (run_id,)
         ).fetchall()
         if (
             parent is None or parent["plan_digest"] != pod["plan_digest"]
+            or not isinstance(parent["graph_fingerprint"], str)
+            or _DIGEST.fullmatch(parent["graph_fingerprint"]) is None
             or parent["engine_pins_json"] is None or not nodes
         ):
             raise AdmissionDenied("stage binding requires sealed scheduler engine pins")
@@ -294,6 +297,7 @@ class PodStageBindings:
             or any(
                 row["pinned_engine_id"] != mapping.get(row["node_id"])
                 or row["plan_digest"] != pod["plan_digest"]
+                or row["graph_fingerprint"] != parent["graph_fingerprint"]
                 for row in nodes
             )
             or mapping.get(node_id) != lease._session.caller.engine
@@ -337,6 +341,23 @@ class PodStageBindings:
             or (row["state"] == "retired" and not allow_retired)
         ):
             raise AdmissionDenied("stage binding is stale, foreign or revoked")
+        if (row["state"] == "receipt-linked") != (row["action_id"] is not None):
+            raise AdmissionDenied("stage receipt linkage integrity changed")
+        if row["action_id"] is not None:
+            action = db.execute(
+                "SELECT reservation_id,child_run_id,supervisor_token_digest "
+                "FROM pod_action_receipt WHERE id=?", (row["action_id"],)
+            ).fetchone()
+            parent = self.receipts._supervisor
+            if (
+                action is None or parent is None
+                or action["reservation_id"] != lease.reservation_id
+                or action["child_run_id"] != lease.run_id
+                or action["supervisor_token_digest"] != hashlib.sha256(
+                    parent.caller.token.encode("utf-8")
+                ).hexdigest()
+            ):
+                raise AdmissionDenied("stage prepared receipt linkage was substituted")
         (source_dev, source_ino), (stage_dev, stage_ino, ctime_ns, mtime_ns) = (
             _snapshot_identity(Path(row["source_path"]), Path(row["staged_path"]))
         )
