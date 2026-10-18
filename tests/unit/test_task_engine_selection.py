@@ -15,6 +15,7 @@ from locus_runtime.task_dispatch_driver import (
     EngineBinding,
     GatewayTaskDriver,
     TrustedEnginePins,
+    WorkReport,
 )
 from tests.unit.test_task_dispatch_driver import TrustedVerifier, Worker
 from tests.unit.test_task_scheduler import build
@@ -160,3 +161,87 @@ def test_capability_incompatible_pinned_engine_fails_without_budget_hold(tmp_pat
 def test_malformed_trusted_selector_fails_closed(bad):
     with pytest.raises(ValueError):
         TrustedEnginePins(*bad)
+
+
+def test_two_pinned_siblings_have_distinct_gateway_tool_scopes(tmp_path):
+    """Each child gets a disjoint tool set; neither may borrow its sibling's."""
+    import hashlib
+
+    from locus_runtime.pod_reservations import PodReservationLedger, ResourceBudget
+    from locus_runtime.task_plan_compiler import compile_task_plan
+    from locus_runtime.task_scheduler import DurableTaskScheduler
+    from tests.unit.test_task_scheduler import build as existing_build
+
+    _, _, baseline, parent = existing_build(tmp_path)
+    proposal = {
+        "contract_version": "1.0",
+        "nodes": [
+            {
+                "node_id": name, "depends_on": [],
+                "capabilities": [tool], "risk_ceiling": "R2",
+                "budget": {
+                    "actions": 3, "tokens": 100,
+                    "wall_seconds": 20, "spend_microunits": 0,
+                },
+                "deliverables": [f"{name} evidence"],
+                "acceptance_criteria": ["independent artifact review"],
+            }
+            for name, tool in (
+                ("native_research", "read_file"),
+                ("codex_triage", "list_issues"),
+            )
+        ],
+    }
+    plan = compile_task_plan(
+        proposal,
+        intent=baseline.plan.intent,
+        parent_authority=baseline.plan.parent_authority,
+    )
+    ledger = PodReservationLedger(tmp_path / "scoped-pods.db")
+    scheduler = DurableTaskScheduler(ledger, max_inflight=2)
+    scheduler.bind(plan, parent, max_tool_calls=12)
+
+    class ScopedWorker:
+        def __init__(self, allowed, denied):
+            self.allowed = allowed
+            self.denied = denied
+            self.calls = []
+
+        def run(self, lease, *, node, intent):
+            assert lease.authorize(kind="tool_call", tool=self.allowed).outcome == "allow"
+            assert lease.authorize(kind="tool_call", tool=self.denied).outcome == "deny"
+            self.calls.append((lease.run_id, node.node_id))
+            return WorkReport(
+                hashlib.sha256(node.node_id.encode()).hexdigest(),
+                ResourceBudget(1, 1, 25, 5, 0),
+            )
+
+    native = ScopedWorker("read_file", "list_issues")
+    codex = ScopedWorker("list_issues", "read_file")
+    verifier = TrustedVerifier()
+    engine_selector = TrustedEnginePins(
+        plan.digest,
+        (
+            ("native_research", "native/deep-agents"),
+            ("codex_triage", "cli/codex"),
+        ),
+    )
+    dispatcher = GatewayTaskDriver(
+        scheduler,
+        engines=(
+            EngineBinding("native/deep-agents", frozenset({"read_file"}), native),
+            EngineBinding("cli/codex", frozenset({"list_issues"}), codex),
+        ),
+        verifier=verifier,
+        max_parallel=2,
+        engine_pins=engine_selector,
+    )
+
+    result = dispatcher.run_until_idle(plan, parent)
+    assert result.status == "done"
+    assert result.waves == 1
+    assert {n for _, n in native.calls} == {"native_research"}
+    assert {n for _, n in codex.calls} == {"codex_triage"}
+    assert native.calls[0][0] != codex.calls[0][0]
+    assert len(verifier.calls) == 2
+    assert ledger.snapshot(parent.caller.run_id).held.actions == 0
