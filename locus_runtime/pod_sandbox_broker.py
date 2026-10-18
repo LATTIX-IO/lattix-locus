@@ -265,6 +265,14 @@ class PodSandboxBroker:
         strategy = _choose_strategy()
         if strategy not in CONFINING_STRATEGIES:
             raise AdmissionDenied("unsupported unconfined strategy")
+        # Docker mount-target preparation can mutate an ORIGINAL writable host
+        # bind, even if readonly tmpfs submounts mask credential directories.
+        # Until the verified per-pod staging mount contract is integrated, do
+        # not create a receipt or launch any writable Docker host bind.
+        if strategy == IsolationStrategy.HARDENED_DOCKER and caps.write_roots:
+            raise AdmissionDenied(
+                "Docker writable host workspace denied until staged pod isolation"
+            )
         # Strict image admission is meaningful only if Docker actually runs
         # the selected digest. Never silently substitute Seatbelt,
         # AppContainer, or another confinement backend when the supervisor
