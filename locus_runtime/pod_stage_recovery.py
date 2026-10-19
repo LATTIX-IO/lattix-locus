@@ -421,6 +421,7 @@ def main(argv: list[str] | None = None) -> int:
 
             publisher = GuardianPublisher(recovery.ledger, recovery.socket_path)
             last: tuple[RecoveryReport, ...] | None = None
+            last_fault: str | None = None
             # No heartbeat is advertised ready until one complete local
             # daemon/ledger reconciliation pass returns. Systemd restarts
             # this process if the watch loop exits or stops reporting.
@@ -433,9 +434,19 @@ def main(argv: list[str] | None = None) -> int:
                             report.outcome == "needs-review" for report in current
                         ) else "ready"
                     )
-                except (AdmissionDenied, OSError, sqlite3.Error):
+                    last_fault = None
+                except (AdmissionDenied, OSError, sqlite3.Error) as exc:
                     # A failed engine probe cannot turn a missing-container
                     # observation into permission for another child launch.
+                    # Emit only a bounded, exception-class/known-reason pair
+                    # on transitions; never raw Docker output or credentials.
+                    fault = (
+                        str(exc)[:160] if isinstance(exc, AdmissionDenied)
+                        else type(exc).__qualname__
+                    )
+                    if fault != last_fault:
+                        logger.warning("stage guardian blocked: %s", fault)
+                        last_fault = fault
                     current = ()
                     status = "blocked"
                 publisher.publish(status)
