@@ -296,3 +296,106 @@ def test_real_kernel_host_workspace_integrity(tmp_path, mode):
         assert stages.inspect_executable(lease, stage.stage_id)
         assert _source_inventory(src) == before
     assert not snapshot.staged.exists()
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_failed_daemon_launch_is_uncertain_and_not_replayable(tmp_path, monkeypatch):
+    src, lease, _, receipts, stages, broker = rig(tmp_path)
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        stage = stages.bind(lease, snapshot)
+        calls = mock_host(monkeypatch)
+
+        class FailedProcess:
+            def __init__(self, argv, **kwargs):
+                calls.append(list(argv))
+                self.returncode = None
+
+            def wait(self, timeout):
+                self.returncode = 125
+                return 125
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        monkeypatch.setattr(module.subprocess, "Popen", FailedProcess)
+        monkeypatch.setattr(
+            module.subprocess, "run",
+            lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1),
+        )
+        with pytest.raises(AdmissionDenied, match="exited unsuccessfully"):
+            broker.execute(lease, stage.stage_id, run_command(snapshot))
+        assert len(calls) == 1
+        with receipts.reservations._connect() as db:
+            states = [r[0] for r in db.execute(
+                "SELECT state FROM pod_action_receipt"
+            )]
+            launches = [r[0] for r in db.execute(
+                "SELECT state FROM pod_stage_docker_launch"
+            )]
+        assert states == ["uncertain"]
+        assert launches == ["uncertain"]
+        with pytest.raises((AdmissionDenied, ActionReplayDenied)):
+            broker.execute(lease, stage.stage_id, run_command(snapshot))
+        assert len(calls) == 1
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_pre_cancelled_child_has_no_receipt_or_launch(tmp_path, monkeypatch):
+    src, lease, _, receipts, stages, broker = rig(tmp_path)
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        stage = stages.bind(lease, snapshot)
+        calls = mock_host(monkeypatch)
+        canceled = threading.Event()
+        canceled.set()
+        with pytest.raises(StagePodCancelled):
+            broker.execute(
+                lease, stage.stage_id, run_command(snapshot), cancel=canceled,
+            )
+        assert not calls
+        with receipts.reservations._connect() as db:
+            assert db.execute(
+                "SELECT count(*) FROM pod_action_receipt"
+            ).fetchone()[0] == 0
+
+
+@ONLY_LINUX_UNPRIVILEGED
+@pytest.mark.parametrize("attack", ("symlink", "hardlink", "case_collision"))
+def test_hostile_stage_entry_cannot_reach_docker(tmp_path, monkeypatch, attack):
+    src, lease, _, receipts, stages, broker = rig(tmp_path)
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        stage = stages.bind(lease, snapshot)
+        calls = mock_host(monkeypatch)
+        if attack == "symlink":
+            (snapshot.staged / "escape").symlink_to(src / "code.txt")
+        elif attack == "hardlink":
+            os.link(src / "code.txt", snapshot.staged / "escape")
+        else:
+            (snapshot.staged / "CODE.TXT").write_text("collision")
+        with pytest.raises((AdmissionDenied, PermissionError)):
+            broker.execute(lease, stage.stage_id, run_command(snapshot))
+        assert not calls
+        with receipts.reservations._connect() as db:
+            assert db.execute(
+                "SELECT count(*) FROM pod_action_receipt"
+            ).fetchone()[0] == 0
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_foreign_gateway_child_cannot_claim_stage(tmp_path, monkeypatch):
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    src, lease, _, receipts, stages, broker = rig(tmp_path / "one")
+    _, foreign, _, _, _, _ = rig(tmp_path / "two")
+    with staged_workspace(src, staging_parent=tmp_path / "one") as snapshot:
+        stage = stages.bind(lease, snapshot)
+        calls = mock_host(monkeypatch)
+        with pytest.raises(AdmissionDenied):
+            broker.execute(foreign, stage.stage_id, run_command(snapshot))
+        assert not calls
+        with receipts.reservations._connect() as db:
+            assert db.execute(
+                "SELECT count(*) FROM pod_action_receipt"
+            ).fetchone()[0] == 0
