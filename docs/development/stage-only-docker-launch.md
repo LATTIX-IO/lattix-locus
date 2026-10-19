@@ -62,9 +62,18 @@ The existing PodSandboxBroker ban on writable original host binds remains in for
   supervisor invokes `python -m locus_runtime.pod_stage_recovery --ledger /absolute/private/runs.db`.
   The directory must be supervisor-owned and mode 0700. A nonzero exit status
   means the service must stay fail-closed: 2 = manual review required;
-  3 = an action lock is owned by a live broker. No application startup
-  integration is implied by the CLI; the operator/service must install this
-  barrier before enabling live child dispatch.
+  3 = an action lock is owned by a live broker or a newly prepared intent is
+  inside its launch grace window.
+- **Continuously supervised guardian:** Run a separate independent,
+  host-service-managed process via `python -m locus_runtime.pod_stage_recovery
+  --ledger /absolute/private/runs.db --watch --poll-seconds 1` with OS-level
+  service restart enabled. This repeatedly inspects uncertain attempts, so a
+  Docker container that appears after an earlier empty scan is not discarded
+  from the recovery work queue. The guardian respects the action OS fence and
+  10-second prepared-receipt grace to avoid racing active launch preparation.
+  No application startup/service-manager integration is implied by the CLI:
+  deploy and verify the guardian and restart barrier **before** enabling live
+  staged child dispatch.
 - The recovery process opens the same SQLite ledger, takes the same nonblocking
   kernel action fence, validates original StageLease/receipt audit seals and
   interrogates the explicitly local Docker daemon. A missing daemon, mismatched
@@ -75,13 +84,16 @@ The existing PodSandboxBroker ban on writable original host binds remains in for
   **absent-observed**, not as proof that a late request from a still-active
   Docker client can never appear. The original stage is neither removed nor
   promoted. Separate operator-approved completion remains necessary.
-- **Residual risk:** A killed supervisor does not automatically kill its Docker
-  CLI child; an in-flight daemon RPC may create a container after an initial
-  no-container observation. The recovery CLI is a startup barrier and
-  observation, not a continuously running guardian. Integrate a durable
-  on-host watchdog or daemon-backed create/start lifecycle and prove delayed
-  creation and restart races before asserting unattended crash containment.
-  Real SIGKILL tests are necessary but alone cannot eliminate this gap.
+- **Residual risk:** The separate `--watch` guardian reduces the window for
+  delayed Docker-created containers, but it is not presently installed or
+  required as a dependency by Locus's native service launcher. A killed
+  supervisor may leave its Docker CLI child briefly active, and an in-flight
+  daemon RPC may create a container after an initial absence observation.
+  Until guardian service supervision, watchdog restart behavior and delayed
+  RPC races pass their own host qualification, **unattended crash
+  containment is not accepted for production**. The conservative uncertain
+  receipt and held reservation prevent logical replay/resource release
+  regardless of that unresolved OS-level timing risk.
 - This broker is *not* the vendor CLI/MCP adapter, artifact promotion verifier,
   or multi-agent native-plus-Codex demonstration. Child subprocess output is
   intentionally suppressed. The user must separately approve promotion.
