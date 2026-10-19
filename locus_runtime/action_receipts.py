@@ -294,19 +294,19 @@ class PodActionReceipts:
         # Kernel mutex is held across both the write-ahead dispatch and the
         # entire callback/result receipt. Another local recovery controller
         # cannot mistake live work for a crashed process.
-        with action_lock(self.reservations.path, intent.action_id) as acquired:
+        with action_lock(self.reservations.path, action_id) as acquired:
             if not acquired:
                 raise ActionReplayDenied("another live broker owns this action")
-            self._begin_dispatch(lease, intent.action_id, guarded=True)
+            self._begin_dispatch(lease, action_id, guarded=True)
             try:
                 output = invoke()
                 digest = _result_digest(output)
             except BaseException as exc:
                 # Never retry ambiguous provider results automatically.
-                self._complete(intent.action_id, "uncertain",
+                self._complete(action_id, "uncertain",
                                evidence=type(exc).__qualname__)
                 raise
-            receipt = self._complete(intent.action_id, "succeeded", evidence=digest)
+            receipt = self._complete(action_id, "succeeded", evidence=digest)
             return receipt, output
 
 
