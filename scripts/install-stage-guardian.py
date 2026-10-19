@@ -17,6 +17,9 @@ import time
 from pathlib import Path
 
 from locus_runtime.pod_reservations import AdmissionDenied, PodReservationLedger
+from locus_runtime.action_receipts import PodActionReceipts
+from locus_runtime.pod_stage_bindings import PodStageBindings
+from locus_runtime.pod_stage_docker import initialize_stage_docker_schema
 from locus_runtime.pod_stage_guardian import require_guardian_ready
 from locus_runtime.pod_stage_recovery import _private_ledger
 from locus_runtime.pod_stage_guardian import _socket_identity
@@ -99,6 +102,14 @@ def install(
     if verify.returncode:
         raise AdmissionDenied("selected Python does not contain installed Locus")
 
+    # Fresh local ledgers may not have admitted a pod yet. Bootstrap the
+    # precise supervisor tables before starting the guardian; absence of
+    # tables must never result in a permanently blocked service.
+    authority = PodReservationLedger(ledger)
+    receipts = PodActionReceipts(authority)
+    PodStageBindings(authority, receipts)
+    initialize_stage_docker_schema(authority)
+
     config = home / ".config" / "locus"
     unit_dir = home / ".config" / "systemd" / "user"
     _owned_directory(home / ".config", private=False)
@@ -114,7 +125,6 @@ def install(
     _replace_private(unit_dir / UNIT, UNIT_SOURCE.read_text(encoding="utf-8"))
     _systemctl("daemon-reload")
     _systemctl("enable", "--now", UNIT)
-    authority = PodReservationLedger(ledger)
     deadline = time.monotonic() + 12
     while time.monotonic() < deadline:
         try:
