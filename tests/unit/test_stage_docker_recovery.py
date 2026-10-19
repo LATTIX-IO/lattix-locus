@@ -295,6 +295,59 @@ def test_daemon_unavailable_does_not_release_or_replay(tmp_path, monkeypatch):
         context.__exit__(None, None, None)
 
 
+@ONLY_LINUX_UNPRIVILEGED
+def test_guardian_does_not_steal_recent_live_prepared_receipt(tmp_path, monkeypatch):
+    """A watcher may see a new prepared row before broker obtains its OS lock."""
+    _, lease, receipts, _, context, _, bound = (
+        _create_uncertain_launch(tmp_path, monkeypatch)
+    )
+    try:
+        ledger = PodReservationLedger(tmp_path / "runs.db")
+        row = _row(ledger, bound.stage_id)
+        with ledger._connect() as db:
+            ledger._tx(db)
+            db.execute(
+                "UPDATE pod_action_receipt SET state='prepared',outcome_digest=NULL "
+                "WHERE id=?", (row["action_id"],),
+            )
+            db.execute(
+                "UPDATE pod_stage_docker_launch SET state='prepared' WHERE stage_id=?",
+                (bound.stage_id,),
+            )
+        monkeypatch.setattr(
+            pod_stage_recovery, "_local_socket",
+            lambda _: "unix:///var/run/docker.sock",
+        )
+        with monkeypatch.context() as patched:
+            def no_docker(_):
+                pytest.fail("guardian must not touch Docker before grace expires")
+            patched.setattr(pod_stage_recovery, "_trusted_local_binary", no_docker)
+            pending = StageDockerRecovery(ledger).recover_pending()
+        assert [r.outcome for r in pending] == ["busy"]
+        assert receipts.get(row["action_id"]).state == "prepared"
+        assert ledger.get(lease.reservation_id).state == "active"
+        # Once stale, an authenticated restart may conservatively mark the
+        # never-dispatched prepared intent uncertain without making a launch.
+        with ledger._connect() as db:
+            ledger._tx(db)
+            db.execute(
+                "UPDATE pod_stage_docker_launch SET stamp=? WHERE stage_id=?",
+                (ledger._now() - 30, bound.stage_id),
+            )
+        monkeypatch.setattr(
+            pod_stage_recovery, "_trusted_local_binary",
+            lambda _: ("/usr/bin/docker", "e" * 64),
+        )
+        monkeypatch.setattr(
+            pod_stage_recovery, "_inspect", lambda *args: None,
+        )
+        assert StageDockerRecovery(ledger).recover_pending()[0].outcome == "absent-observed"
+        assert receipts.get(row["action_id"]).state == "uncertain"
+        assert ledger.snapshot("docker-parent").held.actions == 3
+    finally:
+        context.__exit__(None, None, None)
+
+
 def _docker_names() -> str:
     command = subprocess.run(
         ["/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
