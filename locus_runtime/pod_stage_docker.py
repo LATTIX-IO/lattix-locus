@@ -349,6 +349,17 @@ class StageDockerBroker:
                     while True:
                         if cancel is not None and cancel.is_set():
                             raise StagePodCancelled("container cancelled")
+                        # Revoking a parent or child must not leave an
+                        # already-running Docker worker unchecked until its
+                        # original timeout. Authentication is rechecked
+                        # without creating another Gateway action receipt.
+                        self.receipts.reservations.require_active(
+                            lease.reservation_id,
+                        )
+                        if lease._session.gateway._authenticate(
+                            lease._session.caller
+                        ) is None:
+                            raise AdmissionDenied("child Gateway identity revoked")
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
                             raise subprocess.TimeoutExpired(argv, command.timeout_seconds)
