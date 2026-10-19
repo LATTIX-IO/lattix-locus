@@ -6,9 +6,11 @@ on:
       - "locus_runtime/pod_stage_bindings.py"
       - "locus_runtime/pod_stage_generation.py"
       - "locus_runtime/pod_stage_docker.py"
+      - "locus_runtime/pod_stage_recovery.py"
       - "locus_runtime/action_receipts.py"
       - "locus_runtime/pod_workspace_staging.py"
       - "tests/unit/test_stage_docker_launch.py"
+      - "tests/unit/test_stage_docker_recovery.py"
       - ".github/workflows/stage-docker-acceptance.yml"
   workflow_dispatch:
 
@@ -63,7 +65,7 @@ jobs:
       - name: Execute kernel-backed write, timeout, cancel and host integrity tests
         env:
           LOCUS_REAL_DOCKER_ACCEPTANCE: "1"
-        run: python -m pytest -q tests/unit/test_stage_docker_launch.py
+        run: python -m pytest -q tests/unit/test_stage_docker_launch.py tests/unit/test_stage_docker_recovery.py
       - name: Verify no leftover Locus containers
         if: always()
         shell: bash
