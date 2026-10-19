@@ -1,0 +1,307 @@
+"""LOCUS-466: restart orphan reconciliation (unit and real kernel crash).
+
+No synthetic-only test can establish Docker behavior after SIGKILL. The real
+acceptance fork is opt-in and MUST execute with a real local Linux daemon.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+from locus_runtime import pod_stage_docker, pod_stage_recovery
+from locus_runtime.action_fencing import action_lock
+from locus_runtime.action_receipts import ActionReplayDenied
+from locus_runtime.pod_reservations import AdmissionDenied, PodReservationLedger
+from locus_runtime.pod_sandbox_broker import BrokerCommand
+from locus_runtime.pod_stage_docker import StageDockerBroker
+from locus_runtime.pod_stage_recovery import StageDockerRecovery, _verify_container
+from locus_runtime.pod_workspace_staging import staged_workspace
+from tests.unit.test_stage_docker_launch import (
+    ONLY_LINUX_UNPRIVILEGED, IMAGE, _source_inventory, rig, run_command,
+)
+
+
+def _create_uncertain_launch(tmp_path, monkeypatch):
+    """Prepare a verified stage but cause a Docker-daemon invocation failure."""
+    src, lease, _, receipts, stages, broker = rig(tmp_path)
+    fixture = staged_workspace(src, staging_parent=tmp_path)
+    snapshot = fixture.__enter__()
+    bound = stages.bind(lease, snapshot)
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            pod_stage_docker, "_trusted_local_binary",
+            lambda _: ("/usr/bin/docker", "e" * 64),
+        )
+        patched.setattr(
+            pod_stage_docker, "_local_socket",
+            lambda _: "unix:///var/run/docker.sock",
+        )
+
+        class Refused:
+            def __init__(self, argv, **kwargs):
+                self.returncode = None
+
+            def wait(self, timeout):
+                self.returncode = 125
+                return 125
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        patched.setattr(pod_stage_docker.subprocess, "Popen", Refused)
+        patched.setattr(
+            pod_stage_docker.subprocess, "run",
+            lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1),
+        )
+        with pytest.raises(AdmissionDenied, match="exited unsuccessfully"):
+            broker.execute(lease, bound.stage_id, run_command(snapshot))
+    return src, lease, receipts, stages, fixture, snapshot, bound
+
+
+def _row(ledger: PodReservationLedger, stage_id: str):
+    with ledger._connect() as db:
+        return db.execute(
+            "SELECT l.*,s.staged_path FROM pod_stage_docker_launch l "
+            "JOIN pod_stage_binding s ON s.id=l.stage_id "
+            "WHERE l.stage_id=?", (stage_id,),
+        ).fetchone()
+
+
+def _fake_inspection(row, *, wrong_proof: bool = False):
+    return {
+        "Id": "a" * 64,
+        "Name": "/" + row["container_name"],
+        "Config": {
+            "Image": row["image_ref"],
+            "Labels": {
+                "io.lattix.locus.stage-only": "v1",
+                "io.lattix.locus.stage-proof":
+                    "a" * 64 if wrong_proof else row["stage_proof"],
+            },
+        },
+        "HostConfig": {
+            "NetworkMode": "none",
+            "ReadonlyRootfs": True,
+            "Privileged": False,
+            "Binds": None,
+            "CapDrop": ["ALL"],
+            "SecurityOpt": ["no-new-privileges", "seccomp=/trusted/profile.json"],
+        },
+        "Mounts": [{
+            "Type": "bind", "Source": row["staged_path"],
+            "Destination": "/workspace", "RW": True,
+        }],
+    }
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_recovery_reaps_only_proven_container_and_retains_parent_budget(tmp_path, monkeypatch):
+    src, lease, receipts, stages, context, snapshot, bound = (
+        _create_uncertain_launch(tmp_path, monkeypatch)
+    )
+    try:
+        ledger = PodReservationLedger(tmp_path / "runs.db")
+        row = _row(ledger, bound.stage_id)
+        live = [_fake_inspection(row)]
+        deleted: list[tuple[str, ...]] = []
+        monkeypatch.setattr(
+            pod_stage_recovery, "_trusted_local_binary",
+            lambda _: ("/usr/bin/docker", "e" * 64),
+        )
+        monkeypatch.setattr(
+            pod_stage_recovery, "_local_socket",
+            lambda _: "unix:///var/run/docker.sock",
+        )
+        monkeypatch.setattr(
+            pod_stage_recovery, "_inspect",
+            lambda *args: live[0] if live else None,
+        )
+
+        def fake_docker(*, binary, socket, params):
+            deleted.append(params)
+            live.clear()
+            return subprocess.CompletedProcess(params, 0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(pod_stage_recovery, "_docker", fake_docker)
+        before = ledger.snapshot("docker-parent")
+        assert before.held.actions == 3
+        result = StageDockerRecovery(ledger).recover_pending()
+        assert [r.outcome for r in result] == ["removed"]
+        assert deleted == [("container", "rm", "--force", "a" * 64)]
+        assert receipts.get(row["action_id"]).state == "uncertain"
+        assert ledger.get(lease.reservation_id).state == "uncertain"
+        assert ledger.snapshot("docker-parent").held == before.held
+        assert ledger.snapshot("docker-parent").available == before.available
+        assert (src / "code.txt").read_text() == "original"
+        assert stages.inspect_executable is not None
+        # A second recovery never dispatches work or frees the reservation.
+        assert [r.outcome for r in StageDockerRecovery(ledger).recover_pending()] == [
+            "absent-observed"
+        ]
+        with pytest.raises((AdmissionDenied, ActionReplayDenied)):
+            receipts.execute_prepared_once(lease, row["action_id"], invoke=lambda: 7)
+    finally:
+        context.__exit__(None, None, None)
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_forged_proof_is_never_killed_or_accepted(tmp_path, monkeypatch):
+    src, lease, receipts, _, context, _, bound = (
+        _create_uncertain_launch(tmp_path, monkeypatch)
+    )
+    try:
+        ledger = PodReservationLedger(tmp_path / "runs.db")
+        row = _row(ledger, bound.stage_id)
+        monkeypatch.setattr(
+            pod_stage_recovery, "_local_socket",
+            lambda _: "unix:///var/run/docker.sock",
+        )
+        monkeypatch.setattr(
+            pod_stage_recovery, "_trusted_local_binary",
+            lambda _: ("/usr/bin/docker", "e" * 64),
+        )
+        monkeypatch.setattr(
+            pod_stage_recovery, "_inspect",
+            lambda *args: _fake_inspection(row, wrong_proof=True),
+        )
+        def forbidden(*args, **kwargs):
+            pytest.fail("unproven container must not be deleted")
+        monkeypatch.setattr(pod_stage_recovery, "_docker", forbidden)
+        reports = StageDockerRecovery(ledger).recover_pending()
+        assert reports[0].outcome == "needs-review"
+        assert ledger.get(lease.reservation_id).state == "uncertain"
+        assert ledger.snapshot("docker-parent").held.actions == 3
+        assert receipts.get(row["action_id"]).state == "uncertain"
+        assert (src / "code.txt").read_text() == "original"
+    finally:
+        context.__exit__(None, None, None)
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_live_dispatch_lock_blocks_orphan_recovery(tmp_path, monkeypatch):
+    _, lease, receipts, _, context, _, bound = (
+        _create_uncertain_launch(tmp_path, monkeypatch)
+    )
+    try:
+        ledger = PodReservationLedger(tmp_path / "runs.db")
+        row = _row(ledger, bound.stage_id)
+        with action_lock(ledger.path, row["action_id"]) as locked:
+            assert locked
+            reports = StageDockerRecovery(ledger).recover_pending()
+            assert [r.outcome for r in reports] == ["busy"]
+        assert ledger.get(lease.reservation_id).state == "active"
+        assert receipts.get(row["action_id"]).state == "uncertain"
+    finally:
+        context.__exit__(None, None, None)
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_tampered_provenance_requires_manual_recovery(tmp_path, monkeypatch):
+    _, lease, receipts, _, context, _, bound = (
+        _create_uncertain_launch(tmp_path, monkeypatch)
+    )
+    try:
+        ledger = PodReservationLedger(tmp_path / "runs.db")
+        with ledger._connect() as db:
+            ledger._tx(db)
+            db.execute(
+                "UPDATE pod_stage_docker_launch SET stage_proof=? WHERE stage_id=?",
+                ("f" * 64, bound.stage_id),
+            )
+        reports = StageDockerRecovery(ledger).recover_pending()
+        assert [r.outcome for r in reports] == ["needs-review"]
+        assert ledger.snapshot("docker-parent").held.actions == 3
+        assert receipts.get(_row(ledger, bound.stage_id)["action_id"]).state == "uncertain"
+    finally:
+        context.__exit__(None, None, None)
+
+
+def _docker_names() -> str:
+    command = subprocess.run(
+        ["/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
+         "ps", "-a", "--filter", "name=locus-pod-",
+         "--format", "{{.Names}}"],
+        shell=False, capture_output=True, timeout=6, check=True,
+    )
+    return command.stdout.decode("utf-8").strip()
+
+
+@ONLY_LINUX_UNPRIVILEGED
+@pytest.mark.skipif(
+    os.getenv("LOCUS_REAL_DOCKER_ACCEPTANCE") != "1",
+    reason="must use a real local Docker Engine",
+)
+def test_sigkill_supervisor_restart_reaps_orphan_and_fences_budget(tmp_path):
+    image = os.environ["LOCUS_DOCKER_ACCEPTANCE_IMAGE"]
+    src, lease, _, receipts, stages, _ = rig(tmp_path, executable="sleep")
+    before = _source_inventory(src)
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        stage = stages.bind(lease, snapshot)
+        broker = StageDockerBroker(stages, receipts, image=image)
+        pid = os.fork()
+        if pid == 0:
+            try:
+                broker.execute(
+                    lease, stage.stage_id,
+                    run_command(snapshot, executable="sleep", argument="30",
+                                timeout=25),
+                )
+            except BaseException:
+                os._exit(19)
+            os._exit(0)
+        try:
+            deadline = time.monotonic() + 14
+            started = False
+            while time.monotonic() < deadline:
+                with receipts.reservations._connect() as db:
+                    rows = db.execute(
+                        "SELECT state FROM pod_stage_docker_launch "
+                        "WHERE stage_id=?", (stage.stage_id,),
+                    ).fetchall()
+                if rows and rows[0]["state"] == "dispatching" and _docker_names():
+                    started = True
+                    break
+                time.sleep(0.1)
+            assert started, "Docker child was not launched before forced supervisor crash"
+        finally:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+
+        # This is a genuinely independent new supervisor process; it has no
+        # in-memory GatewaySession or access to the killed worker's lock.
+        recovered = subprocess.run(
+            [sys.executable, "-m", "locus_runtime.pod_stage_recovery",
+             "--ledger", str(tmp_path / "runs.db")],
+            shell=False, check=False, capture_output=True, timeout=20,
+        )
+        assert recovered.returncode == 0, recovered.stderr[-500:]
+        reports = json.loads(recovered.stdout.decode("utf-8"))
+        assert reports and reports[0]["outcome"] in {"removed", "absent-observed"}
+        assert reports[0]["reservation_held"] is True
+        assert _docker_names() == ""
+        assert _source_inventory(src) == before
+        reopened = PodReservationLedger(tmp_path / "runs.db")
+        assert reopened.get(lease.reservation_id).state == "uncertain"
+        assert reopened.snapshot("docker-parent").held.actions == 3
+        with reopened._connect() as db:
+            state = db.execute(
+                "SELECT state FROM pod_action_receipt",
+            ).fetchone()[0]
+            assert state == "uncertain"
+        with pytest.raises((AdmissionDenied, ActionReplayDenied)):
+            broker.execute(
+                lease, stage.stage_id,
+                run_command(snapshot, executable="sleep", argument="30", timeout=25),
+            )
+    assert _source_inventory(src) == before
