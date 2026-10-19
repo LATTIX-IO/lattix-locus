@@ -22,7 +22,7 @@ from pathlib import Path
 
 from locus_runtime.action_receipts import ActionRecord, PodActionReceipts
 from locus_runtime.gateway import JailFacts
-from locus_runtime.pod_reservations import AdmissionDenied, PodLease
+from locus_runtime.pod_reservations import AdmissionDenied, PodLease, PodReservationLedger
 from locus_runtime.pod_sandbox_broker import BrokerCommand, _require_content_addressed_image
 from locus_runtime.pod_stage_bindings import PodStageBindings
 from locus_runtime.pod_stage_guardian import require_guardian_ready
@@ -208,6 +208,32 @@ def _record_launch(
             )
 
 
+def initialize_stage_docker_schema(ledger: PodReservationLedger) -> None:
+    """Bootstrap the durable launch table before starting OS guardian service.
+
+    No container, receipt, capability or launch authority is issued here.
+    The reservation, action and StageLease tables must exist first.
+    """
+    if not isinstance(ledger, PodReservationLedger):
+        raise AdmissionDenied("trusted supervisor ledger required")
+    with ledger._connect() as db:
+        ledger._tx(db)
+        db.execute("""CREATE TABLE IF NOT EXISTS pod_stage_docker_launch (
+            stage_id TEXT PRIMARY KEY REFERENCES pod_stage_binding(id),
+            action_id TEXT NOT NULL UNIQUE REFERENCES pod_action_receipt(id),
+            container_name TEXT NOT NULL UNIQUE,
+            launch_sha256 TEXT NOT NULL,
+            stage_proof TEXT NOT NULL,
+            image_ref TEXT NOT NULL,
+            socket_uri TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(
+                state IN ('prepared','dispatching','finished','uncertain')
+            ),
+            exit_code INTEGER,
+            stamp INTEGER NOT NULL
+        )""")
+
+
 @dataclass(frozen=True, slots=True, init=False, repr=False)
 class StageDockerBroker:
     """Only path for stage-bound writable Docker until independent acceptance."""
@@ -232,23 +258,7 @@ class StageDockerBroker:
         object.__setattr__(self, "image", image)
         object.__setattr__(self, "docker_path", Path(docker_path))
         object.__setattr__(self, "socket_path", Path(socket_path))
-        with receipts.reservations._connect() as db:
-            receipts.reservations._tx(db)
-            db.execute("""CREATE TABLE IF NOT EXISTS pod_stage_docker_launch (
-                stage_id TEXT PRIMARY KEY REFERENCES pod_stage_binding(id),
-                action_id TEXT NOT NULL UNIQUE REFERENCES pod_action_receipt(id),
-                container_name TEXT NOT NULL UNIQUE,
-                launch_sha256 TEXT NOT NULL,
-                stage_proof TEXT NOT NULL,
-                image_ref TEXT NOT NULL,
-                socket_uri TEXT NOT NULL,
-                state TEXT NOT NULL CHECK(
-                    state IN ('prepared','dispatching','finished','uncertain')
-                ),
-                exit_code INTEGER,
-                stamp INTEGER NOT NULL
-            )""")
-
+        initialize_stage_docker_schema(receipts.reservations)
     def execute(
         self, lease: PodLease, stage_id: str, command: BrokerCommand, *,
         cancel: threading.Event | None = None,
