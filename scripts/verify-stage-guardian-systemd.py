@@ -7,6 +7,7 @@ The service itself runs as the unprivileged current user, never as root.
 from __future__ import annotations
 
 import getpass
+import grp
 import os
 import secrets
 import subprocess
@@ -58,6 +59,10 @@ def main() -> int:
         raise RuntimeError("real local Docker Engine is required")
     root = Path(__file__).resolve().parent.parent
     username = getpass.getuser()
+    # The trusted Docker socket is group-scoped on GitHub Linux runners.
+    # Transient system units do not necessarily inherit the login session's
+    # supplementary group set; explicitly provide the exact socket group.
+    docker_group = grp.getgrgid(Path("/var/run/docker.sock").stat().st_gid).gr_name
     unit = "locus-guardian-acceptance-" + secrets.token_hex(6) + ".service"
     with tempfile.TemporaryDirectory(prefix="locus-guardian-systemd-") as folder:
         ledger = PodReservationLedger(Path(folder) / "runs.db")
@@ -65,6 +70,7 @@ def main() -> int:
             "systemd-run", "--no-block", "--unit=" + unit,
             "--service-type=notify",
             "--property=User=" + username,
+            "--property=SupplementaryGroups=" + docker_group,
             "--property=WorkingDirectory=" + str(root),
             "--property=Restart=always", "--property=RestartSec=1s",
             "--property=WatchdogSec=10s",
