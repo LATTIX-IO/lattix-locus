@@ -79,6 +79,8 @@ def _validate_origin(db: sqlite3.Connection, stage_id: str) -> sqlite3.Row:
         "s.action_id AS stage_action,s.parent_run_id,s.child_run_id,"
         "g.generation,g.binding_sha256 AS generation_binding,"
         "g.reservation_id AS generation_reservation,"
+        "g.source_sha256 AS generation_source,"
+        "g.staged_path AS generation_staged_path,"
         "a.id AS action_present,a.reservation_id AS action_reservation,"
         "a.child_run_id AS action_child,a.state AS action_state,"
         "a.fingerprint AS action_fingerprint,a.gateway_audit_id,"
@@ -103,6 +105,9 @@ def _validate_origin(db: sqlite3.Connection, stage_id: str) -> sqlite3.Row:
         or row["child_run_id"] != row["action_child"]
         or row["parent_run_id"] != row["pod_parent"]
         or row["binding_sha256"] != row["generation_binding"]
+        or row["source_sha256"] != row["generation_source"]
+        or row["staged_path"] != row["generation_staged_path"]
+        or row["pod_state"] not in {"active", "uncertain", "revoked"}
         or not _HASH.fullmatch(row["binding_sha256"])
         or row["binding_sha256"] != PodStageBindings._fingerprint(stage)
     ):
