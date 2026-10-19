@@ -60,7 +60,8 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="locus-guardian-systemd-") as folder:
         ledger = PodReservationLedger(Path(folder) / "runs.db")
         service = [
-            "systemd-run", "--unit=" + unit, "--service-type=notify",
+            "systemd-run", "--no-block", "--unit=" + unit,
+            "--service-type=notify",
             "--property=User=" + username,
             "--property=WorkingDirectory=" + str(root),
             "--property=Restart=always", "--property=RestartSec=1s",
