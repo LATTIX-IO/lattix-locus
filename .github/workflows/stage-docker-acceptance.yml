@@ -10,6 +10,7 @@ on:
       - "locus_runtime/pod_stage_guardian.py"
       - "install/systemd/locus-stage-guardian.service"
       - "scripts/install-stage-guardian.py"
+      - "scripts/verify-stage-guardian-systemd.py"
       - "locus_runtime/action_receipts.py"
       - "locus_runtime/pod_workspace_staging.py"
       - "tests/unit/test_stage_docker_launch.py"
@@ -71,6 +72,8 @@ jobs:
         env:
           LOCUS_REAL_DOCKER_ACCEPTANCE: "1"
         run: python -m pytest -q tests/unit/test_stage_docker_launch.py tests/unit/test_stage_docker_recovery.py tests/unit/test_stage_guardian_admission.py
+      - name: Prove actual systemd guardian auto-restart and epoch rotation
+        run: python scripts/verify-stage-guardian-systemd.py
       - name: Verify no leftover Locus containers
         if: always()
         shell: bash
