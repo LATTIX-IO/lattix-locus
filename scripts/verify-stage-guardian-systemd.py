@@ -96,6 +96,26 @@ def main() -> int:
             _sudo("systemctl", "is-active", "--quiet", unit)
             print("PASS: real systemd Type=notify restarted guardian and rotated epoch")
             return 0
+        except (AdmissionDenied, OSError, RuntimeError, subprocess.TimeoutExpired):
+            # Temporary CI unit only. Log output is bounded and redacted by
+            # the guardian; never print its ledger or environment variables.
+            try:
+                journal = subprocess.run(
+                    ["sudo", "-n", "journalctl", "--unit=" + unit, "--no-pager",
+                     "--lines=18", "--output=cat"],
+                    check=False, capture_output=True, text=True, timeout=6,
+                )
+                print("systemd unit journal: " + journal.stdout[-2400:],
+                      file=sys.stderr)
+                state = subprocess.run(
+                    ["sudo", "-n", "systemctl", "show", unit,
+                     "-p", "ActiveState", "-p", "SubState", "-p", "ExecMainStatus"],
+                    check=False, capture_output=True, text=True, timeout=6,
+                )
+                print("systemd unit state: " + state.stdout[-400:], file=sys.stderr)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            raise
         finally:
             # A wedged systemd manager must not replace the first failure
             # with a cleanup timeout; leave the job failed and observable.
