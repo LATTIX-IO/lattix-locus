@@ -19,6 +19,7 @@ import stat
 import sys
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -252,11 +253,17 @@ def _audit_attempt(
             "stage_id TEXT NOT NULL REFERENCES pod_stage_binding(id),"
             "outcome TEXT NOT NULL,proof_sha256 TEXT NOT NULL,stamp INTEGER NOT NULL)"
         )
-        db.execute(
-            "INSERT INTO pod_stage_recovery_audit(stage_id,outcome,proof_sha256,stamp)"
-            " VALUES (?,?,?,?)",
-            (stage_id, outcome, proof, ledger._now()),
-        )
+        last = db.execute(
+            "SELECT outcome,proof_sha256 FROM pod_stage_recovery_audit "
+            "WHERE stage_id=? ORDER BY sequence DESC LIMIT 1",
+            (stage_id,),
+        ).fetchone()
+        if last is None or (last["outcome"], last["proof_sha256"]) != (outcome, proof):
+            db.execute(
+                "INSERT INTO pod_stage_recovery_audit(stage_id,outcome,proof_sha256,stamp)"
+                " VALUES (?,?,?,?)",
+                (stage_id, outcome, proof, ledger._now()),
+            )
         if row["action_state"] in {"prepared", "dispatching"}:
             db.execute(
                 "UPDATE pod_action_receipt SET state='uncertain',outcome_digest=? "
@@ -367,7 +374,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ledger", required=True, help="private supervisor SQLite path")
     parser.add_argument("--docker", default="/usr/bin/docker")
     parser.add_argument("--socket", default="/var/run/docker.sock")
+    parser.add_argument("--watch", action="store_true", help="continuous recovery guardian")
+    parser.add_argument("--poll-seconds", type=float, default=1.0)
     args = parser.parse_args(argv)
+    if not 0.2 <= args.poll_seconds <= 30.0:
+        return 2
     try:
         path = Path(args.ledger)
         _private_ledger(path)
@@ -375,7 +386,23 @@ def main(argv: list[str] | None = None) -> int:
             PodReservationLedger(path),
             docker_path=Path(args.docker), socket_path=Path(args.socket),
         )
+        if args.watch:
+            # This mode must be independently supervised by the host OS
+            # (e.g. Restart=always). It continues to search for Docker
+            # containers created after an earlier absent observation.
+            last: tuple[RecoveryReport, ...] | None = None
+            while True:
+                current = recovery.recover_pending()
+                if current != last:
+                    print(json.dumps([
+                        {"stage_sha256": r.stage_id_sha256, "outcome": r.outcome,
+                         "reservation_held": r.reservation_held} for r in current
+                    ], sort_keys=True), flush=True)
+                    last = current
+                time.sleep(args.poll_seconds)
         results = recovery.recover_pending()
+    except KeyboardInterrupt:
+        return 0
     except (AdmissionDenied, OSError, RuntimeError) as exc:
         logger.error("recovery refused: %s", type(exc).__qualname__)
         return 2
