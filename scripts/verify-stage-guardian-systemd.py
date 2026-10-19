@@ -19,7 +19,7 @@ from pathlib import Path
 from locus_runtime.pod_reservations import AdmissionDenied, PodReservationLedger
 from locus_runtime.action_receipts import PodActionReceipts
 from locus_runtime.pod_stage_bindings import PodStageBindings
-from locus_runtime.pod_stage_docker import StageDockerBroker
+from locus_runtime.pod_stage_docker import initialize_stage_docker_schema
 from locus_runtime.pod_stage_guardian import require_guardian_ready
 
 
@@ -73,10 +73,8 @@ def main() -> int:
         # Bootstrap precisely the real preexisting supervisor contracts;
         # this test never fabricates an active action or a child receipt.
         receipts = PodActionReceipts(ledger)
-        stages = PodStageBindings(ledger, receipts)
-        StageDockerBroker(
-            stages, receipts, image="busybox@sha256:" + "a" * 64,
-        )
+        PodStageBindings(ledger, receipts)
+        initialize_stage_docker_schema(ledger)
         service = [
             "systemd-run", "--no-block", "--unit=" + unit,
             "--service-type=notify",
