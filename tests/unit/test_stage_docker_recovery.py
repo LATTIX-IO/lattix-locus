@@ -506,3 +506,80 @@ def test_independent_guardian_reaps_without_waiting_for_supervisor_restart(tmp_p
                 os.kill(pid, signal.SIGKILL)
                 os.waitpid(pid, 0)
     assert _docker_names() == ""
+
+
+@ONLY_LINUX_UNPRIVILEGED
+@pytest.mark.skipif(
+    os.getenv("LOCUS_REAL_DOCKER_ACCEPTANCE") != "1",
+    reason="delayed daemon-create requires real local Engine",
+)
+def test_guardian_reaps_late_create_after_prior_absent_observation(tmp_path, monkeypatch):
+    """A daemon-late container is still scoped/reaped after the empty first pass."""
+    image = os.environ["LOCUS_DOCKER_ACCEPTANCE_IMAGE"]
+    src, lease, receipts, _, context, snapshot, bound = (
+        _create_uncertain_launch(tmp_path, monkeypatch, image=image)
+    )
+    before = _source_inventory(src)
+    try:
+        ledger = PodReservationLedger(tmp_path / "runs.db")
+        row = _row(ledger, bound.stage_id)
+        with managed_guardian_for_test(tmp_path / "runs.db") as guardian:
+            end = time.monotonic() + 8
+            while time.monotonic() < end:
+                with ledger._connect() as db:
+                    outcomes = [r[0] for r in db.execute(
+                        "SELECT outcome FROM pod_stage_recovery_audit "
+                        "WHERE stage_id=?", (bound.stage_id,),
+                    )]
+                if "absent-observed" in outcomes:
+                    break
+                time.sleep(0.1)
+            assert "absent-observed" in outcomes
+            # Simulate a Docker daemon creating a previously dispatched,
+            # provenance-labeled container after a prior empty observation.
+            # No new Gateway receipt or stage mutation is authorized.
+            cmd = [
+                "/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
+                "run", "--rm", "-d", "--pull=never",
+                "--name", row["container_name"],
+                "--label=io.lattix.locus.stage-only=v1",
+                "--label=io.lattix.locus.stage-proof=" + row["stage_proof"],
+                "--network=none", "--cap-drop=ALL",
+                "--security-opt=no-new-privileges",
+                "--security-opt=seccomp=" + str(
+                    pod_stage_docker._validated_seccomp_profile_path()
+                ),
+                "--read-only",
+                "--user=" + str(os.geteuid()) + ":" + str(os.getegid()),
+                "--ipc=private", "--cgroupns=private",
+                "--memory=256m", "--cpus=1", "--pids-limit=64",
+                "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m",
+                "--mount", "type=bind,source=" + str(snapshot.staged)
+                + ",target=/workspace,bind-propagation=rprivate,bind-recursive=disabled",
+                "--workdir=/workspace", "--entrypoint=sleep", image, "30",
+            ]
+            spawned = subprocess.run(
+                cmd, shell=False, capture_output=True, timeout=10, check=False,
+            )
+            assert spawned.returncode == 0, spawned.stderr[-700:]
+            end = time.monotonic() + 12
+            removed = False
+            while time.monotonic() < end:
+                with ledger._connect() as db:
+                    outcomes = [r[0] for r in db.execute(
+                        "SELECT outcome FROM pod_stage_recovery_audit "
+                        "WHERE stage_id=? ORDER BY sequence",
+                        (bound.stage_id,),
+                    )]
+                if "removed" in outcomes and _docker_names() == "":
+                    removed = True
+                    break
+                time.sleep(0.2)
+            assert removed, "independent guardian failed to reap late daemon create"
+            assert guardian.poll() is None
+            assert ledger.get(lease.reservation_id).state == "uncertain"
+            assert ledger.snapshot("docker-parent").held.actions == 3
+            assert receipts.get(row["action_id"]).state == "uncertain"
+            assert _source_inventory(src) == before
+    finally:
+        context.__exit__(None, None, None)
