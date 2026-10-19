@@ -25,7 +25,7 @@ def _sudo(*args: str) -> subprocess.CompletedProcess[str]:
         check=False, timeout=25,
     )
     if result.returncode:
-        raise RuntimeError("OS systemd service manager command failed: " + args[0])
+        raise RuntimeError("systemd command failed: " + args[0] + ": " + result.stderr.strip()[-240:])
     return result
 
 
@@ -106,6 +106,6 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (AdmissionDenied, OSError, RuntimeError, subprocess.TimeoutExpired) as error:
-        print("FAIL: systemd guardian acceptance: " + type(error).__qualname__,
+        print("FAIL: systemd guardian acceptance: " + type(error).__qualname__ + ": " + str(error)[:240],
               file=sys.stderr)
         raise SystemExit(2) from error
