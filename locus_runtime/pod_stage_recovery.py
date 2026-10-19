@@ -335,6 +335,19 @@ class StageDockerRecovery:
                         row = _validate_origin(db, stage_id)
                         if row["state"] == "finished" and row["action_state"] == "succeeded":
                             continue
+                        # A live broker prepares and links its durable
+                        # receipt BEFORE acquiring its dispatch OS lock. A
+                        # guardian must not steal that short prelaunch window.
+                        # Once dispatching, the OS lock is already held; a
+                        # crashed prepared attempt becomes eligible after a
+                        # bounded grace. Budget remains held throughout.
+                        if (
+                            row["state"] == "prepared"
+                            and row["action_state"] == "prepared"
+                            and self.ledger._now() - row["stamp"] < 10
+                        ):
+                            reports.append(RecoveryReport(hashed, "busy"))
+                            continue
                         if row["socket_uri"] != _local_socket(self.socket_path):
                             raise AdmissionDenied("Docker recovery endpoint changed")
                         docker, _ = _trusted_local_binary(self.docker_path)
