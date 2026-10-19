@@ -387,7 +387,7 @@ def test_sigkill_supervisor_restart_reaps_orphan_and_fences_budget(tmp_path):
                     run_command(snapshot, executable="sleep", argument="30",
                                 timeout=25),
                 )
-            except BaseException:
+            except Exception:
                 os._exit(19)
             os._exit(0)
         try:
@@ -463,7 +463,7 @@ def test_independent_guardian_reaps_without_waiting_for_supervisor_restart(tmp_p
                         run_command(snapshot, executable="sleep", argument="30",
                                     timeout=25),
                     )
-                except BaseException:
+                except Exception:
                     os._exit(21)
                 os._exit(0)
             deadline = time.monotonic() + 15
