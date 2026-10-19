@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import shlex
@@ -26,6 +27,9 @@ from locus_runtime.pod_sandbox_broker import BrokerCommand, _require_content_add
 from locus_runtime.pod_stage_bindings import PodStageBindings
 from locus_runtime.sandbox import IsolationStrategy, _validated_seccomp_profile_path
 from locus_runtime.pod_workspace_staging import staged_workspace
+
+
+logger = logging.getLogger(__name__)
 
 
 class StagePodCancelled(RuntimeError):
@@ -379,7 +383,9 @@ class StageDockerBroker:
                             timeout=5,
                         )
                     except (OSError, subprocess.TimeoutExpired):
-                        pass
+                        # Uncertain receipt fencing blocks replays even if
+                        # Docker daemon cleanup could not be confirmed.
+                        logger.warning("stage Docker container kill was not confirmed")
                     try:
                         _record_launch(
                             self.receipts, stage_id=stage_id,
@@ -387,7 +393,9 @@ class StageDockerBroker:
                             launch_sha256=launch_sha256, state="uncertain",
                         )
                     except Exception:
-                        pass
+                        # Preserve the original error; a dispatching receipt
+                        # remains nonreplayable and must be reconciled.
+                        logger.error("stage Docker uncertainty audit failed; manual reconciliation required")
                     raise
                 finally:
                     if process is not None and process.poll() is None:
