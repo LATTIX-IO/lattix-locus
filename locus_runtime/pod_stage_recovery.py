@@ -405,12 +405,19 @@ def main(argv: list[str] | None = None) -> int:
             docker_path=Path(args.docker), socket_path=Path(args.socket),
         )
         if args.watch:
-            # This mode must be independently supervised by the host OS
-            # (e.g. Restart=always). It continues to search for Docker
-            # containers created after an earlier absent observation.
+            from locus_runtime.pod_stage_guardian import GuardianPublisher
+
+            publisher = GuardianPublisher(recovery.ledger, recovery.socket_path)
             last: tuple[RecoveryReport, ...] | None = None
+            # No heartbeat is advertised ready until one complete local
+            # daemon/ledger reconciliation pass returns. Systemd restarts
+            # this process if the watch loop exits or stops reporting.
             while True:
                 current = recovery.recover_pending()
+                status = ("blocked" if any(
+                    report.outcome == "needs-review" for report in current
+                ) else "ready")
+                publisher.publish(status)
                 if current != last:
                     print(json.dumps([
                         {"stage_sha256": r.stage_id_sha256, "outcome": r.outcome,
