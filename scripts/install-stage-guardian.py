@@ -28,22 +28,20 @@ UNIT_SOURCE = (
 )
 
 
-def _owned_directory(path: Path) -> None:
+def _owned_directory(path: Path, *, private: bool = True) -> None:
     if not path.is_absolute():
         raise AdmissionDenied("guardian config directory must be absolute")
-    if path.exists():
-        metadata = path.lstat()
-        if (
-            not stat.S_ISDIR(metadata.st_mode)
-            or metadata.st_uid != os.geteuid()
-            or stat.S_IMODE(metadata.st_mode) != 0o700
-        ):
-            raise AdmissionDenied("guardian config directory not owned mode 0700")
-    else:
-        path.mkdir(mode=0o700)
-        metadata = path.lstat()
-        if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
-            raise AdmissionDenied("cannot establish private guardian config directory")
+    if not path.exists():
+        path.mkdir(mode=0o700 if private else 0o755)
+    metadata = path.lstat()
+    permissions = stat.S_IMODE(metadata.st_mode)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or permissions & 0o022
+        or private and permissions != 0o700
+    ):
+        raise AdmissionDenied("guardian config directory owner or permissions invalid")
 
 
 def _quote(value: str) -> str:
@@ -103,9 +101,10 @@ def install(
 
     config = home / ".config" / "locus"
     unit_dir = home / ".config" / "systemd" / "user"
+    _owned_directory(home / ".config", private=False)
     _owned_directory(config)
-    _owned_directory(home / ".config" / "systemd")
-    _owned_directory(unit_dir)
+    _owned_directory(home / ".config" / "systemd", private=False)
+    _owned_directory(unit_dir, private=False)
     _replace_private(
         config / "stage-guardian.env",
         "LOCUS_STAGE_LEDGER=" + _quote(str(ledger)) + "\n"
