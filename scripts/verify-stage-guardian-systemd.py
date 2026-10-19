@@ -31,10 +31,12 @@ def _sudo(*args: str) -> subprocess.CompletedProcess[str]:
 
 def _ready(ledger: PodReservationLedger, *, previous: str = "") -> tuple[str, int]:
     deadline = time.monotonic() + 18
+    last_error = "not registered"
     while time.monotonic() < deadline:
         try:
             epoch = require_guardian_ready(ledger, Path("/var/run/docker.sock"))
-        except AdmissionDenied:
+        except AdmissionDenied as exc:
+            last_error = str(exc)
             time.sleep(0.2)
             continue
         with ledger._connect() as db:
@@ -44,7 +46,7 @@ def _ready(ledger: PodReservationLedger, *, previous: str = "") -> tuple[str, in
         if row is not None and epoch != previous:
             return epoch, int(row["pid"])
         time.sleep(0.2)
-    raise RuntimeError("OS-managed guardian did not become freshly ready")
+    raise RuntimeError("OS-managed guardian did not become freshly ready: " + last_error)
 
 
 def main() -> int:
@@ -109,7 +111,7 @@ def main() -> int:
                       file=sys.stderr)
                 state = subprocess.run(
                     ["sudo", "-n", "systemctl", "show", unit,
-                     "-p", "ActiveState", "-p", "SubState", "-p", "ExecMainStatus"],
+                     "-p", "ActiveState", "-p", "SubState", "-p", "StatusText", "-p", "ExecMainStatus"],
                     check=False, capture_output=True, text=True, timeout=6,
                 )
                 print("systemd unit state: " + state.stdout[-400:], file=sys.stderr)
