@@ -42,7 +42,10 @@ def _create_uncertain_launch(tmp_path, monkeypatch, *, image: str | None = None)
         )
         patched.setattr(
             pod_stage_docker, "_local_socket",
-            lambda _: "unix:///var/run/docker.sock",
+            lambda _: (
+                "unix://" + os.path.realpath("/var/run/docker.sock")
+                if image is not None else "unix:///var/run/docker.sock"
+            ),
         )
         patched.setattr(
             pod_stage_docker, "require_guardian_ready",
