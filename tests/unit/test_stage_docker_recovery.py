@@ -21,6 +21,7 @@ from locus_runtime.pod_reservations import AdmissionDenied, PodReservationLedger
 from locus_runtime.pod_stage_docker import StageDockerBroker
 from locus_runtime.pod_stage_recovery import StageDockerRecovery
 from locus_runtime.pod_workspace_staging import staged_workspace
+from tests.unit.stage_guardian_support import managed_guardian_for_test
 from tests.unit.test_stage_docker_launch import (
     ONLY_LINUX_UNPRIVILEGED, _source_inventory, rig, run_command,
 )
@@ -40,6 +41,10 @@ def _create_uncertain_launch(tmp_path, monkeypatch):
         patched.setattr(
             pod_stage_docker, "_local_socket",
             lambda _: "unix:///var/run/docker.sock",
+        )
+        patched.setattr(
+            pod_stage_docker, "require_guardian_ready",
+            lambda *_: "test-guardian-epoch",
         )
 
         class Refused:
@@ -367,7 +372,9 @@ def test_sigkill_supervisor_restart_reaps_orphan_and_fences_budget(tmp_path):
     image = os.environ["LOCUS_DOCKER_ACCEPTANCE_IMAGE"]
     src, lease, _, receipts, stages, _ = rig(tmp_path, executable="sleep")
     before = _source_inventory(src)
-    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot, (
+        managed_guardian_for_test(tmp_path / "runs.db")
+    ):
         stage = stages.bind(lease, snapshot)
         broker = StageDockerBroker(stages, receipts, image=image)
         pid = os.fork()
@@ -438,17 +445,11 @@ def test_independent_guardian_reaps_without_waiting_for_supervisor_restart(tmp_p
     image = os.environ["LOCUS_DOCKER_ACCEPTANCE_IMAGE"]
     src, lease, _, receipts, stages, _ = rig(tmp_path, executable="sleep")
     before = _source_inventory(src)
-    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot, (
+        managed_guardian_for_test(tmp_path / "runs.db")
+    ) as watchdog:
         stage = stages.bind(lease, snapshot)
         broker = StageDockerBroker(stages, receipts, image=image)
-        watchdog = subprocess.Popen(
-            [sys.executable, "-m", "locus_runtime.pod_stage_recovery",
-             "--ledger", str(tmp_path / "runs.db"), "--watch",
-             "--poll-seconds", "0.25"],
-            shell=False, stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True, close_fds=True,
-        )
         pid: int | None = None
         try:
             assert watchdog.poll() is None, "independent guardian did not remain alive"
@@ -502,10 +503,4 @@ def test_independent_guardian_reaps_without_waiting_for_supervisor_restart(tmp_p
             if pid is not None:
                 os.kill(pid, signal.SIGKILL)
                 os.waitpid(pid, 0)
-            watchdog.terminate()
-            try:
-                watchdog.wait(timeout=6)
-            except subprocess.TimeoutExpired:
-                watchdog.kill()
-                watchdog.wait(timeout=6)
     assert _docker_names() == ""
