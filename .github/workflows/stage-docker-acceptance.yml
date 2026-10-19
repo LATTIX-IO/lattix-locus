@@ -53,7 +53,7 @@ jobs:
           docker --host unix:///var/run/docker.sock run --rm --pull=never \
             --network=none --cap-drop=ALL --security-opt=no-new-privileges \
             "--security-opt=seccomp=$PWD/docker/sandbox/seccomp-strict.json" \
-            --read-only "--user=$(id -u):$(id -g)" --ipc=private --pid=private \
+            --read-only "--user=$(id -u):$(id -g)" --ipc=private \
             --cgroupns=private --memory=256m --cpus=1 --pids-limit=64 \
             --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
             --mount "type=bind,source=$stage,target=/workspace,bind-propagation=rprivate,bind-recursive=disabled" \
