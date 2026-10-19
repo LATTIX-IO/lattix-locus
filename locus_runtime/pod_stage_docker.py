@@ -238,6 +238,13 @@ class StageDockerBroker:
             raise StagePodCancelled("cancelled before admission")
         if os.name != "posix" or os.uname().sysname != "Linux" or os.geteuid() == 0:
             raise AdmissionDenied("stage Docker launch requires nonroot Linux supervisor")
+        active = self.receipts.reservations.require_active(lease.reservation_id)
+        if (
+            command.timeout_seconds > active.requested.wall_seconds
+            or self.receipts.reservations._now() + command.timeout_seconds
+            >= active.expires_at
+        ):
+            raise AdmissionDenied("stage command exceeds child duration or lease deadline")
         caps = lease._session.capabilities
         if (
             caps.write_roots or command.tool not in caps.allowed_tools
