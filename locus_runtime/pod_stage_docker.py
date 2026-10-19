@@ -11,7 +11,6 @@ import json
 import os
 import secrets
 import shlex
-import socket
 import stat
 import subprocess
 import tempfile
@@ -26,6 +25,7 @@ from locus_runtime.pod_reservations import AdmissionDenied, PodLease
 from locus_runtime.pod_sandbox_broker import BrokerCommand, _require_content_addressed_image
 from locus_runtime.pod_stage_bindings import PodStageBindings
 from locus_runtime.sandbox import IsolationStrategy, _validated_seccomp_profile_path
+from locus_runtime.pod_workspace_staging import staged_workspace
 
 
 class StagePodCancelled(RuntimeError):
@@ -123,6 +123,26 @@ def _command_vector(
     )
 
 
+def _require_pristine_snapshot(
+    *, source: str, stage: str, expected_sha256: str,
+) -> None:
+    """Rehash the source and staged initial tree with the canonical copier.
+
+    The supervisor copies into a *different* disposable sibling, never into
+    the admitted stage or original source. This deliberately repeats work
+    under the same anchored no-follow/hardlink/size rules as the source
+    snapshot. A newly injected secret path on the stage fails, rather than
+    being silently excluded by the copier.
+    """
+    stage_root = Path(stage)
+    with staged_workspace(source, staging_parent=stage_root.parent) as original:
+        if original.sha256 != expected_sha256:
+            raise AdmissionDenied("original workspace changed since approved snapshot")
+    with staged_workspace(stage, staging_parent=stage_root.parent) as current:
+        if current.sha256 != expected_sha256 or current.excluded:
+            raise AdmissionDenied("stage differs from sealed source snapshot")
+
+
 def _record_launch(
     receipts: PodActionReceipts, *, stage_id: str, action_id: str,
     name: str, launch_sha256: str, state: str, exit_code: int | None = None,
@@ -131,7 +151,7 @@ def _record_launch(
     with receipts.reservations._connect() as db:
         receipts.reservations._tx(db)
         row = db.execute(
-            "SELECT state,launch_sha256,container_name FROM pod_stage_docker_launch "
+            "SELECT state,launch_sha256,container_name,action_id FROM pod_stage_docker_launch "
             "WHERE stage_id=?", (stage_id,),
         ).fetchone()
         if row is None:
@@ -145,7 +165,8 @@ def _record_launch(
                  receipts.reservations._now()),
             )
         else:
-            if row["launch_sha256"] != launch_sha256 or row["container_name"] != name:
+            if (row["launch_sha256"] != launch_sha256
+                or row["container_name"] != name or row["action_id"] != action_id):
                 raise AdmissionDenied("launch identity was substituted")
             if row["state"] == state and state == "prepared":
                 raise AdmissionDenied("stage launch cannot be prepared twice")
@@ -230,6 +251,10 @@ class StageDockerBroker:
         docker, cli_sha = _trusted_local_binary(self.docker_path)
         socket_uri = _local_socket(self.socket_path)
         seccomp = str(_validated_seccomp_profile_path())
+        _require_pristine_snapshot(
+            source=stage.source_path, stage=stage.staged_path,
+            expected_sha256=stage.source_sha256,
+        )
         generation = self.stages.make_executable(lease, stage_id)
         if generation != self.stages_generation(lease, stage_id):
             raise AdmissionDenied("stage generation was substituted")
@@ -285,6 +310,10 @@ class StageDockerBroker:
         def invoke() -> dict[str, int]:
             # Inside the kernel-held action fence; no other broker can replay.
             pristine = self.stages.inspect(lease, stage_id)
+            _require_pristine_snapshot(
+                source=stage.source_path, stage=stage.staged_path,
+                expected_sha256=stage.source_sha256,
+            )
             attested = self.stages.inspect_executable(lease, stage_id)
             if (
                 pristine.action_id != receipt.action_id
