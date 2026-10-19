@@ -10,6 +10,7 @@ same-UID adversary allowed to overwrite the supervisor's private SQLite DB.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import secrets
@@ -123,6 +124,14 @@ def _schema(db: sqlite3.Connection) -> None:
         socket_dev INTEGER NOT NULL,
         socket_ino INTEGER NOT NULL
     )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS pod_stage_guardian_audit (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        epoch_sha256 TEXT NOT NULL,
+        event TEXT NOT NULL CHECK(
+            event IN ('registered','ready','blocked')
+        ),
+        stamp INTEGER NOT NULL
+    )""")
 
 
 def _attest(row: sqlite3.Row, ledger: PodReservationLedger, socket_path: Path,
@@ -201,6 +210,12 @@ class GuardianPublisher:
                 else:
                     raise AdmissionDenied("another healthy guardian owns this ledger")
             db.execute(
+                "INSERT INTO pod_stage_guardian_audit(epoch_sha256,event,stamp)"
+                " VALUES (?,?,?)",
+                (hashlib.sha256(self.epoch.encode("ascii")).hexdigest(),
+                 "registered", ledger._now()),
+            )
+            db.execute(
                 "INSERT OR REPLACE INTO pod_stage_guardian "
                 "(singleton,epoch,pid,process_start,boot_id,invocation_id,state,"
                 "heartbeat_monotonic_ns,ledger_dev,ledger_ino,socket_path,socket_dev,socket_ino)"
@@ -228,7 +243,7 @@ class GuardianPublisher:
         with self.ledger._connect() as db:
             self.ledger._tx(db)
             current = db.execute(
-                "SELECT epoch,pid,process_start FROM pod_stage_guardian "
+                "SELECT epoch,pid,process_start,state FROM pod_stage_guardian "
                 "WHERE singleton=1"
             ).fetchone()
             if current is None or (
@@ -240,6 +255,13 @@ class GuardianPublisher:
                 "SET state=?,heartbeat_monotonic_ns=? WHERE singleton=1",
                 (phase, time.monotonic_ns()),
             )
+            if current["state"] != phase:
+                db.execute(
+                    "INSERT INTO pod_stage_guardian_audit("
+                    "epoch_sha256,event,stamp) VALUES (?,?,?)",
+                    (hashlib.sha256(self.epoch.encode("ascii")).hexdigest(),
+                     phase, self.ledger._now()),
+                )
         self.notify("READY=1\nSTATUS=Locus Docker guardian active" if phase == "ready"
                     else "STATUS=Locus Docker guardian reconciliation blocked")
         self.notify("WATCHDOG=1")
