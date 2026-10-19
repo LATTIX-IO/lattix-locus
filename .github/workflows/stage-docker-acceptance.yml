@@ -1,0 +1,57 @@
+name: Stage-only Docker kernel acceptance
+
+on:
+  pull_request:
+    paths:
+      - "locus_runtime/pod_stage_bindings.py"
+      - "locus_runtime/pod_stage_generation.py"
+      - "locus_runtime/pod_stage_docker.py"
+      - "locus_runtime/action_receipts.py"
+      - "locus_runtime/pod_workspace_staging.py"
+      - "tests/unit/test_stage_docker_launch.py"
+      - ".github/workflows/stage-docker-acceptance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-real-docker:
+    # Never run Docker socket integration from fork-supplied PR code.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install project test dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Prove local Docker Engine availability
+        run: |
+          test -S /var/run/docker.sock
+          docker --host unix:///var/run/docker.sock version
+          docker --host unix:///var/run/docker.sock info --format '{{.ServerVersion}}'
+      - name: Resolve immutable smoke image locally
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker --host unix:///var/run/docker.sock pull busybox:1.37
+          image="$(docker --host unix:///var/run/docker.sock image inspect busybox:1.37 --format '{{index .RepoDigests 0}}')"
+          test "${image#*@sha256:}" != "$image"
+          echo "LOCUS_DOCKER_ACCEPTANCE_IMAGE=$image" >> "$GITHUB_ENV"
+      - name: Execute kernel-backed write, timeout, cancel and host integrity tests
+        env:
+          LOCUS_REAL_DOCKER_ACCEPTANCE: "1"
+        run: python -m pytest -q tests/unit/test_stage_docker_launch.py
+      - name: Verify no leftover Locus containers
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          leftover="$(docker --host unix:///var/run/docker.sock ps -a --filter name=locus-pod- --format '{{.Names}}')"
+          if [ -n "$leftover" ]; then
+            printf 'Orphaned containers: %s\n' "$leftover" >&2
+            exit 1
+          fi
