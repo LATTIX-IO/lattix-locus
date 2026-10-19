@@ -249,10 +249,10 @@ def _source_inventory(root: Path):
     os.getenv("LOCUS_REAL_DOCKER_ACCEPTANCE") != "1",
     reason="explicit real Docker Engine acceptance only",
 )
-@pytest.mark.parametrize("mode", ["success", "timeout", "cancel"])
+@pytest.mark.parametrize("mode", ["success", "timeout", "cancel", "revoke"])
 def test_real_kernel_host_workspace_integrity(tmp_path, mode):
     image = os.environ["LOCUS_DOCKER_ACCEPTANCE_IMAGE"]
-    src, lease, _, receipts, stages, _ = rig(
+    src, lease, parent, receipts, stages, _ = rig(
         tmp_path, executable="touch" if mode == "success" else "sleep",
     )
     before = _source_inventory(src)
@@ -276,8 +276,16 @@ def test_real_kernel_host_workspace_integrity(tmp_path, mode):
             if mode == "cancel":
                 timer = threading.Timer(0.5, cancel.set)
                 timer.start()
+            elif mode == "revoke":
+                timer = threading.Timer(
+                    0.5, lambda: receipts.reservations.revoke_parent(parent),
+                )
+                timer.start()
             try:
-                with pytest.raises((subprocess.TimeoutExpired, StagePodCancelled)):
+                expected = AdmissionDenied if mode == "revoke" else (
+                    subprocess.TimeoutExpired, StagePodCancelled,
+                )
+                with pytest.raises(expected):
                     broker.execute(
                         lease, stage.stage_id,
                         run_command(
@@ -286,14 +294,18 @@ def test_real_kernel_host_workspace_integrity(tmp_path, mode):
                         ), cancel=cancel,
                     )
             finally:
-                if mode == "cancel":
+                if mode in ("cancel", "revoke"):
                     timer.join()
             with receipts.reservations._connect() as db:
                 states = [r[0] for r in db.execute(
                     "SELECT state FROM pod_action_receipt"
                 )]
             assert states == ["uncertain"]
-        assert stages.inspect_executable(lease, stage.stage_id)
+        if mode == "revoke":
+            with pytest.raises(AdmissionDenied):
+                stages.inspect_executable(lease, stage.stage_id)
+        else:
+            assert stages.inspect_executable(lease, stage.stage_id)
         assert _source_inventory(src) == before
     assert not snapshot.staged.exists()
 
