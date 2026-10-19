@@ -27,9 +27,11 @@ from tests.unit.test_stage_docker_launch import (
 )
 
 
-def _create_uncertain_launch(tmp_path, monkeypatch):
+def _create_uncertain_launch(tmp_path, monkeypatch, *, image: str | None = None):
     """Prepare a verified stage but cause a Docker-daemon invocation failure."""
     src, lease, _, receipts, stages, broker = rig(tmp_path)
+    if image is not None:
+        broker = StageDockerBroker(stages, receipts, image=image)
     fixture = staged_workspace(src, staging_parent=tmp_path)
     snapshot = fixture.__enter__()
     bound = stages.bind(lease, snapshot)
