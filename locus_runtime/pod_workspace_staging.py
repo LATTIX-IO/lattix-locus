@@ -23,9 +23,12 @@ DEFAULT_MAX_FILES = 4096
 DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_DEPTH = 24
 _CHUNK_BYTES = 256 * 1024
-_BLOCKED_COMPONENTS = frozenset(
-    part.casefold() for part in ALWAYS_READONLY_SUBPATHS if "/" not in part
-)
+_BLOCKED_COMPONENTS = frozenset({
+    *(part.casefold() for part in ALWAYS_READONLY_SUBPATHS if "/" not in part),
+    # A full .config tree may contain CLI/provider tokens beyond gcloud;
+    # never copy any of it to an untrusted disposable worker stage.
+    ".config",
+})
 _SECRET_NAMES = frozenset({
     ".env", ".envrc", ".netrc", ".npmrc", ".pypirc", ".git-credentials",
     "id_rsa", "id_ed25519", "secrets.json", "secrets.yaml",
