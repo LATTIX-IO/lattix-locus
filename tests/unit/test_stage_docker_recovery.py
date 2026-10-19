@@ -426,3 +426,86 @@ def test_sigkill_supervisor_restart_reaps_orphan_and_fences_budget(tmp_path):
                 run_command(snapshot, executable="sleep", argument="30", timeout=25),
             )
     assert _source_inventory(src) == before
+
+
+@ONLY_LINUX_UNPRIVILEGED
+@pytest.mark.skipif(
+    os.getenv("LOCUS_REAL_DOCKER_ACCEPTANCE") != "1",
+    reason="must use a real local Docker Engine",
+)
+def test_independent_guardian_reaps_without_waiting_for_supervisor_restart(tmp_path):
+    """Guardian is its own OS process; supervisor SIGKILL never terminates it."""
+    image = os.environ["LOCUS_DOCKER_ACCEPTANCE_IMAGE"]
+    src, lease, _, receipts, stages, _ = rig(tmp_path, executable="sleep")
+    before = _source_inventory(src)
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        stage = stages.bind(lease, snapshot)
+        broker = StageDockerBroker(stages, receipts, image=image)
+        watchdog = subprocess.Popen(
+            [sys.executable, "-m", "locus_runtime.pod_stage_recovery",
+             "--ledger", str(tmp_path / "runs.db"), "--watch",
+             "--poll-seconds", "0.25"],
+            shell=False, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, close_fds=True,
+        )
+        pid: int | None = None
+        try:
+            assert watchdog.poll() is None, "independent guardian did not remain alive"
+            pid = os.fork()
+            if pid == 0:
+                try:
+                    broker.execute(
+                        lease, stage.stage_id,
+                        run_command(snapshot, executable="sleep", argument="30",
+                                    timeout=25),
+                    )
+                except BaseException:
+                    os._exit(21)
+                os._exit(0)
+            deadline = time.monotonic() + 15
+            active = False
+            while time.monotonic() < deadline:
+                with receipts.reservations._connect() as db:
+                    row = db.execute(
+                        "SELECT state FROM pod_stage_docker_launch WHERE stage_id=?",
+                        (stage.stage_id,),
+                    ).fetchone()
+                if row is not None and row["state"] == "dispatching" and _docker_names():
+                    active = True
+                    break
+                time.sleep(0.1)
+            assert active, "guardian preempted live child or container could not start"
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+            pid = None
+            # A separate continuously running guardian, not this test and
+            # not a restarted supervisor, must observe and stop the orphan.
+            deadline = time.monotonic() + 14
+            cleared = False
+            while time.monotonic() < deadline:
+                if _docker_names() == "":
+                    with receipts.reservations._connect() as db:
+                        row = db.execute(
+                            "SELECT state FROM pod_action_receipt",
+                        ).fetchone()
+                    if row is not None and row["state"] == "uncertain":
+                        cleared = True
+                        break
+                time.sleep(0.2)
+            assert cleared, "guardian did not independently reap crashed child"
+            assert watchdog.poll() is None, "guardian stopped after supervisor death"
+            assert receipts.reservations.get(lease.reservation_id).state == "uncertain"
+            assert receipts.reservations.snapshot("docker-parent").held.actions == 3
+            assert _source_inventory(src) == before
+        finally:
+            if pid is not None:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+            watchdog.terminate()
+            try:
+                watchdog.wait(timeout=6)
+            except subprocess.TimeoutExpired:
+                watchdog.kill()
+                watchdog.wait(timeout=6)
+    assert _docker_names() == ""
