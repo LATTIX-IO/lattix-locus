@@ -41,6 +41,25 @@ jobs:
           image="$(docker --host unix:///var/run/docker.sock image inspect busybox:1.37 --format '{{index .RepoDigests 0}}')"
           test "${image#*@sha256:}" != "$image"
           echo "LOCUS_DOCKER_ACCEPTANCE_IMAGE=$image" >> "$GITHUB_ENV"
+      - name: Probe frozen Docker confinement flags on disposable stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          parent="$(mktemp -d)"
+          chmod 700 "$parent"
+          trap 'rm -rf "$parent"' EXIT
+          stage="$parent/.locus-pod-stage-probe"
+          mkdir -m 700 "$stage"
+          docker --host unix:///var/run/docker.sock run --rm --pull=never \
+            --network=none --cap-drop=ALL --security-opt=no-new-privileges \
+            "--security-opt=seccomp=$PWD/docker/sandbox/seccomp-strict.json" \
+            --read-only "--user=$(id -u):$(id -g)" --ipc=private --pid=private \
+            --cgroupns=private --memory=256m --cpus=1 --pids-limit=64 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            --mount "type=bind,source=$stage,target=/workspace,bind-propagation=rprivate,bind-recursive=disabled" \
+            --workdir=/workspace --entrypoint=touch \
+            "$LOCUS_DOCKER_ACCEPTANCE_IMAGE" /workspace/probe
+          test -f "$stage/probe"
       - name: Execute kernel-backed write, timeout, cancel and host integrity tests
         env:
           LOCUS_REAL_DOCKER_ACCEPTANCE: "1"
