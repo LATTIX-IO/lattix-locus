@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import time
 from pathlib import Path
 
@@ -59,7 +58,7 @@ def test_foreign_forged_guardian_pid_denied(tmp_path):
     reason="requires real Unix Docker socket and independent guardian process",
 )
 def test_real_guardian_liveness_boot_heartbeat_and_restart_epoch(tmp_path):
-    _, _, _, receipts, _, _ = rig(tmp_path)
+    rig(tmp_path)
     authority = PodReservationLedger(tmp_path / "runs.db")
     sock = Path("/var/run/docker.sock")
     with managed_guardian_for_test(tmp_path / "runs.db") as first:
