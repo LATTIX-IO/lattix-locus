@@ -353,6 +353,11 @@ class StageDockerBroker:
                             break
                         except subprocess.TimeoutExpired:
                             continue
+                    if code != 0:
+                        # Docker CLI exit 125 can mean the container NEVER
+                        # launched. No positive receipt may be written for a
+                        # rejected daemon invocation or failed tool action.
+                        raise AdmissionDenied("stage container exited unsuccessfully")
                     self.stages.inspect_executable(lease, stage_id)
                     _record_launch(
                         self.receipts, stage_id=stage_id, action_id=receipt.action_id,
