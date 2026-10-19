@@ -26,7 +26,7 @@ from locus_runtime.pod_workspace_staging import (
     _require_no_follow,
 )
 
-_VERSION = 1
+_VERSION = 2
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 _ENGINE = re.compile(r"[A-Za-z][A-Za-z0-9_.:/-]{0,127}\Z", re.ASCII)
 _STAGE_PREFIX = ".locus-pod-stage-"
@@ -178,6 +178,10 @@ class PodStageBindings:
                 db.execute(
                     "INSERT INTO pod_stage_schema(version) VALUES (?)", (_VERSION,)
                 )
+            elif row["version"] == 1:
+                # Forward-only additive migration. Old stages stay
+                # non-executable until independently registered for V2.
+                db.execute("UPDATE pod_stage_schema SET version=2 WHERE version=1")
             elif row["version"] != _VERSION:
                 raise RuntimeError("unsupported stage-lease schema; migration required")
             db.execute("""CREATE TABLE IF NOT EXISTS pod_stage_binding (
@@ -217,6 +221,23 @@ class PodStageBindings:
                 event TEXT NOT NULL,
                 stamp INTEGER NOT NULL,
                 receipt_seal_sha256 TEXT
+            )""")
+            # Supervisor-only SQLite birthtime witness. It is never inside
+            # the child-writable staging mount and not a bearer permit.
+            db.execute("""CREATE TABLE IF NOT EXISTS pod_stage_exec_generation (
+                stage_id TEXT PRIMARY KEY REFERENCES pod_stage_binding(id),
+                reservation_id TEXT NOT NULL,
+                binding_sha256 TEXT NOT NULL,
+                source_sha256 TEXT NOT NULL,
+                staged_path TEXT NOT NULL,
+                generation TEXT NOT NULL UNIQUE,
+                parent_dev INTEGER NOT NULL,
+                parent_ino INTEGER NOT NULL,
+                stage_dev INTEGER NOT NULL,
+                stage_ino INTEGER NOT NULL,
+                birth_ns INTEGER NOT NULL,
+                mount_id INTEGER NOT NULL,
+                stage_uid INTEGER NOT NULL
             )""")
 
     @staticmethod
@@ -336,7 +357,7 @@ class PodStageBindings:
 
     def _require(
         self, db: sqlite3.Connection, lease: PodLease, stage_id: str,
-        *, allow_retired: bool = False,
+        *, allow_retired: bool = False, mutable_stage: bool = False,
     ) -> sqlite3.Row:
         pod = self._active(db, lease)
         graph_digest, pins_digest = self._sealed_engine(db, pod, lease)
@@ -406,11 +427,18 @@ class PodStageBindings:
             _snapshot_identity(Path(row["source_path"]), Path(row["staged_path"]))
         )
         if (
-            (source_dev, source_ino, stage_dev, stage_ino, ctime_ns, mtime_ns) !=
-            (row["source_dev"], row["source_ino"], row["stage_dev"], row["stage_ino"],
-             row["stage_ctime_ns"], row["stage_mtime_ns"])
+            (source_dev, source_ino, stage_dev, stage_ino) !=
+            (row["source_dev"], row["source_ino"], row["stage_dev"], row["stage_ino"])
+            or (
+                not mutable_stage and
+                (ctime_ns, mtime_ns) != (row["stage_ctime_ns"], row["stage_mtime_ns"])
+            )
         ):
             raise AdmissionDenied("stage workspace identity changed after binding")
+        if mutable_stage:
+            from locus_runtime.pod_stage_generation import require_generation
+
+            require_generation(db, row)
         expected = self._fingerprint(row)
         if expected != row["binding_sha256"]:
             raise AdmissionDenied("stage durable binding integrity mismatch")
@@ -549,6 +577,54 @@ class PodStageBindings:
             self.ledger._tx(db)
             return self._record(self._require(db, lease, stage_id))
 
+    def make_executable(self, lease: PodLease, stage_id: str) -> str:
+        """Seal an immutable Linux inode-birth witness outside the stage.
+
+        Only a still-pristine, V1-fresh authenticated stage can be registered.
+        This does NOT grant a mount, prepare a receipt or launch a process.
+        """
+        from locus_runtime.pod_stage_generation import stage_witness
+
+        with self.ledger._connect() as db:
+            self.ledger._tx(db)
+            stage = self._require(db, lease, stage_id)
+            if stage["state"] != "bound" or stage["action_id"] is not None:
+                raise AdmissionDenied("executable stage must precede receipt binding")
+            witness = stage_witness(Path(stage["staged_path"]))
+            if (witness[2], witness[3]) != (stage["stage_dev"], stage["stage_ino"]):
+                raise AdmissionDenied("executable stage root was substituted")
+            previous = db.execute(
+                "SELECT generation FROM pod_stage_exec_generation WHERE stage_id=?",
+                (stage_id,),
+            ).fetchone()
+            if previous is not None:
+                return str(previous["generation"])
+            generation = secrets.token_hex(32)
+            db.execute(
+                "INSERT INTO pod_stage_exec_generation "
+                "(stage_id,reservation_id,binding_sha256,source_sha256,staged_path,"
+                "generation,parent_dev,parent_ino,stage_dev,stage_ino,birth_ns,"
+                "mount_id,stage_uid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    stage_id, stage["reservation_id"], stage["binding_sha256"],
+                    stage["source_sha256"], stage["staged_path"], generation,
+                    *witness,
+                ),
+            )
+            db.execute(
+                "INSERT INTO pod_stage_audit(stage_id,event,stamp) VALUES (?,?,?)",
+                (stage_id, "executable-generation", self.ledger._now()),
+            )
+            return generation
+
+    def inspect_executable(self, lease: PodLease, stage_id: str) -> StageLease:
+        """V2 attestation remains valid after a child modifies stage files."""
+        with self.ledger._connect() as db:
+            self.ledger._tx(db)
+            return self._record(
+                self._require(db, lease, stage_id, mutable_stage=True)
+            )
+
     def link_prepared_receipt(
         self, lease: PodLease, stage_id: str, action_id: str,
     ) -> StageLease:
@@ -599,7 +675,14 @@ class PodStageBindings:
         """Mark stage non-reusable; does NOT remove or promote any files."""
         with self.ledger._connect() as db:
             self.ledger._tx(db)
-            stage = self._require(db, lease, stage_id, allow_retired=True)
+            executable = db.execute(
+                "SELECT 1 FROM pod_stage_exec_generation WHERE stage_id=?",
+                (stage_id,),
+            ).fetchone() is not None
+            stage = self._require(
+                db, lease, stage_id, allow_retired=True,
+                mutable_stage=executable,
+            )
             if stage["state"] != "retired":
                 db.execute(
                     "UPDATE pod_stage_binding SET state='retired' WHERE id=?",
@@ -616,7 +699,13 @@ class PodStageBindings:
     def audit(self, lease: PodLease, stage_id: str) -> tuple[str, ...]:
         with self.ledger._connect() as db:
             self.ledger._tx(db)
-            self._require(db, lease, stage_id, allow_retired=True)
+            executable = db.execute(
+                "SELECT 1 FROM pod_stage_exec_generation WHERE stage_id=?",
+                (stage_id,),
+            ).fetchone() is not None
+            self._require(
+                db, lease, stage_id, allow_retired=True, mutable_stage=executable,
+            )
             return tuple(
                 row["event"] for row in db.execute(
                     "SELECT event FROM pod_stage_audit WHERE stage_id=? ORDER BY sequence",
