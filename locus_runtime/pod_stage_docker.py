@@ -25,6 +25,7 @@ from locus_runtime.gateway import JailFacts
 from locus_runtime.pod_reservations import AdmissionDenied, PodLease
 from locus_runtime.pod_sandbox_broker import BrokerCommand, _require_content_addressed_image
 from locus_runtime.pod_stage_bindings import PodStageBindings
+from locus_runtime.pod_stage_guardian import require_guardian_ready
 from locus_runtime.sandbox import IsolationStrategy, _validated_seccomp_profile_path
 from locus_runtime.pod_workspace_staging import staged_workspace
 
@@ -261,6 +262,12 @@ class StageDockerBroker:
         if os.name != "posix" or os.uname().sysname != "Linux" or os.geteuid() == 0:
             raise AdmissionDenied("stage Docker launch requires nonroot Linux supervisor")
         active = self.receipts.reservations.require_active(lease.reservation_id)
+        # Never authorize a launch without an OS-notified independent guardian.
+        # The epoch is pinned across receipt dispatch; a guardian replacement
+        # during execution cannot silently inherit the prior authorization.
+        guardian_epoch = require_guardian_ready(
+            self.receipts.reservations, self.socket_path,
+        )
         if (
             command.timeout_seconds > active.requested.wall_seconds
             or self.receipts.reservations._now() + command.timeout_seconds
@@ -313,6 +320,7 @@ class StageDockerBroker:
             "engine_pins": stage.engine_pins_sha256, "pod_spec": stage.pod_revision,
             "capabilities": stage.capability_sha256,
             "docker_cli_sha256": cli_sha, "timeout_seconds": command.timeout_seconds,
+            "guardian_epoch": guardian_epoch,
         })
         # The exact frozen argv including digest-pinned image, container name,
         # stage source and resource limits is sealed into Gateway/receipt auth.
@@ -332,6 +340,9 @@ class StageDockerBroker:
                 ).hexdigest(),
                 "docker_launch_sha256": launch_sha256,
                 "docker_cli_sha256": cli_sha,
+                "guardian_epoch_sha256": hashlib.sha256(
+                    guardian_epoch.encode("ascii")
+                ).hexdigest(),
             },
         }
         receipt = self.receipts.prepare(
@@ -349,6 +360,10 @@ class StageDockerBroker:
 
         def invoke() -> dict[str, int]:
             # Inside the kernel-held action fence; no other broker can replay.
+            if require_guardian_ready(
+                self.receipts.reservations, self.socket_path,
+            ) != guardian_epoch:
+                raise AdmissionDenied("guardian epoch changed before dispatch")
             pristine = self.stages.inspect(lease, stage_id)
             _require_pristine_snapshot(
                 source=stage.source_path, stage=stage.staged_path,
@@ -376,6 +391,10 @@ class StageDockerBroker:
                 }
                 process: subprocess.Popen[bytes] | None = None
                 try:
+                    if require_guardian_ready(
+                        self.receipts.reservations, self.socket_path,
+                    ) != guardian_epoch:
+                        raise AdmissionDenied("guardian epoch changed at OS boundary")
                     process = subprocess.Popen(
                         argv, shell=False, stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -385,6 +404,10 @@ class StageDockerBroker:
                     while True:
                         if cancel is not None and cancel.is_set():
                             raise StagePodCancelled("container cancelled")
+                        if require_guardian_ready(
+                            self.receipts.reservations, self.socket_path,
+                        ) != guardian_epoch:
+                            raise AdmissionDenied("guardian restarted during child execution")
                         # Revoking a parent or child must not leave an
                         # already-running Docker worker unchecked until its
                         # original timeout. Authentication is rechecked
