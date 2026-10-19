@@ -16,11 +16,12 @@ import os
 import re
 import sqlite3
 import stat
+import sys
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from locus_runtime.action_fencing import action_lock
 from locus_runtime.pod_reservations import AdmissionDenied, PodReservationLedger
@@ -48,7 +49,7 @@ class RecoveryReport:
 
 def _private_ledger(path: Path) -> None:
     """Require a private supervisor-controlled ledger and directory on disk."""
-    if os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() == 0:
+    if sys.platform != "linux" or os.geteuid() == 0:
         raise AdmissionDenied("recovery requires an unprivileged Linux supervisor")
     if not path.is_absolute():
         raise AdmissionDenied("ledger path must be absolute")
@@ -138,7 +139,7 @@ def _validate_origin(db: sqlite3.Connection, stage_id: str) -> sqlite3.Row:
         "prepared", "dispatching", "uncertain", "finished"
     }:
         raise AdmissionDenied("unrecognized stage recovery lifecycle")
-    return row
+    return cast(sqlite3.Row, row)
 
 
 def _docker(*, binary: str, socket: str, params: tuple[str, ...]) -> subprocess.CompletedProcess[bytes]:
