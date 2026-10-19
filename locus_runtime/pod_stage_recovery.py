@@ -169,6 +169,18 @@ def _docker(*, binary: str, socket: str, params: tuple[str, ...]) -> subprocess.
     return completed
 
 
+def _require_daemon_responsive(recovery: StageDockerRecovery) -> None:
+    """Do not advertise a ready guardian when no daemon can be contacted."""
+    endpoint = _local_socket(recovery.socket_path)
+    docker, _ = _trusted_local_binary(recovery.docker_path)
+    response = _docker(
+        binary=docker, socket=endpoint,
+        params=("version", "--format", "{{.Server.Version}}"),
+    )
+    if response.returncode != 0 or not response.stdout.strip():
+        raise AdmissionDenied("guardian Docker Engine is not responsive")
+
+
 def _inspect(binary: str, socket: str, name: str) -> dict[str, Any] | None:
     command = _docker(
         binary=binary, socket=socket,
@@ -413,10 +425,17 @@ def main(argv: list[str] | None = None) -> int:
             # daemon/ledger reconciliation pass returns. Systemd restarts
             # this process if the watch loop exits or stops reporting.
             while True:
-                current = recovery.recover_pending()
-                status = ("blocked" if any(
-                    report.outcome == "needs-review" for report in current
-                ) else "ready")
+                try:
+                    current = recovery.recover_pending()
+                    _require_daemon_responsive(recovery)
+                    status = ("blocked" if any(
+                        report.outcome == "needs-review" for report in current
+                    ) else "ready")
+                except (AdmissionDenied, OSError, sqlite3.Error):
+                    # A failed engine probe cannot turn a missing-container
+                    # observation into permission for another child launch.
+                    current = ()
+                    status = "blocked"
                 publisher.publish(status)
                 if current != last:
                     print(json.dumps([
