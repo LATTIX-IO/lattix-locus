@@ -112,7 +112,7 @@ def _command_vector(
         "--security-opt=no-new-privileges",
         "--security-opt=seccomp=" + seccomp,
         "--read-only", "--user=" + str(uid) + ":" + str(gid),
-        "--ipc=private", "--pid=private", "--cgroupns=private",
+        "--ipc=private", "--cgroupns=private",
         "--memory=256m", "--cpus=1", "--pids-limit=64",
         "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m",
         "--mount",
