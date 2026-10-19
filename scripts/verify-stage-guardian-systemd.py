@@ -73,14 +73,18 @@ def main() -> int:
         ]
         try:
             _sudo(*service)
+            print("systemd transient unit created", flush=True)
             first_epoch, first_pid = _ready(ledger)
+            print("initial guardian heartbeat validated", flush=True)
             manager_pid = int(_sudo(
                 "systemctl", "show", "--value", "-p", "MainPID", unit
             ).stdout.strip())
             if first_pid != manager_pid:
                 raise RuntimeError("guardian PID not systemd managed MainPID")
             _sudo("kill", "-KILL", str(first_pid))
+            print("guardian SIGKILL dispatched", flush=True)
             second_epoch, second_pid = _ready(ledger, previous=first_epoch)
+            print("replacement guardian heartbeat validated", flush=True)
             if second_pid == first_pid:
                 raise RuntimeError("systemd did not actually restart guardian")
             manager_pid = int(_sudo(
@@ -92,14 +96,17 @@ def main() -> int:
             print("PASS: real systemd Type=notify restarted guardian and rotated epoch")
             return 0
         finally:
-            subprocess.run(
-                ["sudo", "-n", "systemctl", "stop", unit],
-                check=False, capture_output=True, timeout=15,
-            )
-            subprocess.run(
-                ["sudo", "-n", "systemctl", "reset-failed", unit],
-                check=False, capture_output=True, timeout=10,
-            )
+            # A wedged systemd manager must not replace the first failure
+            # with a cleanup timeout; leave the job failed and observable.
+            for operation in ("stop", "reset-failed"):
+                try:
+                    subprocess.run(
+                        ["sudo", "-n", "systemctl", operation, unit],
+                        check=False, capture_output=True, timeout=6,
+                    )
+                except subprocess.TimeoutExpired:
+                    print("systemd cleanup did not confirm " + operation,
+                          file=sys.stderr)
 
 
 if __name__ == "__main__":
