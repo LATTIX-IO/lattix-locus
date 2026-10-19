@@ -5,7 +5,6 @@ acceptance fork is opt-in and MUST execute with a real local Linux daemon.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import signal
@@ -20,12 +19,11 @@ from locus_runtime import pod_stage_docker, pod_stage_recovery
 from locus_runtime.action_fencing import action_lock
 from locus_runtime.action_receipts import ActionReplayDenied
 from locus_runtime.pod_reservations import AdmissionDenied, PodReservationLedger
-from locus_runtime.pod_sandbox_broker import BrokerCommand
 from locus_runtime.pod_stage_docker import StageDockerBroker
-from locus_runtime.pod_stage_recovery import StageDockerRecovery, _verify_container
+from locus_runtime.pod_stage_recovery import StageDockerRecovery
 from locus_runtime.pod_workspace_staging import staged_workspace
 from tests.unit.test_stage_docker_launch import (
-    ONLY_LINUX_UNPRIVILEGED, IMAGE, _source_inventory, rig, run_command,
+    ONLY_LINUX_UNPRIVILEGED, _source_inventory, rig, run_command,
 )
 
 
