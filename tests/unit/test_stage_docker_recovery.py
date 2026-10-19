@@ -224,6 +224,77 @@ def test_tampered_provenance_requires_manual_recovery(tmp_path, monkeypatch):
         context.__exit__(None, None, None)
 
 
+@ONLY_LINUX_UNPRIVILEGED
+def test_late_docker_rpc_after_empty_scan_is_not_permanently_cleared(tmp_path, monkeypatch):
+    """First absence is only observed; a subsequent run can reap a late start."""
+    _, lease, receipts, _, context, _, bound = (
+        _create_uncertain_launch(tmp_path, monkeypatch)
+    )
+    try:
+        ledger = PodReservationLedger(tmp_path / "runs.db")
+        row = _row(ledger, bound.stage_id)
+        late = [_fake_inspection(row)]
+        scans = [0]
+        removed: list[str] = []
+        monkeypatch.setattr(
+            pod_stage_recovery, "_local_socket",
+            lambda _: "unix:///var/run/docker.sock",
+        )
+        monkeypatch.setattr(
+            pod_stage_recovery, "_trusted_local_binary",
+            lambda _: ("/usr/bin/docker", "e" * 64),
+        )
+
+        def discover(*args):
+            scans[0] += 1
+            # First reaper pass cannot see the daemon's delayed create.
+            if scans[0] == 1:
+                return None
+            return late[0] if late else None
+
+        def delete(*, binary, socket, params):
+            removed.append(params[-1])
+            late.clear()
+            return subprocess.CompletedProcess(params, 0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(pod_stage_recovery, "_inspect", discover)
+        monkeypatch.setattr(pod_stage_recovery, "_docker", delete)
+        recovery = StageDockerRecovery(ledger)
+        assert recovery.recover_pending()[0].outcome == "absent-observed"
+        assert ledger.get(lease.reservation_id).state == "uncertain"
+        assert receipts.get(row["action_id"]).state == "uncertain"
+        assert ledger.snapshot("docker-parent").held.actions == 3
+        assert recovery.recover_pending()[0].outcome == "removed"
+        assert removed == ["a" * 64]
+        assert ledger.snapshot("docker-parent").held.actions == 3
+    finally:
+        context.__exit__(None, None, None)
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_daemon_unavailable_does_not_release_or_replay(tmp_path, monkeypatch):
+    _, lease, receipts, _, context, _, bound = (
+        _create_uncertain_launch(tmp_path, monkeypatch)
+    )
+    try:
+        ledger = PodReservationLedger(tmp_path / "runs.db")
+
+        def unavailable(_):
+            raise AdmissionDenied("local daemon not reachable")
+
+        monkeypatch.setattr(pod_stage_recovery, "_local_socket", unavailable)
+        outcome = StageDockerRecovery(ledger).recover_pending()
+        assert [r.outcome for r in outcome] == ["needs-review"]
+        assert ledger.get(lease.reservation_id).state == "uncertain"
+        assert ledger.snapshot("docker-parent").held.actions == 3
+        action_id = _row(ledger, bound.stage_id)["action_id"]
+        assert receipts.get(action_id).state == "uncertain"
+        with pytest.raises((AdmissionDenied, ActionReplayDenied)):
+            receipts.execute_prepared_once(lease, action_id, invoke=lambda: 1)
+    finally:
+        context.__exit__(None, None, None)
+
+
 def _docker_names() -> str:
     command = subprocess.run(
         ["/usr/bin/docker", "--host", "unix:///var/run/docker.sock",
