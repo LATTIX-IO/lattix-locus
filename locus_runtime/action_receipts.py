@@ -281,6 +281,16 @@ class PodActionReceipts:
         """Trusted broker only: at-most-once *invocation*, not exactly-once effect."""
         intent = self.prepare(lease, idempotency_key=idempotency_key,
                               authorization=authorization)
+        return self.execute_prepared_once(lease, intent.action_id, invoke=invoke)
+
+    def execute_prepared_once(self, lease: PodLease, action_id: str,
+                              *, invoke: Callable[[], _T]) -> tuple[ActionRecord, _T]:
+        """Dispatch a previously Gateway-authorized, explicitly bound receipt.
+
+        Stage-specific brokers prepare the action, durably link their StageLease,
+        and only then cross the same kernel-locked at-most-once dispatch fence.
+        A replay or crash never authorizes an additional invocation.
+        """
         # Kernel mutex is held across both the write-ahead dispatch and the
         # entire callback/result receipt. Another local recovery controller
         # cannot mistake live work for a crashed process.
@@ -298,6 +308,7 @@ class PodActionReceipts:
                 raise
             receipt = self._complete(intent.action_id, "succeeded", evidence=digest)
             return receipt, output
+
 
     def get(self, action_id: str) -> ActionRecord:
         with self.reservations._connect() as db:
