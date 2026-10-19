@@ -29,6 +29,7 @@ from locus_runtime.task_graph_contract import TaskAuthority, TaskBudget, TaskInt
 from locus_runtime.task_plan_compiler import compile_task_plan
 from locus_runtime.task_scheduler import DurableTaskScheduler
 from tests.gateway_support import FakeEngine
+from tests.unit.stage_guardian_support import managed_guardian_for_test
 
 IMAGE = "busybox@sha256:" + "a" * 64
 ONLY_LINUX_UNPRIVILEGED = pytest.mark.skipif(
@@ -116,6 +117,11 @@ def mock_host(monkeypatch: pytest.MonkeyPatch, written: Path | None = None):
     monkeypatch.setattr(
         module, "_local_socket",
         lambda _: "unix:///var/run/docker.sock",
+    )
+    # Synthetic CLI tests exercise the worker contract; real Engine tests
+    # use a distinct process-authenticated guardian, never this patch.
+    monkeypatch.setattr(
+        module, "require_guardian_ready", lambda *_: "test-guardian-epoch",
     )
 
     class Process:
@@ -249,14 +255,16 @@ def _source_inventory(root: Path):
     os.getenv("LOCUS_REAL_DOCKER_ACCEPTANCE") != "1",
     reason="explicit real Docker Engine acceptance only",
 )
-@pytest.mark.parametrize("mode", ["success", "timeout", "cancel", "revoke"])
+@pytest.mark.parametrize("mode", ["success", "timeout", "cancel", "revoke", "guardian_death"])
 def test_real_kernel_host_workspace_integrity(tmp_path, mode):
     image = os.environ["LOCUS_DOCKER_ACCEPTANCE_IMAGE"]
     src, lease, parent, receipts, stages, _ = rig(
         tmp_path, executable="touch" if mode == "success" else "sleep",
     )
     before = _source_inventory(src)
-    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot, (
+        managed_guardian_for_test(tmp_path / "runs.db")
+    ) as guardian:
         stage = stages.bind(lease, snapshot)
         broker = StageDockerBroker(stages, receipts, image=image)
         assert not any(
@@ -281,10 +289,13 @@ def test_real_kernel_host_workspace_integrity(tmp_path, mode):
                     0.5, lambda: receipts.reservations.revoke_parent(parent),
                 )
                 timer.start()
+            elif mode == "guardian_death":
+                timer = threading.Timer(0.5, guardian.kill)
+                timer.start()
             try:
-                expected = AdmissionDenied if mode == "revoke" else (
-                    subprocess.TimeoutExpired, StagePodCancelled,
-                )
+                expected = AdmissionDenied if mode in (
+                    "revoke", "guardian_death"
+                ) else (subprocess.TimeoutExpired, StagePodCancelled)
                 with pytest.raises(expected):
                     broker.execute(
                         lease, stage.stage_id,
@@ -294,7 +305,7 @@ def test_real_kernel_host_workspace_integrity(tmp_path, mode):
                         ), cancel=cancel,
                     )
             finally:
-                if mode in ("cancel", "revoke"):
+                if mode in ("cancel", "revoke", "guardian_death"):
                     timer.join()
             with receipts.reservations._connect() as db:
                 states = [r[0] for r in db.execute(
