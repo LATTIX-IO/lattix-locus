@@ -106,12 +106,14 @@ def _local_socket(candidate: Path) -> str:
 def _command_vector(
     *, docker: str, socket_uri: str, image: str, name: str,
     stage: str, entrypoint: str, arguments: tuple[str, ...],
-    seccomp: str, uid: int, gid: int,
+    seccomp: str, uid: int, gid: int, proof: str,
 ) -> tuple[str, ...]:
     """One fixed, admin-constructed launch vector. No planner or model flags."""
     return (
         docker, "--host", socket_uri, "run", "--rm", "--pull=never",
         "--name", name,
+        "--label=io.lattix.locus.stage-only=v1",
+        "--label=io.lattix.locus.stage-proof=" + proof,
         "--network=none", "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         "--security-opt=seccomp=" + seccomp,
@@ -147,30 +149,47 @@ def _require_pristine_snapshot(
             raise AdmissionDenied("stage differs from sealed source snapshot")
 
 
+def _stage_proof(*, stage_id: str, binding: str, generation: str,
+                 reservation: str, name: str, image: str) -> str:
+    """Daemon-visible provenance label sealed before Gateway authorization."""
+    return _digest({
+        "schema": "locus.stage-docker-recovery.v1",
+        "stage_id": stage_id, "binding": binding,
+        "generation": generation, "reservation": reservation,
+        "container_name": name, "image": image,
+    })
+
+
 def _record_launch(
     receipts: PodActionReceipts, *, stage_id: str, action_id: str,
     name: str, launch_sha256: str, state: str, exit_code: int | None = None,
+    proof: str | None = None, image_ref: str | None = None,
+    socket_uri: str | None = None,
 ) -> None:
     """Durable bounded launch audit, in the same SQLite ledger as receipts."""
     with receipts.reservations._connect() as db:
         receipts.reservations._tx(db)
         row = db.execute(
-            "SELECT state,launch_sha256,container_name,action_id FROM pod_stage_docker_launch "
+            "SELECT state,launch_sha256,container_name,action_id,stage_proof,image_ref,socket_uri FROM pod_stage_docker_launch "
             "WHERE stage_id=?", (stage_id,),
         ).fetchone()
         if row is None:
-            if state != "prepared":
-                raise AdmissionDenied("launch record must be prepared first")
+            if (state != "prepared" or not proof or not image_ref or not socket_uri):
+                raise AdmissionDenied("verified launch descriptor must be prepared first")
             db.execute(
                 "INSERT INTO pod_stage_docker_launch "
-                "(stage_id,action_id,container_name,launch_sha256,state,stamp) "
-                "VALUES (?,?,?,?,?,?)",
-                (stage_id, action_id, name, launch_sha256, state,
-                 receipts.reservations._now()),
+                "(stage_id,action_id,container_name,launch_sha256,stage_proof,"
+                "image_ref,socket_uri,state,stamp) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (stage_id, action_id, name, launch_sha256, proof, image_ref,
+                 socket_uri, state, receipts.reservations._now()),
             )
         else:
             if (row["launch_sha256"] != launch_sha256
-                or row["container_name"] != name or row["action_id"] != action_id):
+                or row["container_name"] != name or row["action_id"] != action_id
+                or (proof is not None and row["stage_proof"] != proof)
+                or (image_ref is not None and row["image_ref"] != image_ref)
+                or (socket_uri is not None and row["socket_uri"] != socket_uri)):
                 raise AdmissionDenied("launch identity was substituted")
             if row["state"] == state and state == "prepared":
                 raise AdmissionDenied("stage launch cannot be prepared twice")
@@ -219,6 +238,9 @@ class StageDockerBroker:
                 action_id TEXT NOT NULL UNIQUE REFERENCES pod_action_receipt(id),
                 container_name TEXT NOT NULL UNIQUE,
                 launch_sha256 TEXT NOT NULL,
+                stage_proof TEXT NOT NULL,
+                image_ref TEXT NOT NULL,
+                socket_uri TEXT NOT NULL,
                 state TEXT NOT NULL CHECK(
                     state IN ('prepared','dispatching','finished','uncertain')
                 ),
@@ -271,10 +293,16 @@ class StageDockerBroker:
             raise AdmissionDenied("stage generation was substituted")
         name = "locus-pod-" + secrets.token_hex(16)
         uid, gid = os.geteuid(), os.getegid()
+        proof = _stage_proof(
+            stage_id=stage_id, binding=stage.binding_sha256,
+            generation=generation, reservation=stage.reservation_id,
+            name=name, image=self.image,
+        )
         argv = _command_vector(
             docker=docker, socket_uri=socket_uri, image=self.image,
             name=name, stage=stage.staged_path, entrypoint=command.argv[0],
             arguments=command.argv[1:], seccomp=seccomp, uid=uid, gid=gid,
+            proof=proof,
         )
         launch_sha256 = _digest({
             "argv": argv, "stage_id": stage_id,
@@ -316,6 +344,7 @@ class StageDockerBroker:
         _record_launch(
             self.receipts, stage_id=stage_id, action_id=receipt.action_id,
             name=name, launch_sha256=launch_sha256, state="prepared",
+            proof=proof, image_ref=self.image, socket_uri=socket_uri,
         )
 
         def invoke() -> dict[str, int]:
