@@ -428,9 +428,11 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     current = recovery.recover_pending()
                     _require_daemon_responsive(recovery)
-                    status = ("blocked" if any(
-                        report.outcome == "needs-review" for report in current
-                    ) else "ready")
+                    status: Literal["ready", "blocked"] = (
+                        "blocked" if any(
+                            report.outcome == "needs-review" for report in current
+                        ) else "ready"
+                    )
                 except (AdmissionDenied, OSError, sqlite3.Error):
                     # A failed engine probe cannot turn a missing-container
                     # observation into permission for another child launch.
