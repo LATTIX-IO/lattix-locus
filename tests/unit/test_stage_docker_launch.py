@@ -411,3 +411,21 @@ def test_foreign_gateway_child_cannot_claim_stage(tmp_path, monkeypatch):
             assert db.execute(
                 "SELECT count(*) FROM pod_action_receipt"
             ).fetchone()[0] == 0
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_execution_timeout_cannot_outlive_reserved_budget(tmp_path, monkeypatch):
+    src, lease, _, receipts, stages, broker = rig(tmp_path)
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        stage = stages.bind(lease, snapshot)
+        calls = mock_host(monkeypatch)
+        with pytest.raises(AdmissionDenied, match="exceeds child duration"):
+            broker.execute(
+                lease, stage.stage_id,
+                run_command(snapshot, timeout=40),
+            )
+        assert not calls
+        with receipts.reservations._connect() as db:
+            assert db.execute(
+                "SELECT count(*) FROM pod_action_receipt"
+            ).fetchone()[0] == 0
