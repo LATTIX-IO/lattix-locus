@@ -52,10 +52,36 @@ The existing PodSandboxBroker ban on writable original host binds remains in for
   validated OS threat boundary. A private staging parent reduces pathname
   swap exposure; the kernel birth/mount witness catches inode recycling but
   does not attest a compromised daemon.
-- A stopped client after an abrupt supervisor crash may leave an orphaned
-  container. Durable `dispatching` receipt state prevents replay. Runtime
-  restart cleanup/reconciliation and proven daemon teardown require
-  independent acceptance; do not silently release reserved budgets.
+- Each authorized Docker container bears a daemon-visible StageLease-derived
+  proof label. The supervisor's durable launch record binds that proof to the
+  exact image, stage identity, receipt/action and random container name. On
+  recovery the controller independently compares labels, image, readonly
+  rootfs, network, privilege and mount metadata; it can terminate **only**
+  a matching container ID, then verifies daemon-reported absence.
+- **Restart barrier:** Before resuming staged child dispatch, the trusted
+  supervisor invokes `python -m locus_runtime.pod_stage_recovery --ledger /absolute/private/runs.db`.
+  The directory must be supervisor-owned and mode 0700. A nonzero exit status
+  means the service must stay fail-closed: 2 = manual review required;
+  3 = an action lock is owned by a live broker. No application startup
+  integration is implied by the CLI; the operator/service must install this
+  barrier before enabling live child dispatch.
+- The recovery process opens the same SQLite ledger, takes the same nonblocking
+  kernel action fence, validates original StageLease/receipt audit seals and
+  interrogates the explicitly local Docker daemon. A missing daemon, mismatched
+  proof, unexpectedly mounted host path or failed container removal is always
+  **needs-review**, never treated as successful cleanup.
+- Every recovered or uncertain action remains non-replayable and its reservation
+  remains held. A daemon report of no matching container is recorded as
+  **absent-observed**, not as proof that a late request from a still-active
+  Docker client can never appear. The original stage is neither removed nor
+  promoted. Separate operator-approved completion remains necessary.
+- **Residual risk:** A killed supervisor does not automatically kill its Docker
+  CLI child; an in-flight daemon RPC may create a container after an initial
+  no-container observation. The recovery CLI is a startup barrier and
+  observation, not a continuously running guardian. Integrate a durable
+  on-host watchdog or daemon-backed create/start lifecycle and prove delayed
+  creation and restart races before asserting unattended crash containment.
+  Real SIGKILL tests are necessary but alone cannot eliminate this gap.
 - This broker is *not* the vendor CLI/MCP adapter, artifact promotion verifier,
   or multi-agent native-plus-Codex demonstration. Child subprocess output is
   intentionally suppressed. The user must separately approve promotion.
@@ -65,7 +91,7 @@ The existing PodSandboxBroker ban on writable original host binds remains in for
 
 ## Required verification
 
-Synthetic tests: `pytest -q tests/unit/test_stage_docker_launch.py`
+Synthetic tests: `pytest -q tests/unit/test_stage_docker_launch.py tests/unit/test_stage_docker_recovery.py`
 (unit cases run only as an unprivileged Linux process).
 
 Real acceptance uses the repo's **Stage-only Docker kernel acceptance**
@@ -73,7 +99,8 @@ workflow on an internal branch. It runs the unprivileged tests against the
 local Engine with a digest-pinned, pre-pulled BusyBox image, then proves no
 locus-named containers remain. Tests verify a successful stage write and
 original-host byte/directory/permission integrity during success, timeout
-and cancellation. A skipped real-Engine job is not acceptance. Reviewers must
+cancellation, revocation and a real forced supervisor SIGKILL followed by a
+fresh-process reconciliation. A skipped real-Engine job is not acceptance. Reviewers must
 also inspect latest-head CI/CodeQL and any skipped AppSec/SBOM gates.
 
 Release-Impact: minor
