@@ -156,6 +156,31 @@ def _deny_source_submounts(root: str) -> None:
             raise AdmissionDenied("nested source mount is not promotable")
 
 
+def _exchange(fd: int, temporary: str, name: str) -> None:
+    """Atomic Linux two-dentry exchange. The displaced inode remains inspectable.
+
+    Used only for an existing-file content modification. Compare the displaced
+    inode to the one pinned by human approval after exchange. If it differs,
+    exchange back under the OS fence rather than quietly discard an operator's
+    independently written data. A foreign process can still race these kernel
+    operations, so any unprovable compensation stays uncertain.
+    """
+    if sys.platform != "linux":
+        raise AdmissionDenied("kernel atomic exchange requires Linux")
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        rename = libc.renameat2
+    except AttributeError as exc:
+        raise AdmissionDenied("kernel atomic exchange unavailable") from exc
+    rename.argtypes = [
+        ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    rename.restype = ctypes.c_int
+    if rename(fd, os.fsencode(temporary), fd, os.fsencode(name), 2) != 0:
+        raise AdmissionDenied("atomic source exchange failed")
+
+
 def _publish_noreplace(fd: int, temporary: str, name: str) -> None:
     """Linux atomic create-only publication; never clobber a late new file."""
     if sys.platform != "linux":
@@ -212,6 +237,8 @@ class StageArtifactPromoter:
                 source_dev INTEGER,
                 source_ino INTEGER,
                 stage_after_sha256 TEXT NOT NULL,
+                prepared_dev INTEGER,
+                prepared_ino INTEGER,
                 principal TEXT NOT NULL,
                 gateway_audit_id TEXT NOT NULL,
                 expires_at INTEGER NOT NULL,
@@ -357,6 +384,32 @@ class StageArtifactPromoter:
             db.execute(
                 "INSERT INTO pod_artifact_promotion_audit(approval_id,event,stamp)"
                 " VALUES (?,?,?)", (approval_id, after, self.ledger._now()),
+            )
+
+    def _seal_prepared_target(
+        self, approval_id: str, expected_digest: str, prepared: tuple[bytes, str, int, int, int],
+    ) -> None:
+        """Durably pin the exact pending inode BEFORE any rename can publish it.
+
+        Crash/restart recovery must not undo a separately replaced file with
+        equal bytes: compare dev/ino as well as digest.
+        """
+        with self.ledger._connect() as db:
+            self.ledger._tx(db)
+            result = db.execute(
+                "UPDATE pod_artifact_promotion "
+                "SET prepared_dev=?,prepared_ino=?,stamp=? "
+                "WHERE id=? AND state='promoting' AND prepared_ino IS NULL "
+                "AND stage_after_sha256=?",
+                (prepared[3], prepared[4], self.ledger._now(), approval_id,
+                 expected_digest),
+            )
+            if result.rowcount != 1 or prepared[1] != expected_digest:
+                raise AdmissionDenied("prepared promotion inode cannot be sealed")
+            db.execute(
+                "INSERT INTO pod_artifact_promotion_audit(approval_id,event,stamp) "
+                "VALUES (?,'prepared-target',?)",
+                (approval_id, self.ledger._now()),
             )
 
     def promote(
