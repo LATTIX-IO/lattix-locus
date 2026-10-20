@@ -181,6 +181,37 @@ def test_restart_reconciles_interrupted_promotion_without_replaying(
 
 
 @ONLY_LINUX_UNPRIVILEGED
+def test_atomic_new_file_publish_refuses_racing_operator_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from locus_runtime import pod_artifact_promotion as module
+
+    source, lease, stages, _, context, manifest = _stage_change(tmp_path, monkeypatch)
+    try:
+        promoter = StageArtifactPromoter(stages)
+        operator = _operator(lease, source)
+        _human_approves(operator, source, manifest)
+        approval = promoter.approve(operator, lease, manifest)
+        kernel_rename = module._publish_noreplace
+
+        def concurrent_create(fd: int, temporary: str, name: str) -> None:
+            (source / name).write_text("third-party data")
+            kernel_rename(fd, temporary, name)
+
+        monkeypatch.setattr(module, "_publish_noreplace", concurrent_create)
+        with pytest.raises(AdmissionDenied, match="concurrent source file"):
+            promoter.promote(operator, lease, manifest, approval_id=approval.approval_id)
+        assert (source / "output.txt").read_text() == "third-party data"
+        assert StageArtifactPromoter(stages).recover_uncertain(
+            approval.approval_id,
+        ) == "uncertain"
+        with pytest.raises(AdmissionDenied):
+            promoter.promote(operator, lease, manifest, approval_id=approval.approval_id)
+    finally:
+        context.__exit__(None, None, None)
+
+
+@ONLY_LINUX_UNPRIVILEGED
 def test_existing_file_rollback_preserves_previous_contents(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
