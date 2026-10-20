@@ -204,6 +204,9 @@ def test_operator_revocation_during_preparation_denies_final_kernel_write(
         assert not (source / "output.txt").exists()
         assert (source / "code.txt").read_text() == "original"
         assert promoter.recover_uncertain(approval.approval_id) == "rolled_back"
+        assert {p.name for p in source.iterdir()} == {
+            "code.txt", ".git", ".aws", ".locus", ".config",
+        }, "denied publication left a source journal or output"
         with pytest.raises(AdmissionDenied):
             promoter.promote(
                 operator, lease, manifest, approval_id=approval.approval_id,
