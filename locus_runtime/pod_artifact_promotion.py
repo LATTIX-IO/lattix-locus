@@ -7,6 +7,8 @@ and unattended approval are explicitly unsupported (fail closed).
 """
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import os
 import secrets
@@ -125,6 +127,26 @@ def _write_new(fd: int, name: str, payload: bytes, mode: int) -> None:
 
 def _stat_same_root(left: int, right: int) -> bool:
     return os.fstat(left).st_dev == os.fstat(right).st_dev
+
+
+def _publish_noreplace(fd: int, temporary: str, name: str) -> None:
+    """Linux atomic create-only publication; never clobber a late new file."""
+    if sys.platform != "linux":
+        raise AdmissionDenied("atomic no-replace rename needs Linux kernel")
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        rename = libc.renameat2
+    except AttributeError as exc:
+        raise AdmissionDenied("kernel atomic noreplace unavailable") from exc
+    rename.argtypes = [
+        ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    rename.restype = ctypes.c_int
+    if rename(fd, os.fsencode(temporary), fd, os.fsencode(name), 1) != 0:
+        if ctypes.get_errno() == errno.EEXIST:
+            raise AdmissionDenied("a concurrent source file already exists")
+        raise AdmissionDenied("kernel atomic noreplace rejected promotion")
 
 
 class StageArtifactPromoter:
@@ -366,10 +388,13 @@ class StageArtifactPromoter:
                 fresh = _read_file(src_fd, src_name)
                 if (fresh[1] if fresh else None) != row["source_before_sha256"]:
                     raise AdmissionDenied("original changed during promotion preparation")
-                os.replace(
-                    row["temp_name"], src_name,
-                    src_dir_fd=src_fd, dst_dir_fd=src_fd,
-                )
+                if old is None:
+                    _publish_noreplace(src_fd, row["temp_name"], src_name)
+                else:
+                    os.replace(
+                        row["temp_name"], src_name,
+                        src_dir_fd=src_fd, dst_dir_fd=src_fd,
+                    )
                 os.fsync(src_fd)
                 committed = _read_file(src_fd, src_name)
                 if committed is None or committed[1] != row["stage_after_sha256"]:
