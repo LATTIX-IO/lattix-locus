@@ -411,17 +411,30 @@ def test_sigkill_supervisor_restart_reaps_orphan_and_fences_budget(tmp_path):
             os.kill(pid, signal.SIGKILL)
             os.waitpid(pid, 0)
 
-        # This is a genuinely independent new supervisor process; it has no
-        # in-memory GatewaySession or access to the killed worker's lock.
-        recovered = subprocess.run(
-            [sys.executable, "-m", "locus_runtime.pod_stage_recovery",
-             "--ledger", str(tmp_path / "runs.db")],
-            shell=False, check=False, capture_output=True, timeout=20,
-        )
-        assert recovered.returncode == 0, recovered.stderr[-500:]
-        reports = json.loads(recovered.stdout.decode("utf-8"))
-        assert reports and reports[0]["outcome"] in {"removed", "absent-observed"}
-        assert reports[0]["reservation_held"] is True
+        # A genuinely independent restarted supervisor has no in-memory
+        # GatewaySession and cannot steal the independent guardian's action
+        # lock. Return code 3 is a transient, explicit BUSY result, never a
+        # successful cleanup claim. Wait until one reconciler has completed.
+        deadline = time.monotonic() + 14
+        while True:
+            recovered = subprocess.run(
+                [sys.executable, "-m", "locus_runtime.pod_stage_recovery",
+                 "--ledger", str(tmp_path / "runs.db")],
+                shell=False, check=False, capture_output=True, timeout=10,
+            )
+            reports = json.loads(recovered.stdout.decode("utf-8"))
+            if recovered.returncode == 0:
+                assert reports and all(
+                    r["outcome"] in {"removed", "absent-observed"}
+                    for r in reports
+                )
+                assert all(r["reservation_held"] is True for r in reports)
+                break
+            # Only an authenticated action-lock collision is retryable.
+            assert recovered.returncode == 3, recovered.stderr[-500:]
+            assert reports and all(r["outcome"] == "busy" for r in reports)
+            assert time.monotonic() < deadline, "reconciliation lock stayed busy"
+            time.sleep(0.15)
         assert _docker_names() == ""
         assert _source_inventory(src) == before
         reopened = PodReservationLedger(tmp_path / "runs.db")
