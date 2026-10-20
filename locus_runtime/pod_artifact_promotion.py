@@ -73,7 +73,7 @@ def _parent_fd(root: str | Path, path: str) -> tuple[int, str]:
         raise
 
 
-def _read_file(fd: int, name: str) -> tuple[bytes, str, int] | None:
+def _read_file(fd: int, name: str) -> tuple[bytes, str, int, int, int] | None:
     try:
         before = os.stat(name, dir_fd=fd, follow_symlinks=False)
     except FileNotFoundError:
@@ -101,7 +101,10 @@ def _read_file(fd: int, name: str) -> tuple[bytes, str, int] | None:
             or after.st_nlink != 1):
             raise AdmissionDenied("promotion file mutated during hash")
         payload = b"".join(chunks)
-        return payload, hashlib.sha256(payload).hexdigest(), stat.S_IMODE(before.st_mode)
+        return (
+            payload, hashlib.sha256(payload).hexdigest(),
+            stat.S_IMODE(before.st_mode), before.st_dev, before.st_ino,
+        )
     finally:
         os.close(opened)
 
@@ -182,6 +185,9 @@ class StageArtifactPromoter:
                 staged_path TEXT NOT NULL,
                 relative_path TEXT NOT NULL,
                 source_before_sha256 TEXT,
+                source_before_mode INTEGER,
+                source_dev INTEGER,
+                source_ino INTEGER,
                 stage_after_sha256 TEXT NOT NULL,
                 principal TEXT NOT NULL,
                 gateway_audit_id TEXT NOT NULL,
@@ -246,6 +252,16 @@ class StageArtifactPromoter:
         path = change.path
         _relative(path)
         stage = self.stages.inspect_executable(lease, manifest.stage_id)
+        original_fd, original_name = _parent_fd(stage.source_path, path)
+        try:
+            initial = _read_file(original_fd, original_name)
+        finally:
+            os.close(original_fd)
+        if (
+            (initial[1] if initial else None) != change.before_sha256
+            or (initial[2] if initial else None) != change.before_mode
+        ):
+            raise AdmissionDenied("promotion source mode or bytes changed before approval")
         target = str(Path(stage.source_path) / path)
         args = {
             "stage_id": manifest.stage_id,
@@ -270,12 +286,17 @@ class StageArtifactPromoter:
                 raise AdmissionDenied("StageLease already has a promotion decision")
             db.execute("""INSERT INTO pod_artifact_promotion(
                 id,stage_id,manifest_sha256,receipt_id,source_path,staged_path,
-                relative_path,source_before_sha256,stage_after_sha256,principal,
+                relative_path,source_before_sha256,source_before_mode,
+                source_dev,source_ino,stage_after_sha256,principal,
                 gateway_audit_id,expires_at,backup_name,temp_name,state,stamp
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'approved',?)""",
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'approved',?)""",
                        (approved_id, stage.stage_id, manifest.manifest_sha256,
                         manifest.receipt_id, stage.source_path, stage.staged_path,
-                        path, change.before_sha256, change.after_sha256,
+                        path, change.before_sha256,
+                        initial[2] if initial else None,
+                        initial[3] if initial else None,
+                        initial[4] if initial else None,
+                        change.after_sha256,
                         operator.caller.principal, decision.audit_id, now + ttl_seconds,
                         ".locus-backup-" + approved_id,
                         ".locus-promotion-" + approved_id, now))
@@ -373,6 +394,9 @@ class StageArtifactPromoter:
                 new = _read_file(stage_fd, staged_name)
                 if (
                     (old[1] if old else None) != row["source_before_sha256"]
+                    or (old[2] if old else None) != row["source_before_mode"]
+                    or (old[3] if old else None) != row["source_dev"]
+                    or (old[4] if old else None) != row["source_ino"]
                     or new is None or new[1] != row["stage_after_sha256"]
                     or (old is not None and new[1] == old[1])
                 ):
@@ -393,7 +417,12 @@ class StageArtifactPromoter:
                 _write_new(src_fd, row["temp_name"], new[0], mode)
                 os.fsync(src_fd)
                 fresh = _read_file(src_fd, src_name)
-                if (fresh[1] if fresh else None) != row["source_before_sha256"]:
+                if (
+                    (fresh[1] if fresh else None) != row["source_before_sha256"]
+                    or (fresh[2] if fresh else None) != row["source_before_mode"]
+                    or (fresh[3] if fresh else None) != row["source_dev"]
+                    or (fresh[4] if fresh else None) != row["source_ino"]
+                ):
                     raise AdmissionDenied("original changed during promotion preparation")
                 if old is None:
                     _publish_noreplace(src_fd, row["temp_name"], src_name)
