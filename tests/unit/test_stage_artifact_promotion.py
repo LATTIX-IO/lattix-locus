@@ -127,6 +127,26 @@ def test_real_docker_staged_output_requires_human_approved_publication(
 
 
 @ONLY_LINUX_UNPRIVILEGED
+@pytest.mark.parametrize(
+    "filename",
+    [".locus-promotion-foreign", ".locus-rollback-foreign", ".locus-backup-foreign"],
+)
+def test_internal_journal_namespace_cannot_be_promoted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filename: str,
+) -> None:
+    source, lease, stages, _, context, manifest = _stage_change(
+        tmp_path, monkeypatch, filename,
+    )
+    try:
+        operator = _operator(lease, source)
+        with pytest.raises(AdmissionDenied, match="protected or traversing"):
+            StageArtifactPromoter(stages).approve(operator, lease, manifest)
+        assert not (source / filename).exists()
+    finally:
+        context.__exit__(None, None, None)
+
+
+@ONLY_LINUX_UNPRIVILEGED
 def test_single_file_promotion_requires_one_human_approval_and_is_atomic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
