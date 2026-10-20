@@ -85,7 +85,7 @@ def _read_file(fd: int, name: str) -> tuple[bytes, str, int] | None:
     opened = os.open(name, _FLAGS, dir_fd=fd)
     try:
         current = os.fstat(opened)
-        if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
+        if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino) or current.st_nlink != 1:
             raise AdmissionDenied("promotion file changed during open")
         chunks: list[bytes] = []
         total = 0
@@ -97,7 +97,8 @@ def _read_file(fd: int, name: str) -> tuple[bytes, str, int] | None:
         after = os.fstat(opened)
         if (total != before.st_size or
             (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_ctime_ns)
-            != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_ctime_ns)):
+            != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_ctime_ns)
+            or after.st_nlink != 1):
             raise AdmissionDenied("promotion file mutated during hash")
         payload = b"".join(chunks)
         return payload, hashlib.sha256(payload).hexdigest(), stat.S_IMODE(before.st_mode)
@@ -348,6 +349,12 @@ class StageArtifactPromoter:
             ) != manifest:
                 raise AdmissionDenied("staged files changed after approval")
             change = manifest.changes[0]
+            if (
+                change.path != row["relative_path"]
+                or change.before_sha256 != row["source_before_sha256"]
+                or change.after_sha256 != row["stage_after_sha256"]
+            ):
+                raise AdmissionDenied("approved artifact file identity was altered")
             target = str(Path(stage.source_path) / row["relative_path"])
             write = operator.authorize(
                 kind="file_write", tool="write_file", target=target,
