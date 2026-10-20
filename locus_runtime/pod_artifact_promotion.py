@@ -16,6 +16,7 @@ import sqlite3
 import stat
 import sys
 from dataclasses import dataclass
+from typing import cast
 from pathlib import Path
 
 from locus_runtime.action_fencing import action_lock
@@ -316,7 +317,7 @@ class StageArtifactPromoter:
             ).fetchone()
         if row is None:
             raise AdmissionDenied("unknown artifact approval")
-        return row
+        return cast(sqlite3.Row, row)
 
     def _transition(self, approval_id: str, before: str, after: str) -> None:
         if before not in _STATES or after not in _STATES:
