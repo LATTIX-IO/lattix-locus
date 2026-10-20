@@ -51,8 +51,14 @@ def _relative(path: str) -> tuple[str, ...]:
         or len(path.encode("utf-8")) > 2048):
         raise AdmissionDenied("unsafe promotion relative output path")
     parts = path.split("/")
-    if any(part in ("", ".", "..") or _excluded_name(part, tuple(parts[:i]))
-           for i, part in enumerate(parts)):
+    if any(
+        part in ("", ".", "..")
+        or _excluded_name(part, tuple(parts[:i]))
+        or part.casefold().startswith((
+            ".locus-promotion-", ".locus-rollback-", ".locus-backup-",
+        ))
+        for i, part in enumerate(parts)
+    ):
         raise AdmissionDenied("protected or traversing promotion path")
     return tuple(parts)
 
