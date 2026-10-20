@@ -518,6 +518,17 @@ class StageArtifactPromoter:
                     or (fresh[4] if fresh else None) != row["source_ino"]
                 ):
                     raise AdmissionDenied("original changed during promotion preparation")
+                # The OS rename is the actual external side effect. Re-evaluate
+                # operator policy and authenticated child authority immediately
+                # before it, never relying on an earlier allowed decision after
+                # a revocation/policy change during preparation.
+                self.stages.inspect_executable(lease, manifest.stage_id)
+                last_policy = operator.authorize(
+                    kind="file_write", tool="write_file", target=target,
+                    args={"manifest_sha256": manifest.manifest_sha256},
+                )
+                if not last_policy.allowed:
+                    raise AdmissionDenied("Gateway file policy revoked before atomic publication")
                 if old is None:
                     _publish_noreplace(src_fd, row["temp_name"], src_name)
                 else:
