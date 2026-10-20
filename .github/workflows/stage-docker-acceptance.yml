@@ -78,10 +78,10 @@ jobs:
         run: python -m pytest -q tests/unit/test_stage_docker_launch.py tests/unit/test_stage_docker_recovery.py tests/unit/test_stage_guardian_admission.py
       - name: Prove actual systemd guardian auto-restart and epoch rotation
         run: python scripts/verify-stage-guardian-systemd.py
-      - name: Qualify real Docker artifact publication behind human approval
+      - name: Qualify real Docker approval, native SIGKILL rollback, and source-race recovery
         env:
           LOCUS_REAL_DOCKER_ACCEPTANCE: "1"
-        run: python -m pytest -q tests/unit/test_stage_artifact_promotion.py -k real_docker
+        run: python -m pytest -q tests/unit/test_stage_artifact_promotion.py
       - name: Verify no leftover Locus containers
         if: always()
         shell: bash
