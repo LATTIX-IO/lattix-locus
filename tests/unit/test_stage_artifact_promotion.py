@@ -425,6 +425,103 @@ def test_real_sigkill_after_atomic_swap_is_rolled_back_by_new_supervisor(
         context.__exit__(None, None, None)
 
 
+@ONLY_LINUX_UNPRIVILEGED
+def test_crash_after_committed_promotion_recovers_leftover_original_inode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Durable success plus SIGKILL before final cleanup must not leak old code."""
+    source, lease, stages, _, context, manifest = _stage_change(
+        tmp_path, monkeypatch, "code.txt",
+    )
+    try:
+        promoter = StageArtifactPromoter(stages)
+        operator = _operator(lease, source)
+        _human_approves(operator, source, manifest)
+        consent = promoter.approve(operator, lease, manifest)
+        pid = os.fork()
+        if pid == 0:
+            actual_transition = promoter._transition
+
+            def crash_after_commit(approval_id: str, before: str, after: str) -> None:
+                actual_transition(approval_id, before, after)
+                if after == "promoted":
+                    os.kill(os.getpid(), signal.SIGKILL)
+
+            promoter._transition = crash_after_commit  # type: ignore[method-assign]
+            try:
+                promoter.promote(
+                    operator, lease, manifest, approval_id=consent.approval_id,
+                )
+            except Exception:
+                os._exit(91)
+            os._exit(92)
+        _, status = os.waitpid(pid, 0)
+        assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
+        assert (source / "code.txt").read_text() == "agent changed stage"
+        old_temp = source / (".locus-promotion-" + consent.approval_id)
+        assert old_temp.read_text() == "original"
+        restarted = StageArtifactPromoter(stages)
+        assert restarted.cleanup_promoted(consent.approval_id) == "clean"
+        assert not old_temp.exists()
+        assert restarted.cleanup_promoted(consent.approval_id) == "clean"
+        assert (source / "code.txt").read_text() == "agent changed stage"
+        with pytest.raises(AdmissionDenied):
+            restarted.recover_uncertain(consent.approval_id)
+    finally:
+        context.__exit__(None, None, None)
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_restart_cleans_exact_quarantined_new_inode_after_sigkill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recovery after a crash mid-quarantine must not lose the original."""
+    from locus_runtime import pod_artifact_promotion as module
+
+    source, lease, stages, _, context, manifest = _stage_change(
+        tmp_path, monkeypatch,
+    )
+    try:
+        promoter = StageArtifactPromoter(stages)
+        operator = _operator(lease, source)
+        _human_approves(operator, source, manifest)
+        consent = promoter.approve(operator, lease, manifest)
+        # Stop a successfully published transaction at 'promoting' to
+        # exercise interrupted rollback with a durable prepared inode.
+        promoter.promote(operator, lease, manifest, approval_id=consent.approval_id)
+        with stages.ledger._connect() as db:
+            stages.ledger._tx(db)
+            db.execute(
+                "UPDATE pod_artifact_promotion SET state='promoting' WHERE id=?",
+                (consent.approval_id,),
+            )
+        real_rename = module._publish_noreplace
+        pid = os.fork()
+        if pid == 0:
+            def crash_after_quarantine(fd: int, source_name: str, destination: str):
+                real_rename(fd, source_name, destination)
+                if destination.startswith(".locus-rollback-"):
+                    os.kill(os.getpid(), signal.SIGKILL)
+            module._publish_noreplace = crash_after_quarantine
+            try:
+                promoter.recover_uncertain(consent.approval_id)
+            except Exception:
+                os._exit(91)
+            os._exit(92)
+        _, status = os.waitpid(pid, 0)
+        assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
+        assert not (source / "output.txt").exists()
+        quarantine = source / (".locus-rollback-" + consent.approval_id)
+        assert quarantine.exists()
+        assert StageArtifactPromoter(stages).recover_uncertain(
+            consent.approval_id,
+        ) == "rolled_back"
+        assert not quarantine.exists()
+        assert not (source / "output.txt").exists()
+    finally:
+        context.__exit__(None, None, None)
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux supervisor only")
 def test_no_approval_without_trusted_manifest(tmp_path: Path) -> None:
     source, lease, _, _, stages, _ = rig(tmp_path)
