@@ -593,30 +593,84 @@ class StageArtifactPromoter:
             backup_fd = _open_anchored_directory(Path(row["staged_path"]).parent)
             try:
                 old = _read_file(src_fd, name)
-                current = old[1] if old else None
-                if current == row["source_before_sha256"]:
+                original = (
+                    row["source_before_sha256"], row["source_before_mode"],
+                    row["source_dev"], row["source_ino"],
+                )
+                target = (
+                    row["stage_after_sha256"], row["prepared_dev"],
+                    row["prepared_ino"],
+                )
+                if (
+                    (old is None and row["source_before_sha256"] is None)
+                    or (
+                        old is not None
+                        and old[1:5] == original
+                    )
+                ):
+                    # No publication happened, or the exact original inode
+                    # was already atomically restored before a crash.
                     self._transition(approval_id, "promoting", "rolled_back")
                     return "rolled_back"
-                if current != row["stage_after_sha256"]:
+                if (
+                    old is None
+                    or row["prepared_ino"] is None
+                    or (old[1], old[3], old[4]) != target
+                ):
+                    # An external process replaced a file after publication,
+                    # including one with equal bytes. Never remove that inode.
                     self._transition(approval_id, "promoting", "uncertain")
                     return "uncertain"
                 if row["source_before_sha256"] is None:
-                    os.unlink(name, dir_fd=src_fd)
+                    # Move the exact published inode into a private quarantine
+                    # with RENAME_NOREPLACE before deleting. If an operator
+                    # raced our source path, restore its inode instead.
+                    quarantine = ".locus-rollback-" + str(approval_id)
+                    _publish_noreplace(src_fd, name, quarantine)
+                    moved = _read_file(src_fd, quarantine)
+                    if (
+                        moved is None
+                        or (moved[1], moved[3], moved[4]) != target
+                    ):
+                        _publish_noreplace(src_fd, quarantine, name)
+                        os.fsync(src_fd)
+                        self._transition(approval_id, "promoting", "uncertain")
+                        return "uncertain"
+                    os.unlink(quarantine, dir_fd=src_fd)
                 else:
-                    backup = _read_file(backup_fd, row["backup_name"])
-                    if backup is None or backup[1] != row["source_before_sha256"]:
+                    # The legitimate atomic exchange leaves the *original
+                    # inode* under the temporary dentry. Reversal restores
+                    # that exact inode without replacing it with a backup copy.
+                    previous = _read_file(src_fd, row["temp_name"])
+                    if previous is None or previous[1:5] != original:
                         self._transition(approval_id, "promoting", "uncertain")
                         return "uncertain"
-                    if not _stat_same_root(src_fd, backup_fd):
+                    _exchange(src_fd, row["temp_name"], name)
+                    displaced = _read_file(src_fd, row["temp_name"])
+                    if displaced is None or (
+                        displaced[1], displaced[3], displaced[4]
+                    ) != target:
+                        # A different process raced the reversal. Undo this
+                        # exchange only if our original inode is still at
+                        # the target; otherwise leave durable uncertainty.
+                        at_source = _read_file(src_fd, name)
+                        if (
+                            at_source is not None
+                            and at_source[1:5] == original
+                        ):
+                            _exchange(src_fd, row["temp_name"], name)
+                            os.fsync(src_fd)
                         self._transition(approval_id, "promoting", "uncertain")
                         return "uncertain"
-                    os.replace(
-                        row["backup_name"], name,
-                        src_dir_fd=backup_fd, dst_dir_fd=src_fd,
-                    )
                 os.fsync(src_fd)
                 restored = _read_file(src_fd, name)
-                if (restored[1] if restored else None) != row["source_before_sha256"]:
+                if (
+                    row["source_before_sha256"] is None and restored is not None
+                ) or (
+                    row["source_before_sha256"] is not None and (
+                        restored is None or restored[1:5] != original
+                    )
+                ):
                     self._transition(approval_id, "promoting", "uncertain")
                     return "uncertain"
                 self._transition(approval_id, "promoting", "rolled_back")
