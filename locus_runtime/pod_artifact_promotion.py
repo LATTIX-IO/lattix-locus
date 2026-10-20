@@ -639,6 +639,21 @@ class StageArtifactPromoter:
                                 return "uncertain"
                             os.unlink(quarantine, dir_fd=src_fd)
                             os.fsync(src_fd)
+                    # A denied/aborted operation may have already prepared
+                    # an output in the source directory. Remove it ONLY when
+                    # its exact fsynced inode/digest was sealed in the ledger.
+                    # A missing witness or foreign replacement stays uncertain
+                    # rather than deleting an unrelated operator file.
+                    pending = _read_file(src_fd, row["temp_name"])
+                    if pending is not None:
+                        if (
+                            row["prepared_ino"] is None
+                            or (pending[1], pending[3], pending[4]) != target
+                        ):
+                            self._transition(approval_id, "promoting", "uncertain")
+                            return "uncertain"
+                        os.unlink(row["temp_name"], dir_fd=src_fd)
+                        os.fsync(src_fd)
                     # No publication happened, or the exact original inode
                     # was already atomically restored before a crash.
                     self._transition(approval_id, "promoting", "rolled_back")
