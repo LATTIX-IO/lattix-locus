@@ -287,10 +287,91 @@ def test_existing_file_rollback_preserves_previous_contents(
                 "UPDATE pod_artifact_promotion SET state='promoting' WHERE id=?",
                 (approval.approval_id,),
             )
+        # A deliberately tampered post-commit state lacks the original
+        # exchanged inode; recovery must never fabricate a safe rollback.
         assert StageArtifactPromoter(stages).recover_uncertain(
             approval.approval_id,
-        ) == "rolled_back"
-        assert (source / "code.txt").read_text() == "original"
+        ) == "uncertain"
+        assert (source / "code.txt").read_text() == "agent changed stage"
+    finally:
+        context.__exit__(None, None, None)
+
+
+@ONLY_LINUX_UNPRIVILEGED
+@pytest.mark.parametrize("filename", ["output.txt", "code.txt"])
+def test_rollback_refuses_foreign_replacement_with_identical_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filename: str,
+) -> None:
+    source, lease, stages, _, context, manifest = _stage_change(
+        tmp_path, monkeypatch, filename,
+    )
+    try:
+        promoter = StageArtifactPromoter(stages)
+        operator = _operator(lease, source)
+        _human_approves(operator, source, manifest)
+        approval = promoter.approve(operator, lease, manifest)
+        promoter.promote(operator, lease, manifest, approval_id=approval.approval_id)
+        published = source / filename
+        old_inode = published.stat().st_ino
+        with stages.ledger._connect() as db:
+            stages.ledger._tx(db)
+            db.execute(
+                "UPDATE pod_artifact_promotion SET state='promoting' WHERE id=?",
+                (approval.approval_id,),
+            )
+        # Another process placed byte-identical content at the same path
+        # after publication. Hash equality must NOT authorize its removal.
+        substitute = source / "foreign-substitute.txt"
+        substitute.write_bytes(published.read_bytes())
+        os.replace(substitute, published)
+        assert published.stat().st_ino != old_inode
+        assert StageArtifactPromoter(stages).recover_uncertain(
+            approval.approval_id,
+        ) == "uncertain"
+        assert published.read_text() == "agent changed stage"
+        with pytest.raises(AdmissionDenied):
+            promoter.promote(
+                operator, lease, manifest, approval_id=approval.approval_id,
+            )
+    finally:
+        context.__exit__(None, None, None)
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_existing_source_race_exchanges_back_without_losing_operator_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from locus_runtime import pod_artifact_promotion as module
+
+    source, lease, stages, _, context, manifest = _stage_change(
+        tmp_path, monkeypatch, "code.txt",
+    )
+    try:
+        promoter = StageArtifactPromoter(stages)
+        operator = _operator(lease, source)
+        _human_approves(operator, source, manifest)
+        approval = promoter.approve(operator, lease, manifest)
+        atomic_exchange = module._exchange
+        first = True
+
+        def concurrent_swap(fd: int, temporary: str, target: str) -> None:
+            nonlocal first
+            if first:
+                first = False
+                foreign = source / "foreign-sibling.txt"
+                foreign.write_text("third-party write")
+                os.replace(foreign, source / target)
+            atomic_exchange(fd, temporary, target)
+
+        monkeypatch.setattr(module, "_exchange", concurrent_swap)
+        with pytest.raises(AdmissionDenied, match="concurrent source replacement"):
+            promoter.promote(
+                operator, lease, manifest, approval_id=approval.approval_id,
+            )
+        assert (source / "code.txt").read_text() == "third-party write"
+        assert StageArtifactPromoter(stages).recover_uncertain(
+            approval.approval_id,
+        ) == "uncertain"
     finally:
         context.__exit__(None, None, None)
 
@@ -312,19 +393,21 @@ def test_real_sigkill_after_atomic_swap_is_rolled_back_by_new_supervisor(
         consent = promoter.approve(operator, lease, manifest)
         pid = os.fork()
         if pid == 0:
-            actual_replace = module.os.replace
+            actual_exchange = module._exchange
 
             def die_after_swap(*args, **kwargs):
-                actual_replace(*args, **kwargs)
+                actual_exchange(*args, **kwargs)
                 os.kill(os.getpid(), signal.SIGKILL)
 
-            module.os.replace = die_after_swap
+            module._exchange = die_after_swap
             try:
                 promoter.promote(
                     operator, lease, manifest,
                     approval_id=consent.approval_id,
                 )
-            except BaseException:
+            except Exception:
+                # The test process must report ordinary exception failures
+                # independently; SIGKILL itself is not interceptable.
                 os._exit(91)
             os._exit(92)
         _, status = os.waitpid(pid, 0)
