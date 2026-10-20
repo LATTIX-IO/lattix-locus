@@ -130,8 +130,13 @@ def main() -> int:
                     check=False, capture_output=True, text=True, timeout=6,
                 )
                 print("systemd unit state: " + state.stdout[-400:], file=sys.stderr)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+            except (OSError, subprocess.TimeoutExpired) as diagnostic_error:
+                # Diagnostics are best-effort; preserve the original failure.
+                print(
+                    "systemd diagnostics unavailable: "
+                    + type(diagnostic_error).__qualname__,
+                    file=sys.stderr,
+                )
             raise
         finally:
             # A wedged systemd manager must not replace the first failure
