@@ -322,7 +322,10 @@ def test_real_kernel_host_workspace_integrity(tmp_path, mode):
 
 
 @ONLY_LINUX_UNPRIVILEGED
-def test_failed_daemon_launch_is_uncertain_and_not_replayable(tmp_path, monkeypatch):
+@pytest.mark.parametrize("launch_status", [125, 126, 127])
+def test_failed_daemon_launch_is_uncertain_and_not_replayable(
+    tmp_path, monkeypatch, launch_status,
+):
     src, lease, _, receipts, stages, broker = rig(tmp_path)
     with staged_workspace(src, staging_parent=tmp_path) as snapshot:
         stage = stages.bind(lease, snapshot)
@@ -334,8 +337,8 @@ def test_failed_daemon_launch_is_uncertain_and_not_replayable(tmp_path, monkeypa
                 self.returncode = None
 
             def wait(self, timeout):
-                self.returncode = 125
-                return 125
+                self.returncode = launch_status
+                return launch_status
 
             def poll(self):
                 return self.returncode
@@ -348,7 +351,7 @@ def test_failed_daemon_launch_is_uncertain_and_not_replayable(tmp_path, monkeypa
             module.subprocess, "run",
             lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1),
         )
-        with pytest.raises(AdmissionDenied, match="exited unsuccessfully"):
+        with pytest.raises(AdmissionDenied, match="launch outcome ambiguous"):
             broker.execute(lease, stage.stage_id, run_command(snapshot))
         assert len(calls) == 1
         with receipts.reservations._connect() as db:
@@ -363,6 +366,76 @@ def test_failed_daemon_launch_is_uncertain_and_not_replayable(tmp_path, monkeypa
         with pytest.raises((AdmissionDenied, ActionReplayDenied)):
             broker.execute(lease, stage.stage_id, run_command(snapshot))
         assert len(calls) == 1
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_regular_nonzero_application_exit_has_completed_receipt(tmp_path, monkeypatch):
+    src, lease, _, receipts, stages, broker = rig(tmp_path)
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot:
+        stage = stages.bind(lease, snapshot)
+        calls = mock_host(monkeypatch)
+
+        class CompletedApplication:
+            def __init__(self, argv, **kwargs):
+                calls.append(list(argv))
+                self.returncode = None
+
+            def wait(self, timeout):
+                self.returncode = 7
+                return 7
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        monkeypatch.setattr(module.subprocess, "Popen", CompletedApplication)
+        result = broker.execute(lease, stage.stage_id, run_command(snapshot))
+        assert result.exit_code == 7
+        assert result.receipt.state == "succeeded"
+        assert len(calls) == 1
+        with receipts.reservations._connect() as db:
+            assert db.execute(
+                "SELECT state,exit_code FROM pod_stage_docker_launch"
+            ).fetchone() == ("finished", 7)
+        assert (src / "code.txt").read_text() == "original"
+        with pytest.raises((AdmissionDenied, ActionReplayDenied)):
+            broker.execute(lease, stage.stage_id, run_command(snapshot))
+        assert len(calls) == 1
+
+
+@ONLY_LINUX_UNPRIVILEGED
+@pytest.mark.skipif(
+    os.getenv("LOCUS_REAL_DOCKER_ACCEPTANCE") != "1",
+    reason="actual Docker CLI application-exit propagation requires Engine",
+)
+def test_real_kernel_application_nonzero_is_not_ambiguous(tmp_path):
+    src, lease, _, receipts, stages, _ = rig(tmp_path, executable="sh")
+    before = _source_inventory(src)
+    with staged_workspace(src, staging_parent=tmp_path) as snapshot, (
+        managed_guardian_for_test(tmp_path / "runs.db")
+    ):
+        stage = stages.bind(lease, snapshot)
+        broker = StageDockerBroker(
+            stages, receipts, image=os.environ["LOCUS_DOCKER_ACCEPTANCE_IMAGE"],
+        )
+        command = BrokerCommand(
+            "run_command", ("sh", "-c", "exit 7"),
+            str(snapshot.staged), "application-exit-7", timeout_seconds=10,
+        )
+        outcome = broker.execute(lease, stage.stage_id, command)
+        assert outcome.exit_code == 7
+        assert outcome.receipt.state == "succeeded"
+        with receipts.reservations._connect() as db:
+            row = db.execute(
+                "SELECT state,exit_code FROM pod_stage_docker_launch"
+            ).fetchone()
+            assert tuple(row) == ("finished", 7)
+        assert _source_inventory(src) == before
+        with pytest.raises((AdmissionDenied, ActionReplayDenied)):
+            broker.execute(lease, stage.stage_id, command)
+    assert _source_inventory(src) == before
 
 
 @ONLY_LINUX_UNPRIVILEGED
