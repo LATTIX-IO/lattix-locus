@@ -494,6 +494,16 @@ class StageArtifactPromoter:
                     os.fsync(backup_fd)
                 _write_new(src_fd, row["temp_name"], new[0], mode)
                 os.fsync(src_fd)
+                prepared = _read_file(src_fd, row["temp_name"])
+                if (
+                    prepared is None
+                    or prepared[1] != row["stage_after_sha256"]
+                    or prepared[2] != mode
+                ):
+                    raise AdmissionDenied("prepared artifact bytes or mode changed")
+                self._seal_prepared_target(
+                    approval_id, row["stage_after_sha256"], prepared,
+                )
                 fresh = _read_file(src_fd, src_name)
                 if (
                     (fresh[1] if fresh else None) != row["source_before_sha256"]
@@ -505,13 +515,38 @@ class StageArtifactPromoter:
                 if old is None:
                     _publish_noreplace(src_fd, row["temp_name"], src_name)
                 else:
-                    os.replace(
-                        row["temp_name"], src_name,
-                        src_dir_fd=src_fd, dst_dir_fd=src_fd,
-                    )
+                    # An exchange keeps the displaced inode observable instead
+                    # of irreversibly overwriting an outside writer's rename.
+                    _exchange(src_fd, row["temp_name"], src_name)
+                    displaced = _read_file(src_fd, row["temp_name"])
+                    if (
+                        displaced is None
+                        or displaced[1] != row["source_before_sha256"]
+                        or displaced[2] != row["source_before_mode"]
+                        or displaced[3] != row["source_dev"]
+                        or displaced[4] != row["source_ino"]
+                    ):
+                        active = _read_file(src_fd, src_name)
+                        if (
+                            active is None
+                            or (active[3], active[4]) != (prepared[3], prepared[4])
+                        ):
+                            raise AdmissionDenied(
+                                "concurrent source swap cannot be safely compensated"
+                            )
+                        _exchange(src_fd, row["temp_name"], src_name)
+                        os.fsync(src_fd)
+                        raise AdmissionDenied(
+                            "concurrent source replacement compensated; manual review"
+                        )
                 os.fsync(src_fd)
                 committed = _read_file(src_fd, src_name)
-                if committed is None or committed[1] != row["stage_after_sha256"]:
+                if (
+                    committed is None
+                    or committed[1] != row["stage_after_sha256"]
+                    or (committed[3], committed[4])
+                    != (prepared[3], prepared[4])
+                ):
                     raise AdmissionDenied("atomic promotion target not independently verified")
                 self._transition(approval_id, "promoting", "promoted")
                 return PromotionRecord(
@@ -520,16 +555,21 @@ class StageArtifactPromoter:
                     row["expires_at"],
                 )
             finally:
-                # Keep the durable backup for incident reconstruction and
-                # recovery of an interrupted promotion. Only the temporary
-                # file can safely be discarded on this process exit.
+                # A failed/ambiguous promotion retains its source-directory
+                # temporary inode for independent crash recovery. Cleaning it
+                # here could destroy the only exact displaced-source witness.
                 try:
-                    os.unlink(row["temp_name"], dir_fd=src_fd)
-                except FileNotFoundError:
-                    pass
-                os.close(backup_fd)
-                os.close(stage_fd)
-                os.close(src_fd)
+                    if self._row(approval_id)["state"] == "promoted":
+                        try:
+                            os.unlink(row["temp_name"], dir_fd=src_fd)
+                        except FileNotFoundError:
+                            # New-file RENAME_NOREPLACE moved the temporary
+                            # dentry to its final path; absence is expected.
+                            pass
+                finally:
+                    os.close(backup_fd)
+                    os.close(stage_fd)
+                    os.close(src_fd)
 
     def recover_uncertain(self, approval_id: str) -> str:
         """Independent restarted supervisor: rollback only when bytes match.
