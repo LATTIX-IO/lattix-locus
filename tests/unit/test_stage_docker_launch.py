@@ -396,9 +396,9 @@ def test_regular_nonzero_application_exit_has_completed_receipt(tmp_path, monkey
         assert result.receipt.state == "succeeded"
         assert len(calls) == 1
         with receipts.reservations._connect() as db:
-            assert db.execute(
+            assert tuple(db.execute(
                 "SELECT state,exit_code FROM pod_stage_docker_launch"
-            ).fetchone() == ("finished", 7)
+            ).fetchone()) == ("finished", 7)
         assert (src / "code.txt").read_text() == "original"
         with pytest.raises((AdmissionDenied, ActionReplayDenied)):
             broker.execute(lease, stage.stage_id, run_command(snapshot))
