@@ -437,11 +437,18 @@ class StageDockerBroker:
                             break
                         except subprocess.TimeoutExpired:
                             continue
-                    if code != 0:
-                        # Docker CLI exit 125 can mean the container NEVER
-                        # launched. No positive receipt may be written for a
-                        # rejected daemon invocation or failed tool action.
-                        raise AdmissionDenied("stage container exited unsuccessfully")
+                    if code in (125, 126, 127):
+                        # Docker reserves 125 for daemon/CLI launch failure,
+                        # 126 for an uninvokable entrypoint and 127 for a
+                        # missing command. These are ambiguous execution
+                        # boundaries, not independently verified tool runs.
+                        # An application might also return these statuses;
+                        # fail closed rather than asserting a completed run.
+                        raise AdmissionDenied("stage Docker launch outcome ambiguous")
+                    # All other Docker run exit codes reflect a terminated
+                    # application. Persist the exact status as a completed
+                    # tool invocation, NOT a claim that the task/test passed.
+                    # The independent artifact verifier remains mandatory.
                     self.stages.inspect_executable(lease, stage_id)
                     _record_launch(
                         self.receipts, stage_id=stage_id, action_id=receipt.action_id,
