@@ -281,23 +281,34 @@ class PodActionReceipts:
         """Trusted broker only: at-most-once *invocation*, not exactly-once effect."""
         intent = self.prepare(lease, idempotency_key=idempotency_key,
                               authorization=authorization)
+        return self.execute_prepared_once(lease, intent.action_id, invoke=invoke)
+
+    def execute_prepared_once(self, lease: PodLease, action_id: str,
+                              *, invoke: Callable[[], _T]) -> tuple[ActionRecord, _T]:
+        """Dispatch a previously Gateway-authorized, explicitly bound receipt.
+
+        Stage-specific brokers prepare the action, durably link their StageLease,
+        and only then cross the same kernel-locked at-most-once dispatch fence.
+        A replay or crash never authorizes an additional invocation.
+        """
         # Kernel mutex is held across both the write-ahead dispatch and the
         # entire callback/result receipt. Another local recovery controller
         # cannot mistake live work for a crashed process.
-        with action_lock(self.reservations.path, intent.action_id) as acquired:
+        with action_lock(self.reservations.path, action_id) as acquired:
             if not acquired:
                 raise ActionReplayDenied("another live broker owns this action")
-            self._begin_dispatch(lease, intent.action_id, guarded=True)
+            self._begin_dispatch(lease, action_id, guarded=True)
             try:
                 output = invoke()
                 digest = _result_digest(output)
             except BaseException as exc:
                 # Never retry ambiguous provider results automatically.
-                self._complete(intent.action_id, "uncertain",
+                self._complete(action_id, "uncertain",
                                evidence=type(exc).__qualname__)
                 raise
-            receipt = self._complete(intent.action_id, "succeeded", evidence=digest)
+            receipt = self._complete(action_id, "succeeded", evidence=digest)
             return receipt, output
+
 
     def get(self, action_id: str) -> ActionRecord:
         with self.reservations._connect() as db:

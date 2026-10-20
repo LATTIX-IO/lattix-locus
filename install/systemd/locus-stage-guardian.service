@@ -1,0 +1,30 @@
+[Unit]
+Description=Locus Linux stage-only Docker independent recovery guardian
+Documentation=https://github.com/LATTIX-IO/lattix-locus/blob/main/docs/development/stage-only-docker-launch.md
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=10s
+Restart=always
+RestartSec=1s
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=%h/.config/locus/stage-guardian.env
+ExecStart=/usr/bin/env ${LOCUS_PYTHON} -m locus_runtime.pod_stage_recovery --ledger ${LOCUS_STAGE_LEDGER} --socket ${LOCUS_DOCKER_SOCKET} --watch --poll-seconds 0.5
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+LockPersonality=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

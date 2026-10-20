@@ -1,0 +1,86 @@
+name: Stage-only Docker kernel acceptance
+
+on:
+  pull_request:
+    paths:
+      - "locus_runtime/pod_stage_bindings.py"
+      - "locus_runtime/pod_stage_generation.py"
+      - "locus_runtime/pod_stage_docker.py"
+      - "locus_runtime/pod_stage_recovery.py"
+      - "locus_runtime/pod_stage_guardian.py"
+      - "install/systemd/locus-stage-guardian.service"
+      - "scripts/install-stage-guardian.py"
+      - "scripts/verify-stage-guardian-systemd.py"
+      - "locus_runtime/action_receipts.py"
+      - "locus_runtime/pod_workspace_staging.py"
+      - "tests/unit/test_stage_docker_launch.py"
+      - "tests/unit/test_stage_docker_recovery.py"
+      - "tests/unit/test_stage_guardian_admission.py"
+      - "tests/unit/stage_guardian_support.py"
+      - ".github/workflows/stage-docker-acceptance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-real-docker:
+    # Never run Docker socket integration from fork-supplied PR code.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install project test dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Prove local Docker Engine availability
+        run: |
+          test -S /var/run/docker.sock
+          docker --host unix:///var/run/docker.sock version
+          docker --host unix:///var/run/docker.sock info --format '{{.ServerVersion}}'
+      - name: Resolve immutable smoke image locally
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker --host unix:///var/run/docker.sock pull busybox:1.37
+          image="$(docker --host unix:///var/run/docker.sock image inspect busybox:1.37 --format '{{index .RepoDigests 0}}')"
+          test "${image#*@sha256:}" != "$image"
+          echo "LOCUS_DOCKER_ACCEPTANCE_IMAGE=$image" >> "$GITHUB_ENV"
+      - name: Probe frozen Docker confinement flags on disposable stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          parent="$(mktemp -d)"
+          chmod 700 "$parent"
+          trap 'rm -rf "$parent"' EXIT
+          stage="$parent/.locus-pod-stage-probe"
+          mkdir -m 700 "$stage"
+          docker --host unix:///var/run/docker.sock run --rm --pull=never \
+            --network=none --cap-drop=ALL --security-opt=no-new-privileges \
+            "--security-opt=seccomp=$PWD/docker/sandbox/seccomp-strict.json" \
+            --read-only "--user=$(id -u):$(id -g)" --ipc=private \
+            --cgroupns=private --memory=256m --cpus=1 --pids-limit=64 \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            --mount "type=bind,source=$stage,target=/workspace,bind-propagation=rprivate,bind-recursive=disabled" \
+            --workdir=/workspace --entrypoint=touch \
+            "$LOCUS_DOCKER_ACCEPTANCE_IMAGE" /workspace/probe
+          test -f "$stage/probe"
+      - name: Execute kernel-backed write, timeout, cancel and host integrity tests
+        env:
+          LOCUS_REAL_DOCKER_ACCEPTANCE: "1"
+        run: python -m pytest -q tests/unit/test_stage_docker_launch.py tests/unit/test_stage_docker_recovery.py tests/unit/test_stage_guardian_admission.py
+      - name: Prove actual systemd guardian auto-restart and epoch rotation
+        run: python scripts/verify-stage-guardian-systemd.py
+      - name: Verify no leftover Locus containers
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          leftover="$(docker --host unix:///var/run/docker.sock ps -a --filter name=locus-pod- --format '{{.Names}}')"
+          if [ -n "$leftover" ]; then
+            printf 'Orphaned containers: %s\n' "$leftover" >&2
+            exit 1
+          fi
