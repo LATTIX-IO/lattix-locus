@@ -33,9 +33,16 @@ The existing PodSandboxBroker ban on writable original host binds remains in for
    Docker client config and explicit `unix://` host disable inherited
    contexts, cloud credentials and remote Docker routes.
 9. Deadline and explicit cancellation attempt `docker kill`, and the action
-   remains **uncertain/non-replayable** even if cleanup fails. Successful
-   invocation reports only exit status/timing. No CLI output, source writeback,
-   artifact approval or promotion occurs.
+   remains **uncertain/non-replayable** even if cleanup fails. Completed
+   application runs report only exact exit code and timing. An application
+   nonzero exit (for example a failed test suite with code 7) is a completed
+   tool invocation with `StageDockerOutcome.exit_code=7` and a durable
+   `succeeded` **dispatch receipt**, not a claim of task/test success.
+   The caller/independent verifier must evaluate that exit code.
+   Docker-reserved status **125/126/127** remains uncertain: a daemon failure,
+   uninvokable entrypoint or missing executable cannot be distinguished
+   reliably from an application deliberately returning one of those codes.
+   No CLI output, source writeback, artifact approval or promotion occurs.
 
 ## Security and deployment boundaries
 
