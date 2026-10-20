@@ -3,12 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import os
-import sys
 from pathlib import Path
 
 import pytest
 
-from locus_runtime.action_receipts import ActionReplayDenied
 from locus_runtime.pod_artifact_verification import (
     MANIFEST_VERSION, VERIFIER_ID, verify_staged_artifacts,
 )
