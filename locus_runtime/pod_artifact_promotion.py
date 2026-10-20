@@ -608,6 +608,20 @@ class StageArtifactPromoter:
                         and old[1:5] == original
                     )
                 ):
+                    # Crash after moving an approved add into quarantine
+                    # leaves the target absent and the output in a private
+                    # hidden name. Only remove our exact durable inode.
+                    if old is None and row["source_before_sha256"] is None:
+                        quarantine = ".locus-rollback-" + str(approval_id)
+                        staged = _read_file(src_fd, quarantine)
+                        if staged is not None:
+                            if (
+                                staged[1], staged[3], staged[4]
+                            ) != target or row["prepared_ino"] is None:
+                                self._transition(approval_id, "promoting", "uncertain")
+                                return "uncertain"
+                            os.unlink(quarantine, dir_fd=src_fd)
+                            os.fsync(src_fd)
                     # No publication happened, or the exact original inode
                     # was already atomically restored before a crash.
                     self._transition(approval_id, "promoting", "rolled_back")
@@ -677,4 +691,60 @@ class StageArtifactPromoter:
                 return "rolled_back"
             finally:
                 os.close(backup_fd)
+                os.close(src_fd)
+
+    def cleanup_promoted(self, approval_id: str) -> str:
+        """Reconcile a crash after durable success but before temp cleanup.
+
+        A committed promotion cannot be rolled back with this operation.
+        Remove only the displaced *old* inode after independently checking
+        that the published target still belongs to this exact promotion.
+        """
+        row = self._row(approval_id)
+        if row["state"] != "promoted":
+            raise AdmissionDenied("cleanup requires an already promoted artifact")
+        with action_lock(
+            self.ledger.path, "source-promotion:" + row["source_path"],
+        ) as acquired:
+            if not acquired:
+                raise AdmissionDenied("live promoter still owns source OS fence")
+            row = self._row(approval_id)
+            if row["state"] != "promoted":
+                raise AdmissionDenied("promotion state changed during cleanup")
+            _deny_source_submounts(str(row["source_path"]))
+            src_fd, name = _parent_fd(row["source_path"], row["relative_path"])
+            try:
+                current = _read_file(src_fd, name)
+                if (
+                    current is None
+                    or (current[1], current[3], current[4]) != (
+                        row["stage_after_sha256"], row["prepared_dev"],
+                        row["prepared_ino"],
+                    )
+                ):
+                    raise AdmissionDenied("promoted target changed; cleanup held for review")
+                residual = _read_file(src_fd, row["temp_name"])
+                if residual is None:
+                    # An addition moved the temporary dentry on publication,
+                    # or the previous promoter completed cleanup already.
+                    return "clean"
+                if (
+                    row["source_before_sha256"] is None
+                    or residual[1:5] != (
+                        row["source_before_sha256"], row["source_before_mode"],
+                        row["source_dev"], row["source_ino"],
+                    )
+                ):
+                    raise AdmissionDenied("displaced original witness was substituted")
+                os.unlink(row["temp_name"], dir_fd=src_fd)
+                os.fsync(src_fd)
+                with self.ledger._connect() as db:
+                    self.ledger._tx(db)
+                    db.execute(
+                        "INSERT INTO pod_artifact_promotion_audit("
+                        "approval_id,event,stamp) VALUES (?,'cleanup',?)",
+                        (approval_id, self.ledger._now()),
+                    )
+                return "clean"
+            finally:
                 os.close(src_fd)
