@@ -134,6 +134,28 @@ def _stat_same_root(left: int, right: int) -> bool:
     return os.fstat(left).st_dev == os.fstat(right).st_dev
 
 
+def _deny_source_submounts(root: str) -> None:
+    """Never write through nested bind/mount aliases inside an approved root."""
+    if sys.platform != "linux":
+        raise AdmissionDenied("host source mount inventory requires Linux")
+    try:
+        lines = Path("/proc/self/mountinfo").read_text(encoding="ascii").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise AdmissionDenied("promotion host mount inventory unavailable") from exc
+    prefix = str(root).rstrip("/") + "/"
+    for line in lines:
+        data = line.split(" - ", 1)[0].split()
+        if len(data) < 5:
+            raise AdmissionDenied("malformed promotion host mount inventory")
+        mount = data[4]
+        for encoded, decoded in (
+            ("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\"),
+        ):
+            mount = mount.replace(encoded, decoded)
+        if mount.startswith(prefix):
+            raise AdmissionDenied("nested source mount is not promotable")
+
+
 def _publish_noreplace(fd: int, temporary: str, name: str) -> None:
     """Linux atomic create-only publication; never clobber a late new file."""
     if sys.platform != "linux":
@@ -253,6 +275,7 @@ class StageArtifactPromoter:
         path = change.path
         _relative(path)
         stage = self.stages.inspect_executable(lease, manifest.stage_id)
+        _deny_source_submounts(stage.source_path)
         original_fd, original_name = _parent_fd(stage.source_path, path)
         try:
             initial = _read_file(original_fd, original_name)
@@ -385,6 +408,7 @@ class StageArtifactPromoter:
             if not write.allowed:
                 raise AdmissionDenied("independent Gateway file write policy denied promotion")
 
+            _deny_source_submounts(stage.source_path)
             src_fd, src_name = _parent_fd(stage.source_path, row["relative_path"])
             stage_fd, staged_name = _parent_fd(stage.staged_path, row["relative_path"])
             backup_fd = _open_anchored_directory(Path(stage.staged_path).parent)
@@ -471,6 +495,7 @@ class StageArtifactPromoter:
             row = self._row(approval_id)
             if row["state"] != "promoting":
                 raise AdmissionDenied("promotion recovery replay denied")
+            _deny_source_submounts(str(row["source_path"]))
             src_fd, name = _parent_fd(row["source_path"], row["relative_path"])
             backup_fd = _open_anchored_directory(Path(row["staged_path"]).parent)
             try:
