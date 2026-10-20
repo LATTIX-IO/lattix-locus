@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -204,6 +205,53 @@ def test_existing_file_rollback_preserves_previous_contents(
             approval.approval_id,
         ) == "rolled_back"
         assert (source / "code.txt").read_text() == "original"
+    finally:
+        context.__exit__(None, None, None)
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_real_sigkill_after_atomic_swap_is_rolled_back_by_new_supervisor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Kill an actual Linux process after rename but before SQLite outcome."""
+    from locus_runtime import pod_artifact_promotion as module
+
+    source, lease, stages, _, context, manifest = _stage_change(
+        tmp_path, monkeypatch, "code.txt",
+    )
+    try:
+        promoter = StageArtifactPromoter(stages)
+        operator = _operator(lease, source)
+        _human_approves(operator, source, manifest)
+        consent = promoter.approve(operator, lease, manifest)
+        pid = os.fork()
+        if pid == 0:
+            actual_replace = module.os.replace
+
+            def die_after_swap(*args, **kwargs):
+                actual_replace(*args, **kwargs)
+                os.kill(os.getpid(), signal.SIGKILL)
+
+            module.os.replace = die_after_swap
+            try:
+                promoter.promote(
+                    operator, lease, manifest,
+                    approval_id=consent.approval_id,
+                )
+            except BaseException:
+                os._exit(91)
+            os._exit(92)
+        _, status = os.waitpid(pid, 0)
+        assert os.WIFSIGNALED(status), f"promotion child exited unexpectedly: {status}"
+        assert os.WTERMSIG(status) == signal.SIGKILL
+        assert (source / "code.txt").read_text() == "agent changed stage"
+        recovered = StageArtifactPromoter(stages).recover_uncertain(consent.approval_id)
+        assert recovered == "rolled_back"
+        assert (source / "code.txt").read_text() == "original"
+        with pytest.raises(AdmissionDenied):
+            promoter.promote(
+                operator, lease, manifest, approval_id=consent.approval_id,
+            )
     finally:
         context.__exit__(None, None, None)
 
