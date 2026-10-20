@@ -411,7 +411,7 @@ def test_regular_nonzero_application_exit_has_completed_receipt(tmp_path, monkey
     reason="actual Docker CLI application-exit propagation requires Engine",
 )
 def test_real_kernel_application_nonzero_is_not_ambiguous(tmp_path):
-    src, lease, _, receipts, stages, _ = rig(tmp_path, executable="sh")
+    src, lease, _, receipts, stages, _ = rig(tmp_path, executable="false")
     before = _source_inventory(src)
     with staged_workspace(src, staging_parent=tmp_path) as snapshot, (
         managed_guardian_for_test(tmp_path / "runs.db")
@@ -421,17 +421,17 @@ def test_real_kernel_application_nonzero_is_not_ambiguous(tmp_path):
             stages, receipts, image=os.environ["LOCUS_DOCKER_ACCEPTANCE_IMAGE"],
         )
         command = BrokerCommand(
-            "run_command", ("sh", "-c", "exit 7"),
-            str(snapshot.staged), "application-exit-7", timeout_seconds=10,
+            "run_command", ("false",),
+            str(snapshot.staged), "application-exit-1", timeout_seconds=10,
         )
         outcome = broker.execute(lease, stage.stage_id, command)
-        assert outcome.exit_code == 7
+        assert outcome.exit_code == 1
         assert outcome.receipt.state == "succeeded"
         with receipts.reservations._connect() as db:
             row = db.execute(
                 "SELECT state,exit_code FROM pod_stage_docker_launch"
             ).fetchone()
-            assert tuple(row) == ("finished", 7)
+            assert tuple(row) == ("finished", 1)
         assert _source_inventory(src) == before
         with pytest.raises((AdmissionDenied, ActionReplayDenied)):
             broker.execute(lease, stage.stage_id, command)
