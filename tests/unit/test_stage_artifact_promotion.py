@@ -11,6 +11,8 @@ import pytest
 from locus_runtime.gateway import BudgetFigures, Capabilities, RiskClass
 from locus_runtime.pod_artifact_promotion import StageArtifactPromoter
 from locus_runtime.pod_artifact_verification import verify_staged_artifacts
+from locus_runtime.pod_stage_docker import StageDockerBroker
+from tests.unit.stage_guardian_support import managed_guardian_for_test
 from locus_runtime.pod_reservations import AdmissionDenied
 from locus_runtime.pod_workspace_staging import staged_workspace
 from tests.unit.test_stage_docker_launch import (
@@ -69,6 +71,59 @@ def _stage_change(tmp_path, monkeypatch, output: str = "output.txt"):
         allowed_output_paths=frozenset({output}),
     )
     return source, lease, stages, snapshot, context, verified
+
+
+@ONLY_LINUX_UNPRIVILEGED
+@pytest.mark.skipif(
+    os.getenv("LOCUS_REAL_DOCKER_ACCEPTANCE") != "1",
+    reason="real daemon acceptance is opt-in only",
+)
+def test_real_docker_staged_output_requires_human_approved_publication(
+    tmp_path: Path,
+) -> None:
+    """Actual kernel-confined pod cannot write source until separately approved."""
+    source, lease, _, receipts, stages, _ = rig(tmp_path)
+    before = (source / "code.txt").read_bytes()
+    assert not (source / "output.txt").exists()
+    with staged_workspace(source, staging_parent=tmp_path) as snapshot, (
+        managed_guardian_for_test(tmp_path / "runs.db")
+    ):
+        bound = stages.bind(lease, snapshot)
+        engine = StageDockerBroker(
+            stages, receipts, image=os.environ["LOCUS_DOCKER_ACCEPTANCE_IMAGE"],
+        )
+        finished = engine.execute(
+            lease, bound.stage_id,
+            run_command(snapshot, argument="/workspace/output.txt", timeout=15),
+        )
+        assert finished.exit_code == 0
+        assert finished.receipt.state == "succeeded"
+        assert (snapshot.staged / "output.txt").is_file()
+        assert (source / "code.txt").read_bytes() == before
+        assert not (source / "output.txt").exists()
+        manifest = verify_staged_artifacts(
+            stages, lease, bound.stage_id,
+            allowed_output_paths=frozenset({"output.txt"}),
+        )
+        promoter = StageArtifactPromoter(stages)
+        operator = _operator(lease, source)
+        with pytest.raises(AdmissionDenied):
+            promoter.approve(operator, lease, manifest)
+        assert not (source / "output.txt").exists()
+        _human_approves(operator, source, manifest)
+        approval = promoter.approve(operator, lease, manifest)
+        assert not (source / "output.txt").exists()
+        promoted = promoter.promote(
+            operator, lease, manifest, approval_id=approval.approval_id,
+        )
+        assert promoted.state == "promoted"
+        assert (source / "output.txt").read_bytes() == b""
+        assert (source / "code.txt").read_bytes() == before
+        assert (source / ".git" / "secret.txt").read_text() == "private"
+        with pytest.raises(AdmissionDenied):
+            promoter.promote(
+                operator, lease, manifest, approval_id=approval.approval_id,
+            )
 
 
 @ONLY_LINUX_UNPRIVILEGED
