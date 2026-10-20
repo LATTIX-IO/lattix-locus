@@ -71,7 +71,7 @@ def _create_uncertain_launch(tmp_path, monkeypatch, *, image: str | None = None)
             pod_stage_docker.subprocess, "run",
             lambda argv, **kwargs: subprocess.CompletedProcess(argv, 1),
         )
-        with pytest.raises(AdmissionDenied, match="exited unsuccessfully"):
+        with pytest.raises(AdmissionDenied, match="launch outcome ambiguous"):
             broker.execute(lease, bound.stage_id, run_command(snapshot))
     return src, lease, receipts, stages, fixture, snapshot, bound
 
