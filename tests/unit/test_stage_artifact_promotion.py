@@ -176,6 +176,43 @@ def test_single_file_promotion_requires_one_human_approval_and_is_atomic(
 
 
 @ONLY_LINUX_UNPRIVILEGED
+def test_operator_revocation_during_preparation_denies_final_kernel_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, lease, stages, _, context, manifest = _stage_change(tmp_path, monkeypatch)
+    try:
+        promoter = StageArtifactPromoter(stages)
+        operator = _operator(lease, source)
+        _human_approves(operator, source, manifest)
+        approval = promoter.approve(operator, lease, manifest)
+        authorize = operator.authorize
+        first_write = True
+
+        def revoke_after_first_write(**kwargs):
+            nonlocal first_write
+            answer = authorize(**kwargs)
+            if kwargs.get("kind") == "file_write" and first_write:
+                first_write = False
+                operator.close()
+            return answer
+
+        monkeypatch.setattr(operator, "authorize", revoke_after_first_write)
+        with pytest.raises(AdmissionDenied, match="Gateway file policy revoked"):
+            promoter.promote(
+                operator, lease, manifest, approval_id=approval.approval_id,
+            )
+        assert not (source / "output.txt").exists()
+        assert (source / "code.txt").read_text() == "original"
+        assert promoter.recover_uncertain(approval.approval_id) == "rolled_back"
+        with pytest.raises(AdmissionDenied):
+            promoter.promote(
+                operator, lease, manifest, approval_id=approval.approval_id,
+            )
+    finally:
+        context.__exit__(None, None, None)
+
+
+@ONLY_LINUX_UNPRIVILEGED
 def test_unexpected_source_change_refuses_approved_promotion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
