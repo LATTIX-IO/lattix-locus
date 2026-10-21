@@ -335,6 +335,47 @@ def test_delayed_publication_rejects_expired_approval_without_source_write(
 
 
 @ONLY_LINUX_UNPRIVILEGED
+@pytest.mark.parametrize("expiry", ["approval", "escrow"])
+def test_consent_or_escrow_expiry_during_preparation_denies_kernel_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expiry: str,
+) -> None:
+    """The last side-effect gate must not trust earlier valid approval."""
+    source, _, parent, escrow, sealed = _rig_terminal(tmp_path, monkeypatch)
+    operator = _operator(parent.gateway, source)
+    _human_approve(operator, source, sealed)
+    escrow.approve(operator, sealed.escrow_id)
+    original_authorize = escrow._auth_write
+    calls = 0
+
+    def expire_after_first_write_permission(session, row) -> None:
+        nonlocal calls
+        original_authorize(session, row)
+        calls += 1
+        if calls == 1:
+            field = "approval_expires_at" if expiry == "approval" else "expires_at"
+            with escrow.ledger._connect() as db:
+                escrow.ledger._tx(db)
+                db.execute(
+                    f"UPDATE pod_artifact_escrow SET {field}=0 WHERE id=?",
+                    (sealed.escrow_id,),
+                )
+
+    monkeypatch.setattr(escrow, "_auth_write", expire_after_first_write_permission)
+    with pytest.raises(AdmissionDenied, match="consent expired"):
+        escrow.promote(operator, sealed.escrow_id)
+    assert calls == 1
+    assert not (source / "output.txt").exists()
+    assert (source / "code.txt").read_text() == "original"
+    assert escrow._row(sealed.escrow_id)["state"] == "promoting"
+    assert escrow.recover_uncertain(sealed.escrow_id) == "rolled_back"
+    assert not (
+        tmp_path / ".locus-artifact-escrow" / sealed.escrow_id / "prepared"
+    ).exists()
+    with pytest.raises(AdmissionDenied):
+        escrow.promote(operator, sealed.escrow_id)
+
+
+@ONLY_LINUX_UNPRIVILEGED
 def test_sigkill_after_detached_atomic_exchange_rolls_back_exact_original_inode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
