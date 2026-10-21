@@ -175,6 +175,8 @@ class DetachedArtifactEscrow:
                 parent_principal TEXT NOT NULL,
                 parent_area TEXT NOT NULL,
                 source_path TEXT NOT NULL,
+                source_root_dev INTEGER NOT NULL,
+                source_root_ino INTEGER NOT NULL,
                 source_sha256 TEXT NOT NULL,
                 relative_path TEXT NOT NULL,
                 before_sha256 TEXT,
@@ -321,6 +323,18 @@ class DetachedArtifactEscrow:
         ):
             raise AdmissionDenied("detached escrow parent identity revoked or changed")
 
+    def _check_source_root(self, row: sqlite3.Row) -> None:
+        root_fd = _open_anchored_directory(Path(str(row["source_path"])))
+        try:
+            metadata = os.fstat(root_fd)
+            if (
+                metadata.st_dev != row["source_root_dev"]
+                or metadata.st_ino != row["source_root_ino"]
+            ):
+                raise AdmissionDenied("original source root directory was replaced")
+        finally:
+            os.close(root_fd)
+
     def _inspect(self, row: sqlite3.Row, *, eligible: tuple[str, ...]) -> None:
         if row["state"] not in eligible or row["expires_at"] <= self.ledger._now():
             raise AdmissionDenied("detached escrow not eligible or expired")
@@ -345,9 +359,11 @@ class DetachedArtifactEscrow:
             raise AdmissionDenied("detached manifest evidence tampered")
         _relative(str(row["relative_path"]))
         _deny_source_submounts(str(row["source_path"]))
+        self._check_source_root(row)
         self._payload(row)
         _source_integrity(str(row["source_path"]),
                           str(row["source_sha256"]), self.root)
+        self._check_source_root(row)
         source_fd, name = _parent_fd(
             str(row["source_path"]), str(row["relative_path"]),
         )
@@ -409,6 +425,11 @@ class DetachedArtifactEscrow:
             if parent is None or parent["principal"] != lease._session.caller.principal:
                 raise AdmissionDenied("trusted parent principal unavailable")
             _deny_source_submounts(stage.source_path)
+            source_root_fd = _open_anchored_directory(source)
+            try:
+                source_root_identity = os.fstat(source_root_fd)
+            finally:
+                os.close(source_root_fd)
             stage_fd, stage_name = _parent_fd(stage.staged_path, target_path)
             source_fd, source_name = _parent_fd(stage.source_path, target_path)
             try:
@@ -441,14 +462,17 @@ class DetachedArtifactEscrow:
                         raise AdmissionDenied("StageLease already has a terminal escrow")
                     db.execute("""INSERT INTO pod_artifact_escrow(
                         id,stage_id,parent_run_id,child_run_id,
-                        parent_principal,parent_area,source_path,source_sha256,
+                        parent_principal,parent_area,source_path,
+                        source_root_dev,source_root_ino,source_sha256,
                         relative_path,before_sha256,before_mode,before_dev,before_ino,
                         after_sha256,after_mode,manifest_sha256,manifest_json,
                         escrow_root_dev,escrow_root_ino,expires_at,state,stamp
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'sealing', ?)""",
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'sealing', ?)""",
                                (escrow_id, stage_id, stage.parent_run_id,
                                 stage.child_run_id, parent["principal"], parent["area"],
-                                stage.source_path, stage.source_sha256, target_path,
+                                stage.source_path,
+                                source_root_identity.st_dev, source_root_identity.st_ino,
+                                stage.source_sha256, target_path,
                                 before[1] if before else None,
                                 before[2] if before else None,
                                 before[3] if before else None,
@@ -707,6 +731,7 @@ class DetachedArtifactEscrow:
                 _source_integrity(
                     str(row["source_path"]), str(row["source_sha256"]), self.root,
                 )
+                self._check_source_root(row)
                 fresh = _read_file(source_fd, name)
                 if (
                     (fresh[1:5] if fresh else None)
@@ -763,6 +788,7 @@ class DetachedArtifactEscrow:
             if row["state"] != "promoting":
                 raise AdmissionDenied("detached promotion recovery already settled")
             _deny_source_submounts(str(row["source_path"]))
+            self._check_source_root(row)
             source_fd, name = _parent_fd(
                 str(row["source_path"]), str(row["relative_path"]),
             )
