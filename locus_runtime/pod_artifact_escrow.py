@@ -808,6 +808,22 @@ class DetachedArtifactEscrow:
                         quarantined is None
                         or (quarantined[1], quarantined[3], quarantined[4]) != target
                     ):
+                        # A concurrent writer may have swapped the path after
+                        # inspection but before quarantine. Restore its inode
+                        # only if the source path is still absent. Never
+                        # discard a foreign inode under the quarantine name.
+                        if quarantined is not None:
+                            try:
+                                _rename_at(
+                                    attempt_fd, "quarantine",
+                                    source_fd, name, flags=1,
+                                )
+                                os.fsync(source_fd)
+                                os.fsync(attempt_fd)
+                            except AdmissionDenied:
+                                # The path was concurrently reoccupied; keep
+                                # both facts for independent manual review.
+                                pass
                         self._transition(escrow_id, "promoting", "uncertain")
                         return "uncertain"
                     os.unlink("quarantine", dir_fd=attempt_fd)
@@ -959,7 +975,10 @@ class DetachedArtifactEscrow:
                 "SELECT id,state,expires_at,stamp FROM pod_artifact_escrow "
                 "WHERE state IN ('sealing','ready','approved','promoting',"
                 "'promoted','rolled_back','expired') "
-                "ORDER BY stamp ASC,id ASC LIMIT ?", (limit,),
+                "ORDER BY CASE "
+                "WHEN state IN ('promoting','sealing','expired') THEN 0 "
+                "WHEN expires_at<=? THEN 1 ELSE 2 END,"
+                "stamp ASC,id ASC LIMIT ?", (self.ledger._now(), limit),
             ).fetchall()
         results: list[tuple[str, str]] = []
         for row in rows:
