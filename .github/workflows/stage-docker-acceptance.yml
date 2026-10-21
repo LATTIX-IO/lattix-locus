@@ -11,6 +11,8 @@ on:
       - "locus_runtime/pod_artifact_inspection.py"
       - "locus_runtime/pod_artifact_verification.py"
       - "locus_runtime/pod_artifact_promotion.py"
+      - "locus_runtime/pod_artifact_escrow.py"
+      - "tests/unit/test_detached_artifact_escrow.py"
       - "tests/unit/test_stage_artifact_promotion.py"
       - "install/systemd/locus-stage-guardian.service"
       - "scripts/install-stage-guardian.py"
@@ -82,6 +84,10 @@ jobs:
         env:
           LOCUS_REAL_DOCKER_ACCEPTANCE: "1"
         run: python -m pytest -q tests/unit/test_stage_artifact_promotion.py
+      - name: Qualify terminal detached escrow and post-lease promotion
+        env:
+          LOCUS_REAL_DOCKER_ACCEPTANCE: "1"
+        run: python -m pytest -q tests/unit/test_detached_artifact_escrow.py
       - name: Verify no leftover Locus containers
         if: always()
         shell: bash
