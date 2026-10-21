@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from locus_runtime.action_fencing import action_lock
 from locus_runtime.action_receipts import PodActionReceipts
 from locus_runtime.gateway import BudgetFigures, Capabilities, RiskClass
 from locus_runtime.pod_artifact_escrow import DetachedArtifactEscrow
@@ -516,6 +517,34 @@ def test_interrupted_seal_reconciliation_refuses_tampered_escrow(
     os.chmod(artifact, 0o400)
     assert dict(escrow.reconcile_pending())[sealed.escrow_id] == "held-for-review"
     assert artifact.exists()
+    assert not (source / "output.txt").exists()
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_reconciler_cannot_expire_live_sealing_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Aged sealing stamp must never override the live stage OS lock."""
+    source, _, _, escrow, sealed = _rig_terminal(tmp_path, monkeypatch)
+    with escrow.ledger._connect() as db:
+        escrow.ledger._tx(db)
+        db.execute(
+            "UPDATE pod_artifact_escrow SET state='sealing',stamp=0 "
+            "WHERE id=?", (sealed.escrow_id,),
+        )
+    with action_lock(
+        escrow.ledger.path, "artifact-escrow:" + sealed.stage_id,
+    ) as active:
+        assert active
+        result = dict(escrow.reconcile_pending())
+        assert result[sealed.escrow_id] == "sealing"
+        assert escrow._row(sealed.escrow_id)["state"] == "sealing"
+        assert (
+            tmp_path / ".locus-artifact-escrow" / sealed.escrow_id / "artifact"
+        ).exists()
+    result = dict(escrow.reconcile_pending())
+    assert result[sealed.escrow_id] == "clean"
+    assert escrow._row(sealed.escrow_id)["state"] == "expired"
     assert not (source / "output.txt").exists()
 
 
