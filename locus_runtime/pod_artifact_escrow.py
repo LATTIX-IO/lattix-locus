@@ -969,7 +969,9 @@ class DetachedArtifactEscrow:
         row = self._row(escrow_id)
         if row["state"] != "expired":
             raise AdmissionDenied("only expired detached escrow may be reclaimed")
-        with action_lock(self.ledger.path, "artifact-escrow:" + escrow_id) as locked:
+        with action_lock(
+            self.ledger.path, "artifact-escrow:" + str(row["stage_id"]),
+        ) as locked:
             if not locked:
                 raise AdmissionDenied("escrow attempt currently has a live OS fence")
             row = self._row(escrow_id)
@@ -1053,8 +1055,19 @@ class DetachedArtifactEscrow:
                     if row["stamp"] + 60 > self.ledger._now():
                         outcome = "sealing"
                     else:
-                        self._transition(escrow_id, "sealing", "expired")
-                        outcome = self._discard_expired(escrow_id)
+                        # Seal holds this exact stage identity OS fence. An
+                        # aged row alone is not evidence that its supervisor
+                        # is dead. Never expire an active filesystem copy.
+                        with action_lock(
+                            self.ledger.path,
+                            "artifact-escrow:" + str(self._row(escrow_id)["stage_id"]),
+                        ) as seal_free:
+                            if seal_free:
+                                self._transition(escrow_id, "sealing", "expired")
+                        outcome = (
+                            self._discard_expired(escrow_id)
+                            if seal_free else "sealing"
+                        )
                 elif row["state"] in ("ready", "approved", "rolled_back"):
                     if row["expires_at"] > self.ledger._now():
                         outcome = "retained"
