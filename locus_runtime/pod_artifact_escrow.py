@@ -887,3 +887,110 @@ class DetachedArtifactEscrow:
             finally:
                 os.close(attempt_fd)
                 os.close(source_fd)
+
+    def _discard_expired(self, escrow_id: str) -> str:
+        """Remove only a known original escrow inode from supervisor-private disk.
+
+        Unknown filenames, replacement symlinks or mismatched bytes remain
+        held for review. No source workspace or Docker stage is modified.
+        """
+        row = self._row(escrow_id)
+        if row["state"] != "expired":
+            raise AdmissionDenied("only expired detached escrow may be reclaimed")
+        with action_lock(self.ledger.path, "artifact-escrow:" + escrow_id) as locked:
+            if not locked:
+                raise AdmissionDenied("escrow attempt currently has a live OS fence")
+            row = self._row(escrow_id)
+            if row["state"] != "expired":
+                raise AdmissionDenied("escrow state changed before reclaim")
+            root_fd = _path_private(self.root)
+            try:
+                root_meta = os.fstat(root_fd)
+                if (root_meta.st_dev, root_meta.st_ino) != (
+                    row["escrow_root_dev"], row["escrow_root_ino"],
+                ):
+                    raise AdmissionDenied("escrow root substituted before cleanup")
+                try:
+                    attempt = self._attempt_fd(row)
+                except FileNotFoundError:
+                    return "clean"
+                try:
+                    names = os.listdir(attempt)
+                    if any(name != "artifact" for name in names):
+                        raise AdmissionDenied("unexpected escrow journal entries retained")
+                    if "artifact" in names:
+                        content = _read_file(attempt, "artifact")
+                        if (
+                            content is None
+                            or content[1] != row["after_sha256"]
+                            or content[2] != 0o400
+                            or (
+                                row["payload_ino"] is not None
+                                and (content[3], content[4]) != (
+                                    row["payload_dev"], row["payload_ino"],
+                                )
+                            )
+                        ):
+                            raise AdmissionDenied("expired payload witness mismatched")
+                        os.unlink("artifact", dir_fd=attempt)
+                        os.fsync(attempt)
+                finally:
+                    os.close(attempt)
+                os.rmdir(escrow_id, dir_fd=root_fd)
+                os.fsync(root_fd)
+                with self.ledger._connect() as db:
+                    self.ledger._tx(db)
+                    self._event(db, escrow_id, "reclaimed")
+                return "clean"
+            finally:
+                os.close(root_fd)
+
+    def reconcile_pending(self, *, limit: int = 50) -> tuple[tuple[str, str], ...]:
+        """Run on trusted native supervisor startup and scheduled maintenance.
+
+        Reconcile only uncertain prior side effects or expired escrow data.
+        Never reissue approval, revive a child lease, or replay publication.
+        Fail closed and return held-for-review for ambiguous evidence.
+        """
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise AdmissionDenied("reconcile scan must have a bounded batch size")
+        with self.ledger._connect() as db:
+            rows = db.execute(
+                "SELECT id,state,expires_at,stamp FROM pod_artifact_escrow "
+                "WHERE state IN ('sealing','ready','approved','promoting',"
+                "'promoted','rolled_back','expired') "
+                "ORDER BY stamp ASC,id ASC LIMIT ?", (limit,),
+            ).fetchall()
+        results: list[tuple[str, str]] = []
+        for row in rows:
+            escrow_id = str(row["id"])
+            try:
+                if row["state"] == "promoting":
+                    outcome = self.recover_uncertain(escrow_id)
+                elif row["state"] == "promoted":
+                    self.cleanup_promoted(escrow_id)
+                    if row["expires_at"] <= self.ledger._now():
+                        self._transition(escrow_id, "promoted", "expired")
+                        outcome = self._discard_expired(escrow_id)
+                    else:
+                        outcome = "clean"
+                elif row["state"] == "sealing":
+                    if row["stamp"] + 60 > self.ledger._now():
+                        outcome = "sealing"
+                    else:
+                        self._transition(escrow_id, "sealing", "expired")
+                        outcome = self._discard_expired(escrow_id)
+                elif row["state"] in ("ready", "approved", "rolled_back"):
+                    if row["expires_at"] > self.ledger._now():
+                        outcome = "retained"
+                    else:
+                        self._transition(escrow_id, str(row["state"]), "expired")
+                        outcome = self._discard_expired(escrow_id)
+                else:
+                    outcome = self._discard_expired(escrow_id)
+            except (AdmissionDenied, OSError, sqlite3.Error):
+                # Never perform wildcard cleanup or force a state transition
+                # after uncertain filesystem or durable authority evidence.
+                outcome = "held-for-review"
+            results.append((escrow_id, outcome))
+        return tuple(results)
