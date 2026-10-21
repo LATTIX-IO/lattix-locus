@@ -293,9 +293,10 @@ def test_delayed_post_lease_human_approval_publishes_exactly_one_file(
         escrow.promote(operator, sealed.escrow_id)
     _human_approve(operator, source, sealed)
     escrow.approve(operator, sealed.escrow_id)
-    assert (source / output).read_text() == (
-        "original" if output == "code.txt" else ""
-    )
+    if output == "code.txt":
+        assert (source / output).read_text() == "original"
+    else:
+        assert not (source / output).exists()
     published = escrow.promote(operator, sealed.escrow_id)
     assert published.state == "promoted"
     assert (source / output).read_text() == "agent changed stage"
