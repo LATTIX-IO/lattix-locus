@@ -424,6 +424,71 @@ def test_foreign_identical_bytes_never_qualify_for_detached_rollback(
         escrow.promote(operator, sealed.escrow_id)
 
 
+@ONLY_LINUX_UNPRIVILEGED
+def test_expired_detached_escrow_reclaimed_without_source_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, parent, escrow, sealed = _rig_terminal(tmp_path, monkeypatch)
+    dirpath = tmp_path / ".locus-artifact-escrow" / sealed.escrow_id
+    assert dirpath.is_dir()
+    with escrow.ledger._connect() as db:
+        escrow.ledger._tx(db)
+        db.execute(
+            "UPDATE pod_artifact_escrow SET expires_at=0 WHERE id=?",
+            (sealed.escrow_id,),
+        )
+    outcomes = dict(escrow.reconcile_pending())
+    assert outcomes[sealed.escrow_id] == "clean"
+    assert not dirpath.exists()
+    assert escrow._row(sealed.escrow_id)["state"] == "expired"
+    assert dict(escrow.reconcile_pending())[sealed.escrow_id] == "clean"
+    assert not (source / "output.txt").exists()
+    with pytest.raises(AdmissionDenied):
+        escrow.review(_operator(parent.gateway, source), sealed.escrow_id)
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_interrupted_seal_reconciliation_refuses_tampered_escrow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, _, escrow, sealed = _rig_terminal(tmp_path, monkeypatch)
+    artifact = (
+        tmp_path / ".locus-artifact-escrow" / sealed.escrow_id / "artifact"
+    )
+    with escrow.ledger._connect() as db:
+        escrow.ledger._tx(db)
+        db.execute(
+            "UPDATE pod_artifact_escrow SET state='sealing',stamp=0 "
+            "WHERE id=?", (sealed.escrow_id,),
+        )
+    os.chmod(artifact, 0o600)
+    artifact.write_text("foreign payload")
+    os.chmod(artifact, 0o400)
+    assert dict(escrow.reconcile_pending())[sealed.escrow_id] == "held-for-review"
+    assert artifact.exists()
+    assert not (source / "output.txt").exists()
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_interrupted_seal_clean_inode_reclaimed_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, _, escrow, sealed = _rig_terminal(tmp_path, monkeypatch)
+    with escrow.ledger._connect() as db:
+        escrow.ledger._tx(db)
+        db.execute(
+            "UPDATE pod_artifact_escrow SET state='sealing',stamp=0 "
+            "WHERE id=?", (sealed.escrow_id,),
+        )
+    again = DetachedArtifactEscrow(escrow.stages)
+    assert dict(again.reconcile_pending())[sealed.escrow_id] == "clean"
+    assert again._row(sealed.escrow_id)["state"] == "expired"
+    assert not (source / "output.txt").exists()
+    assert not (
+        tmp_path / ".locus-artifact-escrow" / sealed.escrow_id
+    ).exists()
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux escrow only")
 def test_private_escrow_directory_rejects_unsafe_mode(
     tmp_path: Path,
