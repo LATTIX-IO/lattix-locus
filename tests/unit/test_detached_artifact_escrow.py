@@ -167,6 +167,7 @@ def test_escrow_read_and_human_approval_after_child_closed(
     assert not (source / "output.txt").exists()
     review = escrow.review(operator, sealed.escrow_id)
     assert review.after_sha256 == hashlib.sha256(b"agent changed stage").hexdigest()
+    assert review.diff.startswith("diff --git a/output.txt b/output.txt\n")
     assert "+agent changed stage" in review.diff
     assert not review.truncated
     with pytest.raises(AdmissionDenied, match="human approval"):
