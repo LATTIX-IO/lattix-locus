@@ -8,6 +8,10 @@ on:
       - "locus_runtime/pod_stage_docker.py"
       - "locus_runtime/pod_stage_recovery.py"
       - "locus_runtime/pod_stage_guardian.py"
+      - "locus_runtime/pod_artifact_inspection.py"
+      - "locus_runtime/pod_artifact_verification.py"
+      - "locus_runtime/pod_artifact_promotion.py"
+      - "tests/unit/test_stage_artifact_promotion.py"
       - "install/systemd/locus-stage-guardian.service"
       - "scripts/install-stage-guardian.py"
       - "scripts/verify-stage-guardian-systemd.py"
@@ -74,6 +78,10 @@ jobs:
         run: python -m pytest -q tests/unit/test_stage_docker_launch.py tests/unit/test_stage_docker_recovery.py tests/unit/test_stage_guardian_admission.py
       - name: Prove actual systemd guardian auto-restart and epoch rotation
         run: python scripts/verify-stage-guardian-systemd.py
+      - name: Qualify real Docker approval, native SIGKILL rollback, and source-race recovery
+        env:
+          LOCUS_REAL_DOCKER_ACCEPTANCE: "1"
+        run: python -m pytest -q tests/unit/test_stage_artifact_promotion.py
       - name: Verify no leftover Locus containers
         if: always()
         shell: bash
