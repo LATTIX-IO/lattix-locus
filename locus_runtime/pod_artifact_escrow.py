@@ -522,11 +522,19 @@ class DetachedArtifactEscrow:
             try:
                 before = (old[0] if old else b"").decode("utf-8")
                 after = payload.decode("utf-8")
-                candidate = "".join(difflib.unified_diff(
-                    before.splitlines(keepends=True), after.splitlines(keepends=True),
-                    fromfile="before/" + row["relative_path"],
-                    tofile="escrow/" + row["relative_path"], n=3,
-                ))
+                # mask_secret_diff relies on a diff --git pathname header
+                # to identify secret-bearing hunks. A bare unified diff would
+                # bypass that filename-scoped masking on sensitive paths.
+                relative = str(row["relative_path"])
+                candidate = (
+                    "diff --git a/" + relative + " b/" + relative + "\n"
+                    + "".join(difflib.unified_diff(
+                        before.splitlines(keepends=True),
+                        after.splitlines(keepends=True),
+                        fromfile="a/" + relative, tofile="b/" + relative,
+                        n=3,
+                    ))
+                )
                 truncated = len(candidate.encode("utf-8")) > 32768
                 if not truncated:
                     diff = mask_secret_diff(candidate)
