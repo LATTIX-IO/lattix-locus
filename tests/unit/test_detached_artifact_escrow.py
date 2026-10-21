@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-from contextlib import closing
 import os
 import shutil
 import signal
@@ -503,9 +502,9 @@ def test_interrupted_seal_clean_inode_reclaimed_after_restart(
 def test_private_escrow_directory_rejects_unsafe_mode(
     tmp_path: Path,
 ) -> None:
-    from locus_runtime.pod_artifact_escrow import _path_private
-    unsafe = tmp_path / "escrow"
+    unsafe = tmp_path / ".locus-artifact-escrow"
     unsafe.mkdir(mode=0o755)
-    with pytest.raises(AdmissionDenied):
-        with closing(_path_private(unsafe)):
-            pytest.fail("unsafe escrow root unexpectedly passed anchored check")
+    ledger = PodReservationLedger(tmp_path / "runs.db")
+    stages = PodStageBindings(ledger, PodActionReceipts(ledger))
+    with pytest.raises(AdmissionDenied, match="owner-private"):
+        DetachedArtifactEscrow(stages)
