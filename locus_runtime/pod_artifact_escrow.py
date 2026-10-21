@@ -8,7 +8,9 @@ agent stage nor the original workspace is writable by the child during review.
 """
 from __future__ import annotations
 
+import ctypes
 import difflib
+import errno
 import hashlib
 import json
 import os
@@ -24,6 +26,7 @@ from locus_runtime.action_fencing import action_lock
 from locus_runtime.gateway import GatewaySession, REASON_APPROVED, mask_secret_diff
 from locus_runtime.pod_artifact_promotion import (
     _deny_source_submounts, _parent_fd, _read_file, _relative, _write_new,
+    _stat_same_root,
 )
 from locus_runtime.pod_artifact_verification import (
     VerifiedArtifactManifest, verify_staged_artifacts,
@@ -112,6 +115,31 @@ def _source_integrity(source: str, expected_sha256: str, scratch: Path) -> None:
     with staged_workspace(source, staging_parent=scratch) as snapshot:
         if snapshot.sha256 != expected_sha256:
             raise AdmissionDenied("original workspace changed since detached seal")
+
+
+def _rename_at(
+    origin: int, old: str, destination: int, new: str, *,
+    flags: int,
+) -> None:
+    """Use Linux atomic RENAME_NOREPLACE=1 / RENAME_EXCHANGE=2 across dirs."""
+    if sys.platform != "linux" or flags not in (1, 2):
+        raise AdmissionDenied("unsupported kernel atomic artifact publication")
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        rename = libc.renameat2
+    except AttributeError as exc:
+        raise AdmissionDenied("Linux kernel renameat2 unavailable") from exc
+    rename.argtypes = [
+        ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    rename.restype = ctypes.c_int
+    if rename(
+        origin, os.fsencode(old), destination, os.fsencode(new), flags,
+    ) != 0:
+        if ctypes.get_errno() == errno.EEXIST:
+            raise AdmissionDenied("external source file created concurrently")
+        raise AdmissionDenied("kernel atomic escrow publication refused")
 
 
 class DetachedArtifactEscrow:
@@ -547,3 +575,312 @@ class DetachedArtifactEscrow:
                 raise AdmissionDenied("escrow approval consumed by competing operator")
             self._event(db, escrow_id, "approved")
         return self._record(self._row(escrow_id))
+
+    def _attempt_fd(self, row: sqlite3.Row) -> int:
+        root_fd = _path_private(self.root)
+        try:
+            info = os.fstat(root_fd)
+            if (info.st_dev, info.st_ino) != (
+                row["escrow_root_dev"], row["escrow_root_ino"],
+            ):
+                raise AdmissionDenied("detached escrow root replaced")
+            fd = os.open(
+                str(row["id"]), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=root_fd,
+            )
+            attempt = os.fstat(fd)
+            if (
+                attempt.st_uid != os.geteuid()
+                or stat.S_IMODE(attempt.st_mode) != 0o700
+            ):
+                os.close(fd)
+                raise AdmissionDenied("escrow attempt directory permissions changed")
+            return fd
+        finally:
+            os.close(root_fd)
+
+    def _pin_prepared(self, escrow_id: str, prepared: tuple[bytes, str, int, int, int]) -> None:
+        with self.ledger._connect() as db:
+            self.ledger._tx(db)
+            row = db.execute(
+                "UPDATE pod_artifact_escrow SET prepared_dev=?,prepared_ino=?,stamp=? "
+                "WHERE id=? AND state='promoting' AND prepared_ino IS NULL "
+                "AND after_sha256=?",
+                (prepared[3], prepared[4], self.ledger._now(), escrow_id, prepared[1]),
+            )
+            if row.rowcount != 1:
+                raise AdmissionDenied("detached prepared inode already sealed")
+            self._event(db, escrow_id, "prepared")
+
+    def _auth_write(self, operator: GatewaySession, row: sqlite3.Row) -> None:
+        self._authorize_operator(operator, row)
+        if row["approver_principal"] != operator.caller.principal:
+            raise AdmissionDenied("artifact approval belongs to another operator")
+        target = str(Path(row["source_path"]) / str(row["relative_path"]))
+        decision = operator.authorize(
+            kind="file_write", tool="write_file", target=target,
+            args={"escrow_id": row["id"], "manifest_sha256": row["manifest_sha256"]},
+        )
+        if not decision.allowed:
+            raise AdmissionDenied("Gateway file write denied detached promotion")
+
+    def promote(
+        self, operator: GatewaySession, escrow_id: str,
+    ) -> EscrowRecord:
+        """Publish exactly one approved file, independent of the old PodLease.
+
+        The operator's current Gateway and the original source are rechecked
+        before issuing an OS-side rename. A crash after durable promoting
+        intent is NEVER retried; recovery may only rollback exact known inodes.
+        """
+        row = self._row(escrow_id)
+        self._authorize_operator(operator, row)
+        with action_lock(
+            self.ledger.path, "source-promotion:" + str(row["source_path"]),
+        ) as acquired:
+            if not acquired:
+                raise AdmissionDenied("another supervisor owns the source promotion fence")
+            row = self._row(escrow_id)
+            if (
+                row["state"] != "approved"
+                or row["approver_principal"] != operator.caller.principal
+                or row["approval_expires_at"] is None
+                or row["approval_expires_at"] <= self.ledger._now()
+            ):
+                raise AdmissionDenied("detached one-use approval expired or replayed")
+            self._inspect(row, eligible=("approved",))
+            self._auth_write(operator, row)
+            source_fd, name = _parent_fd(
+                str(row["source_path"]), str(row["relative_path"]),
+            )
+            attempt_fd = self._attempt_fd(row)
+            try:
+                if not _stat_same_root(source_fd, attempt_fd):
+                    raise AdmissionDenied("detached escrow and source require one filesystem")
+                old = _read_file(source_fd, name)
+                escrow_payload = self._payload(row)
+                if (
+                    (old[1] if old else None) != row["before_sha256"]
+                    or (old[2] if old else None) != row["before_mode"]
+                    or (old[3] if old else None) != row["before_dev"]
+                    or (old[4] if old else None) != row["before_ino"]
+                    or escrow_payload[1] != row["after_sha256"]
+                ):
+                    raise AdmissionDenied("source/escrow drift during promotion preflight")
+                mode = old[2] if old else 0o600
+                if escrow_payload[2] != 0o400 or (
+                    old is not None
+                    and bool(row["after_mode"] & 0o111)
+                    != bool(old[2] & 0o111)
+                ):
+                    raise AdmissionDenied("detached promotion permission change denied")
+                self._transition(escrow_id, "approved", "promoting")
+                # The private temp directory remains outside the original
+                # host tree until one final, atomic kernel publication.
+                _write_new(attempt_fd, "prepared", escrow_payload[0], mode)
+                os.fsync(attempt_fd)
+                prepared = _read_file(attempt_fd, "prepared")
+                if (
+                    prepared is None
+                    or prepared[1] != row["after_sha256"]
+                    or prepared[2] != mode
+                ):
+                    raise AdmissionDenied("detached prepared payload corrupted")
+                self._pin_prepared(escrow_id, prepared)
+                _deny_source_submounts(str(row["source_path"]))
+                # Verify the complete original revision once more before
+                # publication; no temporary source file has yet been written.
+                _source_integrity(
+                    str(row["source_path"]), str(row["source_sha256"]), self.root,
+                )
+                fresh = _read_file(source_fd, name)
+                if (
+                    (fresh[1:5] if fresh else None)
+                    != (old[1:5] if old else None)
+                ):
+                    raise AdmissionDenied("source changed at detached publish boundary")
+                self._auth_write(operator, self._row(escrow_id))
+                if old is None:
+                    _rename_at(attempt_fd, "prepared", source_fd, name, flags=1)
+                else:
+                    _rename_at(attempt_fd, "prepared", source_fd, name, flags=2)
+                    displaced = _read_file(attempt_fd, "prepared")
+                    if displaced is None or displaced[1:5] != old[1:5]:
+                        at_source = _read_file(source_fd, name)
+                        if at_source is not None and (
+                            at_source[3], at_source[4]
+                        ) == (prepared[3], prepared[4]):
+                            _rename_at(
+                                attempt_fd, "prepared", source_fd, name, flags=2,
+                            )
+                            os.fsync(source_fd)
+                        raise AdmissionDenied(
+                            "concurrent source replacement; detached outcome uncertain"
+                        )
+                os.fsync(source_fd)
+                os.fsync(attempt_fd)
+                committed = _read_file(source_fd, name)
+                if (
+                    committed is None
+                    or (committed[1], committed[3], committed[4])
+                    != (prepared[1], prepared[3], prepared[4])
+                ):
+                    raise AdmissionDenied("detached published inode not independently verified")
+                self._transition(escrow_id, "promoting", "promoted")
+            finally:
+                os.close(attempt_fd)
+                os.close(source_fd)
+        # Cleanup is a separate, idempotent committed-state phase so SIGKILL
+        # after SQLite commit retains an inspectable old inode.
+        self.cleanup_promoted(escrow_id)
+        return self._record(self._row(escrow_id))
+
+    def recover_uncertain(self, escrow_id: str) -> str:
+        """New supervisor: rollback only known inodes, never replay a rename."""
+        row = self._row(escrow_id)
+        if row["state"] != "promoting":
+            raise AdmissionDenied("only interrupted detached promotion is recoverable")
+        with action_lock(
+            self.ledger.path, "source-promotion:" + str(row["source_path"]),
+        ) as acquired:
+            if not acquired:
+                raise AdmissionDenied("running promoter still holds source lock")
+            row = self._row(escrow_id)
+            if row["state"] != "promoting":
+                raise AdmissionDenied("detached promotion recovery already settled")
+            _deny_source_submounts(str(row["source_path"]))
+            source_fd, name = _parent_fd(
+                str(row["source_path"]), str(row["relative_path"]),
+            )
+            attempt_fd = self._attempt_fd(row)
+            try:
+                if not _stat_same_root(source_fd, attempt_fd):
+                    self._transition(escrow_id, "promoting", "uncertain")
+                    return "uncertain"
+                current = _read_file(source_fd, name)
+                initial = (
+                    row["before_sha256"], row["before_mode"],
+                    row["before_dev"], row["before_ino"],
+                )
+                target = (row["after_sha256"], row["prepared_dev"], row["prepared_ino"])
+                original_still_present = (
+                    current is None and row["before_sha256"] is None
+                ) or (
+                    current is not None and current[1:5] == initial
+                )
+                if original_still_present:
+                    waiting = _read_file(attempt_fd, "prepared")
+                    if waiting is not None:
+                        if (
+                            row["prepared_ino"] is None
+                            or (waiting[1], waiting[3], waiting[4]) != target
+                        ):
+                            self._transition(escrow_id, "promoting", "uncertain")
+                            return "uncertain"
+                        os.unlink("prepared", dir_fd=attempt_fd)
+                        os.fsync(attempt_fd)
+                    quarantine = _read_file(attempt_fd, "quarantine")
+                    if quarantine is not None:
+                        if (
+                            row["before_sha256"] is not None
+                            or (quarantine[1], quarantine[3], quarantine[4]) != target
+                        ):
+                            self._transition(escrow_id, "promoting", "uncertain")
+                            return "uncertain"
+                        os.unlink("quarantine", dir_fd=attempt_fd)
+                        os.fsync(attempt_fd)
+                    self._transition(escrow_id, "promoting", "rolled_back")
+                    return "rolled_back"
+                if (
+                    current is None
+                    or row["prepared_ino"] is None
+                    or (current[1], current[3], current[4]) != target
+                ):
+                    self._transition(escrow_id, "promoting", "uncertain")
+                    return "uncertain"
+                if row["before_sha256"] is None:
+                    _rename_at(source_fd, name, attempt_fd, "quarantine", flags=1)
+                    quarantined = _read_file(attempt_fd, "quarantine")
+                    if (
+                        quarantined is None
+                        or (quarantined[1], quarantined[3], quarantined[4]) != target
+                    ):
+                        self._transition(escrow_id, "promoting", "uncertain")
+                        return "uncertain"
+                    os.unlink("quarantine", dir_fd=attempt_fd)
+                else:
+                    displaced = _read_file(attempt_fd, "prepared")
+                    if displaced is None or displaced[1:5] != initial:
+                        self._transition(escrow_id, "promoting", "uncertain")
+                        return "uncertain"
+                    _rename_at(attempt_fd, "prepared", source_fd, name, flags=2)
+                    moved = _read_file(attempt_fd, "prepared")
+                    if moved is None or (
+                        moved[1], moved[3], moved[4]
+                    ) != target:
+                        self._transition(escrow_id, "promoting", "uncertain")
+                        return "uncertain"
+                    os.unlink("prepared", dir_fd=attempt_fd)
+                os.fsync(source_fd)
+                os.fsync(attempt_fd)
+                final = _read_file(source_fd, name)
+                if (
+                    row["before_sha256"] is None and final is not None
+                ) or (
+                    row["before_sha256"] is not None
+                    and (final is None or final[1:5] != initial)
+                ):
+                    self._transition(escrow_id, "promoting", "uncertain")
+                    return "uncertain"
+                self._transition(escrow_id, "promoting", "rolled_back")
+                return "rolled_back"
+            finally:
+                os.close(attempt_fd)
+                os.close(source_fd)
+
+    def cleanup_promoted(self, escrow_id: str) -> str:
+        """Post-commit cleanup of exact displaced original inode, idempotent."""
+        row = self._row(escrow_id)
+        if row["state"] != "promoted":
+            raise AdmissionDenied("detached cleanup requires successful publication")
+        with action_lock(
+            self.ledger.path, "source-promotion:" + str(row["source_path"]),
+        ) as acquired:
+            if not acquired:
+                raise AdmissionDenied("active promotion owns source during cleanup")
+            row = self._row(escrow_id)
+            if row["state"] != "promoted":
+                raise AdmissionDenied("detached promotion no longer committed")
+            source_fd, name = _parent_fd(
+                str(row["source_path"]), str(row["relative_path"]),
+            )
+            attempt_fd = self._attempt_fd(row)
+            try:
+                published = _read_file(source_fd, name)
+                if (
+                    published is None
+                    or (published[1], published[3], published[4]) != (
+                        row["after_sha256"], row["prepared_dev"], row["prepared_ino"],
+                    )
+                ):
+                    raise AdmissionDenied("published source inode changed; cleanup uncertain")
+                remaining = _read_file(attempt_fd, "prepared")
+                if remaining is None:
+                    return "clean"
+                if (
+                    row["before_sha256"] is None
+                    or remaining[1:5] != (
+                        row["before_sha256"], row["before_mode"],
+                        row["before_dev"], row["before_ino"],
+                    )
+                ):
+                    raise AdmissionDenied("displaced original inode unexpectedly changed")
+                os.unlink("prepared", dir_fd=attempt_fd)
+                os.fsync(attempt_fd)
+                with self.ledger._connect() as db:
+                    self.ledger._tx(db)
+                    self._event(db, escrow_id, "cleanup")
+                return "clean"
+            finally:
+                os.close(attempt_fd)
+                os.close(source_fd)
