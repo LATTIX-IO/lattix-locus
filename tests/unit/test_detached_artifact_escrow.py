@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -216,6 +217,151 @@ def test_deleted_stage_cannot_mutate_independent_detached_escrow(
         assert record["child_run_id"] == sealed.child_run_id
         assert len(record["manifest_json"]) > 200
         assert record["payload_dev"] > 0 and record["payload_ino"] > 0
+
+
+@ONLY_LINUX_UNPRIVILEGED
+@pytest.mark.parametrize("output", ["output.txt", "code.txt"])
+def test_delayed_post_lease_human_approval_publishes_exactly_one_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: str,
+) -> None:
+    source, lease, parent, escrow, sealed = _rig_terminal(
+        tmp_path, monkeypatch, name=output,
+    )
+    assert lease._ledger.get(lease.reservation_id).state == "closed"
+    operator = _operator(parent.gateway, source)
+    assert escrow.review(operator, sealed.escrow_id).after_sha256 == sealed.payload_sha256
+    with pytest.raises(AdmissionDenied, match="expired or replayed"):
+        escrow.promote(operator, sealed.escrow_id)
+    _human_approve(operator, source, sealed)
+    escrow.approve(operator, sealed.escrow_id)
+    assert (source / output).read_text() == (
+        "original" if output == "code.txt" else ""
+    )
+    published = escrow.promote(operator, sealed.escrow_id)
+    assert published.state == "promoted"
+    assert (source / output).read_text() == "agent changed stage"
+    assert (source / ".git" / "secret.txt").read_text() == "private"
+    assert escrow.cleanup_promoted(sealed.escrow_id) == "clean"
+    with pytest.raises(AdmissionDenied):
+        escrow.promote(operator, sealed.escrow_id)
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_delayed_publication_rejects_expired_approval_without_source_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, parent, escrow, sealed = _rig_terminal(tmp_path, monkeypatch)
+    operator = _operator(parent.gateway, source)
+    _human_approve(operator, source, sealed)
+    escrow.approve(operator, sealed.escrow_id)
+    with escrow.ledger._connect() as db:
+        escrow.ledger._tx(db)
+        db.execute(
+            "UPDATE pod_artifact_escrow SET approval_expires_at=0 WHERE id=?",
+            (sealed.escrow_id,),
+        )
+    with pytest.raises(AdmissionDenied, match="expired or replayed"):
+        escrow.promote(operator, sealed.escrow_id)
+    assert not (source / "output.txt").exists()
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_sigkill_after_detached_atomic_exchange_rolls_back_exact_original_inode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from locus_runtime import pod_artifact_escrow as module
+
+    source, _, parent, escrow, sealed = _rig_terminal(
+        tmp_path, monkeypatch, name="code.txt",
+    )
+    original_inode = (source / "code.txt").stat().st_ino
+    operator = _operator(parent.gateway, source)
+    _human_approve(operator, source, sealed)
+    escrow.approve(operator, sealed.escrow_id)
+    pid = os.fork()
+    if pid == 0:
+        actual = module._rename_at
+
+        def kill_at_exchange(origin, old, destination, new, *, flags):
+            actual(origin, old, destination, new, flags=flags)
+            if flags == 2:
+                os.kill(os.getpid(), signal.SIGKILL)
+
+        module._rename_at = kill_at_exchange
+        try:
+            escrow.promote(operator, sealed.escrow_id)
+        except Exception:
+            os._exit(91)
+        os._exit(92)
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
+    assert (source / "code.txt").read_text() == "agent changed stage"
+    assert escrow.recover_uncertain(sealed.escrow_id) == "rolled_back"
+    assert (source / "code.txt").read_text() == "original"
+    assert (source / "code.txt").stat().st_ino == original_inode
+    with pytest.raises(AdmissionDenied):
+        escrow.promote(operator, sealed.escrow_id)
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_committed_detached_promotion_cleaned_after_real_supervisor_kill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, parent, escrow, sealed = _rig_terminal(
+        tmp_path, monkeypatch, name="code.txt",
+    )
+    operator = _operator(parent.gateway, source)
+    _human_approve(operator, source, sealed)
+    escrow.approve(operator, sealed.escrow_id)
+    pid = os.fork()
+    if pid == 0:
+        transition = escrow._transition
+
+        def kill_at_commit(escrow_id, before, after):
+            transition(escrow_id, before, after)
+            if after == "promoted":
+                os.kill(os.getpid(), signal.SIGKILL)
+
+        escrow._transition = kill_at_commit  # type: ignore[method-assign]
+        try:
+            escrow.promote(operator, sealed.escrow_id)
+        except Exception:
+            os._exit(91)
+        os._exit(92)
+    _, status = os.waitpid(pid, 0)
+    assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
+    assert (source / "code.txt").read_text() == "agent changed stage"
+    refreshed = DetachedArtifactEscrow(escrow.stages)
+    assert refreshed.cleanup_promoted(sealed.escrow_id) == "clean"
+    assert refreshed.cleanup_promoted(sealed.escrow_id) == "clean"
+    assert (source / "code.txt").read_text() == "agent changed stage"
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_foreign_identical_bytes_never_qualify_for_detached_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _, parent, escrow, sealed = _rig_terminal(tmp_path, monkeypatch)
+    operator = _operator(parent.gateway, source)
+    _human_approve(operator, source, sealed)
+    escrow.approve(operator, sealed.escrow_id)
+    escrow.promote(operator, sealed.escrow_id)
+    target = source / "output.txt"
+    promoted_inode = target.stat().st_ino
+    with escrow.ledger._connect() as db:
+        escrow.ledger._tx(db)
+        db.execute(
+            "UPDATE pod_artifact_escrow SET state='promoting' WHERE id=?",
+            (sealed.escrow_id,),
+        )
+    other = source / "foreign.txt"
+    other.write_bytes(target.read_bytes())
+    os.replace(other, target)
+    assert target.stat().st_ino != promoted_inode
+    assert escrow.recover_uncertain(sealed.escrow_id) == "uncertain"
+    assert target.read_text() == "agent changed stage"
+    with pytest.raises(AdmissionDenied):
+        escrow.promote(operator, sealed.escrow_id)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux escrow only")
