@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import closing
 import os
 import signal
 import sys
@@ -497,4 +498,5 @@ def test_private_escrow_directory_rejects_unsafe_mode(
     unsafe = tmp_path / "escrow"
     unsafe.mkdir(mode=0o755)
     with pytest.raises(AdmissionDenied):
-        _path_private(unsafe)
+        with closing(_path_private(unsafe)):
+            pytest.fail("unsafe escrow root unexpectedly passed anchored check")
