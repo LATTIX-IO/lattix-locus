@@ -503,6 +503,18 @@ class DetachedArtifactEscrow:
                         allowed_output_paths=allowed_output_paths,
                     ) != manifest:
                         raise AdmissionDenied("stage changed while sealing escrow")
+                    last_root_fd = _open_anchored_directory(source)
+                    try:
+                        last_root = os.fstat(last_root_fd)
+                        if (
+                            last_root.st_dev != source_root_identity.st_dev
+                            or last_root.st_ino != source_root_identity.st_ino
+                        ):
+                            raise AdmissionDenied(
+                                "source root replaced during terminal escrow seal"
+                            )
+                    finally:
+                        os.close(last_root_fd)
                     with self.ledger._connect() as db:
                         self.ledger._tx(db)
                         changed = db.execute(
@@ -907,6 +919,7 @@ class DetachedArtifactEscrow:
             row = self._row(escrow_id)
             if row["state"] != "promoted":
                 raise AdmissionDenied("detached promotion no longer committed")
+            self._check_source_root(row)
             source_fd, name = _parent_fd(
                 str(row["source_path"]), str(row["relative_path"]),
             )
