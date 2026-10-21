@@ -34,7 +34,7 @@ from locus_runtime.pod_artifact_verification import (
 from locus_runtime.pod_reservations import AdmissionDenied, PodLease
 from locus_runtime.pod_stage_bindings import PodStageBindings
 from locus_runtime.pod_workspace_staging import (
-    _open_anchored_directory, staged_workspace,
+    WorkspaceStagingDenied, _open_anchored_directory, staged_workspace,
 )
 
 _MAX_BYTES = 8 * 1024 * 1024
@@ -112,9 +112,12 @@ def _mode_root(ledger_path: str) -> Path:
 
 
 def _source_integrity(source: str, expected_sha256: str, scratch: Path) -> None:
-    with staged_workspace(source, staging_parent=scratch) as snapshot:
-        if snapshot.sha256 != expected_sha256:
-            raise AdmissionDenied("original workspace changed since detached seal")
+    try:
+        with staged_workspace(source, staging_parent=scratch) as snapshot:
+            if snapshot.sha256 != expected_sha256:
+                raise AdmissionDenied("original workspace changed since detached seal")
+    except WorkspaceStagingDenied as exc:
+        raise AdmissionDenied("unsafe or changed original workspace during escrow") from exc
 
 
 def _rename_at(
