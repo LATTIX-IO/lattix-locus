@@ -16,7 +16,9 @@ from locus_runtime.pod_reservations import (
     AdmissionDenied, PodReservationLedger, ResourceBudget,
 )
 from locus_runtime.pod_stage_bindings import PodStageBindings
+from locus_runtime.pod_stage_docker import StageDockerBroker
 from locus_runtime.pod_workspace_staging import staged_workspace
+from tests.unit.stage_guardian_support import managed_guardian_for_test
 from tests.unit.test_stage_docker_launch import (
     ONLY_LINUX_UNPRIVILEGED, mock_host, rig, run_command,
 )
@@ -91,6 +93,63 @@ def _human_approve(operator, source: Path, record) -> None:
         operator.caller.run_id, prompted.fingerprint,
         operator.caller.principal,
     )
+
+
+@ONLY_LINUX_UNPRIVILEGED
+@pytest.mark.skipif(
+    os.getenv("LOCUS_REAL_DOCKER_ACCEPTANCE") != "1",
+    reason="actual Linux Docker daemon acceptance must be explicitly enabled",
+)
+def test_real_docker_output_sealed_then_published_only_after_child_closure(
+    tmp_path: Path,
+) -> None:
+    """Real container and supervised guardian; no mock launch and no host bind."""
+    source, lease, parent, receipts, stages, _ = rig(tmp_path)
+    original = (source / "code.txt").read_bytes()
+    assert not (source / "output.txt").exists()
+    with staged_workspace(source, staging_parent=tmp_path) as snapshot, (
+        managed_guardian_for_test(tmp_path / "runs.db")
+    ):
+        bound = stages.bind(lease, snapshot)
+        broker = StageDockerBroker(
+            stages, receipts, image=os.environ["LOCUS_DOCKER_ACCEPTANCE_IMAGE"],
+        )
+        outcome = broker.execute(
+            lease, bound.stage_id,
+            run_command(snapshot, argument="/workspace/output.txt", timeout=15),
+        )
+        assert outcome.receipt.state == "succeeded" and outcome.exit_code == 0
+        assert (snapshot.staged / "output.txt").is_file()
+        assert (source / "code.txt").read_bytes() == original
+        assert not (source / "output.txt").exists()
+        first = DetachedArtifactEscrow(stages)
+        record = first.seal(
+            lease, bound.stage_id,
+            allowed_output_paths=frozenset({"output.txt"}),
+        )
+        lease.close(
+            total=ResourceBudget(1, 1, 0, 1, 0),
+            evidence="real-docker-terminal-escrow:" + record.manifest_sha256,
+        )
+    assert not snapshot.staged.exists()
+    assert not (source / "output.txt").exists()
+    detached = DetachedArtifactEscrow(
+        PodStageBindings(
+            PodReservationLedger(tmp_path / "runs.db"),
+            PodActionReceipts(PodReservationLedger(tmp_path / "runs.db")),
+        ),
+    )
+    reviewer = _operator(parent.gateway, source)
+    assert detached.review(reviewer, record.escrow_id).after_sha256 == hashlib.sha256(b"").hexdigest()
+    with pytest.raises(AdmissionDenied):
+        detached.approve(reviewer, record.escrow_id)
+    _human_approve(reviewer, source, record)
+    assert detached.approve(reviewer, record.escrow_id).state == "approved"
+    assert not (source / "output.txt").exists()
+    assert detached.promote(reviewer, record.escrow_id).state == "promoted"
+    assert (source / "output.txt").read_bytes() == b""
+    assert (source / "code.txt").read_bytes() == original
+    assert (source / ".aws" / "secret.txt").read_text() == "private"
 
 
 @ONLY_LINUX_UNPRIVILEGED
