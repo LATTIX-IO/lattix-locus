@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 from contextlib import closing
 import os
+import shutil
 import signal
 import sys
 from pathlib import Path
@@ -185,7 +186,8 @@ def test_escrow_read_and_human_approval_after_child_closed(
 @ONLY_LINUX_UNPRIVILEGED
 @pytest.mark.parametrize("attack", [
     "foreign_principal", "source_drift", "source_symlink",
-    "tamper_escrow", "swap_inode", "expire_escrow", "revoke_parent",
+    "source_root_swap", "tamper_escrow", "swap_inode",
+    "expire_escrow", "revoke_parent",
 ])
 def test_closed_lease_escrow_review_fails_closed_on_attack(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, attack: str,
@@ -201,6 +203,12 @@ def test_closed_lease_escrow_review_fails_closed_on_attack(
     elif attack == "source_symlink":
         (source / "code.txt").unlink()
         (source / "code.txt").symlink_to(tmp_path / "runs.db")
+    elif attack == "source_root_swap":
+        original_root = tmp_path / "original-source-backup"
+        os.rename(source, original_root)
+        shutil.copytree(original_root, source)
+        assert (source / "code.txt").read_text() == "original"
+        assert source.stat().st_ino != original_root.stat().st_ino
     elif attack == "tamper_escrow":
         os.chmod(payload, 0o600)
         payload.write_text("substituted bytes")
