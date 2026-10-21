@@ -13,6 +13,14 @@ obtain a one-use exact Gateway-human approval after child closure. Escrow
 review never creates a writable original Docker mount, replays the child,
 or treats a failed/ambiguous execution as a successful artifact.
 
-The detached write/rollback path remains gated until independently tested
-and approved. Multi-file atomicity, remote/fleet deployment, automatic
-promotion, and Windows/macOS are not enabled by this increment.
+After separate human approval, a supervisor-only publication path rechecks
+the original source revision and uses a durable prepared-inode witness with
+atomic Linux create/exchange. Restart recovery rolls back only verified
+inodes without replay, reclaims bounded expired escrow payloads and preserves
+uncertain/foreign evidence. A reconciliation CLI is provided for native
+startup and periodic maintenance.
+
+Multi-file atomicity, remote/fleet deployment, automatic approval, and
+Windows/macOS are not enabled by this increment. Native lifecycle wiring,
+independent end-user UI acceptance and full exact-head security gates must
+pass before default production activation.
