@@ -101,8 +101,11 @@ def _mode_root(ledger_path: str) -> Path:
     root = Path(ledger_path).absolute().parent / ".locus-artifact-escrow"
     try:
         root.mkdir(mode=0o700)
-    except FileExistsError:
-        pass
+    except FileExistsError as exc:
+        # Idempotent supervisor restart is permitted, but an existing
+        # symlink or non-directory is never accepted as an escrow root.
+        if root.is_symlink() or not root.is_dir():
+            raise AdmissionDenied("existing escrow root is not a private directory") from exc
     with os.scandir(root.parent) as scanned:
         if not any(entry.name == root.name and not entry.is_symlink() for entry in scanned):
             raise AdmissionDenied("escrow root replaced by a symlink")
