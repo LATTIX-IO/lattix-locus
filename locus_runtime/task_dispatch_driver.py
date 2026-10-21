@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
+from locus_runtime.action_fencing import action_lock
 from locus_runtime.gateway import GatewaySession
 from locus_runtime.pod_reservations import AdmissionDenied, PodLease, ResourceBudget
 from locus_runtime.task_graph_contract import TaskIntent, TaskNode
@@ -287,73 +288,88 @@ class GatewayTaskDriver:
         """
         if type(recover_unstarted) is not bool:
             raise ValueError("recovery flag must be boolean")
-        self._preflight_engine_pins(plan, parent)
-        expected = self.engine_pins.node_engines if self.engine_pins is not None else None
-        resumable = (
-            list(self.scheduler.recover_unstarted(
-                plan, parent, expected_engine_pins=expected,
-            ))
-            if recover_unstarted else []
-        )
-        nodes = {node.node_id: node for node in plan.plan.nodes}
-        outcomes: list[DispatchOutcome] = []
-        tasks: list[tuple[TaskNode, NodeClaim, PodLease, EngineBinding]] = []
-        for _ in range(self.max_parallel):
-            if should_stop is not None:
-                try:
-                    if should_stop():
-                        break
-                except Exception:
-                    break
-            claim = (
-                resumable.pop(0) if resumable
-                else self.scheduler.claim_next(
+        # Two independent recovering supervisors must never reconstruct,
+        # reserve or admit the same child in the same uncontrolled window.
+        # The lock protects admission only; release before actual worker
+        # execution so parallel specialists are not serialized.
+        with action_lock(
+            self.scheduler.ledger.path,
+            "task-dispatch-admit:" + parent.caller.run_id,
+        ) as admission_owned:
+            if not admission_owned:
+                # Another trusted supervisor is reconciling the same run.
+                # Busy is not a failed child, a new claim, or an uncertain
+                # receipt; the caller may retry a new wave after lock release.
+                return DispatchWave(
+                    outcomes=(), ready_after=self.scheduler.ready(plan, parent),
+                )
+            self._preflight_engine_pins(plan, parent)
+            expected = self.engine_pins.node_engines if self.engine_pins is not None else None
+            resumable = (
+                list(self.scheduler.recover_unstarted(
                     plan, parent, expected_engine_pins=expected,
-                )
+                ))
+                if recover_unstarted else []
             )
-            if claim is None:
-                break
-            node = nodes[claim.node_id]
-            binding = self._select(node)
-            if binding is None:
-                if claim.state == "claimed":
-                    self.scheduler.block_unstarted(plan, parent, claim)
-                outcomes.append(DispatchOutcome(
-                    claim.node_id, "",
-                    "blocked" if claim.state == "claimed" else "uncertain",
-                    "engine_capability_unavailable",
-                ))
-                continue
-            try:
-                budget = self._budget(node)
-            except (AdmissionDenied, ValueError):
-                if claim.state == "claimed":
-                    self.scheduler.block_unstarted(plan, parent, claim)
-                outcomes.append(DispatchOutcome(
-                    claim.node_id, binding.engine_id,
-                    "blocked" if claim.state == "claimed" else "uncertain",
-                    "invalid_node_budget",
-                ))
-                continue
-            try:
-                if claim.state == "claimed":
-                    self.scheduler.reserve(
-                        plan, parent, claim,
-                        budget=budget, lease_seconds=budget.wall_seconds,
+            nodes = {node.node_id: node for node in plan.plan.nodes}
+            outcomes: list[DispatchOutcome] = []
+            tasks: list[tuple[TaskNode, NodeClaim, PodLease, EngineBinding]] = []
+            for _ in range(self.max_parallel):
+                if should_stop is not None:
+                    try:
+                        if should_stop():
+                            break
+                    except Exception:
+                        break
+                claim = (
+                    resumable.pop(0) if resumable
+                    else self.scheduler.claim_next(
+                        plan, parent, expected_engine_pins=expected,
                     )
-                elif claim.state != "reserved":
-                    raise AdmissionDenied("recovered attempt is not unstarted")
-                lease = self.scheduler.admit(
-                    plan, parent, claim, engine=binding.engine_id,
                 )
-            except Exception:
-                # The reservation may have been durably admitted just before
-                # the failure. Never guess it is safe to cancel or retry.
-                outcomes.append(DispatchOutcome(
-                    claim.node_id, binding.engine_id, "uncertain", "child_admission_failed",
-                ))
-                continue
-            tasks.append((node, claim, lease, binding))
+                if claim is None:
+                    break
+                node = nodes[claim.node_id]
+                binding = self._select(node)
+                if binding is None:
+                    if claim.state == "claimed":
+                        self.scheduler.block_unstarted(plan, parent, claim)
+                    outcomes.append(DispatchOutcome(
+                        claim.node_id, "",
+                        "blocked" if claim.state == "claimed" else "uncertain",
+                        "engine_capability_unavailable",
+                    ))
+                    continue
+                try:
+                    budget = self._budget(node)
+                except (AdmissionDenied, ValueError):
+                    if claim.state == "claimed":
+                        self.scheduler.block_unstarted(plan, parent, claim)
+                    outcomes.append(DispatchOutcome(
+                        claim.node_id, binding.engine_id,
+                        "blocked" if claim.state == "claimed" else "uncertain",
+                        "invalid_node_budget",
+                    ))
+                    continue
+                try:
+                    if claim.state == "claimed":
+                        self.scheduler.reserve(
+                            plan, parent, claim,
+                            budget=budget, lease_seconds=budget.wall_seconds,
+                        )
+                    elif claim.state != "reserved":
+                        raise AdmissionDenied("recovered attempt is not unstarted")
+                    lease = self.scheduler.admit(
+                        plan, parent, claim, engine=binding.engine_id,
+                    )
+                except Exception:
+                    # The reservation may have been durably admitted just before
+                    # the failure. Never guess it is safe to cancel or retry.
+                    outcomes.append(DispatchOutcome(
+                        claim.node_id, binding.engine_id, "uncertain", "child_admission_failed",
+                    ))
+                    continue
+                tasks.append((node, claim, lease, binding))
         if tasks:
             with ThreadPoolExecutor(max_workers=self.max_parallel) as pool:
                 futures = [

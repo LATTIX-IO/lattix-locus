@@ -6,6 +6,7 @@ independently verified artifacts with trusted fake worker adapters.
 from __future__ import annotations
 
 import concurrent.futures
+import threading
 
 import pytest
 
@@ -174,6 +175,70 @@ def test_two_recovering_supervisors_cannot_duplicate_admission(tmp_path):
     assert sum(x.status == "verified" and x.node_id == "research"
                for wave in waves for x in wave.outcomes) == 1
     assert ledger.snapshot(parent.caller.run_id).used.actions <= 2
+
+
+def test_concurrent_recovery_cannot_quarantine_live_admission(
+    tmp_path, monkeypatch,
+):
+    """One coordinator paused before child admission must exclude another.
+
+    This deterministically exercises the post-merge CI race. The second
+    supervisor cannot recover the still-unexecuted claim, mark it uncertain,
+    or cause a duplicate worker while the first holds its parent admission
+    fence. The fence is released before the actual worker runs.
+    """
+    scheduler, ledger, plan, parent = build(tmp_path)
+    claim = scheduler.claim_next(plan, parent)
+    assert claim is not None and claim.node_id == "research"
+    first = restart(tmp_path)
+    second = restart(tmp_path)
+    worker = Worker()
+    owner = driver(first, worker, parallel=1)
+    challenger = driver(second, worker, parallel=1)
+    entered = threading.Event()
+    finish_admission = threading.Event()
+    admit = first.admit
+
+    def paused_admit(*args, **kwargs):
+        entered.set()
+        assert finish_admission.wait(timeout=15), "admission barrier stalled"
+        return admit(*args, **kwargs)
+
+    monkeypatch.setattr(first, "admit", paused_admit)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        winning = pool.submit(
+            owner.run_wave, plan, parent, recover_unstarted=True,
+        )
+        assert entered.wait(timeout=15), "owner did not reach held admission"
+        try:
+            competing = pool.submit(
+                challenger.run_wave, plan, parent, recover_unstarted=True,
+            )
+            rival = competing.result(timeout=15)
+            assert rival.outcomes == ()
+            with ledger._connect() as db:
+                row = db.execute(
+                    "SELECT state FROM task_dispatch_node "
+                    "WHERE parent_run_id=? AND node_id='research'",
+                    (parent.caller.run_id,),
+                ).fetchone()
+                assert row["state"] == "reserved", (
+                    "concurrent recoverer improperly quarantined a live admission"
+                )
+        finally:
+            finish_admission.set()
+        result = winning.result(timeout=20)
+    assert [
+        (outcome.node_id, outcome.status) for outcome in result.outcomes
+    ] == [("research", "verified")]
+    assert [name for name, *_ in worker.calls].count("research") == 1
+    assert first.states(plan, parent)["research"] == "verified"
+    assert ledger.snapshot(parent.caller.run_id).held.actions == 0
+    assert ledger.snapshot(parent.caller.run_id).used.actions == 1
+    # The independent sibling remains eligible without a duplicated child.
+    resumed = driver(restart(tmp_path), Worker()).run_until_idle(plan, parent)
+    assert resumed.status == "done"
+    assert all(v == "verified" for v in resumed.node_states.values())
 
 
 @pytest.mark.parametrize("invalid", [None, "true", 1])
