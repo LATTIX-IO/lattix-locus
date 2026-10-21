@@ -664,8 +664,14 @@ class DetachedArtifactEscrow:
 
     def _auth_write(self, operator: GatewaySession, row: sqlite3.Row) -> None:
         self._authorize_operator(operator, row)
-        if row["approver_principal"] != operator.caller.principal:
-            raise AdmissionDenied("artifact approval belongs to another operator")
+        if (
+            row["approver_principal"] != operator.caller.principal
+            or row["approval_expires_at"] is None
+            or row["approval_expires_at"] <= self.ledger._now()
+            or row["expires_at"] <= self.ledger._now()
+            or row["state"] not in ("approved", "promoting")
+        ):
+            raise AdmissionDenied("detached promotion consent expired, revoked or consumed")
         target = str(Path(row["source_path"]) / str(row["relative_path"]))
         decision = operator.authorize(
             kind="file_write", tool="write_file", target=target,
