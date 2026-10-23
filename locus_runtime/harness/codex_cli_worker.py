@@ -98,7 +98,7 @@ class CodexCliWorker:
             ),
             stdin=initial, codex_bridge=bridge, cancel=cancel,
         )
-        if outcome.exit_code != 0 or not outcome.codex_terminal_sha256:
+        if outcome.exit_code != 0 or not outcome.codex_terminal_sha256 or not bridge.receipts:
             raise AdmissionDenied("Codex execution lacked terminal evidence")
         # The digest comes from a pinned runner, not the independent verifier.
         # Consumers MUST call DetachedArtifactEscrow.seal before accepting.
