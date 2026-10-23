@@ -14,4 +14,6 @@ RUN chmod 0555 /usr/local/bin/locus-codex-stdio \
     && python3 -m py_compile /usr/local/bin/locus-codex-stdio
 # Never mount the Docker socket, host profile, Git config or provider credentials.
 # StageDockerBroker always overrides the entrypoint and host UID/GID.
+# Other standalone Docker invocations must also default to nonroot.
+USER node
 ENTRYPOINT ["/usr/local/bin/locus-codex-stdio"]
