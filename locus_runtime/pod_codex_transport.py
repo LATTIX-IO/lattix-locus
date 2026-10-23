@@ -139,6 +139,7 @@ class CodexFramePump:
                         "cli_configuration", "model_metadata", "model_connection",
                         "provider_http", "provider_model", "cli_unknown",
                         "not_reported", "unexpected_tool", "artifact_invalid", "runner_startup",
+                        "os_confinement", "stderr_unavailable", "discovery_get",
                     }
                     category, code, calls = (
                         frame.get("category"), frame.get("exit_code"), frame.get("model_calls"),
