@@ -20,10 +20,9 @@ import json
 import re
 import threading
 from dataclasses import dataclass
-from typing import Any
 
 from locus_runtime.model_client import (
-    GatewayModelGate, ModelCall, ModelCallDenied, provenance_denial,
+    GatewayModelGate, ModelCall, provenance_denial,
 )
 from locus_runtime.pod_reservations import AdmissionDenied, PodLease, ResourceBudget
 
