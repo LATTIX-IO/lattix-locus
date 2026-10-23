@@ -18,6 +18,7 @@ import hashlib
 import http.client
 import json
 import re
+import socket
 import threading
 from dataclasses import dataclass
 
@@ -243,6 +244,30 @@ class CodexOllamaBridge:
         self._last_id = 0
         self._receipts: list[CodexModelReceipt] = []
         self._lock = threading.Lock()
+        # A cancellation must never wait on the model RPC serialization lock:
+        # handle() can be blocked in a 50-second Ollama read while holding it.
+        self._cancelled = threading.Event()
+        self._connection_lock = threading.Lock()
+        self._active_connection: http.client.HTTPConnection | None = None
+
+    def abort(self) -> None:
+        """Abort in-flight local inference on container cancel/revoke/timeout.
+
+        Socket.shutdown interrupts a blocking recv on Linux; close alone is
+        not always enough. This is idempotent, never waits on handle's lock,
+        and also prohibits future requests on this child lease.
+        """
+        self._cancelled.set()
+        with self._connection_lock:
+            active = self._active_connection
+        if active is not None:
+            sock = active.sock
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            active.close()
 
     @property
     def receipts(self) -> tuple[CodexModelReceipt, ...]:
@@ -250,7 +275,11 @@ class CodexOllamaBridge:
 
     def handle(self, raw: bytes) -> bytes:
         """One authenticated RPC; exception always kills/denies the task."""
+        if self._cancelled.is_set():
+            raise CodexRelayDenied("Codex inference lease cancelled")
         with self._lock:
+            if self._cancelled.is_set():
+                raise CodexRelayDenied("Codex inference lease cancelled")
             ident, path, body, stream, max_output, suppressed = _request(raw, self.model)
             if ident != self._last_id + 1 or ident > _MAX_CALLS:
                 raise CodexRelayDenied("replayed, skipped, or exhausted model request")
@@ -278,11 +307,19 @@ class CodexOllamaBridge:
             # The bridge is allowed to contact one fixed loopback service; no
             # client-controlled host, path, port, headers, redirects, or proxies.
             connection = http.client.HTTPConnection(self.host, self.port, timeout=50)
+            with self._connection_lock:
+                if self._cancelled.is_set():
+                    raise CodexRelayDenied("Codex inference lease cancelled")
+                self._active_connection = connection
             try:
+                if self._cancelled.is_set():
+                    raise CodexRelayDenied("Codex inference lease cancelled")
                 connection.request("POST", path, body=body, headers={
                     "Content-Type": "application/json",
                     "Accept": "text/event-stream" if stream else "application/json",
                 })
+                if self._cancelled.is_set():
+                    raise CodexRelayDenied("Codex inference lease cancelled")
                 response = connection.getresponse()
                 code = response.status
                 media = response.getheader("Content-Type", "application/json").split(";", 1)[0].strip()
@@ -297,10 +334,17 @@ class CodexOllamaBridge:
                 if len(output) > _MAX_RESPONSE:
                     raise CodexRelayDenied("model response exceeds maximum size")
                 _reject_tool_responses(output, media)
+                if self._cancelled.is_set():
+                    raise CodexRelayDenied("Codex inference lease cancelled")
             except (OSError, http.client.HTTPException, TimeoutError) as exc:
                 raise CodexRelayDenied("approved loopback model unavailable") from exc
             finally:
+                with self._connection_lock:
+                    if self._active_connection is connection:
+                        self._active_connection = None
                 connection.close()
+            if self._cancelled.is_set():
+                raise CodexRelayDenied("Codex inference lease cancelled")
             self._receipts.append(CodexModelReceipt(
                 sequence=ident,
                 audit_sha256=hashlib.sha256(audit_id.encode("utf-8")).hexdigest(),
