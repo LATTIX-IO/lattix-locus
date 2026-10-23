@@ -267,7 +267,12 @@ class CodexOllamaBridge:
                     sock.shutdown(socket.SHUT_RDWR)
                 except OSError:
                     pass
-            active.close()
+            try:
+                active.close()
+            except OSError:
+                # A failed close must never mask the original cancellation or
+                # stop the supervisor from killing the Docker container.
+                pass
 
     @property
     def receipts(self) -> tuple[CodexModelReceipt, ...]:
