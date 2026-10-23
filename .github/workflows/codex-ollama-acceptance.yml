@@ -65,6 +65,16 @@ jobs:
           docker run --rm --pull=never --network=none \
             --entrypoint=/usr/local/bin/codex "$image" --version \
             | grep -Fx 'codex-cli 0.163.0'
+          docker run --rm --pull=never --network=none \
+            --entrypoint=/usr/local/bin/codex "$image" exec --help \
+            > "$RUNNER_TEMP/codex-exec-help.txt"
+          for flag in '--oss' '--local-provider' '--ignore-user-config' '--sandbox' '--ephemeral'; do
+            grep -F -- "$flag" "$RUNNER_TEMP/codex-exec-help.txt" >/dev/null
+          done
+          echo "Codex official exec flags preflight passed"
+          docker run --rm --pull=never --network=none \
+            --entrypoint=/usr/local/bin/codex "$image" features list \
+            | grep -E '^shell_tool[[:space:]]'
           echo "LOCUS_CODEX_ACCEPTANCE_IMAGE=$image" >> "$GITHUB_ENV"
           printf 'Pinned image: %s\n' "$image"
       - name: Verify full real local inference, kernel isolation and escrow
