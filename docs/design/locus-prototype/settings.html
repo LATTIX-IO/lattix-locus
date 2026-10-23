@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+<style>
+  .set { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 32px; }
+  .set-nav { position: sticky; top: 16px; align-self: start; }
+  .set-nav ul { list-style: none; margin: 0 0 16px; padding: 0; }
+  .set-nav a { display: block; padding: 6px 10px; border-radius: var(--r); text-decoration: none; font-size: 13px; color: var(--muted); }
+  .set-nav a:hover { color: var(--fg); background: var(--hover); }
+  .set-nav a[aria-current="true"] { color: var(--fg); background: var(--select); font-weight: 600; }
+  .set-sec[hidden] { display: none; }
+  .set-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 24px; padding: 14px 0; border-bottom: 1px solid var(--border); align-items: center; }
+  .set-row:last-child { border-bottom: 0; }
+  .set-row p.d { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .tier { border: 1px solid var(--border); border-radius: var(--r); padding: 14px; display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
+  .tier:hover { border-color: var(--border-strong); }
+  .tier:has(input:checked) { border-color: var(--fg); background: var(--select); }
+  .tier input { margin-top: 3px; accent-color: var(--fg); }
+  @media (max-width: 860px) { .set { grid-template-columns: minmax(0, 1fr); } .set-nav { position: static; } }
+</style>
+</head>
+<body data-nav="settings" data-crumbs='[["Settings","settings.html"],["Organization",""]]'>
+<main id="main">
+  <div class="page page-narrow">
+    <header class="page-h"><div class="t"><h1>Settings</h1><p>Configuration only. Content such as knowledge and personal skills lives in Library and Memory.</p></div></header>
+    <div class="set">
+      <nav class="set-nav" aria-label="Settings sections" data-od-id="settings-nav">
+        <p class="label" style="padding:0 10px 4px">You</p>
+        <ul><li><a href="#account" data-s="account">Account &amp; preferences</a></li><li><a href="#appearance" data-s="appearance">Appearance</a></li></ul>
+        <p class="label" style="padding:0 10px 4px">Organization</p>
+        <ul><li><a href="#members" data-s="members">Members &amp; roles</a></li><li><a href="#identity" data-s="identity">Identity &amp; sign-in</a></li><li><a href="#secrets" data-s="secrets">Secrets</a></li></ul>
+        <p class="label" style="padding:0 10px 4px">Runtime</p>
+        <ul><li><a href="#computer" data-s="computer">Computer use</a></li><li><a href="#deploy" data-s="deploy">Deployment &amp; updates</a></li><li><a href="#audit" data-s="audit">Audit export</a></li></ul>
+      </nav>
+
+      <div>
+        <section class="set-sec" id="s-account" data-od-id="settings-account">
+          <h2>Account &amp; preferences</h2>
+          <div class="set-row"><div><b>Default autonomy for new tasks</b><p class="d">Applies when you start work from Home.</p></div><select class="select" style="width:200px" aria-label="Default autonomy" disabled aria-disabled="true" title="Illustrative setting; not connected"><option>Act within policy</option><option>Plan only</option><option>Ask before acting</option></select></div>
+          <div class="set-row"><div><b>Show technical detail by default</b><p class="d">Model routes, token counts and raw events in run views.</p></div><input type="checkbox" class="toggle" aria-label="Show technical detail" disabled aria-disabled="true" title="Illustrative setting; not connected"></div>
+          <div class="set-row"><div><b>Notify me when a run needs a decision</b><p class="d">Desktop notification and inbox badge.</p></div><input type="checkbox" class="toggle" checked aria-label="Notify on decisions" disabled aria-disabled="true" title="Illustrative setting; not connected"></div>
+        </section>
+
+        <section class="set-sec" id="s-appearance" hidden data-od-id="settings-appearance">
+          <h2>Appearance</h2>
+          <div class="set-row"><div><b>Theme</b><p class="d">Light and dark carry the same hierarchy and states.</p></div><div class="seg" role="group" aria-label="Theme"><button aria-pressed="true" onclick="document.documentElement.removeAttribute('data-theme');localStorage.setItem('locus.theme','light')">Light</button><button aria-pressed="false" onclick="document.documentElement.dataset.theme='dark';localStorage.setItem('locus.theme','dark')">Dark</button></div></div>
+          <div class="set-row"><div><b>Density</b></div><div class="seg" role="group" aria-label="Density"><button aria-pressed="false">Comfortable</button><button aria-pressed="true">Compact</button></div></div>
+        </section>
+
+        <section class="set-sec" id="s-members" hidden data-od-id="settings-members">
+          <div class="row-b"><h2>Members &amp; roles</h2><button class="btn btn-sm btn-primary" data-toast="open the invitation form; roles map to backend policy groups">Invite</button></div>
+          <div class="panel tbl-wrap" style="margin-top:12px"><table class="tbl"><thead><tr><th>Member</th><th>Role</th><th>Workspaces</th><th>Last active</th></tr></thead><tbody>
+            <tr><td><span class="t">Dana Reyes</span><br><span class="id">dana@northwind.example</span></td><td>Org admin</td><td>All</td><td class="num">Now</td></tr>
+            <tr><td><span class="t">Priya Nair</span><br><span class="id">priya@northwind.example</span></td><td>Security admin</td><td>All</td><td class="num">12 m</td></tr>
+            <tr><td><span class="t">Sam Ortiz</span><br><span class="id">sam@northwind.example</span></td><td>Builder</td><td>Engineering</td><td class="num">2 h</td></tr>
+            <tr><td><span class="t">Ines Carvalho</span><br><span class="id">auditor@external.example</span></td><td>Auditor · read-only</td><td>Operations</td><td class="num">3 d</td></tr>
+          </tbody></table></div>
+          <p class="small muted" style="margin-top:8px">Roles are evaluated by the backend for every request. Changing a role here does not grant anything until policy confirms it.</p>
+        </section>
+
+        <section class="set-sec" id="s-identity" hidden data-od-id="settings-identity">
+          <h2>Identity &amp; sign-in</h2>
+          <div class="set-row"><div><b>OIDC provider</b><p class="d">login.northwind.example · groups claim mapped</p></div><span class="st st-ok">Connected</span></div>
+          <div class="set-row"><div><b>Require phishing-resistant MFA</b><p class="d">Passkeys or hardware keys for admins and approvers.</p></div><input type="checkbox" class="toggle" checked aria-label="Require MFA" disabled aria-disabled="true" title="Illustrative setting; not connected"></div>
+          <div class="set-row"><div><b>Session lifetime</b></div><select class="select" style="width:160px" aria-label="Session lifetime" disabled aria-disabled="true" title="Illustrative setting; not connected"><option>8 hours</option><option>12 hours</option><option>24 hours</option></select></div>
+        </section>
+
+        <section class="set-sec" id="s-secrets" hidden data-od-id="settings-secrets">
+          <div class="row-b"><h2>Secrets</h2><button class="btn btn-sm" data-toast="write a secret to Vault; values are never shown again">Add secret</button></div>
+          <div class="panel tbl-wrap" style="margin-top:12px"><table class="tbl"><thead><tr><th>Name</th><th>Used by</th><th>Rotated</th><th>Value</th></tr></thead><tbody>
+            <tr><td class="mono t">anthropic/api-key</td><td class="small">3 routes</td><td class="num">Sep 28</td><td class="mono muted">•••••••• stored in Vault</td></tr>
+            <tr><td class="mono t">mcp/docstore</td><td class="small">docstore MCP</td><td class="num">Aug 02</td><td class="mono muted">•••••••• stored in Vault</td></tr>
+            <tr><td class="mono t">mcp/web</td><td class="small">web-research MCP</td><td><span class="st st-warn">94 days</span></td><td class="mono muted">•••••••• stored in Vault</td></tr>
+          </tbody></table></div>
+        </section>
+
+        <section class="set-sec" id="s-computer" hidden data-od-id="settings-computer-use">
+          <h2>Computer use</h2>
+          <p class="small muted" style="margin:4px 0 14px">The highest tier an agent may request. Widening on desktop always needs a native confirmation, even for admins.</p>
+          <div class="stack">
+            <label class="tier"><input type="radio" name="tier" disabled aria-disabled="true" title="Illustrative setting; not connected"><div><b>Observe</b><p class="small muted">Screenshots and page text only. No clicks or typing.</p></div></label>
+            <label class="tier"><input type="radio" name="tier" checked disabled aria-disabled="true" title="Illustrative setting; not connected"><div><b>Assist</b><p class="small muted">Navigate and fill forms in an isolated browser. Downloads quarantined until scanned.</p></div></label>
+            <label class="tier"><input type="radio" name="tier" disabled aria-disabled="true" title="Illustrative setting; not connected"><div><b>Interactive</b><p class="small muted">Full browser control including sign-in with stored credentials. Recorded and reviewable.</p></div></label>
+          </div>
+          <p class="small" style="margin-top:12px"><span class="trc trc-fd">Browser tiers · foundation</span> <span class="trc trc-pl" style="margin-left:8px">Desktop app control · planned</span></p>
+        </section>
+
+        <section class="set-sec" id="s-deploy" hidden data-od-id="settings-deployment">
+          <h2>Deployment &amp; updates</h2>
+          <div class="set-row"><div><b>Runtime profile</b><p class="d">Hosted · HTTPS required · signed runtime headers</p></div><span class="tag tag-strong">hosted</span></div>
+          <div class="set-row"><div><b>Version</b><p class="d">0.19.2 · 0.19.3 available (security fixes)</p></div><button class="btn btn-sm" data-toast="schedule the update for the Sun 02:00 maintenance window">Schedule update</button></div>
+          <div class="set-row"><div><b>Maintenance window</b></div><select class="select" style="width:180px" aria-label="Maintenance window" disabled aria-disabled="true" title="Illustrative setting; not connected"><option>Sun 02:00–04:00</option><option>Sat 22:00–00:00</option></select></div>
+        </section>
+
+        <section class="set-sec" id="s-audit" hidden data-od-id="settings-audit">
+          <h2>Audit export</h2>
+          <p class="small muted" style="margin:4px 0 14px">Signed evidence bundles for a time range: policy decisions, approvals, grants and artifact hashes. Content is redacted by default.</p>
+          <div class="grid g2"><div class="field"><label for="auFrom">From</label><input id="auFrom" type="date" class="input" value="2026-09-01"></div><div class="field"><label for="auTo">To</label><input id="auTo" type="date" class="input" value="2026-09-30"></div></div>
+          <div class="row" style="margin-top:12px"><button class="btn btn-primary" data-toast="queue an export signed with the tenant key" data-toast-id="EXP-0042">Create export</button><span class="trc trc-pl">Planned</span></div>
+        </section>
+      </div>
+    </div>
+  </div>
+</main>
+<script src="locus-state.js"></script>
+<script src="locus.js"></script>
+<script>
+  const links = document.querySelectorAll('.set-nav a');
+  function go(s) {
+    document.querySelectorAll('.set-sec').forEach(x => x.hidden = x.id !== 's-' + s);
+    links.forEach(a => a.setAttribute('aria-current', a.dataset.s === s));
+    const c = document.querySelector('.crumbs .cur'); const a = [...links].find(l => l.dataset.s === s); if (c && a) c.textContent = a.textContent;
+  }
+  links.forEach(a => a.onclick = e => { e.preventDefault(); history.replaceState(null, '', '#' + a.dataset.s); go(a.dataset.s); });
+  go(location.hash.slice(1) || 'members');
+  if (document.documentElement.dataset.theme === 'dark') { const b = document.querySelectorAll('#s-appearance .seg')[0].children; b[0].setAttribute('aria-pressed', 'false'); b[1].setAttribute('aria-pressed', 'true'); }
+</script>
+</body>
+</html>

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Team composer · Library · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+<style>
+  .bld { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; margin-top: 16px; }
+  .bld-side { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 16px; }
+  .sec { margin-bottom: 16px; }
+  .sec .panel-b { display: flex; flex-direction: column; gap: 12px; }
+  .pick { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r); cursor: pointer; }
+  .pick:has(input:checked) { border-color: var(--accent, var(--fg)); background: var(--select); }
+  .pick:has(input:disabled) { cursor: not-allowed; opacity: .65; }
+  .pick input { margin-top: 3px; }
+  .pick b { display: block; font-weight: 500; }
+  .picks { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .auth-m { border: 1px solid var(--border); border-radius: var(--r); padding: 12px; }
+  .auth-m + .auth-m { margin-top: 10px; }
+  .auth-m .caps { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; }
+  .auth-m .caps label { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; }
+  .ho { border: 1px solid var(--border); border-radius: var(--r); padding: 10px 12px; display: grid; gap: 8px; }
+  .ho + .ho { margin-top: 8px; }
+  .ho-r { display: grid; grid-template-columns: minmax(0, 1fr) 20px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+  .ho-d { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, .8fr) minmax(0, 1.2fr); gap: 8px; }
+  .ho .bad { font-size: 12px; color: var(--crit-fg, var(--fg)); }
+  .chk { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13px; }
+  .chk li { display: grid; grid-template-columns: 16px 1fr; gap: 8px; align-items: start; }
+  .flowmap { font-size: 13px; display: grid; gap: 6px; }
+  .flowmap div { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  @media (max-width: 1100px) { .bld { grid-template-columns: 1fr; } .bld-side { position: static; } }
+  @media (max-width: 640px) { .picks { grid-template-columns: minmax(0, 1fr); } .ho-r, .ho-d { grid-template-columns: minmax(0, 1fr); } .ho .arr { display: none; } }
+</style>
+</head>
+<body data-nav="library" data-crumbs='[["Library","library.html"],["Agents & teams","library.html"],["Team composer",""]]'>
+<main id="main">
+  <div class="page">
+    <header class="page-h" data-od-id="team-composer-header" id="hdr"></header>
+    <div class="callout" style="margin-top:12px" data-od-id="delegation-contract"><span class="st st-ok"></span><p class="small"><b>Delegation contract.</b> Delegation receives an independently authorized subset of capabilities; authority cannot widen transitively through a team or execution engine. In a run, each member gets only what its own definition holds, what this team delegates to it, and what policy permits for that run.</p></div>
+    <div class="bld">
+      <form id="f" autocomplete="off" novalidate data-od-id="team-composer-form">
+        <section class="panel sec" aria-labelledby="s1"><div class="panel-h"><h3 id="s1">Identity</h3></div><div class="panel-b">
+          <div class="field"><label for="fName">Name</label><input id="fName" class="input" required></div>
+          <div class="field"><label for="fDesc">Purpose</label><textarea id="fDesc" class="textarea" rows="2"></textarea></div>
+        </div></section>
+        <section class="panel sec" aria-labelledby="s2"><div class="panel-h"><h3 id="s2">Members</h3><span class="small muted">Published agents only · two or more</span></div><div class="panel-b">
+          <div class="picks" id="fMembers"></div>
+          <div class="field"><label for="fLead">Lead</label><select id="fLead" class="select"></select><span class="hint">The lead receives the task and starts the handoffs. Leading confers no extra authority.</span></div>
+        </div></section>
+        <section class="panel sec" aria-labelledby="s3"><div class="panel-h"><h3 id="s3">Authority per member</h3><span class="small muted">A subset of each agent's own permissions</span></div><div class="panel-b" id="fAuth"></div></section>
+        <section class="panel sec" aria-labelledby="s4"><div class="panel-h"><h3 id="s4">Handoffs</h3><span class="small muted">Who passes work to whom, and what moves</span></div><div class="panel-b">
+          <div id="fHand"></div>
+          <div><button type="button" class="btn btn-sm" id="addHo" data-icon="plus">Add handoff</button></div>
+          <p class="small muted">A handoff moves work products, never grants. Each handoff states the classification and namespace of what moves; the receiving agent's ceiling and read scopes must cover both.</p>
+        </div></section>
+        <section class="panel sec" aria-labelledby="s5"><div class="panel-h"><h3 id="s5">Limits</h3></div><div class="panel-b">
+          <div class="field" style="max-width:220px"><label for="lSpend">Team spend per run (USD)</label><input id="lSpend" class="input num" type="number" min="0.01" max="100" step="0.5"></div>
+          <p class="small muted">Each member's own step, time and spend limits still apply inside the team limit.</p>
+        </div></section>
+      </form>
+      <aside class="bld-side" aria-label="Publish checks and effective authority">
+        <section class="panel" data-od-id="team-checks"><div class="panel-h"><h3>Publish checks</h3><span id="chkSum"></span></div><div class="panel-b" id="checks" tabindex="-1"></div></section>
+        <section class="panel" data-od-id="team-flow"><div class="panel-h"><h3>Work flow</h3></div><div class="panel-b" id="flow"></div></section>
+        <section class="panel" data-od-id="team-diff"><div class="panel-h"><h3>Changes from published</h3></div><div class="panel-b" id="diff"></div></section>
+        <section class="panel" data-od-id="team-versions"><div class="panel-h"><h3>Versions</h3></div><div class="panel-b" id="vers"></div></section>
+      </aside>
+    </div>
+  </div>
+  <div class="dialog" id="pubDlg" role="dialog" aria-labelledby="pubH" data-od-id="publish-team-dialog">
+    <div class="dialog-h"><h2 id="pubH">Publish team</h2></div>
+    <div class="dialog-b"><p class="small">New runs assigned to this team use this version. Runs already in progress keep the version they were authorized with.</p><div class="field"><label for="pubNote">Release note</label><input id="pubNote" class="input" placeholder="What changed and why"></div></div>
+    <div class="dialog-f"><button class="btn" type="button" onclick="Locus.close()">Cancel</button><button class="btn btn-primary" id="pubGo">Publish</button></div>
+  </div>
+</main>
+<script src="locus-state.js"></script>
+<script src="locus.js"></script>
+<script>
+  const {H, A} = LocusState, $ = s => document.querySelector(s), esc = H.esc;
+  const ID = new URLSearchParams(location.search).get('team') || 'TEAM-07';
+  const LBL = {name:'Name', desc:'Purpose', members:'Members', lead:'Lead', authority:'Authority', handoffs:'Handoffs', limits:'Limits'};
+  const tm = () => H.team(ID), cur = () => { const t = tm(); return t.draft || H.pick(t, H.TEAM_FIELDS); };
+  let F = null; // working copy; the form is rendered from it and saved as a draft
+  const agentsAvail = () => H.s.agents.filter(a => a.state !== 'Draft');
+  function draw() { const f = F;
+    $('#fName').value = f.name; $('#fDesc').value = f.desc || '';
+    $('#fMembers').innerHTML = H.s.agents.map(a => { const off = a.state === 'Draft'; return `<label class="pick"><input type="checkbox" name="mem" value="${esc(a.id)}" ${f.members.includes(a.id) ? 'checked' : ''} ${off ? 'disabled' : ''}><span><b>${esc(a.name)}</b><span class="small muted">${esc(a.id)} · ${esc(H.engine(a.engine).name)} · ${esc(a.version)}${H.esc(off ? ' · not published' : '')}</span></span><span class="cls">${esc(a.ceiling)}</span></label>`; }).join('');
+    $('#fLead').innerHTML = f.members.length ? f.members.map(m => `<option value="${esc(m)}" ${f.lead === m ? 'selected' : ''}>${esc(H.nameOf(m))}</option>`).join('') : '<option value="">Add members first</option>';
+    $('#fAuth').innerHTML = f.members.map(m => { const a = H.agent(m), au = f.authority[m] || [], extra = au.filter(c => !a.caps.includes(c));
+      return `<div class="auth-m"><div class="row-b"><b>${esc(a.name)}</b><span class="small muted">holds ${a.caps.length} · delegates ${au.filter(c => a.caps.includes(c)).length}</span></div><div class="caps">${a.caps.map(c => { const d = H.evalCap(c, {cls:a.ceiling, engine:a.engine}); return `<label><input type="checkbox" name="au" data-m="${esc(m)}" value="${esc(c)}" ${au.includes(c) ? 'checked' : ''}><span class="mono small">${esc(c)}</span>${d.d === 'approval' ? ' <span class="decision approval">Ask first</span>' : ''}</label>`; }).join('')}</div>${extra.length ? `<p class="small" style="margin-top:8px"><span class="st st-crit"></span> Delegates ${esc(extra.join(', '))}, which ${esc(a.name)} no longer holds. Remove it to publish.</p>` : ''}</div>`; }).join('') || '<p class="small muted">Choose members to set what each may do in this team.</p>';
+    $('#fHand').innerHTML = f.handoffs.map((h, i) => { const opt = sel => f.members.map(m => `<option value="${esc(m)}" ${sel === m ? 'selected' : ''}>${esc(H.nameOf(m))}</option>`).join(''), rc = H.agent(h.to);
+      const probs = []; if (rc && h.cls && H.CLS.indexOf(rc.ceiling) < H.CLS.indexOf(h.cls)) probs.push(`${rc.name}'s ceiling is ${rc.ceiling}`); if (rc && h.ns && !(rc.scopes || []).includes(h.ns)) probs.push(`${rc.name} cannot read ${h.ns}`);
+      return `<div class="ho" data-od-id="handoff-${i + 1}"><div class="ho-r"><select class="select" data-ho="${i}:from" aria-label="Handoff ${i + 1} from">${opt(h.from)}</select><span class="arr muted" aria-hidden="true">→</span><select class="select" data-ho="${i}:to" aria-label="Handoff ${i + 1} to">${opt(h.to)}</select><button type="button" class="btn btn-sm btn-ghost" data-rm="${i}" aria-label="Remove handoff ${i + 1}">Remove</button></div>
+        <div class="ho-d"><input class="input" data-ho="${i}:what" value="${esc(h.what)}" aria-label="Handoff ${i + 1} carries" placeholder="What moves"><select class="select" data-ho="${i}:cls" aria-label="Handoff ${i + 1} classification">${['', ...H.CLS].map(c => `<option value="${esc(c)}" ${h.cls === c ? 'selected' : ''}>${H.esc(c ? esc(c) : 'Classification')}</option>`).join('')}</select><select class="select" data-ho="${i}:ns" aria-label="Handoff ${i + 1} namespace">${['', ...H.NAMESPACES.map(n => n.ns)].map(n => `<option value="${esc(n)}" ${h.ns === n ? 'selected' : ''}>${H.esc(n ? esc(n) : 'Namespace')}</option>`).join('')}</select></div>
+        ${probs.length ? `<p class="bad"><span class="st st-crit"></span> ${esc(probs.join('; '))}</p>` : ''}</div>`; }).join('') || '<p class="small muted">No handoffs yet.</p>';
+    $('#lSpend').value = f.limits.perRun; }
+  function side() { const t = tm(), f = F, v = H.validateTeam(f), pub = H.pick(t, H.TEAM_FIELDS), neverPub = t.state === 'Draft', next = 'v' + ((parseInt(String(t.version).replace('v', ''), 10) || 0) + 1);
+    const ch = Object.keys(LBL).filter(k => JSON.stringify(pub[k]) !== JSON.stringify(f[k]));
+    H.setH($('#hdr'), `<div class="t"><p class="id">${esc(t.id)} · published ${H.esc(neverPub ? 'never' : esc(t.version))}</p><h1>${esc(f.name || 'Untitled team')}</h1><p>Team ceiling <span class="cls">${esc(H.teamCeiling(f))}</span> (the lowest member ceiling) · owner ${esc(H.nameOf(t.owner))}</p></div>
+      <div class="acts"><span class="st ${H.esc(t.state === 'Published' ? 'st-ok' : 'st-adv')}">${esc(t.state)}</span>${t.draft && !neverPub ? '<button class="btn btn-ghost" id="discard">Discard draft</button>' : ''}<button class="btn btn-primary" id="publish" ${H.esc(!t.draft && !neverPub ? 'disabled' : '')}>Publish ${H.esc(next)}</button></div>`);
+    $('#chkSum').innerHTML = v.errors.length ? `<span class="st st-crit">${v.errors.length} blocking</span>` : '<span class="st st-ok">Ready</span>';
+    H.setH($('#checks'), `<ul class="chk">${v.errors.map(e => `<li><span class="st st-crit"></span><span>${esc(e)}</span></li>`).join('')}${v.warnings.map(w => `<li><span class="st st-adv"></span><span>${esc(w)}</span></li>`).join('')}${!v.errors.length ? '<li><span class="st st-ok"></span><span>Every delegated capability is held by the member itself</span></li><li><span class="st st-ok"></span><span>Every member is reachable from the lead</span></li>' : ''}</ul>`);
+    H.setH($('#flow'), f.lead ? `<div class="flowmap"><div><span class="tag">lead</span><b>${esc(H.nameOf(f.lead))}</b></div>${f.handoffs.map(h => `<div><span>${esc(H.nameOf(h.from))}</span><span class="muted">→</span><b>${esc(H.nameOf(h.to))}</b><span class="small muted">· ${esc(h.what || 'work product')}</span></div>`).join('')}</div>
+      <p class="label" style="margin:12px 0 6px">Effective in a run</p><ul class="chk">${f.members.map(m => { const a = H.agent(m), eff = (f.authority[m] || []).filter(c => a && a.caps.includes(c)); return `<li><span class="st ${H.esc(eff.length ? 'st-ok' : 'st-idle')}"></span><span><b>${esc(H.nameOf(m))}</b> <span class="small muted mono">${esc(eff.join(', ') || 'none')}</span></span></li>`; }).join('')}</ul><p class="small muted" style="margin-top:6px">Definition ∩ team authority, before run policy narrows it further.</p>` : '<p class="small muted">Choose a lead to see the flow.</p>');
+    H.setH($('#diff'), neverPub ? '<p class="small muted">First version.</p>' : ch.length ? `<ul class="chk">${ch.map(k => `<li><span class="st st-adv"></span><span><b>${H.esc(LBL[k])}</b> changed</span></li>`).join('')}</ul>` : '<p class="small muted">No changes. Edits are saved as a draft automatically.</p>');
+    H.setH($('#vers'), (t.versions || []).length ? `<ul class="chk">${t.versions.map(x => `<li><span class="st st-ok"></span><span><b class="mono">${esc(x.v)}</b> · ${H.ago(x.at)} by ${esc(H.nameOf(x.by))}${x.note ? ` · “${esc(x.note)}”` : ''}</span></li>`).join('')}</ul>` : `<p class="small muted">${H.esc(neverPub ? 'Not published yet.' : esc(t.version) + ' is the current published version.')}</p>`); }
+  let t0 = null;
+  function save() { clearTimeout(t0); t0 = setTimeout(() => { const t = tm(); if (t.state !== 'Draft' && JSON.stringify(F) === JSON.stringify(H.pick(t, H.TEAM_FIELDS))) A.discardTeamDraft(ID); else A.saveTeamDraft(ID, F); }, 250); side(); }
+  $('#f').addEventListener('input', e => { const x = e.target;
+    if (x.id === 'fName') F.name = x.value; else if (x.id === 'fDesc') F.desc = x.value; else if (x.id === 'lSpend') F.limits = {perRun:+x.value}; else if (x.dataset.ho) { const [i, k] = x.dataset.ho.split(':'); F.handoffs[+i][k] = x.value; } else return; save(); });
+  $('#f').addEventListener('change', e => { const x = e.target;
+    if (x.name === 'mem') { F.members = [...document.querySelectorAll('[name=mem]:checked')].map(y => y.value); if (!F.members.includes(F.lead)) F.lead = F.members[0] || null;
+      Object.keys(F.authority).forEach(m => { if (!F.members.includes(m)) delete F.authority[m]; }); F.members.forEach(m => { if (!F.authority[m]) F.authority[m] = []; }); F.handoffs = F.handoffs.filter(h => F.members.includes(h.from) && F.members.includes(h.to)); draw(); }
+    else if (x.id === 'fLead') F.lead = x.value;
+    else if (x.name === 'au') { const m = x.dataset.m; F.authority[m] = [...document.querySelectorAll(`[name=au][data-m="${CSS.escape(m)}"]:checked`)].map(y => y.value); draw(); }
+    else if (x.dataset.ho) { const [i, k] = x.dataset.ho.split(':'); F.handoffs[+i][k] = x.value; if (k !== 'what') { draw(); const el = document.querySelector(`[data-ho="${i}:${k}"]`); if (el) el.focus(); } }
+    else return; save(); });
+  $('#addHo').onclick = () => { if (F.members.length < 2) { Locus.toast('Add at least two members first'); return; } F.handoffs.push({from:F.lead || F.members[0], to:F.members.find(m => m !== (F.lead || F.members[0])), what:'', cls:'', ns:''}); draw(); save(); const s = document.querySelectorAll('[data-ho$=":what"]'); s[s.length - 1].focus(); };
+  document.addEventListener('click', e => { const rm = e.target.closest('[data-rm]'); if (rm) { F.handoffs.splice(+rm.dataset.rm, 1); draw(); save(); return; }
+    if (e.target.id === 'discard') { A.discardTeamDraft(ID); F = cur(); draw(); side(); Locus.toast('Draft discarded. The published team is unchanged.', ID); }
+    if (e.target.id === 'publish') { clearTimeout(t0); A.saveTeamDraft(ID, F); const v = H.validateTeam(F); if (v.errors.length) { $('#checks').focus(); Locus.toast(`Fix ${v.errors.length} blocking check${v.errors.length === 1 ? '' : 's'} before publishing`); return; } $('#pubNote').value = ''; Locus.open('pubDlg'); } });
+  $('#pubGo').onclick = () => { const r = A.publishTeam(ID, $('#pubNote').value.trim()); Locus.close(); Locus.toast(r.ok ? 'Published ' + r.version + '. New runs assigned to this team use it.' : r.errors[0], ID); F = cur(); draw(); side(); };
+  if (!tm()) document.querySelector('.bld').innerHTML = `<div class="empty">Team ${esc(ID)} was not found. <a href="library.html">Back to Library</a></div>`;
+  else { F = cur(); draw(); side(); LocusState.on(side); const c = document.querySelector('.crumbs .cur'); if (c) c.textContent = tm().name; }
+</script>
+</body>
+</html>

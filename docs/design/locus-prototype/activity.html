@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Activity · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+</head>
+<body data-nav="activity" data-crumbs='[["Activity","activity.html"],["Runs",""]]'>
+<main id="main">
+  <div class="page">
+    <header class="page-h" data-od-id="activity-header">
+      <div class="t"><h1>Activity</h1><p>Every run across your workspace: what is executing, what is waiting on a person, what failed, and what it produced.</p></div>
+      <div class="acts"><a class="btn btn-primary" href="home.html#compose">New task</a></div>
+    </header>
+    <div class="strip-sum panel" data-od-id="run-summary" style="margin-bottom:16px"><div class="grid g4" style="gap:0" id="sum"></div></div>
+    <div class="tabs" role="tablist" aria-label="Activity views">
+      <button role="tab" aria-selected="true" aria-controls="a-runs" id="at-runs" data-hash="runs">Runs<span class="count" id="cRuns"></span></button>
+      <button role="tab" aria-selected="false" aria-controls="a-apr" id="at-apr" tabindex="-1" data-hash="approvals">Approvals<span class="count" id="cApr"></span></button>
+      <button role="tab" aria-selected="false" aria-controls="a-art" id="at-art" tabindex="-1" data-hash="artifacts">Artifacts<span class="count" id="cArt"></span></button>
+    </div>
+    <section role="tabpanel" id="a-runs" aria-labelledby="at-runs" data-od-id="run-list">
+      <div class="panel" style="border-top:0">
+        <div class="filters" id="rf" role="group" aria-label="Filter runs by state">
+          <button class="chip-f" data-f="all" aria-pressed="true">All</button><button class="chip-f" data-f="active" aria-pressed="false">Active</button><button class="chip-f" data-f="blocked" aria-pressed="false">Needs a decision</button><button class="chip-f" data-f="failed" aria-pressed="false">Failed</button><button class="chip-f" data-f="completed" aria-pressed="false">Completed</button>
+        </div>
+        <div class="tbl-wrap"><table class="tbl"><caption style="position:absolute;left:-9999px">Runs. Each run ID opens the run console; each task ID opens the task.</caption><thead><tr><th scope="col">Run</th><th scope="col">Task</th><th>Assigned</th><th>State</th><th class="hide-narrow">Step</th><th class="r hide-narrow">Spend</th><th class="r hide-narrow">Elapsed</th></tr></thead><tbody id="runs"></tbody></table></div>
+      </div>
+    </section>
+    <section role="tabpanel" id="a-apr" aria-labelledby="at-apr" hidden data-od-id="approval-list">
+      <div class="panel tbl-wrap" style="border-top:0"><table class="tbl"><thead><tr><th>Approval</th><th>Run</th><th>Rule</th><th>Status</th><th>Decided</th><th></th></tr></thead><tbody id="aprs"></tbody></table></div>
+    </section>
+    <section role="tabpanel" id="a-art" aria-labelledby="at-art" hidden data-od-id="artifact-list">
+      <div class="panel tbl-wrap" style="border-top:0"><table class="tbl"><thead><tr><th>Artifact</th><th>Type</th><th>Produced by</th><th>Run</th><th>Integrity</th></tr></thead><tbody id="arts"></tbody></table></div>
+    </section>
+  </div>
+</main>
+<script src="locus-state.js"></script>
+<script src="locus.js"></script>
+<script>
+  const {H, A} = LocusState, $ = s => document.querySelector(s), esc = H.esc; let F = 'all';
+  const setH = H.setH;
+  document.getElementById('rf').addEventListener('click', e => { const b = e.target.closest('[data-f]'); if (!b) return; setTimeout(() => { F = b.dataset.f; document.querySelectorAll('#rf [data-f]').forEach(x => x.setAttribute('aria-pressed', x === b)); render(); }); });
+  function render() { const s = H.s;
+    const act = H.runsIn('active', 'stopping').length, blk = H.runsIn('waiting').length, fl = s.runs.filter(r => r.status === 'failed').length, dn = s.runs.filter(r => r.status === 'completed').length;
+    setH($('#sum'), [['Active', act, ''], ['Waiting on a decision', blk, blk ? 'st-warn' : ''], ['Failed', fl, fl ? 'st-crit' : ''], ['Completed', dn, '']].map(([l, v, c]) => `<div style="padding:12px 14px;border-right:1px solid var(--border)"><p class="label">${H.esc(l)}</p><p class="num" style="font-size:20px;font-weight:600;margin-top:4px">${H.esc(v)}</p>${c && v ? `<span class="st ${H.esc(c)} small">${H.esc(l === 'Failed' ? 'Needs recovery' : 'Open inbox')}</span>` : ''}</div>`).join(''));
+    const rows = s.runs.filter(r => F === 'all' || (F === 'active' ? ['active', 'stopping'].includes(H.phaseOf(r)) : r.status === F));
+    $('#cRuns').textContent = s.runs.length; $('#cApr').textContent = H.pending().length; $('#cArt').textContent = s.artifacts.length;
+    setH($('#runs'), rows.map(r => { const st = r.steps[Math.min(r.cursor, r.steps.length - 1)]; return `<tr><th scope="row"><a class="mono" href="activity-run.html?run=${esc(r.id)}" aria-label="Open run ${esc(r.id)}: ${esc(r.title)}">${esc(r.id)}</a></th><td><span class="t">${esc(r.title)}</span><br><a class="id" href="task.html?task=${esc(r.task)}" aria-label="Open task ${esc(r.task)}">${esc(r.task)}</a></td><td>${H.assignee(r.plan.assignee)}</td><td>${H.runChip(r)}${r.error ? `<div class="small muted">${esc(r.error)}</div>` : ''}</td><td class="small hide-narrow">${Math.min(r.cursor + 1, r.steps.length)}/${r.steps.length} · ${esc(st.title)}</td><td class="r num hide-narrow">$${r.cost.toFixed(2)}</td><td class="r num hide-narrow">${H.elapsed(r)}</td></tr>`; }).join('') || '<tr><td colspan="7" class="empty">No runs match this filter.</td></tr>');
+    setH($('#aprs'), s.approvals.map(a => `<tr><td><span class="t">${esc(a.title)}</span><br><span class="id">${esc(a.id)} · ${esc(a.why)}</span></td><td><a class="mono" href="activity-run.html?run=${esc(a.run)}#approvals">${esc(a.run)}</a></td><td class="id">${esc(a.rule)}</td><td>${a.status === 'pending' ? '<span class="st st-warn">Pending</span>' : a.status === 'approved' ? '<span class="st st-ok">Approved once</span>' : a.status === 'denied' ? '<span class="st st-crit">Denied</span>' : a.status === 'expired' ? '<span class="st st-warn">Expired · not sent</span>' : '<span class="st st-idle">Withdrawn</span>'}</td><td class="small">${H.esc(a.decidedAt ? esc(a.decidedBy) + ' · ' + H.hm(a.decidedAt) : '—')}</td><td class="r">${a.status === 'pending' || (a.status === 'expired' && !a.replacedBy) ? `<button class="btn btn-sm ${H.esc(a.status === 'pending' ? 'btn-primary' : '')}" data-review="${esc(a.id)}">${H.esc(a.status === 'pending' ? 'Review decision' : 'Review expired request')}</button>` : `<button class="btn btn-sm btn-ghost" data-review="${esc(a.id)}">Details</button>`}</td></tr>`).join('') || '<tr><td colspan="6" class="empty">No approvals yet.</td></tr>');
+    setH($('#arts'), s.artifacts.map(x => `<tr><td class="t">${esc(x.title)}<br><span class="id">${esc(x.id)} · ${esc(x.version)}</span></td><td>${esc(x.type)}</td><td>${esc(H.nameOf(x.by))}</td><td><a class="mono" href="activity-run.html?run=${esc(x.run)}#outcome">${esc(x.run)}</a></td><td><span class="st st-ok">Hash recorded</span> <span class="id">${esc(x.hash)}</span></td></tr>`).join('') || '<tr><td colspan="5" class="empty">Artifacts produced by runs appear here.</td></tr>');
+  }
+  render(); LocusState.on(render);
+</script>
+</body>
+</html>

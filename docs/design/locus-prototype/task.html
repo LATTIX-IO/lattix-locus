@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task · Work · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+<style>
+  .msg { display: grid; grid-template-columns: 24px 1fr; gap: 10px; }
+  .msg .av { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font: 600 10px var(--font-mono); border: 1px solid var(--border-strong); }
+  .msg .av.ai { border-radius: var(--r); background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .who { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .who .av { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font: 600 9px var(--font-mono); border: 1px solid var(--border-strong); }
+  .who .av.ai { border-radius: var(--r); background: var(--fg); color: var(--bg); border-color: var(--fg); }
+</style>
+</head>
+<body data-nav="work" data-crumbs='[["Work","work.html"],["Tasks","work.html"],["Task",""]]'>
+<main id="main"><div class="page page-narrow" id="root" style="margin-inline:auto"></div>
+  <div class="dialog" id="editDlg" role="dialog" aria-labelledby="edH" data-od-id="edit-task-dialog">
+    <div class="dialog-h"><h2 id="edH">Edit task</h2></div>
+    <form class="dialog-b" id="edForm" novalidate>
+      <div class="field"><label for="edTitle">Title</label><input id="edTitle" class="input" required><p class="err-msg" id="edErr" hidden>A title is required.</p></div>
+      <div class="grid g2"><div class="field"><label for="edDue">Due</label><input id="edDue" class="input"></div><div class="field"><label for="edAs">Assigned to</label><select id="edAs" class="select"></select></div></div>
+    </form>
+    <div class="dialog-f"><button class="btn" type="button" onclick="Locus.close()">Cancel</button><button class="btn btn-primary" type="button" id="edSave">Save changes</button></div>
+  </div>
+</main>
+<script src="locus-state.js"></script>
+<script src="locus.js"></script>
+<script>
+  /* one idempotency key per page view: double clicks and retries resolve to the same run */
+  const START_KEY = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const {H, A} = LocusState, $ = s => document.querySelector(s), esc = H.esc;
+  const TID = new URLSearchParams(location.search).get('task') || 'TSK-3318';
+  function render() { const t = H.task(TID);
+    if (!t) { H.setH($('#root'), `<div class="panel" style="margin-top:24px"><div class="empty"><b>Task ${esc(TID)} was not found.</b><br>It may belong to sample data that was reset. <a href="work.html">Open all tasks</a>.</div></div>`); return; }
+    const cur = document.querySelector('.crumbs .cur'); if (cur) cur.textContent = t.id; document.title = t.id + ' · Work · Lattix Locus';
+    const status = H.taskStatus(t), run = t.runs.length ? H.run(t.runs[0]) : null, live = H.liveRun(t), active = !!live, prj = t.project ? H.project(t.project) : null;
+    const blocks = H.s.tasks.filter(x => x.deps.includes(t.id)), open = t.deps.map(H.task).filter(d => d && H.taskStatus(d) !== 'Done');
+    const canRun = t.assignee.type !== 'person' && !active && !['Done','Canceled'].includes(status);
+    const primary = active ? `<a class="btn btn-primary" href="activity-run.html?run=${encodeURIComponent(live.id)}">${H.esc(live.status === 'canceling' ? 'Open run · stopping' : live.status === 'recovering' ? 'Open run · recovering' : live.status === 'failed' ? 'Open failed run' : 'Open live run')}</a>` : status === 'In review' && run ? `<a class="btn btn-primary" href="activity-run.html?run=${H.enc(run.id)}#outcome">Review outcome</a>` : canRun ? `<button class="btn btn-primary" data-act="run" ${open.length ? 'disabled aria-disabled="true" title="Blocked by open dependencies"' : ''}>${H.esc(t.plan && t.plan.reviewedAt ? 'Start run' : 'Review plan and start')}</button>` : t.assignee.type === 'person' && !['Done','Canceled'].includes(status) ? `<button class="btn btn-primary" data-act="done">Mark done</button>` : '';
+    H.setH($('#root'), `
+    <header class="page-h" data-od-id="task-header" style="margin-top:8px"><div class="t"><div class="row" style="flex-wrap:wrap">${H.taskChip(t)}<span class="cls">${H.esc(t.cls)}</span><span class="id">${H.esc(t.id)}</span>${t.source ? `<span class="tag">From ${H.esc(t.source.type)} ${H.esc(t.source.id)}</span>` : ''}</div><h1 style="margin-top:8px">${esc(t.title)}</h1></div>
+      <div class="acts">${primary}<button class="btn" data-act="edit">Edit</button>${!['Done','Canceled'].includes(status) && !active ? '<button class="btn btn-ghost" data-act="cancel">Cancel task</button>' : ''}</div></header>
+    ${open.length ? `<div class="callout warn" style="margin-bottom:16px"><span>${Locus.icon('alert')}</span><p class="small"><b>Blocked by ${open.length} open ${H.esc(open.length === 1 ? 'dependency' : 'dependencies')}:</b> ${open.map(d => `<a href="task.html?task=${H.enc(d.id)}">${H.esc(d.id)} · ${esc(d.title)}</a>`).join(', ')}. A run can start once they are done.</p></div>` : ''}
+    <div class="grid g21">
+      <div class="stack">
+        <section class="panel" data-od-id="task-plan"><div class="panel-h"><h2>Plan</h2>${t.plan ? `<span class="tag">${esc(H.TEMPLATES[t.plan.template].label)}</span>` : ''}</div>
+          ${t.plan ? `<ol class="list" style="list-style:none">${t.plan.steps.map((s, i) => { const a = H.agent(s.agent); return `<li><span class="id">${String(i + 1).padStart(2, '0')}</span><div class="li-b"><b>${esc(s.title)}</b><span class="small muted">${esc(a ? a.name : s.agent)} · engine ${esc(a ? H.engine(a.engine).name : '—')}</span></div></li>`; }).join('')}</ol><div class="panel-f small muted">${t.plan.reviewedAt ? 'Reviewed by ' + esc(H.nameOf(t.plan.reviewedBy)) + ' · ' + H.ago(t.plan.reviewedAt) : '<b>Not reviewed</b> · starting a run opens authorization review'} · route ${esc(t.plan.route)} · ${t.plan.caps.length} capabilities · cap $${(+t.plan.budget).toFixed(2)}</div>`
+            : `<div class="empty">${H.esc(t.assignee.type === 'person' ? 'Assigned to a person; no agent plan.' : 'No reviewed plan yet. Starting a run uses the default plan for this kind of work.')}</div>`}
+        </section>
+        <section class="panel" data-od-id="task-runs"><div class="panel-h"><h2>Runs</h2><span class="tag">${t.runs.length}</span></div>
+          <div class="tbl-wrap"><table class="tbl"><thead><tr><th>Run</th><th>State</th><th>Step</th><th class="r">Spend</th><th class="r">Elapsed</th></tr></thead><tbody>${t.runs.map(H.run).filter(Boolean).map(r => `<tr><td><a class="mono" href="activity-run.html?run=${H.enc(r.id)}">${H.esc(r.id)}</a></td><td>${H.runChip(r)}</td><td class="small">${Math.min(r.cursor + 1, r.steps.length)}/${r.steps.length}</td><td class="r num">$${r.cost.toFixed(2)}</td><td class="r num">${H.elapsed(r).replace(/\d+s$/, '')}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No runs yet.</td></tr>'}</tbody></table></div>
+        </section>
+        <section class="panel" data-od-id="task-conversation"><div class="panel-h"><h2>Conversation</h2>${active ? '<span class="small muted">Replies reach the live run as messages</span>' : ''}</div>
+          <div class="panel-b stack">${t.conversation.map(([ts, from, text]) => `<div class="msg"><span class="av ${H.esc(from === 'DR' || H.PEOPLE[from] ? '' : 'ai')}">${from === 'LO' ? 'LO' : esc(from.length <= 3 ? from : H.nameOf(from).split(' ').map(w => w[0]).join(''))}</span><div class="small"><b>${esc(H.nameOf(from))}</b> <span class="id">${H.ago(ts)}</span><p style="margin-top:2px">${esc(text)}</p></div></div>`).join('') || '<p class="small muted">No messages yet.</p>'}</div>
+          <form class="panel-f" id="reply" style="flex-wrap:wrap"><label for="replyIn" style="position:absolute;left:-9999px">Reply</label><input id="replyIn" class="input" placeholder="Reply or redirect the work…" style="flex:1;min-width:200px"><button class="btn btn-sm" type="submit">Send</button></form>
+        </section>
+      </div>
+      <div class="stack">
+        <section class="panel" data-od-id="task-details"><div class="panel-b"><dl class="kv"><dt>Assigned</dt><dd>${H.assignee(t.assignee)}</dd><dt>Owner</dt><dd>${esc(H.nameOf(t.owner))}</dd><dt>Project</dt><dd>${prj ? `<a href="work-projects.html?prj=${H.enc(prj.id)}">${esc(prj.name)}</a>` : 'None'}</dd><dt>Due</dt><dd>${esc(t.due)}</dd><dt>Memory</dt><dd class="mono small">${H.esc(prj ? 'tenant · ' + esc(prj.ns) : 'tenant · shared')}</dd></dl></div></section>
+        <section class="panel" data-od-id="task-dependencies"><div class="panel-h"><h2>Dependencies</h2></div>
+          <ul class="list">${t.deps.map(H.task).filter(Boolean).map(d => `<li>${H.taskChip(d)}<div class="li-b"><a class="li-link" href="task.html?task=${H.enc(d.id)}"><b>${esc(d.title)}</b></a><span class="id">${H.esc(d.id)} · this task depends on it</span></div><button class="btn btn-sm btn-ghost" data-rmdep="${H.esc(d.id)}" aria-label="Remove dependency on ${H.esc(d.id)}">Remove</button></li>`).join('')}${blocks.map(d => `<li>${H.taskChip(d)}<div class="li-b"><a class="li-link" href="task.html?task=${H.enc(d.id)}"><b>${esc(d.title)}</b></a><span class="id">${H.esc(d.id)} · waits on this task</span></div></li>`).join('') || (t.deps.length ? '' : '<li class="empty" style="display:block">No dependencies.</li>')}</ul>
+          <form class="panel-f" id="depForm" style="flex-wrap:wrap"><label for="depSel" style="position:absolute;left:-9999px">Add dependency</label><select id="depSel" class="select" style="flex:1;min-width:180px"><option value="">Depends on…</option>${H.s.tasks.filter(x => x.id !== t.id && !t.deps.includes(x.id)).map(x => `<option value="${H.esc(x.id)}">${H.esc(x.id)} · ${esc(x.title.slice(0, 48))}</option>`).join('')}</select><button class="btn btn-sm" type="submit">Add</button></form>
+        </section>
+        <section class="panel" data-od-id="task-history"><div class="panel-h"><h2>History</h2></div><ul class="list">${t.history.slice(0, 12).map(([ts, txt, who]) => `<li><span class="id num" style="width:56px;flex:none">${H.hm(ts).slice(0, 5)}</span><div class="li-b small">${esc(txt)} <span class="muted">· ${esc(who || '')}</span></div></li>`).join('')}</ul></section>
+      </div>
+    </div>`);
+  }
+  document.addEventListener('click', e => { const t = H.task(TID); if (!t) return; const b = e.target.closest('[data-act],[data-rmdep]'); if (!b) return;
+    if (b.dataset.rmdep) { A.removeDep(TID, b.dataset.rmdep); Locus.toast('Dependency removed', TID); return; }
+    const act = b.dataset.act;
+    if (act === 'run') { const res = A.startRun(TID, START_KEY); if (res.error) Locus.toast(res.error, res.run); location.href = res.run ? 'activity-run.html?run=' + res.run : 'plan-review.html?draft=' + encodeURIComponent(res.draft); }
+    if (act === 'done') { A.setTaskStatus(TID, 'Done'); Locus.toast('Task marked done', TID); }
+    if (act === 'cancel') { A.setTaskStatus(TID, 'Canceled'); Locus.toast('Task canceled · kept in history', TID); }
+    if (act === 'edit') { $('#edTitle').value = t.title; $('#edDue').value = t.due; const opts = [...H.s.teams.map(x => ['team:' + x.id, x.name + ' (team)']), ...H.s.agents.map(x => ['agent:' + x.id, x.name + ' · ' + H.engine(x.engine).name]), ...Object.entries(H.PEOPLE).map(([k, v]) => ['person:' + k, v])];
+      $('#edAs').innerHTML = opts.map(([v, l]) => `<option value="${H.esc(v)}" ${H.esc(v === t.assignee.type + ':' + t.assignee.id ? 'selected' : '')}>${esc(l)}</option>`).join(''); $('#edErr').hidden = true; Locus.open('editDlg'); }
+  });
+  $('#edSave').onclick = () => { const v = $('#edTitle').value.trim(); if (!v) { $('#edErr').hidden = false; $('#edTitle').setAttribute('aria-invalid', 'true'); $('#edTitle').focus(); return; } const [type, id] = $('#edAs').value.split(':'); A.updateTask(TID, {title:v, due:$('#edDue').value.trim() || '—', assignee:{type, id}}); Locus.close(); Locus.toast('Task updated · change recorded in history', TID); };
+  document.addEventListener('submit', e => { if (e.target.id === 'reply') { e.preventDefault(); const v = $('#replyIn').value.trim(); if (!v) return; const where = A.taskReply(TID, v); Locus.toast(where === 'run' ? 'Sent to the live run; delivered at the next step boundary' : 'Reply added to the task', TID); }
+    if (e.target.id === 'depForm') { e.preventDefault(); const v = $('#depSel').value; if (!v) return; const res = A.addDep(TID, v); Locus.toast(res === 'cycle' ? 'Not added: that would create a dependency cycle' : 'Dependency added', TID); } });
+  render(); LocusState.on(render);
+</script>
+</body>
+</html>
