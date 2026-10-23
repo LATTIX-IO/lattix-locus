@@ -89,8 +89,25 @@ class CodexFramePump:
                     return
                 self.process.stdin.write(response)
                 self.process.stdin.flush()
-        except (CodexRelayDenied, OSError, ValueError):
-            self._fail("Gateway model transport denied or unavailable")
+        except CodexRelayDenied as exc:
+            # Strict allowlist of diagnostic labels. Never include raw model
+            # request, provider data or arbitrary exception text in audit/logs.
+            codes = {
+                "unmediated model tools are disabled": "tool_registration_denied",
+                "unbounded model completion request": "token_ceiling_denied",
+                "unapproved inference model": "model_pin_denied",
+                "unsupported secondary output token ceiling": "token_contract_denied",
+                "ambiguous completion token ceilings": "ambiguous_token_ceiling",
+                "approved loopback model unavailable": "ollama_unavailable",
+                "local model returned an unsupported response": "ollama_response_denied",
+                "inference request exceeds size limit": "request_size_denied",
+                "model provenance is not authorized": "model_provenance_denied",
+                "unknown relay fields": "rpc_schema_denied",
+                "unsupported relay schema or operation": "rpc_operation_denied",
+            }
+            self._fail("Codex model RPC rejected: " + codes.get(str(exc), "rpc_admission_denied"))
+        except (OSError, ValueError):
+            self._fail("Codex model transport I/O failure")
         except Exception:
             # Unexpected implementation bugs must not silently approve a
             # provider/model tool call, and must not leak exception strings.
