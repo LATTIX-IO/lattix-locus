@@ -164,6 +164,22 @@ class LocalOllamaHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+def _failure_category(message: str) -> str:
+    """Map CLI errors to bounded diagnostic labels, never expose source text."""
+    normalized = message.lower()
+    if any(token in normalized for token in ("unknown feature", "unknown option", "unrecognized", "configuration error")):
+        return "cli_configuration"
+    if "model metadata" in normalized:
+        return "model_metadata"
+    if any(token in normalized for token in ("connection refused", "connect failed", "connection failed")):
+        return "model_connection"
+    if any(token in normalized for token in ("404", "503", "429", "500", "response status")):
+        return "provider_http"
+    if any(token in normalized for token in ("model", "ollama", "provider")):
+        return "provider_model"
+    return "cli_unknown"
+
+
 def main() -> int:
     raw = sys.stdin.buffer.readline(_MAX_PROMPT + 2049)
     try:
@@ -214,6 +230,7 @@ def main() -> int:
         stream_digest = hashlib.sha256()
         events = 0
         tool_seen = False
+        error_category = "not_reported"
         proc = subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, cwd="/workspace", shell=False,
@@ -235,6 +252,10 @@ def main() -> int:
                 break
             try:
                 event = json.loads(line)
+                if isinstance(event, dict) and event.get("type") in {"error", "turn.failed"}:
+                    info = event.get("error")
+                    message = info.get("message", "") if isinstance(info, dict) else event.get("message", "")
+                    error_category = _failure_category(str(message))
                 if event.get("type") == "item.completed":
                     item = event.get("item")
                     if isinstance(item, dict) and item.get("type") in {
@@ -247,11 +268,18 @@ def main() -> int:
         code = proc.wait(timeout=5)
         server.shutdown()
         if code != 0 or tool_seen or not output_path.is_file() or output_path.is_symlink():
-            emit({"schema": SCHEMA, "kind": "done", "ok": False, "events": events})
+            emit({
+                "schema": SCHEMA, "kind": "done", "ok": False, "events": events,
+                "exit_code": code, "model_calls": _counter,
+                "category": ("unexpected_tool" if tool_seen else error_category),
+            })
             return 3
         data = output_path.read_bytes()
         if not 0 < len(data) <= 65536:
-            emit({"schema": SCHEMA, "kind": "done", "ok": False, "events": events})
+            emit({
+                "schema": SCHEMA, "kind": "done", "ok": False, "events": events,
+                "exit_code": 4, "model_calls": _counter, "category": "artifact_invalid",
+            })
             return 4
         emit({
             "schema": SCHEMA, "kind": "done", "ok": True,
@@ -262,7 +290,10 @@ def main() -> int:
         return 0
     except (OSError, ValueError, KeyError, subprocess.SubprocessError):
         # Never report input, filesystem names, subprocess stderr, or secrets.
-        emit({"schema": SCHEMA, "kind": "done", "ok": False, "events": 0})
+        emit({
+            "schema": SCHEMA, "kind": "done", "ok": False, "events": 0,
+            "exit_code": 5, "model_calls": _counter, "category": "runner_startup",
+        })
         return 5
 
 
