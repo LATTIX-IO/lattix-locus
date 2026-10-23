@@ -16,14 +16,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
 
 SCHEMA = "locus.codex.stdio.v1"
 PINNED_CODEX_VERSION = "0.163.0"
