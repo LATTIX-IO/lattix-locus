@@ -9,6 +9,7 @@ import base64
 import hashlib
 import io
 import json
+import socket
 from pathlib import Path
 
 import pytest
@@ -137,6 +138,50 @@ def test_frame_pump_requires_pinned_ready_and_terminal():
         bad = CodexFramePump(FakeProcess(lines), StubBridge(), b'{"init":true}')
         with pytest.raises(CodexRelayDenied):
             bad.finish()
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_bridge_abort_interrupts_host_connection_and_fences_future_calls(tmp_path):
+    _, lease, _, _, _, _ = rig(tmp_path)
+    bridge = CodexOllamaBridge(lease, model="llama3.2:1b")
+
+    class MockSocket:
+        def __init__(self):
+            self.shutdowns = []
+        def shutdown(self, how):
+            self.shutdowns.append(how)
+
+    class MockConnection:
+        def __init__(self):
+            self.sock = MockSocket()
+            self.closes = 0
+        def close(self):
+            self.closes += 1
+
+    active = MockConnection()
+    bridge._active_connection = active
+    bridge.abort()
+    bridge.abort()  # cancellation is idempotent
+    assert active.sock.shutdowns == [socket.SHUT_RDWR, socket.SHUT_RDWR]
+    assert active.closes == 2
+    with pytest.raises(CodexRelayDenied, match="cancelled"):
+        bridge.handle(rpc({"model": "llama3.2:1b", "input": "later"}))
+    assert bridge.receipts == ()
+
+
+def test_large_nonascii_init_is_not_truncated_by_runner_limit():
+    # 9,000 CJK code points fit the 48-KiB UTF-8 prompt cap but expand
+    # beyond the old 51,201-byte init readline limit under ensure_ascii.
+    prompt = "界" * 9000
+    assert len(prompt.encode("utf-8")) <= 48 * 1024
+    init = json.dumps({
+        "schema": "locus.codex.stdio.v1", "kind": "init",
+        "version": CODEX_VERSION, "model": "llama3.2:1b",
+        "prompt": prompt, "output": "answer.txt",
+    }, ensure_ascii=True).encode("ascii")
+    assert 51201 < len(init) <= 65536
+    runner = (Path(__file__).resolve().parents[2] / "docker/codex/stdio_runner.py").read_text()
+    assert 'sys.stdin.buffer.readline(65537)' in runner
 
 
 @ONLY_LINUX_UNPRIVILEGED
