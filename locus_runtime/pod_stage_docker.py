@@ -499,7 +499,7 @@ class StageDockerBroker:
                     if pump is not None:
                         terminal_digest = pump.finish()
                         if code != 0:
-                            raise AdmissionDenied("Codex CLI exited unsuccessfully")
+                            raise AdmissionDenied(f"Codex Docker exit status {int(code)} after terminal proof")
                     if code in (125, 126, 127):
                         # Docker reserves 125 for daemon/CLI launch failure,
                         # 126 for an uninvokable entrypoint and 127 for a
