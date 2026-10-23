@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -20,7 +22,7 @@ from locus_runtime.harness.codex_cli_worker import CodexCliWorker, ENGINE_ID, EN
 from locus_runtime.pod_artifact_escrow import DetachedArtifactEscrow
 from locus_runtime.pod_reservations import AdmissionDenied, PodReservationLedger, ResourceBudget
 from locus_runtime.pod_stage_bindings import PodStageBindings
-from locus_runtime.pod_stage_docker import StageDockerBroker
+from locus_runtime.pod_stage_docker import StageDockerBroker, StagePodCancelled
 from locus_runtime.pod_workspace_staging import staged_workspace
 from locus_runtime.task_graph_contract import TaskAuthority, TaskBudget, TaskIntent
 from locus_runtime.task_plan_compiler import compile_task_plan
@@ -143,7 +145,7 @@ def test_cancelled_codex_pod_does_not_prepare_dispatch(tmp_path):
         bound = stages.bind(lease, snapshot)
         cancel = threading.Event()
         cancel.set()
-        with pytest.raises(Exception):
+        with pytest.raises(StagePodCancelled):
             CodexCliWorker(broker, model="llama3.2:1b").run(
                 lease, bound.stage_id, prompt="test",
                 output_name="answer.txt", idempotency_key="cancel-before-dispatch",
@@ -152,3 +154,66 @@ def test_cancelled_codex_pod_does_not_prepare_dispatch(tmp_path):
         with receipts.reservations._connect() as db:
             assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
     assert not (source / "answer.txt").exists()
+
+
+@REAL
+def test_real_codex_inflight_cancel_is_uncertain_not_replayed(tmp_path):
+    """Kill the actual running OCI worker after observing its kernel container.
+
+    This deliberately exercises an in-flight Codex run, not a pre-cancelled
+    shortcut. No model response or daemon/receipt replay is taken as success.
+    """
+    source, lease, _, receipts, stages, broker = real_rig(tmp_path)
+    before = (source / "source.txt").read_bytes()
+    with staged_workspace(source, staging_parent=tmp_path) as snapshot, (
+        managed_guardian_for_test(tmp_path / "runs.db")
+    ):
+        bound = stages.bind(lease, snapshot)
+        cancel = threading.Event()
+        saw_container = threading.Event()
+
+        def cancel_when_container_exists():
+            deadline = time.monotonic() + 18
+            while time.monotonic() < deadline:
+                try:
+                    probe = subprocess.run(
+                        ["docker", "ps", "--filter",
+                         "label=io.lattix.locus.stage-only=v1",
+                         "--filter", "name=locus-pod-", "--format", "{{.Names}}"],
+                        capture_output=True, text=True, check=True, timeout=3,
+                    )
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+                    cancel.set()
+                    return
+                if probe.stdout.strip():
+                    saw_container.set()
+                    cancel.set()
+                    return
+                time.sleep(0.05)
+            cancel.set()
+
+        watcher = threading.Thread(target=cancel_when_container_exists, daemon=True)
+        watcher.start()
+        try:
+            with pytest.raises(StagePodCancelled):
+                CodexCliWorker(broker, model="llama3.2:1b").run(
+                    lease, bound.stage_id,
+                    prompt="Describe briefly what causes the blue color of the sea. Do not use tools.",
+                    output_name="answer.txt", idempotency_key="cancel-after-real-container",
+                    timeout_seconds=58, cancel=cancel,
+                )
+        finally:
+            watcher.join(timeout=20)
+        assert saw_container.is_set(), "must observe a real running confined Codex container"
+        with receipts.reservations._connect() as db:
+            state = db.execute("SELECT state FROM pod_action_receipt").fetchone()
+            assert state is not None and state[0] == "uncertain"
+        assert (source / "source.txt").read_bytes() == before
+        assert not (source / "answer.txt").exists()
+        with pytest.raises(AdmissionDenied):
+            CodexCliWorker(broker, model="llama3.2:1b").run(
+                lease, bound.stage_id, prompt="replay after cancellation",
+                output_name="replay.txt", idempotency_key="cancel-after-real-container",
+                timeout_seconds=58,
+            )
+    assert not snapshot.staged.exists()
