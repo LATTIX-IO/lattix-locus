@@ -72,10 +72,15 @@ def test_model_response_tool_calls_are_never_forwarded():
     bad = {"output": [{"type": "function_call", "name": "shell_command"}]}
     with pytest.raises(CodexRelayDenied, match="tool response refused"):
         _reject_tool_responses(json.dumps(bad).encode(), "application/json")
-    event = (b"event: response.output_item.added\\n"
-             b"data: {\\\"type\\\":\\\"response.output_item.added\\\","
-             b"\\\"item\\\":{\\\"type\\\":\\\"function_call\\\"}}\\n\\n"
-             b"data: [DONE]\\n\\n").decode("unicode_escape").encode()
+    event = (
+        b"event: response.output_item.added\n"
+        + b"data: "
+        + json.dumps({
+            "type": "response.output_item.added",
+            "item": {"type": "function_call", "name": "shell_command"},
+        }).encode("ascii")
+        + b"\n\ndata: [DONE]\n\n"
+    )
     with pytest.raises(CodexRelayDenied, match="tool response refused"):
         _reject_tool_responses(event, "text/event-stream")
     with pytest.raises(CodexRelayDenied, match="unparseable"):
