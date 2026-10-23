@@ -32,10 +32,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker pull ollama/ollama:latest
-          docker image inspect ollama/ollama:latest --format '{{index .RepoDigests 0}}'
+          # SHA-256 digest observed from the passing real acceptance image.
+          # Update deliberately, not through a mutable :latest tag.
+          ollama_image='ollama/ollama@sha256:5c6707fcf2e1a30cffe2ecb7e315584fc87747c389327e4bc711c4959aa1eecc'
+          docker pull "$ollama_image"
           docker run -d --name locus-ollama --pull=never \
-            -p 127.0.0.1:11434:11434 ollama/ollama:latest
+            -p 127.0.0.1:11434:11434 "$ollama_image"
           for attempt in $(seq 1 40); do
             if curl --noproxy '*' --fail --silent http://127.0.0.1:11434/api/tags > /dev/null; then
               break
@@ -49,14 +51,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker pull node:22.18.0-bookworm-slim
-          node_ref="$(docker image inspect node:22.18.0-bookworm-slim --format '{{index .RepoDigests 0}}')"
-          test "${node_ref#*@sha256:}" != "$node_ref"
+          node_ref='node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e'
+          docker pull "$node_ref"
           docker build -f docker/codex/Dockerfile \
             --build-arg "NODE_BASE=$node_ref" \
             --build-arg CODEX_CLI_VERSION=0.163.0 \
             -t locus-codex:acceptance .
-          docker run -d --name locus-codex-registry -p 127.0.0.1:5001:5000 registry:2
+          registry_image='registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373'
+          docker pull "$registry_image"
+          docker run -d --pull=never --name locus-codex-registry \
+            -p 127.0.0.1:5001:5000 "$registry_image"
           docker tag locus-codex:acceptance localhost:5001/locus-codex:0.163.0
           docker push localhost:5001/locus-codex:0.163.0
           image="$(docker image inspect localhost:5001/locus-codex:0.163.0 --format '{{index .RepoDigests 0}}')"
@@ -81,8 +85,30 @@ jobs:
         env:
           LOCUS_REAL_CODEX_ACCEPTANCE: "1"
         run: |
-          python -m pytest -q -rs tests/unit/test_stage_codex_worker.py \
+          python -m pytest -q -rs \
+            --junitxml="$RUNNER_TEMP/codex-acceptance.xml" \
+            tests/unit/test_stage_codex_worker.py \
             tests/integration/test_codex_ollama_kernel_acceptance.py
+          # A successful pytest exit can still mean skipped live tests.
+          # This release gate explicitly prohibits skipped or missing cases.
+          python - "$RUNNER_TEMP/codex-acceptance.xml" <<'PY'
+          import sys
+          from xml.etree import ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          cases = list(root.iter("testcase"))
+          skipped = [case.get("name") for case in cases if case.find("skipped") is not None]
+          executed = {case.get("name") for case in cases if case.find("skipped") is None}
+          required = {
+              "test_real_codex_calls_ollama_and_escrows_single_artifact",
+              "test_real_codex_inflight_cancel_is_uncertain_not_replayed",
+              "test_cancelled_codex_pod_does_not_prepare_dispatch",
+          }
+          if not cases or skipped or not required.issubset(executed):
+              raise SystemExit(
+                  "Codex real-kernel acceptance requires all live tests, zero skips"
+              )
+          print(f"Codex acceptance verified: {len(cases)} executed, 0 skipped")
+          PY
       - name: Assert no Locus workers remain on host
         if: always()
         shell: bash
