@@ -1,4 +1,4 @@
-"""LOCUS-466: receipt-fenced Linux Docker launch with stage as the sole bind.
+"""LOCUS-466/470: receipt-fenced Linux Docker launch with stage as the sole bind.
 
 Trusted supervisor code only. No agent can call this object or choose mounts,
 image, daemon, Docker flags, or launch identity. Output remains in stage and
@@ -108,10 +108,12 @@ def _command_vector(
     *, docker: str, socket_uri: str, image: str, name: str,
     stage: str, entrypoint: str, arguments: tuple[str, ...],
     seccomp: str, uid: int, gid: int, proof: str,
+    interactive: bool = False,
 ) -> tuple[str, ...]:
     """One fixed, admin-constructed launch vector. No planner or model flags."""
     return (
         docker, "--host", socket_uri, "run", "--rm", "--pull=never",
+        *(("--interactive",) if interactive else ()),
         "--name", name,
         "--label=io.lattix.locus.stage-only=v1",
         "--label=io.lattix.locus.stage-proof=" + proof,
@@ -261,10 +263,23 @@ class StageDockerBroker:
         initialize_stage_docker_schema(receipts.reservations)
     def execute(
         self, lease: PodLease, stage_id: str, command: BrokerCommand, *,
+        stdin: bytes | None = None,
         cancel: threading.Event | None = None,
     ) -> StageDockerOutcome:
         if not isinstance(lease, PodLease) or not isinstance(command, BrokerCommand):
             raise AdmissionDenied("trusted lease and bounded command required")
+        # A bounded UTF-8 prompt goes over an ephemeral stdin pipe, never the
+        # Docker argv, environment, daemon labels or durable action ledger.
+        # This does not grant network access to a CLI; model egress requires a
+        # separate authenticated, receipt-fenced inference bridge.
+        if stdin is not None:
+            if type(stdin) is not bytes or not 1 <= len(stdin) <= 65536 or b"\x00" in stdin:
+                raise AdmissionDenied("bounded immutable UTF-8 Docker stdin required")
+            try:
+                stdin.decode("utf-8", errors="strict")
+            except UnicodeDecodeError as exc:
+                raise AdmissionDenied("Docker stdin must be UTF-8") from exc
+        stdin_sha256 = hashlib.sha256(stdin).hexdigest() if stdin is not None else None
         if cancel is not None and not isinstance(cancel, threading.Event):
             raise AdmissionDenied("cancellation must be a trusted local event")
         if cancel is not None and cancel.is_set():
@@ -319,7 +334,7 @@ class StageDockerBroker:
             docker=docker, socket_uri=socket_uri, image=self.image,
             name=name, stage=stage.staged_path, entrypoint=command.argv[0],
             arguments=command.argv[1:], seccomp=seccomp, uid=uid, gid=gid,
-            proof=proof,
+            proof=proof, interactive=stdin is not None,
         )
         launch_sha256 = _digest({
             "argv": argv, "stage_id": stage_id,
@@ -331,6 +346,8 @@ class StageDockerBroker:
             "capabilities": stage.capability_sha256,
             "docker_cli_sha256": cli_sha, "timeout_seconds": command.timeout_seconds,
             "guardian_epoch": guardian_epoch,
+            "stdin_sha256": stdin_sha256,
+            "stdin_bytes": len(stdin) if stdin is not None else 0,
         })
         # The exact frozen argv including digest-pinned image, container name,
         # stage source and resource limits is sealed into Gateway/receipt auth.
@@ -350,6 +367,7 @@ class StageDockerBroker:
                 ).hexdigest(),
                 "docker_launch_sha256": launch_sha256,
                 "docker_cli_sha256": cli_sha,
+                "stdin_sha256": stdin_sha256 or "",
                 "guardian_epoch_sha256": hashlib.sha256(
                     guardian_epoch.encode("ascii")
                 ).hexdigest(),
@@ -406,11 +424,13 @@ class StageDockerBroker:
                     ) != guardian_epoch:
                         raise AdmissionDenied("guardian epoch changed at OS boundary")
                     process = subprocess.Popen(
-                        argv, shell=False, stdin=subprocess.DEVNULL,
+                        argv, shell=False,
+                        stdin=(subprocess.PIPE if stdin is not None else subprocess.DEVNULL),
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                         close_fds=True, env=env,
                     )
                     deadline = start + command.timeout_seconds
+                    pending_input = stdin
                     while True:
                         if cancel is not None and cancel.is_set():
                             raise StagePodCancelled("container cancelled")
@@ -433,9 +453,22 @@ class StageDockerBroker:
                         if remaining <= 0:
                             raise subprocess.TimeoutExpired(argv, command.timeout_seconds)
                         try:
-                            code = process.wait(timeout=min(0.2, remaining))
+                            if stdin is None:
+                                code = process.wait(timeout=min(0.2, remaining))
+                            else:
+                                # communicate() retains an incomplete input
+                                # internally after TimeoutExpired; resuming
+                                # with None prevents replaying prompt bytes.
+                                process.communicate(
+                                    input=pending_input, timeout=min(0.2, remaining),
+                                )
+                                pending_input = None
+                                if process.returncode is None:
+                                    raise AdmissionDenied("Docker stdin exit was not observed")
+                                code = process.returncode
                             break
                         except subprocess.TimeoutExpired:
+                            pending_input = None
                             continue
                     if code in (125, 126, 127):
                         # Docker reserves 125 for daemon/CLI launch failure,
