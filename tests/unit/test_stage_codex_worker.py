@@ -130,6 +130,10 @@ def test_container_image_and_runner_are_static():
     assert '"--ignore-user-config"' in runner
     assert '"--sandbox", "read-only"' in runner
     assert '"--disable", "shell_tool"' in runner
-    assert '"--oss", "--local-provider", "ollama"' in runner
+    assert 'model_provider="locus_ollama"' in runner
+    assert "model_providers.locus_ollama.wire_api" in runner
+    assert '"--ignore-rules"' in runner
+    assert '"--disable", "unified_exec"' in runner
+    assert '"--oss", "--local-provider", "ollama"' not in runner
     assert "shell=True" not in runner
     assert "stderr=subprocess.PIPE" in runner
