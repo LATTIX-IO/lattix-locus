@@ -9,7 +9,6 @@ import base64
 import hashlib
 import io
 import json
-import threading
 from pathlib import Path
 
 import pytest
