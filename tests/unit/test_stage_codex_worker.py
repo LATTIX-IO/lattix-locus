@@ -88,11 +88,11 @@ def test_model_response_tool_calls_are_never_forwarded():
         _reject_tool_responses(b"{malformed", "application/json")
 
 
-def test_no_nonlocal_provider():
-    class NeverUsed:
-        pass
-    with pytest.raises(CodexRelayDenied):
-        CodexOllamaBridge(NeverUsed(), model="llama3.2:1b", host="example.com")
+@ONLY_LINUX_UNPRIVILEGED
+def test_no_nonlocal_provider(tmp_path):
+    _, lease, _, _, _, _ = rig(tmp_path)
+    with pytest.raises(CodexRelayDenied, match="only fixed local Ollama"):
+        CodexOllamaBridge(lease, model="llama3.2:1b", host="example.com")
 
 
 class FakeProcess:
