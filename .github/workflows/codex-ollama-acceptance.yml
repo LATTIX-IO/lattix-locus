@@ -1,0 +1,88 @@
+name: Real Codex CLI and Ollama kernel acceptance
+
+on:
+  pull_request:
+    paths:
+      - "locus_runtime/pod_codex_bridge.py"
+      - "locus_runtime/pod_codex_transport.py"
+      - "locus_runtime/pod_stage_docker.py"
+      - "locus_runtime/harness/codex_cli_worker.py"
+      - "docker/codex/**"
+      - "tests/integration/test_codex_ollama_kernel_acceptance.py"
+      - "tests/unit/test_stage_codex_worker.py"
+      - ".github/workflows/codex-ollama-acceptance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-codex-ollama:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Start local Ollama (inference is never exposed to Codex container)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull ollama/ollama:latest
+          docker image inspect ollama/ollama:latest --format '{{index .RepoDigests 0}}'
+          docker run -d --name locus-ollama --pull=never \
+            -p 127.0.0.1:11434:11434 ollama/ollama:latest
+          for attempt in $(seq 1 40); do
+            if curl --noproxy '*' --fail --silent http://127.0.0.1:11434/api/tags > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --noproxy '*' --fail --silent http://127.0.0.1:11434/api/tags > /dev/null
+          docker exec locus-ollama ollama pull llama3.2:1b
+          docker exec locus-ollama ollama list
+      - name: Build pinned official Codex image, record immutable image manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull node:22.18.0-bookworm-slim
+          node_ref="$(docker image inspect node:22.18.0-bookworm-slim --format '{{index .RepoDigests 0}}')"
+          test "${node_ref#*@sha256:}" != "$node_ref"
+          docker build -f docker/codex/Dockerfile \
+            --build-arg "NODE_BASE=$node_ref" \
+            --build-arg CODEX_CLI_VERSION=0.163.0 \
+            -t locus-codex:acceptance .
+          docker run -d --name locus-codex-registry -p 127.0.0.1:5001:5000 registry:2
+          docker tag locus-codex:acceptance localhost:5001/locus-codex:0.163.0
+          docker push localhost:5001/locus-codex:0.163.0
+          image="$(docker image inspect localhost:5001/locus-codex:0.163.0 --format '{{index .RepoDigests 0}}')"
+          test "${image#*@sha256:}" != "$image"
+          docker image inspect "$image" > "$RUNNER_TEMP/locus-codex-image-inspect.json"
+          docker run --rm --pull=never --network=none \
+            --entrypoint=/usr/local/bin/codex "$image" --version \
+            | grep -Fx 'codex-cli 0.163.0'
+          echo "LOCUS_CODEX_ACCEPTANCE_IMAGE=$image" >> "$GITHUB_ENV"
+          printf 'Pinned image: %s\n' "$image"
+      - name: Verify full real local inference, kernel isolation and escrow
+        env:
+          LOCUS_REAL_CODEX_ACCEPTANCE: "1"
+        run: |
+          python -m pytest -q -rs tests/unit/test_stage_codex_worker.py \
+            tests/integration/test_codex_ollama_kernel_acceptance.py
+      - name: Assert no Locus workers remain on host
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          leftover="$(docker ps -a --filter name=locus-pod- --format '{{.Names}}')"
+          if [ -n "$leftover" ]; then
+            echo "Locus Docker pods remained after test" >&2
+            exit 1
+          fi
+      - name: Tear down test-only model and registry
+        if: always()
+        run: docker rm -f locus-ollama locus-codex-registry 2>/dev/null || true
