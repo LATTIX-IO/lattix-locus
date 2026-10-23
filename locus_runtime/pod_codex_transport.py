@@ -131,6 +131,7 @@ class CodexFramePump:
                 if self._done or not self._ready or set(frame) not in (
                     {"schema", "kind", "ok", "events"},
                     {"schema", "kind", "ok", "events", "sha256", "stdout_sha256", "bytes"},
+                    {"schema", "kind", "ok", "events", "exit_code", "model_calls", "category"},
                 ):
                     raise CodexProtocolDenied("malformed Codex terminal frame")
                 if frame.get("ok") is not True:
