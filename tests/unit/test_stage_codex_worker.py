@@ -16,7 +16,7 @@ import pytest
 from locus_runtime.pod_codex_bridge import (
     CodexOllamaBridge, CodexRelayDenied, _request, relay_error,
 )
-from locus_runtime.pod_codex_transport import CodexFramePump, CodexProtocolDenied
+from locus_runtime.pod_codex_transport import CodexFramePump
 from locus_runtime.harness.codex_cli_worker import CODEX_VERSION, CodexCliWorker
 from locus_runtime.pod_reservations import AdmissionDenied
 from locus_runtime.pod_workspace_staging import staged_workspace
