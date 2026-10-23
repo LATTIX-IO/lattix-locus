@@ -8,8 +8,6 @@ checks every 200 ms while loopback Ollama is generating.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import queue
 import re
 import subprocess
