@@ -435,6 +435,7 @@ class StageDockerBroker:
                     "HOME": config,
                 }
                 process: subprocess.Popen[bytes] | None = None
+                pump: CodexFramePump | None = None
                 try:
                     if require_guardian_ready(
                         self.receipts.reservations, self.socket_path,
@@ -524,6 +525,14 @@ class StageDockerBroker:
                         "codex_terminal_sha256": terminal_digest,
                     }
                 except BaseException:
+                    # The model request is a separate host-side operation.
+                    # Cancellation/revocation/guardian failures must also
+                    # interrupt its active Ollama socket, not merely kill the
+                    # child container and leave inference running unbounded.
+                    if codex_bridge is not None:
+                        codex_bridge.abort()
+                        if pump is not None:
+                            pump.wait_pending(timeout=3)
                     # A killed Docker CLI may leave an orphaned daemon process.
                     # A failed cleanup is an *uncertain* action, never replayed.
                     try:
@@ -549,6 +558,10 @@ class StageDockerBroker:
                         logger.error("stage Docker uncertainty audit failed; manual reconciliation required")
                     raise
                 finally:
+                    # Successful completion also closes the inference channel
+                    # and prevents a stale child broker from making new calls.
+                    if codex_bridge is not None:
+                        codex_bridge.abort()
                     if process is not None and process.poll() is None:
                         process.kill()
                         process.wait(timeout=5)
