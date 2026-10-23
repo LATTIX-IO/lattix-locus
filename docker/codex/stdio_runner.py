@@ -237,8 +237,12 @@ def _read_stderr(pipe: object, category: list[str]) -> None:
 
 
 def main() -> int:
-    raw = sys.stdin.buffer.readline(_MAX_PROMPT + 2049)
     try:
+        # The trusted parent permits a 65,536-byte *JSON frame*, including
+        # ensure_ascii-expanded non-ASCII prompts. Read that same bound + LF.
+        raw = sys.stdin.buffer.readline(65537)
+        if not raw.endswith(b"\n") or len(raw) > 65537:
+            raise ValueError("truncated or oversized Codex init")
         init = read_frame(raw)
         if set(init) != {"schema", "kind", "model", "prompt", "output", "version"}:
             raise ValueError("unexpected launch fields")
