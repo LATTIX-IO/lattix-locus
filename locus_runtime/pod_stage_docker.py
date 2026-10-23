@@ -403,7 +403,7 @@ class StageDockerBroker:
             proof=proof, image_ref=self.image, socket_uri=socket_uri,
         )
 
-        def invoke() -> dict[str, int]:
+        def invoke() -> dict[str, int | str]:
             # Inside the kernel-held action fence; no other broker can replay.
             if require_guardian_ready(
                 self.receipts.reservations, self.socket_path,
@@ -557,7 +557,7 @@ class StageDockerBroker:
             lease, receipt.action_id, invoke=invoke,
         )
         return StageDockerOutcome(
-            final, data["exit_code"], data["elapsed_ms"], stage_id, generation,
+            final, int(data["exit_code"]), int(data["elapsed_ms"]), stage_id, generation,
             str(data.get("codex_terminal_sha256", "")),
         )
 
