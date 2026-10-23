@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from locus_runtime.pod_codex_bridge import (
-    CodexOllamaBridge, CodexRelayDenied, _request, relay_error,
+    CodexOllamaBridge, CodexRelayDenied, _reject_tool_responses, _request, relay_error,
 )
 from locus_runtime.pod_codex_transport import CodexFramePump
 from locus_runtime.harness.codex_cli_worker import CODEX_VERSION, CodexCliWorker
@@ -36,11 +36,13 @@ def test_exact_model_and_endpoint_only():
     request = _request(rpc({"model": model, "input": "hello"}), model)
     assert request[0] == 1 and request[1] == "/v1/responses"
     assert b"hello" in request[2]
+    assert request[5] == 0
     for payload in (
         rpc({"model": model}, path="http://evil.example/"),
         rpc({"model": model}, path="/v1/models"),
         rpc({"model": "other", "input": "hello"}),
-        rpc({"model": model, "tools": [{"type": "function"}]}),
+        rpc({"model": model, "tools": [{"type": "function"}],
+             "tool_choice": "required"}),
         rpc({"model": model, "max_output_tokens": 100000}),
         rpc({"model": model, "stream": "true"}),
         b'{"schema":"locus.codex.stdio.v1","schema":"duplicate"}',
@@ -49,8 +51,35 @@ def test_exact_model_and_endpoint_only():
     ):
         with pytest.raises(CodexRelayDenied):
             _request(payload, model)
+    downscoped = _request(rpc({
+        "model": model, "input": "answer without any tools",
+        "tools": [{"type": "function", "name": "shell_command"}],
+        "tool_choice": "auto", "parallel_tool_calls": True,
+    }), model)
+    outbound = json.loads(downscoped[2])
+    assert downscoped[5] == 1
+    assert "tools" not in outbound and "tool_choice" not in outbound
+    assert "parallel_tool_calls" not in outbound
+    assert "shell_command" not in downscoped[2].decode("utf-8")
     denied = relay_error(1)
     assert b"prompt" not in denied and b"credential" not in denied
+
+
+def test_model_response_tool_calls_are_never_forwarded():
+    normal = {"output": [{"type": "message", "content": [{"type": "output_text",
+               "text": "The sea appears blue because of light scattering."}]}]}
+    _reject_tool_responses(json.dumps(normal).encode(), "application/json")
+    bad = {"output": [{"type": "function_call", "name": "shell_command"}]}
+    with pytest.raises(CodexRelayDenied, match="tool response refused"):
+        _reject_tool_responses(json.dumps(bad).encode(), "application/json")
+    event = (b"event: response.output_item.added\\n"
+             b"data: {\\\"type\\\":\\\"response.output_item.added\\\","
+             b"\\\"item\\\":{\\\"type\\\":\\\"function_call\\\"}}\\n\\n"
+             b"data: [DONE]\\n\\n").decode("unicode_escape").encode()
+    with pytest.raises(CodexRelayDenied, match="tool response refused"):
+        _reject_tool_responses(event, "text/event-stream")
+    with pytest.raises(CodexRelayDenied, match="unparseable"):
+        _reject_tool_responses(b"{malformed", "application/json")
 
 
 def test_no_nonlocal_provider():
