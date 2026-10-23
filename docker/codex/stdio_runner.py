@@ -16,6 +16,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import select
 import re
 import subprocess
 import sys
@@ -36,6 +38,7 @@ _response_slots: dict[int, dict[str, object]] = {}
 _counter = 0
 _closed = False
 _get_attempts = 0
+_reply_stop = threading.Event()
 
 
 def emit(frame: dict[str, object]) -> None:
@@ -64,36 +67,61 @@ def read_frame(raw: bytes) -> dict[str, object]:
 
 
 def receive_replies() -> None:
+    """Bounded, interruptible stdin reader; no daemon thread at Python shutdown.
+
+    Do not use buffered `sys.stdin.buffer.readline()` in a daemon thread:
+    on interpreter finalization that thread can hold the buffered I/O lock,
+    turning a successfully completed CLI run into a fatal exit (134).
+    """
     global _closed
-    while True:
-        frame_bytes = sys.stdin.buffer.readline(_MAX_REPLY_BYTES * 4 // 3 + 4097)
-        if not frame_bytes:
-            break
-        try:
-            frame = read_frame(frame_bytes)
-            ident = frame.get("id")
-            if (
-                set(frame) != {"schema", "kind", "id", "status", "content_type", "body"}
-                or frame["kind"] != "model_reply"
-                or type(ident) is not int or ident <= 0
-                or type(frame["status"]) is not int or not 100 <= frame["status"] <= 599
-                or frame["content_type"] not in {"application/json", "text/event-stream"}
-            ):
-                raise ValueError("invalid model reply")
-            body = frame["body"]
-            if not isinstance(body, str) or len(body) > _MAX_REPLY_BYTES * 4 // 3 + 8:
-                raise ValueError("bad response size")
-            base64.b64decode(body, validate=True)
-            with _response_lock:
-                if ident not in _response_slots or _response_slots[ident]:
-                    raise ValueError("unknown or duplicate reply")
-                _response_slots[ident] = frame
-                _response_lock.notify_all()
-        except (ValueError, TypeError, KeyError):
-            break
-    with _response_lock:
-        _closed = True
-        _response_lock.notify_all()
+    pending = bytearray()
+    max_line = _MAX_REPLY_BYTES * 4 // 3 + 4096
+    try:
+        fd = sys.stdin.fileno()
+        while not _reply_stop.is_set():
+            readable, _, _ = select.select([fd], [], [], 0.1)
+            if not readable:
+                continue
+            fragment = os.read(fd, 65536)
+            if not fragment:
+                break
+            pending.extend(fragment)
+            while True:
+                end = pending.find(b"\n")
+                if end < 0:
+                    if len(pending) > max_line:
+                        raise ValueError("inference reply frame exceeded bound")
+                    break
+                if end > max_line:
+                    raise ValueError("inference reply frame exceeded bound")
+                frame = read_frame(bytes(pending[:end]))
+                del pending[:end + 1]
+                ident = frame.get("id")
+                if (
+                    set(frame) != {"schema", "kind", "id", "status", "content_type", "body"}
+                    or frame["kind"] != "model_reply"
+                    or type(ident) is not int or ident <= 0
+                    or type(frame["status"]) is not int or not 100 <= frame["status"] <= 599
+                    or frame["content_type"] not in {"application/json", "text/event-stream"}
+                ):
+                    raise ValueError("invalid model reply")
+                body = frame["body"]
+                if not isinstance(body, str) or len(body) > _MAX_REPLY_BYTES * 4 // 3 + 8:
+                    raise ValueError("bad response size")
+                base64.b64decode(body, validate=True)
+                with _response_lock:
+                    if ident not in _response_slots or _response_slots[ident]:
+                        raise ValueError("unknown or duplicate reply")
+                    _response_slots[ident] = frame
+                    _response_lock.notify_all()
+        if pending and not _reply_stop.is_set():
+            raise ValueError("partial inference reply at end of input")
+    except (ValueError, TypeError, KeyError, OSError):
+        pass  # deny/close: never propagate untrusted reply data
+    finally:
+        with _response_lock:
+            _closed = True
+            _response_lock.notify_all()
 
 
 class LocalOllamaHandler(BaseHTTPRequestHandler):
@@ -343,6 +371,17 @@ def main() -> int:
             "exit_code": 5, "model_calls": _counter, "category": "runner_startup",
         })
         return 5
+    finally:
+        # Terminate all threads that could hold interpreter buffered-I/O locks.
+        # Protocol shutdown is a normal completion path, not a child privilege.
+        _reply_stop.set()
+        if "receiver" in locals() and receiver.is_alive():
+            receiver.join(timeout=2)
+        if "server" in locals():
+            if "thread" in locals() and thread.is_alive():
+                server.shutdown()
+                thread.join(timeout=2)
+            server.server_close()
 
 
 if __name__ == "__main__":
