@@ -104,9 +104,24 @@ def _request(raw: bytes, pinned_model: str) -> tuple[int, str, bytes, bool, int]
     requested = request.get("max_output_tokens", request.get("max_tokens", _MAX_OUTPUT_TOKENS))
     if type(requested) is not int or not 1 <= requested <= _MAX_OUTPUT_TOKENS:
         raise CodexRelayDenied("unbounded model completion request")
-    # Exact request bytes are sent unmodified to loopback Ollama. This is a
-    # fail-closed admission contract, not a text redaction or prompt rewrite.
-    return ident, str(message["path"]), raw_body, stream, requested
+    # Bound *every* provider request, even when the Codex CLI omits a limit.
+    # Never rely solely on a server's default output cap for budget admission.
+    if "max_output_tokens" in request and "max_tokens" in request:
+        raise CodexRelayDenied("ambiguous completion token ceilings")
+    if "max_output_tokens" not in request and "max_tokens" not in request:
+        endpoint_limit = (
+            "max_output_tokens" if message["path"] == "/v1/responses" else "max_tokens"
+        )
+        request[endpoint_limit] = _MAX_OUTPUT_TOKENS
+    if any(field in request for field in ("max_completion_tokens", "num_predict")):
+        raise CodexRelayDenied("unsupported secondary output token ceiling")
+    bounded_body = json.dumps(
+        request, separators=(",", ":"), sort_keys=True, ensure_ascii=True,
+        allow_nan=False,
+    ).encode("ascii")
+    if len(bounded_body) > _MAX_BODY:
+        raise CodexRelayDenied("bounded model request too large")
+    return ident, str(message["path"]), bounded_body, stream, requested
 
 
 def _reply(ident: int, status: int, body: bytes, content_type: str) -> bytes:
