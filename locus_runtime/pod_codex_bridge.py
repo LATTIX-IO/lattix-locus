@@ -77,7 +77,7 @@ def _body(encoded: object) -> bytes:
     return data
 
 
-def _request(raw: bytes, pinned_model: str) -> tuple[int, str, bytes, bool, int]:
+def _request(raw: bytes, pinned_model: str) -> tuple[int, str, bytes, bool, int, int]:
     message = _frame(raw)
     if set(message) != {"schema", "kind", "id", "method", "path", "body"}:
         raise CodexRelayDenied("unknown relay fields")
@@ -93,11 +93,25 @@ def _request(raw: bytes, pinned_model: str) -> tuple[int, str, bytes, bool, int]
     model = request.get("model")
     if model != pinned_model:
         raise CodexRelayDenied("unapproved inference model")
-    # No cross-tool provider calls. Codex uses local sandbox read-only and
-    # ships no MCP plugins in this profile; deny model tool declarations.
+    # A real Codex CLI advertises built-in tools even with shell/unified_exec
+    # disabled. Its declarations are *not* authorized capabilities. Actively
+    # downscope the request before the model sees it: no exposed tool schema,
+    # no forced tool_choice and no chance for a provider tool dispatch.
     tools = request.get("tools", [])
-    if tools not in ([], None):
-        raise CodexRelayDenied("unmediated model tools are disabled")
+    if tools is None:
+        tools = []
+    if (
+        not isinstance(tools, list) or len(tools) > 32
+        or any(not isinstance(tool, dict) for tool in tools)
+    ):
+        raise CodexRelayDenied("invalid tool declarations")
+    choice = request.get("tool_choice", "auto")
+    if choice not in ("auto", "none", None):
+        raise CodexRelayDenied("forced model tool call refused")
+    suppressed = len(tools)
+    request.pop("tools", None)
+    request.pop("tool_choice", None)
+    request.pop("parallel_tool_calls", None)
     stream = request.get("stream", False)
     if type(stream) is not bool:
         raise CodexRelayDenied("invalid streaming mode")
@@ -121,7 +135,58 @@ def _request(raw: bytes, pinned_model: str) -> tuple[int, str, bytes, bool, int]
     ).encode("ascii")
     if len(bounded_body) > _MAX_BODY:
         raise CodexRelayDenied("bounded model request too large")
-    return ident, str(message["path"]), bounded_body, stream, requested
+    return ident, str(message["path"]), bounded_body, stream, requested, suppressed
+
+
+def _reject_tool_responses(body: bytes, media: str) -> None:
+    """Reject semantic tool invocation in bounded JSON/Responses SSE payloads.
+
+    Stripping tool registration prevents legitimate calls. This second boundary
+    also denies misbehaving local models that return a tool-call result without
+    receiving a tool declaration. Nothing is executed or forwarded on denial.
+    """
+    def contains_tool(value: object) -> bool:
+        if isinstance(value, dict):
+            kind = value.get("type")
+            if kind in {
+                "function_call", "custom_tool_call", "tool_call",
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+                "response.custom_tool_call_input.delta",
+                "response.custom_tool_call_input.done",
+            }:
+                return True
+            if value.get("tool_calls") or value.get("function_call"):
+                return True
+            return any(contains_tool(v) for v in value.values())
+        if isinstance(value, list):
+            return any(contains_tool(v) for v in value)
+        return False
+
+    try:
+        if media == "application/json":
+            if contains_tool(json.loads(
+                body, object_pairs_hook=_unique_fields, parse_constant=_reject_nan,
+            )):
+                raise CodexRelayDenied("unmediated model tool response refused")
+        elif media == "text/event-stream":
+            # SSE event data can span multiple data lines and use CRLF.
+            for block in body.replace(b"\r\n", b"\n").split(b"\n\n"):
+                data = b"\n".join(
+                    line[5:].lstrip() for line in block.split(b"\n")
+                    if line.startswith(b"data:")
+                ).strip()
+                if not data or data == b"[DONE]":
+                    continue
+                item = json.loads(
+                    data, object_pairs_hook=_unique_fields, parse_constant=_reject_nan,
+                )
+                if contains_tool(item):
+                    raise CodexRelayDenied("unmediated model tool response refused")
+        else:
+            raise CodexRelayDenied("unsupported inference content type")
+    except (UnicodeError, ValueError, RecursionError, TypeError) as exc:
+        raise CodexRelayDenied("unparseable model response") from exc
 
 
 def _reply(ident: int, status: int, body: bytes, content_type: str) -> bytes:
@@ -142,6 +207,7 @@ class CodexModelReceipt:
     response_sha256: str
     status: int
     reserved_tokens: int
+    suppressed_tools: int
 
 
 class CodexOllamaBridge:
@@ -180,7 +246,7 @@ class CodexOllamaBridge:
     def handle(self, raw: bytes) -> bytes:
         """One authenticated RPC; exception always kills/denies the task."""
         with self._lock:
-            ident, path, body, stream, max_output = _request(raw, self.model)
+            ident, path, body, stream, max_output, suppressed = _request(raw, self.model)
             if ident != self._last_id + 1 or ident > _MAX_CALLS:
                 raise CodexRelayDenied("replayed, skipped, or exhausted model request")
             self._last_id = ident
@@ -225,6 +291,7 @@ class CodexOllamaBridge:
                 output = response.read(_MAX_RESPONSE + 1)
                 if len(output) > _MAX_RESPONSE:
                     raise CodexRelayDenied("model response exceeds maximum size")
+                _reject_tool_responses(output, media)
             except (OSError, http.client.HTTPException, TimeoutError) as exc:
                 raise CodexRelayDenied("approved loopback model unavailable") from exc
             finally:
@@ -235,6 +302,7 @@ class CodexOllamaBridge:
                 input_sha256=hashlib.sha256(body).hexdigest(),
                 response_sha256=hashlib.sha256(output).hexdigest(),
                 status=code, reserved_tokens=reserve_tokens,
+                suppressed_tools=suppressed,
             ))
             return _reply(ident, code, output, media)
 
