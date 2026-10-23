@@ -134,7 +134,24 @@ class CodexFramePump:
                 ):
                     raise CodexProtocolDenied("malformed Codex terminal frame")
                 if frame.get("ok") is not True:
-                    raise CodexProtocolDenied("Codex CLI reported unsuccessful execution")
+                    valid_categories = {
+                        "cli_configuration", "model_metadata", "model_connection",
+                        "provider_http", "provider_model", "cli_unknown",
+                        "not_reported", "unexpected_tool", "artifact_invalid", "runner_startup",
+                    }
+                    category, code, calls = (
+                        frame.get("category"), frame.get("exit_code"), frame.get("model_calls"),
+                    )
+                    if (
+                        set(frame) != {"schema", "kind", "ok", "events", "exit_code", "model_calls", "category"}
+                        or category not in valid_categories
+                        or type(code) is not int or not -128 <= code <= 255
+                        or type(calls) is not int or not 0 <= calls <= 16
+                    ):
+                        raise CodexProtocolDenied("Codex terminal failure evidence malformed")
+                    raise CodexProtocolDenied(
+                        f"Codex CLI rejected the run: {category}, exit={code}, model_calls={calls}"
+                    )
                 digest = frame.get("sha256")
                 stdout_digest = frame.get("stdout_sha256")
                 amount = frame.get("bytes")
