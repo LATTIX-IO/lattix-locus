@@ -312,8 +312,10 @@ def main() -> int:
         proc.stdin.close()
         # Codex stdout is untrusted. Its content is digested in memory only,
         # never placed into Docker stdout or an audit record.
-        for line in iter(proc.stdout.readline, b""):
-            if len(line) > 131072:
+        for line in iter(lambda: proc.stdout.readline(131073), b""):
+            # The CLI is untrusted at this boundary. Bound *before* allocation,
+            # rather than reading an unbounded line and checking afterward.
+            if len(line) > 131072 or not line.endswith(b"\n"):
                 proc.kill()
                 break
             stream_digest.update(line)
