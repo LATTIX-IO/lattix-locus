@@ -249,9 +249,19 @@ def main() -> int:
         argv = [
             "/usr/local/bin/codex", "exec", "--json", "--skip-git-repo-check",
             "--ephemeral", "--ignore-user-config", "--cd", "/workspace",
-            "--sandbox", "read-only", "--oss", "--local-provider", "ollama",
-            "--disable", "shell_tool",
+            "--sandbox", "read-only", "--disable", "shell_tool",
+            "--disable", "unified_exec", "--ignore-rules",
             "--model", model, "-o", str(output_path),
+            # --oss runs model discovery / auto-pull (GET /api/tags,
+            # POST /api/pull) before inference. This sandbox intentionally
+            # forbids those operations. A fixed custom provider sends only
+            # OpenAI-compatible Responses calls to our in-container loopback
+            # HTTP facade; no provider credentials are configured.
+            "-c", 'model_provider="locus_ollama"',
+            "-c", 'model_providers.locus_ollama.name="Locus local Ollama"',
+            "-c", 'model_providers.locus_ollama.base_url="http://127.0.0.1:11434/v1"',
+            "-c", 'model_providers.locus_ollama.wire_api="responses"',
+            "-c", 'model_providers.locus_ollama.requires_openai_auth=false',
             "-c", 'web_search="disabled"',
             "-",
         ]
