@@ -36,6 +36,6 @@ python -m pytest -q -rs tests/unit/test_stage_codex_worker.py \
 
 ## Rollback and subsequent increments
 
-The implementation is opt-in. Disable instantiation of `CodexCliWorker` or revert its new modules and optional broker channel without a migration; preserve existing uncertain receipts, ledgers and escorted artifact records. Stage-only Docker without a Codex bridge remains unchanged.
+The implementation is opt-in. Disable instantiation of `CodexCliWorker` or revert its new modules and optional broker channel without a migration; preserve existing uncertain receipts, ledgers and escrowed artifact records. Stage-only Docker without a Codex bridge remains unchanged.
 
 **LOCUS-470/C** must add two real independent specialists (native + Codex) with verified artifact escrow between them, revision-pinned immutable handoff, post-child-closure human approval, negative/repair and supervisor-crash acceptance, and the front-end journey later under LOCUS-459.
