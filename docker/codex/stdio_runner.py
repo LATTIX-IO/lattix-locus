@@ -35,6 +35,7 @@ _response_lock = threading.Condition()
 _response_slots: dict[int, dict[str, object]] = {}
 _counter = 0
 _closed = False
+_get_attempts = 0
 
 
 def emit(frame: dict[str, object]) -> None:
@@ -151,6 +152,8 @@ class LocalOllamaHandler(BaseHTTPRequestHandler):
         self.close_connection = True
 
     def do_GET(self) -> None:
+        global _get_attempts
+        _get_attempts += 1
         # No unmediated GET to the host. A fixed local health response is the
         # only discovery capability; model calls still require the supervisor.
         if self.path != "/":
@@ -167,8 +170,17 @@ class LocalOllamaHandler(BaseHTTPRequestHandler):
 def _failure_category(message: str) -> str:
     """Map CLI errors to bounded diagnostic labels, never expose source text."""
     normalized = message.lower()
-    if any(token in normalized for token in ("unknown feature", "unknown option", "unrecognized", "configuration error")):
+    if any(token in normalized for token in (
+        "unknown feature", "unknown option", "unrecognized",
+        "configuration error", "unexpected argument", "invalid value",
+        "invalid feature", "failed to load config", "error parsing config",
+    )):
         return "cli_configuration"
+    if any(token in normalized for token in (
+        "permission denied", "operation not permitted", "sandbox",
+        "unable to create", "failed to create",
+    )):
+        return "os_confinement"
     if "model metadata" in normalized:
         return "model_metadata"
     if any(token in normalized for token in ("connection refused", "connect failed", "connection failed")):
@@ -178,6 +190,22 @@ def _failure_category(message: str) -> str:
     if any(token in normalized for token in ("model", "ollama", "provider")):
         return "provider_model"
     return "cli_unknown"
+
+
+def _read_stderr(pipe: object, category: list[str]) -> None:
+    """Drain subprocess stderr privately; only a fixed category crosses the wire."""
+    if not hasattr(pipe, "readline"):
+        return
+    try:
+        while True:
+            line = pipe.readline(16384)
+            if not line:
+                break
+            kind = _failure_category(line.decode("utf-8", errors="replace"))
+            if category[0] in ("not_reported", "cli_unknown") and kind != "cli_unknown":
+                category[0] = kind
+    except (OSError, ValueError):
+        category[0] = "stderr_unavailable"
 
 
 def main() -> int:
@@ -231,12 +259,17 @@ def main() -> int:
         events = 0
         tool_seen = False
         error_category = "not_reported"
+        stderr_status = ["not_reported"]
         proc = subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, cwd="/workspace", shell=False,
+            stderr=subprocess.PIPE, cwd="/workspace", shell=False,
             close_fds=True, env=env,
         )
-        assert proc.stdin is not None and proc.stdout is not None
+        assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+        stderr_reader = threading.Thread(
+            target=_read_stderr, args=(proc.stderr, stderr_status), daemon=True,
+        )
+        stderr_reader.start()
         proc.stdin.write(prompt.encode("utf-8"))
         proc.stdin.close()
         # Codex stdout is untrusted. Its content is digested in memory only,
@@ -266,7 +299,12 @@ def main() -> int:
                 proc.kill()
                 break
         code = proc.wait(timeout=5)
+        stderr_reader.join(timeout=1)
         server.shutdown()
+        if error_category == "not_reported":
+            error_category = stderr_status[0]
+        if error_category == "not_reported" and _get_attempts:
+            error_category = "discovery_get"
         if code != 0 or tool_seen or not output_path.is_file() or output_path.is_symlink():
             emit({
                 "schema": SCHEMA, "kind": "done", "ok": False, "events": events,
