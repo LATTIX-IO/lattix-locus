@@ -132,4 +132,4 @@ def test_container_image_and_runner_are_static():
     assert '"--disable", "shell_tool"' in runner
     assert '"--oss", "--local-provider", "ollama"' in runner
     assert "shell=True" not in runner
-    assert "stderr=subprocess.DEVNULL" in runner
+    assert "stderr=subprocess.PIPE" in runner
