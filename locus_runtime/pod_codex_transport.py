@@ -191,6 +191,12 @@ class CodexFramePump:
         if self._error:
             raise CodexProtocolDenied(self._error)
 
+    def wait_pending(self, *, timeout: float = 3) -> None:
+        """Bounded cleanup after the trusted bridge has aborted its HTTP socket."""
+        pending = self._pending
+        if pending is not None and pending.is_alive():
+            pending.join(timeout=timeout)
+
     def finish(self) -> str:
         """A successful Docker exit alone is NOT Codex task acceptance."""
         deadline = time.monotonic() + 2
