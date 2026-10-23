@@ -116,17 +116,22 @@ def _request(raw: bytes, pinned_model: str) -> tuple[int, str, bytes, bool, int,
     if type(stream) is not bool:
         raise CodexRelayDenied("invalid streaming mode")
     requested = request.get("max_output_tokens", request.get("max_tokens", _MAX_OUTPUT_TOKENS))
-    if type(requested) is not int or not 1 <= requested <= _MAX_OUTPUT_TOKENS:
+    # Codex may request a generous logical ceiling (e.g. 8192 tokens).
+    # Never forward that ceiling; clamp to our supervisor-enforced 512-token
+    # cap. Preserve fail-closed behavior for invalid or absurdly large values.
+    if type(requested) is not int or not 1 <= requested <= 65536:
         raise CodexRelayDenied("unbounded model completion request")
+    requested = min(requested, _MAX_OUTPUT_TOKENS)
     # Bound *every* provider request, even when the Codex CLI omits a limit.
     # Never rely solely on a server's default output cap for budget admission.
     if "max_output_tokens" in request and "max_tokens" in request:
         raise CodexRelayDenied("ambiguous completion token ceilings")
-    if "max_output_tokens" not in request and "max_tokens" not in request:
-        endpoint_limit = (
-            "max_output_tokens" if message["path"] == "/v1/responses" else "max_tokens"
-        )
-        request[endpoint_limit] = _MAX_OUTPUT_TOKENS
+    endpoint_limit = (
+        "max_output_tokens" if message["path"] == "/v1/responses" else "max_tokens"
+    )
+    request.pop("max_output_tokens", None)
+    request.pop("max_tokens", None)
+    request[endpoint_limit] = requested
     if any(field in request for field in ("max_completion_tokens", "num_predict")):
         raise CodexRelayDenied("unsupported secondary output token ceiling")
     bounded_body = json.dumps(
