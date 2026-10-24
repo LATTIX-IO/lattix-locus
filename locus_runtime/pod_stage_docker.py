@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from locus_runtime.action_receipts import ActionRecord, PodActionReceipts
+from locus_runtime.pod_codex_bridge import CodexOllamaBridge
+from locus_runtime.pod_codex_transport import CodexFramePump
 from locus_runtime.gateway import JailFacts
 from locus_runtime.pod_reservations import AdmissionDenied, PodLease, PodReservationLedger
 from locus_runtime.pod_sandbox_broker import BrokerCommand, _require_content_addressed_image
@@ -44,6 +46,7 @@ class StageDockerOutcome:
     elapsed_ms: int
     stage_id: str
     generation: str
+    codex_terminal_sha256: str = ""
 
 
 def _digest(payload: object) -> str:
@@ -265,6 +268,7 @@ class StageDockerBroker:
         self, lease: PodLease, stage_id: str, command: BrokerCommand, *,
         stdin: bytes | None = None,
         cancel: threading.Event | None = None,
+        codex_bridge: CodexOllamaBridge | None = None,
     ) -> StageDockerOutcome:
         if not isinstance(lease, PodLease) or not isinstance(command, BrokerCommand):
             raise AdmissionDenied("trusted lease and bounded command required")
@@ -280,6 +284,13 @@ class StageDockerBroker:
             except UnicodeDecodeError as exc:
                 raise AdmissionDenied("Docker stdin must be UTF-8") from exc
         stdin_sha256 = hashlib.sha256(stdin).hexdigest() if stdin is not None else None
+        if codex_bridge is not None and (
+            not isinstance(codex_bridge, CodexOllamaBridge)
+            or codex_bridge.lease is not lease
+            or stdin is None
+            or command.argv != ("/usr/local/bin/locus-codex-stdio",)
+        ):
+            raise AdmissionDenied("Codex model pipe requires exact admitted child and pinned runner")
         if cancel is not None and not isinstance(cancel, threading.Event):
             raise AdmissionDenied("cancellation must be a trusted local event")
         if cancel is not None and cancel.is_set():
@@ -311,6 +322,11 @@ class StageDockerBroker:
             or command.working_dir != stage.staged_path
         ):
             raise AdmissionDenied("command does not belong to bound stage attempt")
+        if codex_bridge is not None and (
+            stage.engine_id != "codex-cli/0.163.0"
+            or "model:ollama" not in caps.allowed_tools
+        ):
+            raise AdmissionDenied("Codex runner requires pinned engine and model grant")
         # Fail before receipt preparation unless the host daemon, binary,
         # seccomp and stage witness can be independently re-attested.
         docker, cli_sha = _trusted_local_binary(self.docker_path)
@@ -348,6 +364,7 @@ class StageDockerBroker:
             "guardian_epoch": guardian_epoch,
             "stdin_sha256": stdin_sha256,
             "stdin_bytes": len(stdin) if stdin is not None else 0,
+            "codex_model": codex_bridge.model if codex_bridge is not None else None,
         })
         # The exact frozen argv including digest-pinned image, container name,
         # stage source and resource limits is sealed into Gateway/receipt auth.
@@ -386,7 +403,7 @@ class StageDockerBroker:
             proof=proof, image_ref=self.image, socket_uri=socket_uri,
         )
 
-        def invoke() -> dict[str, int]:
+        def invoke() -> dict[str, int | str]:
             # Inside the kernel-held action fence; no other broker can replay.
             if require_guardian_ready(
                 self.receipts.reservations, self.socket_path,
@@ -418,6 +435,7 @@ class StageDockerBroker:
                     "HOME": config,
                 }
                 process: subprocess.Popen[bytes] | None = None
+                pump: CodexFramePump | None = None
                 try:
                     if require_guardian_ready(
                         self.receipts.reservations, self.socket_path,
@@ -426,9 +444,15 @@ class StageDockerBroker:
                     process = subprocess.Popen(
                         argv, shell=False,
                         stdin=(subprocess.PIPE if stdin is not None else subprocess.DEVNULL),
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        stdout=(subprocess.PIPE if codex_bridge is not None else subprocess.DEVNULL),
+                        stderr=subprocess.DEVNULL,
                         close_fds=True, env=env,
                     )
+                    pump = (
+                        CodexFramePump(process, codex_bridge, stdin)
+                        if codex_bridge is not None and stdin is not None else None
+                    )
+                    terminal_digest = ""
                     deadline = start + command.timeout_seconds
                     pending_input = stdin
                     while True:
@@ -453,7 +477,10 @@ class StageDockerBroker:
                         if remaining <= 0:
                             raise subprocess.TimeoutExpired(argv, command.timeout_seconds)
                         try:
-                            if stdin is None:
+                            if pump is not None:
+                                pump.poll()
+                                code = process.wait(timeout=min(0.2, remaining))
+                            elif stdin is None:
                                 code = process.wait(timeout=min(0.2, remaining))
                             else:
                                 # communicate() retains an incomplete input
@@ -470,6 +497,10 @@ class StageDockerBroker:
                         except subprocess.TimeoutExpired:
                             pending_input = None
                             continue
+                    if pump is not None:
+                        terminal_digest = pump.finish()
+                        if code != 0:
+                            raise AdmissionDenied(f"Codex Docker exit status {int(code)} after terminal proof")
                     if code in (125, 126, 127):
                         # Docker reserves 125 for daemon/CLI launch failure,
                         # 126 for an uninvokable entrypoint and 127 for a
@@ -491,8 +522,17 @@ class StageDockerBroker:
                     return {
                         "exit_code": int(code),
                         "elapsed_ms": max(0, int((time.monotonic() - start) * 1000)),
+                        "codex_terminal_sha256": terminal_digest,
                     }
                 except BaseException:
+                    # The model request is a separate host-side operation.
+                    # Cancellation/revocation/guardian failures must also
+                    # interrupt its active Ollama socket, not merely kill the
+                    # child container and leave inference running unbounded.
+                    if codex_bridge is not None:
+                        codex_bridge.abort()
+                        if pump is not None:
+                            pump.wait_pending(timeout=3)
                     # A killed Docker CLI may leave an orphaned daemon process.
                     # A failed cleanup is an *uncertain* action, never replayed.
                     try:
@@ -518,6 +558,10 @@ class StageDockerBroker:
                         logger.error("stage Docker uncertainty audit failed; manual reconciliation required")
                     raise
                 finally:
+                    # Successful completion also closes the inference channel
+                    # and prevents a stale child broker from making new calls.
+                    if codex_bridge is not None:
+                        codex_bridge.abort()
                     if process is not None and process.poll() is None:
                         process.kill()
                         process.wait(timeout=5)
@@ -526,7 +570,8 @@ class StageDockerBroker:
             lease, receipt.action_id, invoke=invoke,
         )
         return StageDockerOutcome(
-            final, data["exit_code"], data["elapsed_ms"], stage_id, generation,
+            final, int(data["exit_code"]), int(data["elapsed_ms"]), stage_id, generation,
+            str(data.get("codex_terminal_sha256", "")),
         )
 
     def stages_generation(self, lease: PodLease, stage_id: str) -> str:

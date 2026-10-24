@@ -1,0 +1,394 @@
+#!/usr/bin/python3
+"""Unprivileged, container-only Codex/OpenAI CLI + stdio Ollama HTTP bridge.
+
+Only used as the entrypoint of the digest-pinned Locus Codex OCI image.
+Docker networking is NONE. A loopback HTTP server emulates the *transport*
+surface for the official Codex --oss / Ollama mode; each actual inference call
+crosses a bounded JSONL Docker pipe to the trusted supervisor's Gateway model
+broker. No Locus credentials, host Codex configuration, or Docker socket exist
+inside the container. No MCP tools or arbitrary host capabilities are exposed.
+
+stdout is a protocol, never Codex stdout or logs. The supervisor must reject
+malformed/missing terminal protocol events and separately verify stage outputs.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import select
+import re
+import subprocess
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+SCHEMA = "locus.codex.stdio.v1"
+PINNED_CODEX_VERSION = "0.163.0"
+_MAX_PROMPT = 48 * 1024
+_MAX_MODEL_BYTES = 1024 * 1024
+_MAX_REPLY_BYTES = 4 * 1024 * 1024
+_MODEL = re.compile(r"[A-Za-z][A-Za-z0-9_.:/-]{0,100}\Z", re.ASCII)
+_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,80}\.txt\Z", re.ASCII)
+_output_lock = threading.Lock()
+_response_lock = threading.Condition()
+_response_slots: dict[int, dict[str, object]] = {}
+_counter = 0
+_closed = False
+_get_attempts = 0
+_reply_stop = threading.Event()
+
+
+def emit(frame: dict[str, object]) -> None:
+    raw = json.dumps(frame, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    if len(raw) > _MAX_REPLY_BYTES * 4 // 3 + 4096:
+        raise RuntimeError("oversized relay response")
+    with _output_lock:
+        sys.stdout.buffer.write(raw + b"\n")
+        sys.stdout.buffer.flush()
+
+
+def read_frame(raw: bytes) -> dict[str, object]:
+    if len(raw) > _MAX_REPLY_BYTES * 4 // 3 + 4096:
+        raise ValueError("oversized frame")
+    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        data: dict[str, object] = {}
+        for key, value in pairs:
+            if key in data:
+                raise ValueError("duplicate wire field")
+            data[key] = value
+        return data
+    frame = json.loads(raw, object_pairs_hook=unique)
+    if not isinstance(frame, dict) or frame.get("schema") != SCHEMA:
+        raise ValueError("invalid wire version")
+    return frame
+
+
+def receive_replies() -> None:
+    """Bounded, interruptible stdin reader; no daemon thread at Python shutdown.
+
+    Do not use buffered `sys.stdin.buffer.readline()` in a daemon thread:
+    on interpreter finalization that thread can hold the buffered I/O lock,
+    turning a successfully completed CLI run into a fatal exit (134).
+    """
+    global _closed
+    pending = bytearray()
+    max_line = _MAX_REPLY_BYTES * 4 // 3 + 4096
+    try:
+        fd = sys.stdin.fileno()
+        while not _reply_stop.is_set():
+            readable, _, _ = select.select([fd], [], [], 0.1)
+            if not readable:
+                continue
+            fragment = os.read(fd, 65536)
+            if not fragment:
+                break
+            pending.extend(fragment)
+            while True:
+                end = pending.find(b"\n")
+                if end < 0:
+                    if len(pending) > max_line:
+                        raise ValueError("inference reply frame exceeded bound")
+                    break
+                if end > max_line:
+                    raise ValueError("inference reply frame exceeded bound")
+                frame = read_frame(bytes(pending[:end]))
+                del pending[:end + 1]
+                ident = frame.get("id")
+                if (
+                    set(frame) != {"schema", "kind", "id", "status", "content_type", "body"}
+                    or frame["kind"] != "model_reply"
+                    or type(ident) is not int or ident <= 0
+                    or type(frame["status"]) is not int or not 100 <= frame["status"] <= 599
+                    or frame["content_type"] not in {"application/json", "text/event-stream"}
+                ):
+                    raise ValueError("invalid model reply")
+                body = frame["body"]
+                if not isinstance(body, str) or len(body) > _MAX_REPLY_BYTES * 4 // 3 + 8:
+                    raise ValueError("bad response size")
+                base64.b64decode(body, validate=True)
+                with _response_lock:
+                    if ident not in _response_slots or _response_slots[ident]:
+                        raise ValueError("unknown or duplicate reply")
+                    _response_slots[ident] = frame
+                    _response_lock.notify_all()
+        if pending and not _reply_stop.is_set():
+            raise ValueError("partial inference reply at end of input")
+    except (ValueError, TypeError, KeyError, OSError):
+        pass  # deny/close: never propagate untrusted reply data
+    finally:
+        with _response_lock:
+            _closed = True
+            _response_lock.notify_all()
+
+
+class LocalOllamaHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *_: object) -> None:
+        pass
+
+    def do_POST(self) -> None:
+        global _counter
+        if self.path not in {"/v1/responses", "/v1/chat/completions"}:
+            self.send_error(404)
+            return
+        size = self.headers.get("Content-Length", "")
+        if not size.isascii() or not size.isdecimal() or not 0 < int(size) <= _MAX_MODEL_BYTES:
+            self.send_error(413)
+            return
+        body = self.rfile.read(int(size))
+        with _response_lock:
+            if _closed:
+                self.send_error(503)
+                return
+            _counter += 1
+            ident = _counter
+            if ident > 16:
+                self.send_error(429)
+                return
+            _response_slots[ident] = {}
+        emit({
+            "schema": SCHEMA, "kind": "model_request", "id": ident,
+            "method": "POST", "path": self.path,
+            "body": base64.b64encode(body).decode("ascii"),
+        })
+        with _response_lock:
+            ready = _response_lock.wait_for(
+                lambda: _closed or bool(_response_slots.get(ident)), timeout=52,
+            )
+            reply = _response_slots.pop(ident, None)
+            if not ready or not reply:
+                self.send_error(503)
+                return
+        status = reply["status"]
+        media = reply["content_type"]
+        encoded = reply["body"]
+        assert type(status) is int and isinstance(media, str) and isinstance(encoded, str)
+        data = base64.b64decode(encoded, validate=True)
+        if len(data) > _MAX_REPLY_BYTES:
+            self.send_error(502)
+            return
+        self.send_response(status)
+        self.send_header("Content-Type", media)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(data)
+        self.wfile.flush()
+        self.close_connection = True
+
+    def do_GET(self) -> None:
+        global _get_attempts
+        _get_attempts += 1
+        # No unmediated GET to the host. A fixed local health response is the
+        # only discovery capability; model calls still require the supervisor.
+        if self.path != "/":
+            self.send_error(404)
+            return
+        data = b'{"status":"ok"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def _failure_category(message: str) -> str:
+    """Map CLI errors to bounded diagnostic labels, never expose source text."""
+    normalized = message.lower()
+    if any(token in normalized for token in (
+        "unknown feature", "unknown option", "unrecognized",
+        "configuration error", "unexpected argument", "invalid value",
+        "invalid feature", "failed to load config", "error parsing config",
+    )):
+        return "cli_configuration"
+    if any(token in normalized for token in (
+        "permission denied", "operation not permitted", "sandbox",
+        "unable to create", "failed to create",
+    )):
+        return "os_confinement"
+    if "model metadata" in normalized:
+        return "model_metadata"
+    if any(token in normalized for token in ("connection refused", "connect failed", "connection failed")):
+        return "model_connection"
+    if any(token in normalized for token in ("404", "503", "429", "500", "response status")):
+        return "provider_http"
+    if any(token in normalized for token in ("model", "ollama", "provider")):
+        return "provider_model"
+    return "cli_unknown"
+
+
+def _read_stderr(pipe: object, category: list[str]) -> None:
+    """Drain subprocess stderr privately; only a fixed category crosses the wire."""
+    if not hasattr(pipe, "readline"):
+        return
+    try:
+        while True:
+            line = pipe.readline(16384)
+            if not line:
+                break
+            kind = _failure_category(line.decode("utf-8", errors="replace"))
+            if category[0] in ("not_reported", "cli_unknown") and kind != "cli_unknown":
+                category[0] = kind
+    except (OSError, ValueError):
+        category[0] = "stderr_unavailable"
+
+
+def main() -> int:
+    try:
+        # The trusted parent permits a 65,536-byte *JSON frame*, including
+        # ensure_ascii-expanded non-ASCII prompts. Read that same bound + LF.
+        raw = sys.stdin.buffer.readline(65537)
+        if not raw.endswith(b"\n") or len(raw) > 65537:
+            raise ValueError("truncated or oversized Codex init")
+        init = read_frame(raw)
+        if set(init) != {"schema", "kind", "model", "prompt", "output", "version"}:
+            raise ValueError("unexpected launch fields")
+        if init["kind"] != "init" or init["version"] != PINNED_CODEX_VERSION:
+            raise ValueError("CLI version pin mismatch")
+        model, prompt, output = init["model"], init["prompt"], init["output"]
+        if (
+            not isinstance(model, str) or _MODEL.fullmatch(model) is None
+            or not isinstance(prompt, str) or not 0 < len(prompt.encode("utf-8")) <= _MAX_PROMPT
+            or not isinstance(output, str) or _NAME.fullmatch(output) is None
+        ):
+            raise ValueError("bounded model/task/artifact required")
+        version = subprocess.run(
+            ["/usr/local/bin/codex", "--version"], check=True, capture_output=True,
+            timeout=5, env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp"},
+        ).stdout.decode("ascii").strip()
+        if version != "codex-cli " + PINNED_CODEX_VERSION:
+            raise ValueError("unexpected official Codex CLI version")
+        output_path = Path("/workspace") / output
+        if output_path.exists() or output_path.is_symlink():
+            raise ValueError("output must not exist in the stage before launch")
+        server = ThreadingHTTPServer(("127.0.0.1", 11434), LocalOllamaHandler)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        receiver = threading.Thread(target=receive_replies, daemon=True)
+        receiver.start()
+        emit({"schema": SCHEMA, "kind": "ready", "version": PINNED_CODEX_VERSION})
+        env = {
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "HOME": "/tmp",
+            "CODEX_HOME": "/tmp/locus-codex",
+            "OLLAMA_HOST": "http://127.0.0.1:11434",
+        }
+        Path(env["CODEX_HOME"]).mkdir(mode=0o700, exist_ok=False)
+        argv = [
+            "/usr/local/bin/codex", "exec", "--json", "--skip-git-repo-check",
+            "--ephemeral", "--ignore-user-config", "--cd", "/workspace",
+            "--sandbox", "read-only", "--disable", "shell_tool",
+            "--disable", "unified_exec", "--ignore-rules",
+            "--model", model, "-o", str(output_path),
+            # --oss runs model discovery / auto-pull (GET /api/tags,
+            # POST /api/pull) before inference. This sandbox intentionally
+            # forbids those operations. A fixed custom provider sends only
+            # OpenAI-compatible Responses calls to our in-container loopback
+            # HTTP facade; no provider credentials are configured.
+            "-c", 'model_provider="locus_ollama"',
+            "-c", 'model_providers.locus_ollama.name="Locus local Ollama"',
+            "-c", 'model_providers.locus_ollama.base_url="http://127.0.0.1:11434/v1"',
+            "-c", 'model_providers.locus_ollama.wire_api="responses"',
+            "-c", 'model_providers.locus_ollama.requires_openai_auth=false',
+            "-c", 'web_search="disabled"',
+            "-",
+        ]
+        stream_digest = hashlib.sha256()
+        events = 0
+        tool_seen = False
+        error_category = "not_reported"
+        stderr_status = ["not_reported"]
+        proc = subprocess.Popen(
+            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, cwd="/workspace", shell=False,
+            close_fds=True, env=env,
+        )
+        assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+        stderr_reader = threading.Thread(
+            target=_read_stderr, args=(proc.stderr, stderr_status), daemon=True,
+        )
+        stderr_reader.start()
+        proc.stdin.write(prompt.encode("utf-8"))
+        proc.stdin.close()
+        # Codex stdout is untrusted. Its content is digested in memory only,
+        # never placed into Docker stdout or an audit record.
+        for line in iter(lambda: proc.stdout.readline(131073), b""):
+            # The CLI is untrusted at this boundary. Bound *before* allocation,
+            # rather than reading an unbounded line and checking afterward.
+            if len(line) > 131072 or not line.endswith(b"\n"):
+                proc.kill()
+                break
+            stream_digest.update(line)
+            events += 1
+            if events > 8192:
+                proc.kill()
+                break
+            try:
+                event = json.loads(line)
+                if isinstance(event, dict) and event.get("type") in {"error", "turn.failed"}:
+                    info = event.get("error")
+                    message = info.get("message", "") if isinstance(info, dict) else event.get("message", "")
+                    error_category = _failure_category(str(message))
+                if event.get("type") == "item.completed":
+                    item = event.get("item")
+                    if isinstance(item, dict) and item.get("type") in {
+                        "command_execution", "mcp_tool_call", "file_change",
+                    }:
+                        tool_seen = True
+            except (ValueError, TypeError, AttributeError):
+                proc.kill()
+                break
+        code = proc.wait(timeout=5)
+        stderr_reader.join(timeout=1)
+        server.shutdown()
+        if error_category == "not_reported":
+            error_category = stderr_status[0]
+        if error_category == "not_reported" and _get_attempts:
+            error_category = "discovery_get"
+        if code != 0 or tool_seen or not output_path.is_file() or output_path.is_symlink():
+            emit({
+                "schema": SCHEMA, "kind": "done", "ok": False, "events": events,
+                "exit_code": code, "model_calls": _counter,
+                "category": ("unexpected_tool" if tool_seen else error_category),
+            })
+            return 3
+        data = output_path.read_bytes()
+        if not 0 < len(data) <= 65536:
+            emit({
+                "schema": SCHEMA, "kind": "done", "ok": False, "events": events,
+                "exit_code": 4, "model_calls": _counter, "category": "artifact_invalid",
+            })
+            return 4
+        emit({
+            "schema": SCHEMA, "kind": "done", "ok": True,
+            "events": events, "sha256": hashlib.sha256(data).hexdigest(),
+            "stdout_sha256": stream_digest.hexdigest(),
+            "bytes": len(data),
+        })
+        return 0
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        # Never report input, filesystem names, subprocess stderr, or secrets.
+        emit({
+            "schema": SCHEMA, "kind": "done", "ok": False, "events": 0,
+            "exit_code": 5, "model_calls": _counter, "category": "runner_startup",
+        })
+        return 5
+    finally:
+        # Terminate all threads that could hold interpreter buffered-I/O locks.
+        # Protocol shutdown is a normal completion path, not a child privilege.
+        _reply_stop.set()
+        if "receiver" in locals() and receiver.is_alive():
+            receiver.join(timeout=2)
+        if "server" in locals():
+            if "thread" in locals() and thread.is_alive():
+                server.shutdown()
+                thread.join(timeout=2)
+            server.server_close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

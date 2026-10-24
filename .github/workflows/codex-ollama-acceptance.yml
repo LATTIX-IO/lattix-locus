@@ -1,0 +1,124 @@
+name: Real Codex CLI and Ollama kernel acceptance
+
+on:
+  pull_request:
+    paths:
+      - "locus_runtime/pod_codex_bridge.py"
+      - "locus_runtime/pod_codex_transport.py"
+      - "locus_runtime/pod_stage_docker.py"
+      - "locus_runtime/harness/codex_cli_worker.py"
+      - "docker/codex/**"
+      - "tests/integration/test_codex_ollama_kernel_acceptance.py"
+      - "tests/unit/test_stage_codex_worker.py"
+      - ".github/workflows/codex-ollama-acceptance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-codex-ollama:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Start local Ollama (inference is never exposed to Codex container)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # SHA-256 digest observed from the passing real acceptance image.
+          # Update deliberately, not through a mutable :latest tag.
+          ollama_image='ollama/ollama@sha256:5c6707fcf2e1a30cffe2ecb7e315584fc87747c389327e4bc711c4959aa1eecc'
+          docker pull "$ollama_image"
+          docker run -d --name locus-ollama --pull=never \
+            -p 127.0.0.1:11434:11434 "$ollama_image"
+          for attempt in $(seq 1 40); do
+            if curl --noproxy '*' --fail --silent http://127.0.0.1:11434/api/tags > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --noproxy '*' --fail --silent http://127.0.0.1:11434/api/tags > /dev/null
+          docker exec locus-ollama ollama pull llama3.2:1b
+          docker exec locus-ollama ollama list
+      - name: Build pinned official Codex image, record immutable image manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          node_ref='node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e'
+          docker pull "$node_ref"
+          docker build -f docker/codex/Dockerfile \
+            --build-arg "NODE_BASE=$node_ref" \
+            --build-arg CODEX_CLI_VERSION=0.163.0 \
+            -t locus-codex:acceptance .
+          registry_image='registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373'
+          docker pull "$registry_image"
+          docker run -d --pull=never --name locus-codex-registry \
+            -p 127.0.0.1:5001:5000 "$registry_image"
+          docker tag locus-codex:acceptance localhost:5001/locus-codex:0.163.0
+          docker push localhost:5001/locus-codex:0.163.0
+          image="$(docker image inspect localhost:5001/locus-codex:0.163.0 --format '{{index .RepoDigests 0}}')"
+          test "${image#*@sha256:}" != "$image"
+          docker image inspect "$image" > "$RUNNER_TEMP/locus-codex-image-inspect.json"
+          docker run --rm --pull=never --network=none \
+            --entrypoint=/usr/local/bin/codex "$image" --version \
+            | grep -Fx 'codex-cli 0.163.0'
+          docker run --rm --pull=never --network=none \
+            --entrypoint=/usr/local/bin/codex "$image" exec --help \
+            > "$RUNNER_TEMP/codex-exec-help.txt"
+          for flag in '--ignore-user-config' '--ignore-rules' '--sandbox' '--ephemeral'; do
+            grep -F -- "$flag" "$RUNNER_TEMP/codex-exec-help.txt" >/dev/null
+          done
+          echo "Codex official exec flags preflight passed"
+          docker run --rm --pull=never --network=none \
+            --entrypoint=/usr/local/bin/codex "$image" features list \
+            | grep -E '^shell_tool[[:space:]]'
+          echo "LOCUS_CODEX_ACCEPTANCE_IMAGE=$image" >> "$GITHUB_ENV"
+          printf 'Pinned image: %s\n' "$image"
+      - name: Verify full real local inference, kernel isolation and escrow
+        env:
+          LOCUS_REAL_CODEX_ACCEPTANCE: "1"
+        run: |
+          python -m pytest -q -rs \
+            --junitxml="$RUNNER_TEMP/codex-acceptance.xml" \
+            tests/unit/test_stage_codex_worker.py \
+            tests/integration/test_codex_ollama_kernel_acceptance.py
+          # A successful pytest exit can still mean skipped live tests.
+          # This release gate explicitly prohibits skipped or missing cases.
+          python - "$RUNNER_TEMP/codex-acceptance.xml" <<'PY'
+          import sys
+          from xml.etree import ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          cases = list(root.iter("testcase"))
+          skipped = [case.get("name") for case in cases if case.find("skipped") is not None]
+          executed = {case.get("name") for case in cases if case.find("skipped") is None}
+          required = {
+              "test_real_codex_calls_ollama_and_escrows_single_artifact",
+              "test_real_codex_inflight_cancel_is_uncertain_not_replayed",
+              "test_cancelled_codex_pod_does_not_prepare_dispatch",
+          }
+          if not cases or skipped or not required.issubset(executed):
+              raise SystemExit(
+                  "Codex real-kernel acceptance requires all live tests, zero skips"
+              )
+          print(f"Codex acceptance verified: {len(cases)} executed, 0 skipped")
+          PY
+      - name: Assert no Locus workers remain on host
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          leftover="$(docker ps -a --filter name=locus-pod- --format '{{.Names}}')"
+          if [ -n "$leftover" ]; then
+            echo "Locus Docker pods remained after test" >&2
+            exit 1
+          fi
+      - name: Tear down test-only model and registry
+        if: always()
+        run: docker rm -f locus-ollama locus-codex-registry 2>/dev/null || true
