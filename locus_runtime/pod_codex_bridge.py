@@ -266,6 +266,9 @@ class CodexOllamaBridge:
                 try:
                     sock.shutdown(socket.SHUT_RDWR)
                 except OSError:
+                    # The remote side may have already closed its socket.
+                    # Cancellation is irrevocable; do not mask it or skip
+                    # closing the HTTP connection when shutdown fails.
                     pass
             try:
                 active.close()
