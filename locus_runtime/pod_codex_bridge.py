@@ -344,6 +344,11 @@ class CodexOllamaBridge:
                 _reject_tool_responses(output, media)
                 if self._cancelled.is_set():
                     raise CodexRelayDenied("Codex inference lease cancelled")
+            except CodexRelayDenied:
+                # Denials inherit PermissionError -> OSError. Preserve policy,
+                # cancellation and malformed-response reasons verbatim rather
+                # than misclassifying them as an unavailable Ollama service.
+                raise
             except (OSError, http.client.HTTPException, TimeoutError) as exc:
                 raise CodexRelayDenied("approved loopback model unavailable") from exc
             finally:
