@@ -6,6 +6,7 @@ remote admission is intentionally unavailable, including with well-formed data.
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -89,3 +90,36 @@ def admit_remote_execution(envelope: UntrustedRemoteEnvelope) -> None:
     if not isinstance(envelope, UntrustedRemoteEnvelope):
         raise InvalidRemoteEnvelope("remote envelope type denied")
     raise RemoteAdmissionUnavailable("organization remote execution is not enabled")
+
+
+
+def decode_untrusted_remote_envelope(raw: bytes) -> UntrustedRemoteEnvelope:
+    """Decode a bounded UTF-8 JSON frame without granting remote authority.
+
+    This is an untrusted ingress parser, not an authentication or admission
+    decision. The bound applies BEFORE decoding or JSON allocation. Any
+    duplicate JSON key (including nested ones), nonfinite token, malformed
+    Unicode or unsupported schema fails closed. Unknown fields remain denied.
+    """
+    if type(raw) is not bytes or not 0 < len(raw) <= MAX_WIRE_BYTES:
+        raise InvalidRemoteEnvelope("remote envelope frame size denied")
+
+    def unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        output: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in output:
+                raise ValueError("duplicate JSON key")
+            output[key] = value
+        return output
+
+    def reject_nonfinite(value: str) -> None:
+        raise ValueError("nonfinite JSON token")
+
+    try:
+        parsed = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=unique_pairs,
+            parse_constant=reject_nonfinite,
+        )
+    except (UnicodeError, ValueError, RecursionError):
+        raise InvalidRemoteEnvelope("remote envelope JSON frame denied") from None
+    return parse_untrusted_remote_envelope(parsed)

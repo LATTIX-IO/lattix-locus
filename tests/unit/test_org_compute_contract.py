@@ -1,11 +1,14 @@
 """OCF-01 trust-boundary contract: untrusted data is never authority."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from locus_runtime.org_compute_contract import (
     InvalidRemoteEnvelope, RemoteAdmissionUnavailable,
-    admit_remote_execution, parse_untrusted_remote_envelope,
+    admit_remote_execution, decode_untrusted_remote_envelope,
+    parse_untrusted_remote_envelope,
 )
 
 
@@ -80,6 +83,62 @@ def test_malformed_container_denied(bad):
     with pytest.raises(InvalidRemoteEnvelope):
         parse_untrusted_remote_envelope(bad)
 
+
+
+def test_bounded_frame_valid_decoding_still_cannot_execute():
+    wire = json.dumps(valid(), separators=(",", ":")).encode("utf-8")
+    assert decode_untrusted_remote_envelope(wire) == parse_untrusted_remote_envelope(valid())
+    with pytest.raises(RemoteAdmissionUnavailable):
+        admit_remote_execution(decode_untrusted_remote_envelope(wire))
+
+
+@pytest.mark.parametrize("raw", [
+    b"", b"[]", b"null", b"NaN", b"{} trailing", b"not json",
+    b'{"org_id":"org:alpha","org_id":"org:beta"}',
+    b'{"unknown":{"x":1,"x":2}}',
+    bytes([0xef, 0xbb, 0xbf]) + b"{}",
+    bytes([0xff]),
+    b"{" + b" " * 16384 + b"}",
+])
+def test_raw_frame_malformed_duplicate_or_oversized_denied(raw):
+    with pytest.raises(InvalidRemoteEnvelope):
+        decode_untrusted_remote_envelope(raw)
+
+
+@pytest.mark.parametrize("raw", [None, "{}", bytearray(b"{}"), {}, 123])
+def test_ingress_accepts_only_immutable_bytes(raw):
+    with pytest.raises(InvalidRemoteEnvelope):
+        decode_untrusted_remote_envelope(raw)
+
+
+def test_oversized_frame_is_rejected_before_json_parser(monkeypatch):
+    from locus_runtime import org_compute_contract as module
+
+    def forbidden_parser(*args, **kwargs):
+        raise AssertionError("oversized payload must not reach JSON parsing")
+
+    monkeypatch.setattr(module.json, "loads", forbidden_parser)
+    with pytest.raises(InvalidRemoteEnvelope, match="frame size denied"):
+        decode_untrusted_remote_envelope(b"x" * (module.MAX_WIRE_BYTES + 1))
+
+
+def test_escaped_unicode_surrogate_is_explicitly_denied_not_server_error():
+    wire = valid()
+    wire["org_id"] = chr(0xD800)
+    with pytest.raises(InvalidRemoteEnvelope, match="identifier denied"):
+        decode_untrusted_remote_envelope(json.dumps(wire).encode("utf-8"))
+    with pytest.raises(InvalidRemoteEnvelope, match="identifier denied"):
+        parse_untrusted_remote_envelope(wire)
+
+
+@pytest.mark.parametrize("field", ["org_id", "workspace_id", "sender_device_id"])
+def test_encoded_foreign_claims_have_no_authority(field):
+    wire = valid()
+    wire[field] = "foreign:spoofed"
+    with pytest.raises(RemoteAdmissionUnavailable):
+        admit_remote_execution(
+            decode_untrusted_remote_envelope(json.dumps(wire).encode("utf-8"))
+        )
 
 
 @pytest.mark.parametrize("field", [
