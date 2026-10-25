@@ -81,9 +81,14 @@ fn validate_response(
         if let Some(version) = expected_build {
             let announced = response_header(headers, "x-locus-desktop-build");
             if announced != Some(version) {
+                // The listener is untrusted; bound user-visible diagnostics.
+                let observed: String = announced
+                    .unwrap_or("no Locus build header")
+                    .chars()
+                    .take(96)
+                    .collect();
                 return Err(format!(
-                    "frontend build mismatch: expected v{version}, received {}",
-                    announced.unwrap_or("no Locus build header")
+                    "frontend build mismatch: expected v{version}, received {observed}"
                 ));
             }
         }
