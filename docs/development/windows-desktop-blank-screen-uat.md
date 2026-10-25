@@ -74,3 +74,75 @@ its standalone smoke and Rust/Tauri packaging; verify the resulting release
 before recommending another installer to the owner. Do not trigger the
 credential-bearing desktop release workflow on an untrusted PR branch, change
 signing keys or publish an unmerged PR to the automatic Dev channel.
+
+## October 25 owner asset evidence (installed v0.10.4)
+
+Confirmed from the owner's Windows PowerShell and Edge tests:
+
+- The Next.js frontend at `http://127.0.0.1:3000/home` is completely white
+  in Edge **and** the installed Tauri window. It responds HTTP 200,
+  `text/html; charset=utf-8`, with 12,011 HTML characters.
+- Installed `%LOCALAPPDATA%\\Lattix Locus\\resources\\frontend\\server.js`
+  and `.next\\static` exist; the static tree contains 52 JavaScript and 3 CSS files.
+- HTML references 14 JS/CSS assets. **6 of the first 12 HTTP requests returned
+  404**: one CSS chunk (`3vgvgj9_bqlsc.css`) and five JS chunks
+  (`38yxu_eyyt1fs.js`, `0fo546wxpcpmm.js`, `1a8fdlddd8icn.js`,
+  `2e0etuy-dhsrf.js`, `2rrrnh9yjjav3.js`).
+- PID 99020 on port 3000 is bundled `bin\\node.EXE`; PID 80912
+  on port 8000 is bundled `locus-backend.exe`. The installed shell path is
+  `%LOCALAPPDATA%\\Lattix Locus\\lattix-locus-desktop.exe`.
+
+**Confirmed failure class:** the installed Node server does not serve all
+required static assets, which can prevent React hydration. **Not yet proven:**
+whether those files are absent from disk (installer/build staging defect),
+or a previous Node server is still running against a newer installed tree
+(stale process/build mismatch), or an unexpected route is used.
+
+The older smoke probe validated only the alphabetically first arbitrary
+JS file. The revised `scripts/desktop_frontend_smoke.py` now tests *every*
+page-referenced JS/CSS file against both the packaged tree and HTTP response.
+The three CI installer recipes now clean their staged Next.js resource tree
+before copying, and a focused regression suite covers 404, missing files,
+bad MIME types and empty references. No passing exact-head results or owner
+Windows repair can be claimed until those validations complete.
+
+### Read-only local discriminator
+
+With the white Locus app **still running**, use PowerShell:
+
+```powershell
+$install = Join-Path $env:LOCALAPPDATA 'Lattix Locus'
+$static = Join-Path $install 'resources\\frontend\\.next\\static\\chunks'
+$missing = @(
+  '3vgvgj9_bqlsc.css',
+  '38yxu_eyyt1fs.js',
+  '0fo546wxpcpmm.js',
+  '1a8fdlddd8icn.js',
+  '2e0etuy-dhsrf.js',
+  '2rrrnh9yjjav3.js'
+)
+$missing | ForEach-Object {
+  [pscustomobject]@{
+    Chunk = $_
+    Exists = Test-Path (Join-Path $static $_)
+  }
+} | Format-Table -AutoSize
+
+$listener = Get-NetTCPConnection -LocalPort 3000 -State Listen |
+  Select-Object -First 1
+$nodeInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $($listener.OwningProcess)"
+$serverInfo = Get-Item (Join-Path $install 'resources\\frontend\\server.js')
+[pscustomobject]@{
+  NodePID = $nodeInfo.ProcessId
+  NodeParentPID = $nodeInfo.ParentProcessId
+  NodeStarted = $nodeInfo.CreationDate
+  ServerJSModified = $serverInfo.LastWriteTime
+} | Format-List
+```
+
+If files are missing from disk, investigate NSIS resource inclusion and
+unified staging; if files exist but return 404, investigate the serving root
+and running-process identity. If Node predates a newer installed
+`server.js`, a stale process/build mismatch is strongly indicated. Save
+work, use tray **Quit**, verify ports are released before relaunching; do
+not manually kill active worker processes or uninstall/delete app data.
