@@ -59,6 +59,7 @@ def test_unexpected_error_creates_real_sanitized_failure_report(
         artifact_created = next(e for e in event_payload if e["type"] == "artifact_created")
         assert error["metadata"]["exception_type"] == "RuntimeError"
         assert error["metadata"]["error_code"] == "execution_unhandled_exception"
+        assert "[execution_unhandled_exception]" in error["summary"]
         assert artifact_created["summary"].startswith("Bounded failure facts")
     finally:
         ids = {a["id"] for a in store.run_details.get(run_id, {}).get("artifacts", [])}
