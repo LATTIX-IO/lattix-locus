@@ -248,7 +248,7 @@ export function LocalModelsPanel({ overview, onRefresh }: { overview: ModelsOver
       </p>
       {missingDefault ? (
         <p role="alert" className="text-xs text-[var(--fx-warning)]">
-          Configured Ollama default "{configuredDefault}" is not installed.
+          Configured Ollama default &ldquo;{configuredDefault}&rdquo; is not installed.
           Choose an installed model under Providers → Local (Ollama) and save the default;
           no model was downloaded or changed automatically.
         </p>
