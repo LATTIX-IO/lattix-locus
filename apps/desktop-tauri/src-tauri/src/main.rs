@@ -94,6 +94,12 @@ fn quit_now(app: tauri::AppHandle) {
 
 fn main() {
     tauri::Builder::default()
+        // Must be first so a second launch exits before it creates a tray,
+        // registers hotkeys, or starts another backend/frontend supervisor.
+        // No argv/cwd is stored or logged, and the existing window is focused.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main(app);
+        }))
         .plugin(tauri_plugin_shell::init())
         // Native WebView2 navigation signals, independent of Next/React paint.
         // Fixed event codes only; no URLs, prompts, tokens or query strings.
