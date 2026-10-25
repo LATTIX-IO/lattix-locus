@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   createWorkflowRun,
   getAgentDefinitions,
+  getModelsOverview,
   getPlaybooks,
   getPublishedWorkflows,
   type ComposerOptions,
@@ -332,6 +333,26 @@ export function TaskKickoffComposer({
         .filter((token) => token.kind === "playbook")
         .map((token) => token.value);
 
+      // A blank model silently falls back to an agent's OpenAI default, even
+      // on a local-only host with no OpenAI credentials. Require a deliberate
+      // selection before admitting a task, never switch trust domains.
+      const chosenModel = String(composerOpts.model || "").trim();
+      if (!chosenModel) {
+        throw new Error("No execution model selected. Open Model and choose a configured provider or installed Ollama model.");
+      }
+      if (chosenModel.toLowerCase().startsWith("ollama/")) {
+        // Refresh at submission, not only when the composer mounts. A model can
+        // be removed or Ollama stopped while the draft is open.
+        const inventory = await getModelsOverview();
+        const ollama = inventory.providers.ollama;
+        const installedId = chosenModel.slice("ollama/".length);
+        if (!ollama.available) {
+          throw new Error("Ollama is not running. Start Ollama or choose a configured hosted model before submitting.");
+        }
+        if (!ollama.installed_models.some((item) => item.id === installedId)) {
+          throw new Error(`Ollama model "${installedId}" is not installed. Select an installed model under Model or update Settings > Engines.`);
+        }
+      }
       const payload = {
         session_kind: "task",
         prompt: draft,
