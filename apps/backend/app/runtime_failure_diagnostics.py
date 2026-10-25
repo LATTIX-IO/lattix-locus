@@ -18,9 +18,8 @@ _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
 _SAFE_BASENAME = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 _REPORT_SCHEMA = "locus/runtime-failure/v1"
 HISTORICAL_UNRECORDED_MESSAGE = (
-    "The run failed before structured failure diagnostics were recorded. "
-    "The original exception was not retained; retry after installing a "
-    "diagnostics-enabled build. A provider/auth cause has not been established."
+    "This historical failure predates structured diagnostics. The original "
+    "exception was not retained; a provider/auth cause has not been established."
 )
 
 
