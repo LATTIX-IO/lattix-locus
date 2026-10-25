@@ -8,7 +8,9 @@ and identify the exact desktop version the native shell will enforce.
 from __future__ import annotations
 
 import argparse
+import html
 import os
+import re
 import socket
 import subprocess
 import tempfile
@@ -16,6 +18,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 
 def choose_loopback_port() -> int:
@@ -29,7 +32,7 @@ def validate_home(
     *,
     version: str,
     timeout: float = 3.0,
-) -> None:
+) -> bytes:
     with urllib.request.urlopen(url, timeout=timeout) as response:
         if response.status != 200:
             raise RuntimeError(f"frontend /home returned HTTP {response.status}")
@@ -40,15 +43,78 @@ def validate_home(
             )
         if not response.headers.get("Content-Type", "").lower().startswith("text/html"):
             raise RuntimeError("frontend /home is not HTML")
-        sample = response.read(128 * 1024)
+        # Reading only the first 128 KiB can miss route-specific client chunks.
+        # Bounded HTML is required so every referenced initial asset can be checked.
+        sample = response.read(2 * 1024 * 1024 + 1)
+        if len(sample) > 2 * 1024 * 1024:
+            raise RuntimeError("frontend /home HTML exceeds 2 MiB diagnostic limit")
         if b"<html" not in sample.lower():
             raise RuntimeError("frontend /home did not render an HTML document")
+        return sample
 
 
-def validate_static(url: str, *, timeout: float = 3.0) -> None:
+def validate_static(
+    url: str, *, timeout: float = 3.0, expected_type: str | None = None,
+) -> None:
     with urllib.request.urlopen(url, timeout=timeout) as response:
         if response.status != 200 or not response.read(128):
             raise RuntimeError("packaged static chunk is missing or empty")
+        if expected_type:
+            content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            acceptable = (
+                {"application/javascript", "text/javascript"} if expected_type == "js"
+                else {"text/css"}
+            )
+            if content_type not in acceptable:
+                raise RuntimeError(
+                    f"static {expected_type} response has wrong content type: {content_type!r}"
+                )
+
+
+# Check the page's own initial assets. A single arbitrary chunk succeeding is
+# not evidence that the app's required CSS/JS exists: owner v0.10.4 had 6
+# missing assets among the first 12, despite a 200 /home response.
+_ASSET_REF = re.compile(
+    r"/_next/static/[A-Za-z0-9._~%+/-]+?\\.(?:js|css)(?:\\?[A-Za-z0-9_.~%=&+-]*)?",
+    flags=re.IGNORECASE,
+)
+
+
+def referenced_assets(html_body: bytes) -> list[str]:
+    document = html.unescape(html_body.decode("utf-8", errors="replace"))
+    return sorted(set(_ASSET_REF.findall(document)))
+
+
+def validate_referenced_assets(
+    base: str, html_body: bytes, static: Path, *, timeout: float = 3.0,
+) -> int:
+    assets = referenced_assets(html_body)
+    if not assets:
+        raise RuntimeError("frontend /home references no Next.js JS/CSS assets")
+    if len(assets) > 512:
+        raise RuntimeError("frontend /home references an unexpected number of assets")
+    for reference in assets:
+        raw_path = urlsplit(reference).path
+        path = unquote(raw_path)
+        if not path.startswith("/_next/static/"):
+            raise RuntimeError("invalid Next.js asset reference")
+        relative = path[len("/_next/static/"):]
+        segments = relative.split("/")
+        if not relative or any(part in ("", ".", "..") for part in segments) or "\\\\" in relative:
+            raise RuntimeError("unsafe Next.js asset reference")
+        expected_type = "js" if relative.lower().endswith(".js") else "css"
+        installed_file = static.joinpath(*segments)
+        if not installed_file.is_file() or installed_file.stat().st_size == 0:
+            raise RuntimeError(f"referenced Next.js asset not packaged: {path}")
+        try:
+            validate_static(
+                base + reference, timeout=timeout, expected_type=expected_type,
+            )
+        except (OSError, urllib.error.URLError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"referenced Next.js asset cannot load: {path} ({type(exc).__name__}: {exc})"
+            ) from exc
+    return len(assets)
 
 
 def validate_rendered_ui(base: str, *, browser_channel: str) -> None:
@@ -158,12 +224,11 @@ def smoke(
                     last_error = f"standalone server exited ({proc.returncode})"
                     break
                 try:
-                    validate_home(f"{base}/home", version=version)
-                    relative = chunks[0].relative_to(static).as_posix()
-                    validate_static(f"{base}/_next/static/{relative}")
+                    html_body = validate_home(f"{base}/home", version=version)
+                    asset_count = validate_referenced_assets(base, html_body, static)
                     print(
                         f"Desktop frontend HTTP acceptance passed: build {version}, "
-                        f"HTML /home, static /_next/static/{relative}"
+                        f"HTML /home and all {asset_count} referenced JS/CSS assets"
                     )
                     if browser_channel:
                         validate_rendered_ui(base, browser_channel=browser_channel)
