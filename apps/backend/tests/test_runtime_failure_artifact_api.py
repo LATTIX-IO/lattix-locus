@@ -17,7 +17,7 @@ from test_generated_artifacts import AUTH_HEADERS, client, main_module, store
 from test_provider_unavailable import _cleanup_run, _create_run_and_collect
 
 
-def _explode_secretly(**_kwargs: object) -> tuple[str, dict]:
+def _explode_secretly(*_args: object, **_kwargs: object) -> tuple[str, dict]:
     raise RuntimeError("secret: sk-test-NEVER-LEAK provider key from upstream")
 
 
