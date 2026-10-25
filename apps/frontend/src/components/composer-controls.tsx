@@ -116,6 +116,10 @@ export function ComposerControls({ onChange, onModelReadinessChange }: Props) {
         }
       }
       for (const p of ov?.external ?? []) {
+        // The generic provider list can report Ollama "configured" even
+        // when its default points to an uninstalled model. For local models
+        // only the live installed-model inventory grants selection.
+        if (p.id === "ollama") continue;
         if (p.configured && p.default_model) {
           const value = p.id === "openai" ? p.default_model : `${p.id}/${p.default_model}`;
           if (!opts.some((item) => item.value === value)) {
