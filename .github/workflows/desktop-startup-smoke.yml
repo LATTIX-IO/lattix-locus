@@ -1,0 +1,115 @@
+# LOCUS-475: read-only, secretless Windows verification of the actual staged
+# standalone Next.js desktop frontend before a PR can become a Dev installer.
+# This is a smoke job, NOT a release or PR-preview installer publisher.
+name: desktop-startup-smoke
+
+on:
+  pull_request:
+    paths:
+      - "apps/frontend/**"
+      - "apps/desktop-tauri/src-tauri/src/**"
+      - "apps/desktop-tauri/src-tauri/loading/**"
+      - "scripts/desktop_frontend_smoke.py"
+      - "scripts/desktop_installer_smoke.py"
+      - "tests/unit/test_desktop_installer_smoke.py"
+      - "tests/unit/test_desktop_frontend_smoke.py"
+      - ".github/workflows/desktop-startup-smoke.yml"
+      - ".github/workflows/desktop-dev.yml"
+      - ".github/workflows/desktop-release.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  windows-standalone-ui:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile and run the native HTTP readiness tests
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'locus-desktop-health-tests.exe'
+          rustc --edition 2021 --test apps/desktop-tauri/src-tauri/src/desktop_health.rs -o $exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build the desktop Next.js standalone bundle
+        shell: bash
+        working-directory: apps/frontend
+        env:
+          LOCUS_DESKTOP_BUILD_VERSION: "0.10.0-pr-smoke"
+        run: |
+          npm ci
+          npm run build
+          # Stage one coherent build. Reusing the destination mixes content-hashed
+          # JS/CSS from earlier runs; copying static onto an existing static/
+          # directory can also create an unintended nested static/static tree.
+          stage=../../apps/desktop-tauri/src-tauri/resources/frontend
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          cp -r .next/standalone/. "$stage/"
+          rm -rf "$stage/.next/static"
+          mkdir -p "$stage/.next"
+          cp -r .next/static "$stage/.next/"
+          if [ -d public ]; then
+            rm -rf "$stage/public"
+            cp -r public "$stage/"
+          fi
+      - name: Regression test full referenced-asset manifest
+        shell: bash
+        run: |
+          python -m pip install pytest==8.4.2
+          # This smoke test is stdlib-only. Do not import the repository-wide
+          # backend conftest (FastAPI/database deps are deliberately absent).
+          python -m pytest -q --noconftest tests/unit/test_desktop_frontend_smoke.py tests/unit/test_desktop_installer_smoke.py
+      - name: Require actual Windows Edge client rendering
+        shell: bash
+        run: |
+          python -m pip install playwright==1.63.0
+          python scripts/desktop_frontend_smoke.py \
+            --frontend apps/desktop-tauri/src-tauri/resources/frontend \
+            --node node --version 0.10.0-pr-smoke \
+            --browser-channel msedge
+      # PR-only NSIS inspection: no signing key, no release, no artifact upload,
+      # and no startup of the dummy backend/policy executables. Their only
+      # purpose is satisfying Tauri's externalBin packaging contract so the
+      # real Tauri NSIS resource layout is exercised before merge.
+      - name: Build unsigned resource-inspection NSIS (no publication)
+        shell: bash
+        run: |
+          triple=x86_64-pc-windows-msvc
+          tauri=apps/desktop-tauri/src-tauri
+          mkdir -p "$tauri/bin" "$tauri/sidecars"
+          node_exe="$(command -v node)"
+          cp "$node_exe" "$tauri/bin/node.exe"
+          cp "$node_exe" "$tauri/bin/locus-backend-$triple.exe"
+          cp "$node_exe" "$tauri/sidecars/locus-opa-$triple.exe"
+          rustup target add "$triple"
+          cargo install tauri-cli --version "^2" --locked
+          (
+            cd "$tauri"
+            cargo tauri icon ../icon-source.png
+            cargo tauri build --target "$triple" --bundles nsis
+          )
+      - name: Verify extracted NSIS contains all staged frontend bytes
+        shell: bash
+        run: |
+          nsis_dir=apps/desktop-tauri/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis
+          mapfile -t installers < <(find "$nsis_dir" -maxdepth 1 -type f -name '*-setup.exe')
+          if [ "${#installers[@]}" -ne 1 ]; then
+            echo "::error::NSIS inspection build missing or ambiguous"; exit 1
+          fi
+          python scripts/desktop_installer_smoke.py \
+            --installer "${installers[0]}" \
+            --frontend apps/desktop-tauri/src-tauri/resources/frontend \
+            --version 0.10.0-pr-smoke

@@ -78,11 +78,20 @@ $sidecars = Join-Path $tauri "sidecars"
 New-Item -ItemType Directory -Force -Path $sidecars | Out-Null
 Copy-Item (Join-Path $root "dist/locus-opa.exe") (Join-Path $sidecars "locus-opa-$triple.exe") -Force
 
-# 2) Frontend standalone + vendored Node
-Write-Host "== building frontend (Next.js standalone) =="
+# 2) Frontend standalone + vendored Node. The exact installed Tauri
+# version must be compiled into Next's X-Locus-Desktop-Build response header.
+# Otherwise the native shell correctly refuses the unstamped UI.
+$desktopVersion = (Get-Content (Join-Path $tauri "tauri.conf.json") -Raw | ConvertFrom-Json).version
+Write-Host "== building frontend (Next.js standalone) for $desktopVersion =="
+$previousDesktopBuildVersion = $env:LOCUS_DESKTOP_BUILD_VERSION
+$env:LOCUS_DESKTOP_BUILD_VERSION = $desktopVersion
 Push-Location (Join-Path $root "apps/frontend")
-& npm ci; CheckExit "npm ci"
-& npm run build; CheckExit "next build"
+try {
+  & npm ci; CheckExit "npm ci"
+  & npm run build; CheckExit "next build"
+} finally {
+  $env:LOCUS_DESKTOP_BUILD_VERSION = $previousDesktopBuildVersion
+}
 $dest = Join-Path $tauri "resources/frontend"
 # Wipe the staged frontend first — Next content-hashes chunk filenames, so a plain
 # copy-over leaves STALE old chunks behind (bundle bloat / mixed assets). Clean each build.
@@ -93,7 +102,12 @@ New-Item -ItemType Directory -Force -Path (Join-Path $dest ".next/static") | Out
 Copy-Item ".next/static/*" (Join-Path $dest ".next/static") -Recurse -Force
 if (Test-Path "public") { Copy-Item "public" (Join-Path $dest "public") -Recurse -Force }
 Pop-Location
-Copy-Item (Get-Command node).Source (Join-Path $bin "node.exe") -Force
+Write-Host "== verifying staged desktop frontend before installer build =="
+$nodeExe = (Get-Command node).Source
+& $Py (Join-Path $root "scripts/desktop_frontend_smoke.py") `
+  --frontend $dest --node $nodeExe --version $desktopVersion
+CheckExit "desktop frontend standalone smoke"
+Copy-Item $nodeExe (Join-Path $bin "node.exe") -Force
 
 # 3) Icons — ALWAYS regenerate from icon-source.png so logo updates take effect
 #    (the generated icons/ dir is not committed; a stale set would otherwise stick).

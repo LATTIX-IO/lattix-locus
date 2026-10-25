@@ -453,3 +453,66 @@ def test_frontend_shell_actions_mirror_the_backend_rules():
     assert "Locus desktop app (missing_proof)" in source
     main_py = (_REPO_ROOT / "apps" / "backend" / "app" / "main.py").read_text(encoding="utf-8")
     assert 'detail=f"Confirm this change in the Locus desktop app ({exc.code})"' in main_py
+
+
+def test_desktop_shell_requires_http_responses_and_exact_frontend_build() -> None:
+    """No TCP-only readiness: an occupied port can serve stale/error content."""
+    shell = (_REPO_ROOT / "apps/desktop-tauri/src-tauri/src/main.rs").read_text(
+        encoding="utf-8"
+    )
+    health = (_REPO_ROOT / "apps/desktop-tauri/src-tauri/src/desktop_health.rs").read_text(
+        encoding="utf-8"
+    )
+    next_config = (_REPO_ROOT / "apps/frontend/next.config.ts").read_text(
+        encoding="utf-8"
+    )
+    assert "mod desktop_health;" in shell
+    assert "desktop_health::Service::Backend" in shell
+    assert "desktop_health::Service::Frontend" in shell
+    assert "wait_for_service(" in shell
+    assert "wait_for_health(" not in shell
+    assert "TcpStream::connect_timeout" in health
+    assert '"/healthz"' in health
+    assert '"/home"' in health
+    assert "status != 200" in health
+    assert '"x-locus-desktop-build"' in health
+    assert 'expected_frontend = if cfg!(debug_assertions)' in shell
+    assert '"X-Locus-Desktop-Build"' in next_config
+    assert "LOCUS_DESKTOP_BUILD_VERSION" in next_config
+
+
+def test_desktop_installer_builds_pin_and_smoke_real_staged_frontend() -> None:
+    """Both distribution paths test the installed Next tree before bundling."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    workflows = root / ".github" / "workflows"
+    for name in ("desktop-dev.yml", "desktop-release.yml"):
+        raw = (workflows / name).read_text(encoding="utf-8")
+        assert "LOCUS_DESKTOP_BUILD_VERSION: ${{ needs.plan.outputs.version }}" in raw, name
+        assert "scripts/desktop_frontend_smoke.py" in raw, name
+        assert "--frontend apps/desktop-tauri/src-tauri/resources/frontend" in raw, name
+        assert "--version \"$VERSION\"" in raw, name
+        assert raw.index("Smoke staged standalone desktop frontend") < raw.index(
+            "Vendor Node runtime into the bundle"
+        ), name
+    smoke = (root / "scripts/desktop_frontend_smoke.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'validate_home(f"{base}/home"' in smoke
+    assert '"X-Locus-Desktop-Build"' in smoke
+    assert '/_next/static/' in smoke
+    assert "frontend /home did not render an HTML document" in smoke
+
+
+def test_local_windows_installer_stamps_and_smokes_exact_tauri_version() -> None:
+    script = (_REPO_ROOT / "scripts/build-desktop.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert 'ConvertFrom-Json).version' in script
+    assert '$env:LOCUS_DESKTOP_BUILD_VERSION = $desktopVersion' in script
+    assert 'desktop_frontend_smoke.py' in script
+    assert '--frontend $dest --node $nodeExe --version $desktopVersion' in script
+    assert script.index('desktop_frontend_smoke.py') < script.index(
+        'cargo tauri build'
+    )

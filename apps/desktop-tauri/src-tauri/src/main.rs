@@ -13,6 +13,7 @@
 
 mod browser_tier;
 mod computer_use;
+mod desktop_health;
 mod shell_actions;
 mod updates;
 
@@ -26,9 +27,11 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
-const BACKEND_HEALTH_URL: &str = "http://127.0.0.1:8000/healthz";
 const FRONTEND_URL: &str = "http://127.0.0.1:3000";
 const HEALTH_TIMEOUT_SECS: u64 = 180;
+// The backend can need a slow first-run import; the frontend is already a
+// staged local Node bundle and must become ready much sooner.
+const FRONTEND_HEALTH_TIMEOUT_SECS: u64 = 60;
 
 /// PID of the spawned backend supervisor sidecar. The supervisor in turn spawns
 /// every native service (Postgres, NATS, Node, …), so killing its process TREE
@@ -282,10 +285,21 @@ pub(crate) fn start_backend(app: &AppHandle) -> Result<(), String> {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         let _ = handle.emit("firstrun-progress", "Starting backend…".to_string());
-        let backend_up = wait_for_health(BACKEND_HEALTH_URL, HEALTH_TIMEOUT_SECS).await;
+        // HTTP 200 is required; accepting a TCP socket was insufficient and
+        // could treat a stale/wrong listener as a healthy backend.
+        if let Err(reason) = wait_for_service(
+            desktop_health::Service::Backend, HEALTH_TIMEOUT_SECS, None,
+        ).await {
+            eprintln!("[desktop-startup] backend unhealthy: {reason}");
+            let _ = handle.emit(
+                "firstrun-progress",
+                format!("⚠ Backend startup failed: {reason}. See the desktop repair guide."),
+            );
+            return;
+        }
         // tauri#15134: never run a backend that is not the one this app shipped
         // with. Release builds only (a debug build runs the source backend).
-        if backend_up && !cfg!(debug_assertions) {
+        if !cfg!(debug_assertions) {
             let expected = handle.package_info().version.to_string();
             let verdict =
                 tauri::async_runtime::spawn_blocking(move || updates::backend_handshake(&expected))
@@ -312,69 +326,66 @@ pub(crate) fn start_backend(app: &AppHandle) -> Result<(), String> {
         }
         let _ = handle.emit(
             "firstrun-progress",
-            if backend_up { "Backend ready — loading interface…" } else { "Loading interface…" }
-                .to_string(),
+            "Backend ready — verifying the local interface…".to_string(),
         );
-        if wait_for_health(FRONTEND_URL, HEALTH_TIMEOUT_SECS).await {
-            if let Some(window) = handle.get_webview_window("main") {
-                let _ = window.navigate(FRONTEND_URL.parse().unwrap());
-            }
+        // The desktop build pipeline stamps the same validated version in
+        // Next's X-Locus-Desktop-Build header. A stale web server on port 3000,
+        // a 404/500, and the wrong frontend cannot replace the branded splash.
+        let expected_frontend = if cfg!(debug_assertions) {
+            None
         } else {
-            let _ = handle.emit(
-                "firstrun-progress",
-                "⚠ The interface didn't start in time. See logs in %LOCALAPPDATA%\\Lattix\\Locus."
-                    .to_string(),
-            );
-            eprintln!("frontend did not become reachable within {HEALTH_TIMEOUT_SECS}s");
+            Some(handle.package_info().version.to_string())
+        };
+        match wait_for_service(
+            desktop_health::Service::Frontend, FRONTEND_HEALTH_TIMEOUT_SECS, expected_frontend,
+        ).await {
+            Ok(()) => {
+                if let Some(window) = handle.get_webview_window("main") {
+                    if let Err(error) = window.navigate(FRONTEND_URL.parse().unwrap()) {
+                        eprintln!("[desktop-startup] could not navigate to frontend: {error}");
+                        let _ = handle.emit(
+                            "firstrun-progress",
+                            format!("⚠ Interface navigation failed: {error}"),
+                        );
+                    }
+                }
+            }
+            Err(reason) => {
+                eprintln!("[desktop-startup] frontend unhealthy: {reason}");
+                let _ = handle.emit(
+                    "firstrun-progress",
+                    format!("⚠ Local interface unavailable: {reason}. Check 127.0.0.1:3000/home; no user data was changed."),
+                );
+            }
         }
     });
     Ok(())
 }
 
-/// Poll the backend health endpoint until it responds or the timeout elapses.
-async fn wait_for_health(url: &str, timeout_secs: u64) -> bool {
+/// Readiness is an HTTP contract, not a listening TCP socket. Run the
+/// bounded synchronous loopback probe off the UI runtime, retaining the last
+/// failure for an actionable splash message rather than a blank webview.
+async fn wait_for_service(
+    service: desktop_health::Service,
+    timeout_secs: u64,
+    expected_build: Option<String>,
+) -> Result<(), String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
-    let client = match reqwest_like_get() {
-        Some(c) => c,
-        None => return false,
-    };
+    let mut last_error = format!("{} did not start", service.label());
     while std::time::Instant::now() < deadline {
-        if client(url) {
-            return true;
+        let expected = expected_build.clone();
+        match tauri::async_runtime::spawn_blocking(move || {
+            desktop_health::probe(service, expected.as_deref())
+        })
+        .await
+        {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(reason)) => last_error = reason,
+            Err(error) => last_error = format!("readiness probe failed: {error}"),
         }
         tokio_sleep(Duration::from_millis(750)).await;
     }
-    false
-}
-
-// The desktop shell avoids an extra HTTP dependency: a tiny std TCP probe is
-// enough to know the backend port is accepting connections. Swap for a real
-// HTTP client if a status-code check is needed.
-fn reqwest_like_get() -> Option<fn(&str) -> bool> {
-    Some(|url: &str| {
-        // url is http://host:port/path — extract host:port and TCP-probe it.
-        let trimmed = url.trim_start_matches("http://");
-        let authority = trimmed.split('/').next().unwrap_or("");
-        std::net::TcpStream::connect_timeout(
-            &match authority.to_socket_addrs_first() {
-                Some(addr) => addr,
-                None => return false,
-            },
-            Duration::from_millis(500),
-        )
-        .is_ok()
-    })
-}
-
-trait ToSocketAddrsFirst {
-    fn to_socket_addrs_first(&self) -> Option<std::net::SocketAddr>;
-}
-
-impl ToSocketAddrsFirst for str {
-    fn to_socket_addrs_first(&self) -> Option<std::net::SocketAddr> {
-        use std::net::ToSocketAddrs;
-        self.to_socket_addrs().ok().and_then(|mut it| it.next())
-    }
+    Err(last_error)
 }
 
 async fn tokio_sleep(d: Duration) {
