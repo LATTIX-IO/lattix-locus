@@ -40,6 +40,12 @@ if (Test-Path -LiteralPath $buildFile) {
     Write-Output ("Installed Next BUILD_ID: {0}" -f ($buildId -replace '[^a-zA-Z0-9_.-]',''))
 }
 
+# Also verify the actual desktop process came from this installation path.
+Get-CimInstance Win32_Process -Filter "Name='lattix-locus-desktop.exe'" -ErrorAction SilentlyContinue |
+    ForEach-Object {
+        Write-Output ("Desktop process: PID {0}; executable {1}; started {2}" -f $_.ProcessId, $_.ExecutablePath, $_.CreationDate)
+    }
+
 foreach ($port in @(3000, 8000)) {
     $connections = @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
     if ($connections.Count -eq 0) {
