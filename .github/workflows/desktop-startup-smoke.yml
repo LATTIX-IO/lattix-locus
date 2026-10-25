@@ -1,0 +1,51 @@
+# LOCUS-475: read-only, secretless Windows verification of the actual staged
+# standalone Next.js desktop frontend before a PR can become a Dev installer.
+# This is a smoke job, NOT a release or PR-preview installer publisher.
+name: desktop-startup-smoke
+
+on:
+  pull_request:
+    paths:
+      - "apps/frontend/**"
+      - "apps/desktop-tauri/src-tauri/src/**"
+      - "apps/desktop-tauri/src-tauri/loading/**"
+      - "scripts/desktop_frontend_smoke.py"
+      - ".github/workflows/desktop-startup-smoke.yml"
+      - ".github/workflows/desktop-dev.yml"
+      - ".github/workflows/desktop-release.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  windows-standalone-ui:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the desktop Next.js standalone bundle
+        shell: bash
+        working-directory: apps/frontend
+        env:
+          LOCUS_DESKTOP_BUILD_VERSION: "0.10.0-pr-smoke"
+        run: |
+          npm ci
+          npm run build
+          mkdir -p ../../apps/desktop-tauri/src-tauri/resources/frontend
+          cp -r .next/standalone/. ../../apps/desktop-tauri/src-tauri/resources/frontend/
+          cp -r .next/static ../../apps/desktop-tauri/src-tauri/resources/frontend/.next/static
+          cp -r public ../../apps/desktop-tauri/src-tauri/resources/frontend/public || true
+      - name: Require installed HTML, matching build and JavaScript chunk
+        shell: bash
+        run: |
+          python scripts/desktop_frontend_smoke.py \
+            --frontend apps/desktop-tauri/src-tauri/resources/frontend \
+            --node node --version 0.10.0-pr-smoke
