@@ -127,3 +127,34 @@ jobs:
             --installer "${installers[0]}" \
             --frontend apps/desktop-tauri/src-tauri/resources/frontend \
             --version 0.10.0-pr-smoke
+
+      # The extracted payload can be correct while the current-user NSIS
+      # installer writes an incomplete/mixed tree. Check ACTUAL installed bytes.
+      # This runs only on an ephemeral secretless Windows PR runner, with a
+      # placeholder backend that is never launched. Never use an operator path.
+      - name: Install unsigned NSIS in ephemeral Windows runner and verify Home
+        shell: pwsh
+        run: |
+          $nsisDir = 'apps/desktop-tauri/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis'
+          $installers = @(Get-ChildItem -LiteralPath $nsisDir -File -Filter '*-setup.exe')
+          if ($installers.Count -ne 1) { throw 'Exactly one test installer required' }
+          $installRoot = Join-Path $env:LOCALAPPDATA 'Lattix Locus'
+          if (Test-Path -LiteralPath $installRoot) {
+            throw 'Refusing to touch an existing Windows runner installation'
+          }
+          $installed = Join-Path $installRoot 'resources/frontend'
+          $node = Join-Path $installRoot 'bin/node.exe'
+          $proc = Start-Process -FilePath $installers[0].FullName -ArgumentList '/S' -PassThru -Wait
+          if ($proc.ExitCode -ne 0) { throw "NSIS installer failed with $($proc.ExitCode)" }
+          if (-not (Test-Path -LiteralPath (Join-Path $installed 'server.js'))) {
+            throw 'NSIS did not install resources/frontend/server.js'
+          }
+          if (-not (Test-Path -LiteralPath $node)) {
+            throw 'NSIS did not install bin/node.exe'
+          }
+          $env:LOCUS_DESKTOP_STAGE_DIR = (Resolve-Path 'apps/desktop-tauri/src-tauri/resources/frontend').Path
+          $env:LOCUS_DESKTOP_INSTALLED_DIR = $installed
+          python -c 'import os; from pathlib import Path; from scripts.desktop_installer_smoke import verify_extracted_frontend; staged=Path(os.environ["LOCUS_DESKTOP_STAGE_DIR"]); installed=Path(os.environ["LOCUS_DESKTOP_INSTALLED_DIR"]); count=verify_extracted_frontend(staged,installed); print(f"Installed NSIS static payload matches stage: {count} files")'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/desktop_frontend_smoke.py --frontend $installed --node $node --version '0.10.0-pr-smoke' --browser-channel msedge
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
