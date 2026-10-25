@@ -10,6 +10,7 @@ on:
       - "apps/desktop-tauri/src-tauri/src/**"
       - "apps/desktop-tauri/src-tauri/loading/**"
       - "scripts/desktop_frontend_smoke.py"
+      - "tests/unit/test_desktop_frontend_smoke.py"
       - ".github/workflows/desktop-startup-smoke.yml"
       - ".github/workflows/desktop-dev.yml"
       - ".github/workflows/desktop-release.yml"
@@ -48,10 +49,25 @@ jobs:
         run: |
           npm ci
           npm run build
-          mkdir -p ../../apps/desktop-tauri/src-tauri/resources/frontend
-          cp -r .next/standalone/. ../../apps/desktop-tauri/src-tauri/resources/frontend/
-          cp -r .next/static ../../apps/desktop-tauri/src-tauri/resources/frontend/.next/static
-          cp -r public ../../apps/desktop-tauri/src-tauri/resources/frontend/public || true
+          # Stage one coherent build. Reusing the destination mixes content-hashed
+          # JS/CSS from earlier runs; copying static onto an existing static/
+          # directory can also create an unintended nested static/static tree.
+          stage=../../apps/desktop-tauri/src-tauri/resources/frontend
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          cp -r .next/standalone/. "$stage/"
+          rm -rf "$stage/.next/static"
+          mkdir -p "$stage/.next"
+          cp -r .next/static "$stage/.next/"
+          if [ -d public ]; then
+            rm -rf "$stage/public"
+            cp -r public "$stage/"
+          fi
+      - name: Regression test full referenced-asset manifest
+        shell: bash
+        run: |
+          python -m pip install pytest==8.4.2
+          python -m pytest -q tests/unit/test_desktop_frontend_smoke.py
       - name: Require actual Windows Edge client rendering
         shell: bash
         run: |
