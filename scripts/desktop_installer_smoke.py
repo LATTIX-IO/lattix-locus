@@ -20,7 +20,10 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from desktop_frontend_smoke import smoke
+if __package__:
+    from .desktop_frontend_smoke import smoke
+else:
+    from desktop_frontend_smoke import smoke
 
 
 class InstallerSmokeError(RuntimeError):
