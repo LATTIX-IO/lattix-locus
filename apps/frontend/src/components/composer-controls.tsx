@@ -62,9 +62,18 @@ const MODES: { value: Mode; label: string; icon: string; hint: string }[] = [
   { value: "execute", label: "Execute", icon: I.execute, hint: "Tools, MCP, and file edits enabled" },
 ];
 
-type Props = { onChange: (options: ComposerOptions) => void };
+type Props = {
+  onChange: (options: ComposerOptions) => void;
+  onModelReadinessChange?: (ready: boolean, reason: string) => void;
+};
 
-export function ComposerControls({ onChange }: Props) {
+function isChatModel(id: string, capabilities?: string[]): boolean {
+  // /api/tags also lists embedding-only models, which cannot answer tasks.
+  if (capabilities?.length) return capabilities.includes("completion") || capabilities.includes("tools");
+  return !/(?:^|\/)(?:nomic-embed-text|mxbai-embed-large|all-minilm|bge-m3)(?::|$)/i.test(id);
+}
+
+export function ComposerControls({ onChange, onModelReadinessChange }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [folders, setFolders] = useState<{ name: string; path: string }[]>([]);
   const [models, setModels] = useState<ModelOption[]>([]);
@@ -73,6 +82,8 @@ export function ComposerControls({ onChange }: Props) {
 
   const [workingFolder, setWorkingFolder] = useState("");
   const [model, setModel] = useState("");
+  const [modelDiscovery, setModelDiscovery] = useState<"checking" | "ready" | "error">("checking");
+  const [missingPreferredModel, setMissingPreferredModel] = useState("");
   const [reasoning, setReasoning] = useState<"" | "low" | "medium" | "high">("");
   const [mode, setMode] = useState<Mode>("execute");
   const [mcpIds, setMcpIds] = useState<string[]>([]);
@@ -92,19 +103,24 @@ export function ComposerControls({ onChange }: Props) {
       if (cancelled) return;
       const opts: ModelOption[] = [];
       const ov = overview as unknown as {
-        providers?: { ollama?: { available?: boolean; installed_models?: { id: string }[] } };
+        providers?: {
+          ollama?: { available?: boolean; installed_models?: { id: string; capabilities?: string[] }[] };
+        };
         external?: { id: string; label: string; configured: boolean; default_model: string }[];
       } | null;
       if (ov?.providers?.ollama?.available) {
         for (const m of ov.providers.ollama.installed_models ?? []) {
           const id = String(m.id);
+          if (!id || !isChatModel(id, m.capabilities)) continue;
           opts.push({ value: `ollama/${id}`, label: `${id} · ollama`, reasoning: isReasoningModel(id) });
         }
       }
       for (const p of ov?.external ?? []) {
         if (p.configured && p.default_model) {
           const value = p.id === "openai" ? p.default_model : `${p.id}/${p.default_model}`;
-          opts.push({ value, label: `${p.default_model} · ${p.label}`, reasoning: isReasoningModel(value) });
+          if (!opts.some((item) => item.value === value)) {
+            opts.push({ value, label: `${p.default_model} · ${p.label}`, reasoning: isReasoningModel(value) });
+          }
         }
       }
       setModels(opts);
@@ -113,13 +129,34 @@ export function ComposerControls({ onChange }: Props) {
       if (folderList) setFolders(folderList.folders ?? []);
       setMode((settings?.default_mode as Mode) || "execute");
       setReasoning((settings?.preferred_reasoning_effort as "" | "low" | "medium" | "high") || "");
-      setModel(settings?.preferred_model || opts[0]?.value || "");
+      const preferred = String(settings?.preferred_model || "").trim();
+      const matchesPreferred = opts.some((item) => item.value === preferred);
+      setMissingPreferredModel(preferred && !matchesPreferred ? preferred : "");
+      // Do not silently replace an unavailable preferred model or provider.
+      setModel(matchesPreferred ? preferred : preferred ? "" : (opts[0]?.value ?? ""));
+      setModelDiscovery(ov ? "ready" : "error");
       if (settings?.default_working_folder) setWorkingFolder(settings.default_working_folder);
     })();
     return () => {
       cancelled = true;
     };
   }, []);
+
+  const modelReady = modelDiscovery === "ready" && models.some((option) => option.value === model);
+  const modelIssue = modelDiscovery === "checking"
+    ? "Checking available models…"
+    : modelDiscovery === "error"
+      ? "Could not check models. Verify the backend is running, then reload Home."
+      : missingPreferredModel && !model
+        ? `Saved default model "${missingPreferredModel}" is unavailable. Select a model before starting a task.`
+        : models.length === 0
+          ? "No chat-capable models are available. Start Ollama or configure a provider in Settings → Engines."
+          : !modelReady
+            ? "Select an available model before starting a task."
+            : "";
+  useEffect(() => {
+    onModelReadinessChange?.(modelReady, modelIssue);
+  }, [modelReady, modelIssue, onModelReadinessChange]);
 
   // close popovers on outside click
   useEffect(() => {
@@ -237,7 +274,7 @@ export function ComposerControls({ onChange }: Props) {
             <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-[var(--fx-muted)]">Model</div>
             {models.length === 0 ? <div className="px-2 py-1.5 text-[11px] text-[var(--fx-muted)]">No models configured</div> : null}
             {models.map((m) => (
-              <button key={m.value} type="button" className={item} onClick={() => setModel(m.value)}>
+              <button key={m.value} type="button" className={item} onClick={() => { setModel(m.value); setMissingPreferredModel(""); }}>
                 <Icon d={I.cpu} />
                 <span className="flex-1 truncate">{m.label}</span>
                 {model === m.value ? <Icon d={I.check} className="h-3.5 w-3.5 text-[hsl(var(--primary))]" /> : null}
