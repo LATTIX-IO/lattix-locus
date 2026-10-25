@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from typing import Any
 
 from locus_runtime.harness.executor import LocalDirectExecutor
 from locus_runtime.harness.llm import ChatResponse, GatedChatClient
@@ -47,7 +48,17 @@ class _LeaseBoundModel:
         self.client = client
         self.calls = 0
 
-    def complete(self, messages: list[dict], **kwargs: object) -> ChatResponse:
+    def complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> ChatResponse:
         if self.calls >= 8:
             raise AdmissionDenied("native specialist model-call budget exhausted")
         try:
@@ -57,8 +68,7 @@ class _LeaseBoundModel:
         if not 0 < len(serialized) <= 16384:
             raise AdmissionDenied("native specialist context exceeds bound")
         cap = 512
-        requested = kwargs.get("max_tokens")
-        if requested is not None and (type(requested) is not int or requested < 1):
+        if max_tokens is not None and (type(max_tokens) is not int or max_tokens < 1):
             raise AdmissionDenied("invalid native output ceiling")
         self.calls += 1
         active = self.lease._ledger.require_active(self.lease.reservation_id)
@@ -68,8 +78,10 @@ class _LeaseBoundModel:
             used.tokens + len(serialized) + cap,
             used.wall_seconds, used.spend_microunits,
         ))
-        kwargs["max_tokens"] = cap
-        return self.client.complete(messages, **kwargs)
+        return self.client.complete(
+            messages, tools=tools, temperature=temperature, top_p=top_p,
+            max_tokens=cap, reasoning_effort=reasoning_effort, extra=extra,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,7 +177,23 @@ class NativeLocusDraftWorker:
             or not 1 <= len(answer.encode("utf-8")) <= 32768
             or native_model.calls == 0
         ):
-            raise AdmissionDenied("native runtime did not independently verify a bounded draft")
+            # Diagnostic status only: never leak prompt, answer or raw tool args.
+            blocker_kind = (
+                str(result.blocker.get("kind", ""))[:48]
+                if isinstance(result.blocker, dict) else "none"
+            )
+            stop_kind = (
+                str(result.stop.get("kind", ""))[:48]
+                if isinstance(result.stop, dict) else "none"
+            )
+            answer_size = len(answer.encode("utf-8")) if isinstance(answer, str) else 0
+            raise AdmissionDenied(
+                "native runtime did not independently verify a bounded draft "
+                f"(state={result.end_state}, verified={result.verified}, "
+                f"blocker={blocker_kind}, stop={stop_kind}, calls={native_model.calls}, "
+                f"answer_bytes={answer_size}, "
+                f"verification_attempts={result.verification_attempts})"
+            )
         raw = answer.encode("utf-8")
         outcome = self.broker.execute(
             lease, stage_id,
