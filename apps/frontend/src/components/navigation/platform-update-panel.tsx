@@ -64,6 +64,7 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
   // undefined = not yet checked, null = up to date, string = update available.
   const [checkedUpdate, setCheckedUpdate] = useState<string | null | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -137,6 +138,7 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
   );
 
   const checkNow = useCallback(async () => {
+    setChecking(true);
     setBusy(true);
     setError(null);
     setCheckedUpdate(undefined);
@@ -154,6 +156,7 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
         // Keep the original error; the native shell may be an older version.
       }
     } finally {
+      setChecking(false);
       setBusy(false);
     }
   }, []);
@@ -184,12 +187,16 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
       ? `v${platformVersion.current_version}`
       : "Version unavailable";
   const backendUpdate = !isDesktop && platformVersion?.status === "update_available" ? platformVersion : null;
+  // A completed native poll takes precedence over a stale manual result.
+  // Older desktop shells can still report a manual result while status is idle.
   const availableUpdate = isDesktop
     ? status?.state === "available" && status.version
       ? status.version
-      : typeof checkedUpdate === "string"
-        ? checkedUpdate
-        : null
+      : status && status.state !== "idle" && status.state !== "checking"
+        ? null
+        : typeof checkedUpdate === "string"
+          ? checkedUpdate
+          : null
     : null;
 
   return {
@@ -201,6 +208,7 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
     backendUpdate,
     currentLabel,
     busy,
+    checking,
     error,
     changeChannel,
     checkNow,
@@ -315,7 +323,7 @@ export function UpdatesPanel({ platformVersion }: { platformVersion?: PlatformVe
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono">{updates.currentLabel}</span>
           <Badge variant={updates.availableUpdate ? "warning" : "secondary"}>
-            {updates.busy && updates.status?.state !== "downloading" && updates.status?.state !== "installing"
+            {updates.checking
               ? "Checking…"
               : updates.availableUpdate
               ? `v${updates.availableUpdate} available`
