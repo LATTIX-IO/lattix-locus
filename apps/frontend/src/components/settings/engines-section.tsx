@@ -39,7 +39,7 @@ export const ENGINE_PROVIDERS: Array<{ id: string; label: string; keyHint: strin
   { id: "mistral", label: "Mistral", keyHint: "Mistral API key", endpointHint: "https://api.mistral.ai/v1", modelHint: "mistral-large-latest", keyRequired: true },
   { id: "xai", label: "xAI Grok", keyHint: "xai-…", endpointHint: "https://api.x.ai/v1", modelHint: "grok-4", keyRequired: true },
   { id: "nim", label: "NVIDIA NIM", keyHint: "nvapi-…", endpointHint: "blank = NVIDIA-hosted", modelHint: "meta/llama-3.3-70b-instruct", keyRequired: true },
-  { id: "ollama", label: "Local (Ollama)", keyHint: "", endpointHint: "http://127.0.0.1:11434", modelHint: "llama3.2:3b", keyRequired: false },
+  { id: "ollama", label: "Local (Ollama)", keyHint: "", endpointHint: "http://127.0.0.1:11434", modelHint: "installed model ID", keyRequired: false },
 ];
 
 /* ------------------------------ providers ------------------------------ */
