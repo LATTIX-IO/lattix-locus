@@ -32,20 +32,7 @@ from locus_runtime.pod_sandbox_broker import BrokerCommand
 from locus_runtime.pod_stage_docker import StageDockerBroker
 
 NATIVE_ENGINE_ID = "locus-native/deep-agents"
-_WRITER = (
-    "import os,sys\n"
-    "data=sys.stdin.buffer.read(32769)\n"
-    "if not data or len(data)>32768: sys.exit(41)\n"
-    "fd=os.open('/workspace/draft.txt',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)\n"
-    "try:\n"
-    " view=memoryview(data)\n"
-    " while view:\n"
-    "  sent=os.write(fd,view)\n"
-    "  if sent<=0: sys.exit(43)\n"
-    "  view=view[sent:]\n"
-    " os.fsync(fd)\n"
-    "finally: os.close(fd)\n"
-)
+STAGE_WRITER = "/usr/local/bin/locus-stage-writer"
 
 
 class _LeaseBoundModel:
@@ -114,7 +101,7 @@ class NativeLocusDraftWorker:
             raise AdmissionDenied("native model must not have host write capabilities")
         if "model:ollama" not in lease._session.capabilities.allowed_tools:
             raise AdmissionDenied("native model Gateway grant missing")
-        if "/usr/bin/python3" not in lease._session.capabilities.allowed_executables:
+        if STAGE_WRITER not in lease._session.capabilities.allowed_executables:
             raise AdmissionDenied("stage writer executable not granted")
         target = ModelEndpoint(
             provider="ollama", model=self.model, base_url="http://127.0.0.1:11434/v1",
@@ -181,7 +168,7 @@ class NativeLocusDraftWorker:
             lease, stage_id,
             BrokerCommand(
                 tool="run_command",
-                argv=("/usr/bin/python3", "-c", _WRITER),
+                argv=(STAGE_WRITER,),
                 working_dir=stage.staged_path,
                 idempotency_key="native-stage-" + hashlib.sha256(raw).hexdigest(),
                 timeout_seconds=8,
