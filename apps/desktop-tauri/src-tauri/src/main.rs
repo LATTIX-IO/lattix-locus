@@ -29,6 +29,9 @@ use tauri_plugin_shell::ShellExt;
 
 const FRONTEND_URL: &str = "http://127.0.0.1:3000/home";
 const HEALTH_TIMEOUT_SECS: u64 = 180;
+// The backend can need a slow first-run import; the frontend is already a
+// staged local Node bundle and must become ready much sooner.
+const FRONTEND_HEALTH_TIMEOUT_SECS: u64 = 60;
 
 /// PID of the spawned backend supervisor sidecar. The supervisor in turn spawns
 /// every native service (Postgres, NATS, Node, …), so killing its process TREE
@@ -334,7 +337,7 @@ pub(crate) fn start_backend(app: &AppHandle) -> Result<(), String> {
             Some(handle.package_info().version.to_string())
         };
         match wait_for_service(
-            desktop_health::Service::Frontend, HEALTH_TIMEOUT_SECS, expected_frontend,
+            desktop_health::Service::Frontend, FRONTEND_HEALTH_TIMEOUT_SECS, expected_frontend,
         ).await {
             Ok(()) => {
                 if let Some(window) = handle.get_webview_window("main") {
@@ -351,7 +354,7 @@ pub(crate) fn start_backend(app: &AppHandle) -> Result<(), String> {
                 eprintln!("[desktop-startup] frontend unhealthy: {reason}");
                 let _ = handle.emit(
                     "firstrun-progress",
-                    format!("⚠ Local interface unavailable: {reason}. No user data was changed."),
+                    format!("⚠ Local interface unavailable: {reason}. Check 127.0.0.1:3000/home; no user data was changed."),
                 );
             }
         }
