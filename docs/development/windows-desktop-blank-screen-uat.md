@@ -146,3 +146,50 @@ and running-process identity. If Node predates a newer installed
 `server.js`, a stale process/build mismatch is strongly indicated. Save
 work, use tray **Quit**, verify ports are released before relaunching; do
 not manually kill active worker processes or uninstall/delete app data.
+
+## Owner follow-up: missing files and restart (2026-10-25)
+
+All six 404 assets were confirmed **absent from their installed expected
+locations** under `resources/frontend/.next/static/chunks`; the white screen
+remained after a tray Quit, verification that ports 3000/8000 were no longer
+listening, and an explicit restart. Node was started at 12:08:15 PM, while
+`server.js` had been modified at 11:01:22 AM. This substantially weakens a
+stale-before-upgrade Node explanation, but does not yet prove which build or
+installer step omitted the files. The owner data contains no evidence that
+WebView2 is the unique cause: Edge reproduced the white page as well.
+
+**One bounded, read-only discriminator** that can establish a nested packaging
+path, without needing another reinstall or sharing app secrets:
+
+```powershell
+$base = Join-Path $env:LOCALAPPDATA "Lattix Locus"
+$names = @("3vgvgj9_bqlsc.css", "38yxu_eyyt1fs.js",
+  "0fo546wxpcpmm.js", "1a8fdlddd8icn.js",
+  "2e0etuy-dhsrf.js", "2rrrnh9yjjav3.js")
+Get-ChildItem (Join-Path $base "resources/frontend") -Recurse -File -ErrorAction SilentlyContinue |
+  Where-Object { $names -contains $_.Name } |
+  Select-Object Name, FullName
+```
+
+If these files appear under `.next/static/static/chunks`, staging likely
+created an accidental nested directory. If no match exists, inspect the NSIS
+archive (instead of speculatively copying files into the live install). If
+they appear elsewhere, retain those paths as evidence for release packaging
+triage.
+
+## Installer-level regression gate
+
+`scripts/desktop_installer_smoke.py` extracts the actual NSIS build to a
+temporary directory using 7-Zip, verifies every `.next/static` file against
+the independently smoke-checked stage by SHA-256 and relative name, verifies
+the bundled Node runtime, and launches the extracted standalone server to
+check all route-referenced JS/CSS HTTP assets. This extends the existing
+staged-only browser smoke to cover the gap observed on the owner's v0.10.4
+installation. Both main-channel release workflows must pass this check
+**before publishing**. A separate secretless PR workflow builds an ephemeral
+unsigned NSIS with never-executed placeholder external binaries solely for
+resource-inspection QA. It does not publish or sign any candidate.
+
+Release qualification still requires a genuine new Windows installation and
+operator verification; the premerge smoke cannot validate actual migration of
+the owner's local state.
