@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import os
 import re
 import socket
@@ -118,13 +119,57 @@ def validate_referenced_assets(
 
 
 def validate_rendered_ui(base: str, *, browser_channel: str) -> None:
-    """Run real React in Windows Edge: HTTP 200 alone is insufficient.
+    """Prove authenticated Home renders in real Edge, not just the splash.
 
-    Exercise both normal web rendering and a simulated Tauri global. The test
-    intentionally has no backend; the visible session gate must still render.
-    Browser smoke cannot replace installed Tauri/WebView2 acceptance.
+    LOCUS-475/v0.10.5: earlier smoke accepted "Starting Locus" or a backend
+    error as success. Both can appear while the actual Home route is unusable.
+    Run the installed frontend with a *synthetic* authenticated API response
+    and require real Home content and a task composer. No provider credentials,
+    real backend, or production API mutations are used. This remains distinct
+    from full installed Windows UAT.
     """
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import Route, sync_playwright
+
+    session = {
+        "authenticated": True,
+        "actor": "smoke-operator",
+        "principal_id": "smoke-operator",
+        "principal_type": "user",
+        "display_name": "Smoke Operator",
+        "subject": "smoke-operator",
+        "roles": ["owner"],
+        "auth_mode": "local-desktop",
+        "capabilities": {"can_admin": True, "can_builder": True},
+        "allowed_modes": ["user"],
+        "default_mode": "user",
+        "oidc": {"configured": False, "issuer": "", "audience": "", "provider": ""},
+    }
+
+    def synthetic_backend(route: Route) -> None:
+        # The route handler is installed only in the isolated headless smoke.
+        # Do not turn this into a production auth bypass or persist the session.
+        path = urlsplit(route.request.url).path
+        responses: dict[str, object] = {
+            "/api/auth/session": session,
+            "/api/workflow-runs": [],
+            "/api/agent-definitions": [],
+            "/api/playbooks": [],
+            "/api/workflows/published": [],
+            "/api/platform/version": {"version": "smoke-only"},
+            "/api/platform/settings": {},
+            "/api/healthz/details": {"postgres": "connected"},
+        }
+        if path in responses:
+            route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps(responses[path]),
+            )
+        else:
+            # Unknown endpoints must not silently return privileged success.
+            route.fulfill(
+                status=404, content_type="application/json",
+                body='{"detail":"synthetic smoke endpoint not implemented"}',
+            )
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel=browser_channel, headless=True)
@@ -132,12 +177,18 @@ def validate_rendered_ui(base: str, *, browser_channel: str) -> None:
             for desktop in (False, True):
                 context = browser.new_context()
                 try:
+                    # Avoid a first-run modal obscuring whether the actual Home
+                    # component paints. This is a test-only browser context.
+                    context.add_init_script(
+                        "window.localStorage.setItem('locus-first-run-complete', '1');"
+                    )
                     if desktop:
                         context.add_init_script('''window.__TAURI__ = {
                           core: { invoke: async () => null },
-                          app: { getVersion: async () => "0.10.0" },
+                          app: { getVersion: async () => "smoke-only" },
                           event: { listen: async () => () => {} }
                         };''')
+                    context.route("**/api/**", synthetic_backend)
                     page = context.new_page()
                     errors: list[str] = []
                     missing_chunks: list[str] = []
@@ -149,23 +200,20 @@ def validate_rendered_ui(base: str, *, browser_channel: str) -> None:
                         ) if "/_next/static/" in response.url and response.status >= 400 else None,
                     )
                     page.goto(base + "/home", wait_until="domcontentloaded", timeout=30000)
-                    page.wait_for_function(
-                        '''() => {
-                          const main = document.querySelector("main");
-                          if (!main) return false;
-                          const content = main.innerText || "";
-                          return content.includes("Starting Locus") ||
-                            content.includes("Can't reach the Locus backend") ||
-                            content.includes("Opening Home") ||
-                            content.includes("Skip to content");
-                        }''',
-                        timeout=25000,
-                    )
-                    page.wait_for_timeout(1500)
-                    main = page.locator("main")
-                    if not main.is_visible() or not main.inner_text().strip():
-                        raise RuntimeError("browser rendered an empty/invisible main element")
-                    if "The interface could not load" in page.locator("body").inner_text():
+                    # A splash/session gate is NOT accepted as Home. In
+                    # particular, "Starting Locus" alone made v0.10.5 green.
+                    page.get_by_role(
+                        "heading", name="What should Locus do?", exact=True,
+                    ).wait_for(state="visible", timeout=25000)
+                    page.get_by_role(
+                        "button", name="Start task", exact=True,
+                    ).wait_for(state="visible", timeout=10000)
+                    page.wait_for_timeout(800)
+                    main = page.locator("main#main-content")
+                    if not main.is_visible() or "What should Locus do?" not in main.inner_text():
+                        raise RuntimeError("authenticated Home component did not render")
+                    body_text = page.locator("body").inner_text()
+                    if "The interface could not load" in body_text:
                         raise RuntimeError("React root global-error boundary rendered")
                     if errors or missing_chunks:
                         raise RuntimeError(
@@ -173,15 +221,14 @@ def validate_rendered_ui(base: str, *, browser_channel: str) -> None:
                             + "; ".join((errors + missing_chunks)[:8])
                         )
                     print(
-                        "Desktop frontend rendered in Edge: "
+                        "Desktop frontend authenticated Home rendered in Edge: "
                         + ("simulated Tauri" if desktop else "browser")
-                        + ", visible main (" + str(len(main.inner_text())) + " chars), 0 JS faults"
+                        + ", real task composer, 0 JS faults"
                     )
                 finally:
                     context.close()
         finally:
             browser.close()
-
 
 def smoke(
     frontend: Path, *, node: str, version: str,

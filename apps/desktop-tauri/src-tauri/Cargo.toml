@@ -3,13 +3,17 @@ name = "lattix-locus-desktop"
 version = "0.10.0"
 description = "Lattix Locus desktop shell"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.77.2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
+# Only one desktop process may own and spawn the local supervisor. Pin to the
+# last 2.4 Windows-focus fix that retains the 1.77.2 MSRV.
+# LOCUS-475: two real desktop processes were observed during owner UAT.
+tauri-plugin-single-instance = "=2.4.5"
 tauri-plugin-shell = "2"
 # Auto-update (Dev/Stable channels, LOCUS-349): src/updates.rs picks one of two
 # compiled-in endpoints at runtime (`updater_builder().endpoints`); the pubkey is

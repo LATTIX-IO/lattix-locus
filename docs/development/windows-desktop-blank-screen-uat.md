@@ -193,3 +193,54 @@ resource-inspection QA. It does not publish or sign any candidate.
 Release qualification still requires a genuine new Windows installation and
 operator verification; the premerge smoke cannot validate actual migration of
 the owner's local state.
+
+
+## v0.10.5 installed Windows — native-only white screen and separate run failure
+
+Owner UAT on October 25 supersedes the older v0.10.4 Edge + Tauri
+both-blank observation. With the v0.10.5 installed bundle, Edge renders the real
+http://127.0.0.1:3000/home interface, including Activity and prior runs.
+Bundled bin/node.exe (PID 25144) listens on 3000; bundled locus-backend.exe
+(PID 71320) listens on 8000, both started at 13:41. GET /api/auth/session
+returned HTTP 200. The Tauri desktop window is still completely white.
+Thus a fresh frontend asset 404 is no longer proven for this install; native
+WebView2 profile/navigation/rendering is the primary investigation track.
+
+**PowerShell correction:** $home/$HOME is a case-insensitive PowerShell
+read-only automatic variable. The owner's prior diagnostic assigned
+$home = Invoke-WebRequest, which raised an error, and all subsequent
+zero-length/zero-asset counts were invalid. Use $homeResponse instead.
+Do not classify those zero counts as missing frontend files.
+
+**Safe immediate discriminator:**
+
+1. Use the system tray Quit (not window close). Check the desktop process
+   and ports 3000/8000 have terminated before trying another launch.
+2. Launch the known installed executable from
+   %LOCALAPPDATA%\Lattix Locus\lattix-locus-desktop.exe with process-local
+   WEBVIEW2_USER_DATA_FOLDER pointing to a new UUID-named directory under
+   %TEMP%. Do not delete the existing profile, uninstall or clear app data.
+   Restore the parent PowerShell variable after Start-Process.
+3. If the fresh WebView2 profile renders Home, investigate persistent webview
+   profile/browser state. If it remains white, investigate Tauri navigation
+   and WebView2 page/JavaScript/paint diagnostics.
+4. PR #143 removes a redundant native redirect: desktop readiness checks
+   /home while the old shell navigates to /. New code navigates directly to
+   the validated /home route. This is a plausible compatibility improvement,
+   not an owner-verified repair.
+
+The same UAT showed a **separate backend execution failure**: the owner sent a
+noncoding architecture task through the Edge Activity chat. The resulting run
+appears as Failed / Execution error, with one blocker and no action item.
+The right panel says provider Default and model Platform default; those are
+display fallbacks, not evidence that configuration caused the failure.
+Tracked at https://linear.app/lattix/issue/LOCUS-477.
+Retrieve the run's error event through read-only
+GET /api/workflow-runs/{id}/events, redact sensitive content, and investigate
+the resulting error (model, engine, definition, admission, or worker).
+Do not claim local-agent UAT passed because an auth session returned HTTP 200
+or a failed workflow-run row exists.
+
+**Release gate:** native WebView2 must render Home, preserve existing state,
+submit a real local task and show a verifiable agent outcome and artifacts.
+Synthetic Edge smoke or extracted NSIS alone cannot satisfy this gate.

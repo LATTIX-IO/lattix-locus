@@ -14,6 +14,7 @@
 mod browser_tier;
 mod computer_use;
 mod desktop_health;
+mod desktop_startup_diagnostics;
 mod shell_actions;
 mod updates;
 
@@ -27,7 +28,9 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
-const FRONTEND_URL: &str = "http://127.0.0.1:3000";
+// Navigate to the exact route that passed the build-identity/readiness probe.
+// Avoid a redundant / -> /home redirect in the embedded WebView2 runtime.
+const FRONTEND_URL: &str = "http://127.0.0.1:3000/home";
 const HEALTH_TIMEOUT_SECS: u64 = 180;
 // The backend can need a slow first-run import; the frontend is already a
 // staged local Node bundle and must become ready much sooner.
@@ -91,7 +94,20 @@ fn quit_now(app: tauri::AppHandle) {
 
 fn main() {
     tauri::Builder::default()
+        // Must be first so a second launch exits before it creates a tray,
+        // registers hotkeys, or starts another backend/frontend supervisor.
+        // No argv/cwd is stored or logged, and the existing window is focused.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main(app);
+        }))
         .plugin(tauri_plugin_shell::init())
+        // Native WebView2 navigation signals, independent of Next/React paint.
+        // Fixed event codes only; no URLs, prompts, tokens or query strings.
+        .on_page_load(|webview, payload| {
+            desktop_startup_diagnostics::page_load(
+                webview.app_handle(), payload.url(), payload.event(),
+            );
+        })
         .plugin(tauri_plugin_updater::Builder::new().build())
         // Native confirmation dialogs for widening the user-browser tier (LOCUS-350)
         // and every other capability-widening request (LOCUS-357, shell_actions.rs).
@@ -116,6 +132,7 @@ fn main() {
             }
         })
         .setup(|app| {
+            desktop_startup_diagnostics::record(app.handle(), "desktop-setup-started");
             // Update channel (LOCUS-349): persisted dev|stable, default stable.
             let channel = updates::load_channel(app.handle());
             app.manage(updates::UpdateState::new(channel));
@@ -291,12 +308,14 @@ pub(crate) fn start_backend(app: &AppHandle) -> Result<(), String> {
             desktop_health::Service::Backend, HEALTH_TIMEOUT_SECS, None,
         ).await {
             eprintln!("[desktop-startup] backend unhealthy: {reason}");
+            desktop_startup_diagnostics::record(&handle, "backend-health-failed");
             let _ = handle.emit(
                 "firstrun-progress",
                 format!("⚠ Backend startup failed: {reason}. See the desktop repair guide."),
             );
             return;
         }
+        desktop_startup_diagnostics::record(&handle, "backend-health-passed");
         // tauri#15134: never run a backend that is not the one this app shipped
         // with. Release builds only (a debug build runs the source backend).
         if !cfg!(debug_assertions) {
@@ -340,8 +359,11 @@ pub(crate) fn start_backend(app: &AppHandle) -> Result<(), String> {
             desktop_health::Service::Frontend, FRONTEND_HEALTH_TIMEOUT_SECS, expected_frontend,
         ).await {
             Ok(()) => {
+                desktop_startup_diagnostics::record(&handle, "frontend-health-passed");
                 if let Some(window) = handle.get_webview_window("main") {
+                    desktop_startup_diagnostics::record(&handle, "frontend-navigation-requested");
                     if let Err(error) = window.navigate(FRONTEND_URL.parse().unwrap()) {
+                        desktop_startup_diagnostics::record(&handle, "frontend-navigation-rejected");
                         eprintln!("[desktop-startup] could not navigate to frontend: {error}");
                         let _ = handle.emit(
                             "firstrun-progress",
@@ -351,6 +373,7 @@ pub(crate) fn start_backend(app: &AppHandle) -> Result<(), String> {
                 }
             }
             Err(reason) => {
+                desktop_startup_diagnostics::record(&handle, "frontend-health-failed");
                 eprintln!("[desktop-startup] frontend unhealthy: {reason}");
                 let _ = handle.emit(
                     "firstrun-progress",
