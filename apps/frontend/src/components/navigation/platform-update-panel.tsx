@@ -66,6 +66,7 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [statusReadError, setStatusReadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isDesktop) return;
@@ -83,11 +84,14 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
       });
     getDesktopUpdateStatus()
       .then((next) => {
-        if (!cancelled && next) setStatus(next);
+        if (!cancelled && next) {
+          setStatus(next);
+          setStatusReadError(null);
+        }
       })
       .catch((reason) => {
         if (!cancelled) {
-          setError(`Could not read the desktop update status: ${String(reason)}`);
+          setStatusReadError(`Could not read the desktop update status: ${String(reason)}`);
         }
       });
     // The native supervisor owns background checks and publishes status events.
@@ -95,7 +99,10 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
     // those compete for the same busy gate and formerly hid feed failures.
     tauri?.event
       ?.listen?.("update-status", (event) => {
-        if (!cancelled) setStatus(event.payload as DesktopUpdateStatus);
+        if (!cancelled) {
+          setStatus(event.payload as DesktopUpdateStatus);
+          setStatusReadError(null);
+        }
       })
       .then((unlisten) => {
         if (cancelled) unlisten();
@@ -210,6 +217,7 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
     busy,
     checking,
     error,
+    statusReadError,
     changeChannel,
     checkNow,
     updateNow,
@@ -322,17 +330,21 @@ export function UpdatesPanel({ platformVersion }: { platformVersion?: PlatformVe
       <div className="flex flex-wrap items-center justify-between gap-2 text-[13px]">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono">{updates.currentLabel}</span>
-          <Badge variant={updates.availableUpdate ? "warning" : "secondary"}>
-            {updates.checking
-              ? "Checking…"
-              : updates.availableUpdate
-              ? `v${updates.availableUpdate} available`
-              : updates.status
-                ? STATE_LABEL[updates.status.state]
-                : updates.checkedUpdate === null
-                  ? "Up to date"
-                  : "Not checked"}
-          </Badge>
+          <span role="status" aria-live="polite" aria-atomic="true">
+            <Badge variant={updates.availableUpdate ? "warning" : "secondary"}>
+              {updates.checking
+                ? "Checking…"
+                : updates.availableUpdate
+                  ? `v${updates.availableUpdate} available`
+                  : updates.status && updates.status.state !== "idle"
+                    ? STATE_LABEL[updates.status.state]
+                    : updates.checkedUpdate === null
+                      ? "Up to date"
+                      : updates.status
+                        ? STATE_LABEL[updates.status.state]
+                        : "Not checked"}
+            </Badge>
+          </span>
           {updates.status?.detail && updates.status.state !== "error" ? (
             <span aria-live="polite" className="text-xs text-muted-foreground">
               {updates.status.detail}
@@ -355,9 +367,9 @@ export function UpdatesPanel({ platformVersion }: { platformVersion?: PlatformVe
           ) : null}
         </div>
       </div>
-      {updates.error || updates.status?.state === "error" ? (
+      {updates.error || updates.statusReadError || updates.status?.state === "error" ? (
         <p role="alert" className="text-xs text-destructive">
-          {updates.error ?? updates.status?.detail ?? "The signed update feed could not be checked."}
+          {updates.error ?? updates.statusReadError ?? updates.status?.detail ?? "The update feed could not be checked."}
         </p>
       ) : null}
     </div>
