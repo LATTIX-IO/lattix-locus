@@ -264,18 +264,18 @@ fn run_cycle(app: &AppHandle) {
     }
     let _guard = BusyGuard(app.clone());
     let channel = current_channel(app);
-    set_status(app, "checking", None, format!("Checking the signed {} update feed…", channel.as_str()));
+    set_status(app, "checking", None, format!("Checking the {} update feed…", channel.as_str()));
     let checked = updater_for(app, channel)
         .and_then(|updater| tauri::async_runtime::block_on(updater.check()).map_err(|e| e.to_string()));
     match checked {
         Ok(None) => set_status(app, "up_to_date", None, format!(
-            "Signed {} channel checked; no newer version is available.",
+            "{} channel checked; no newer version was announced.",
             channel.as_str(),
         )),
         Ok(Some(update)) => {
             let version = update.version;
             set_status(app, "available", Some(version.clone()), format!(
-                "Signed {} update available. Review and choose Update & Restart.",
+                "{} channel reports an update. Signature verification occurs during install.",
                 channel.as_str(),
             ));
             let _ = app.emit(AVAILABLE_EVENT, version);
@@ -439,7 +439,7 @@ pub async fn check_for_update(app: AppHandle) -> Result<Option<String>, String> 
     let _guard = BusyGuard(app.clone());
     let channel = current_channel(&app);
     set_status(&app, "checking", None, format!(
-        "Checking the signed {} update feed…", channel.as_str(),
+        "Checking the {} update feed…", channel.as_str(),
     ));
     let checked = match updater_for(&app, channel) {
         Ok(updater) => updater.check().await.map_err(|e| e.to_string()),
@@ -449,7 +449,7 @@ pub async fn check_for_update(app: AppHandle) -> Result<Option<String>, String> 
         Ok(Some(update)) => {
             let version = update.version;
             set_status(&app, "available", Some(version.clone()), format!(
-                "Signed {} update found; choose Update & Restart to install it.",
+                "{} channel reports an update; bytes are verified before installation.",
                 channel.as_str(),
             ));
             let _ = app.emit(AVAILABLE_EVENT, version.clone());
@@ -457,7 +457,7 @@ pub async fn check_for_update(app: AppHandle) -> Result<Option<String>, String> 
         }
         Ok(None) => {
             set_status(&app, "up_to_date", None, format!(
-                "Signed {} channel checked; no newer version is available.",
+                "{} channel checked; no newer version was announced.",
                 channel.as_str(),
             ));
             Ok(None)
