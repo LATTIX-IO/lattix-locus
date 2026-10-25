@@ -109,4 +109,16 @@ try {
     Write-Output "ASSET SCAN UNAVAILABLE: $($_.Exception.GetType().Name)"
 }
 
+# PR #143+ native startup event codes are fixed strings only; no URL or data.
+foreach ($root in @(
+    (Join-Path $env:APPDATA 'com.lattix.locus\logs'),
+    (Join-Path $env:LOCALAPPDATA 'com.lattix.locus\logs')
+)) {
+    $nativeLog = Join-Path $root 'desktop-startup-events.log'
+    if (Test-Path -LiteralPath $nativeLog -PathType Leaf) {
+        Write-Output "Native startup events (last 20):"
+        Get-Content -LiteralPath $nativeLog -Tail 20 -ErrorAction SilentlyContinue
+    }
+}
+
 Write-Output "DIAGNOSTIC COMPLETE. No user data or application files were modified."
