@@ -155,7 +155,7 @@ jobs:
         run: |
           python scripts/desktop_frontend_smoke.py \
             --frontend apps/desktop-tauri/src-tauri/resources/frontend \
-            --node "$(command -v node)" --version "$VERSION"
+            --node node --version "$VERSION"
 
       - name: Vendor Node runtime into the bundle
         shell: bash
