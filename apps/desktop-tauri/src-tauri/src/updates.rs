@@ -264,19 +264,27 @@ fn run_cycle(app: &AppHandle) {
     }
     let _guard = BusyGuard(app.clone());
     let channel = current_channel(app);
-    set_status(app, "checking", None, "");
+    set_status(app, "checking", None, format!("Checking the signed {} update feed…", channel.as_str()));
     let checked = updater_for(app, channel)
         .and_then(|updater| tauri::async_runtime::block_on(updater.check()).map_err(|e| e.to_string()));
     match checked {
-        Ok(None) => set_status(app, "up_to_date", None, ""),
+        Ok(None) => set_status(app, "up_to_date", None, format!(
+            "Signed {} channel checked; no newer version is available.",
+            channel.as_str(),
+        )),
         Ok(Some(update)) => {
             let version = update.version;
-            set_status(app, "available", Some(version.clone()), "Ready when you are");
+            set_status(app, "available", Some(version.clone()), format!(
+                "Signed {} update available. Review and choose Update & Restart.",
+                channel.as_str(),
+            ));
             let _ = app.emit(AVAILABLE_EVENT, version);
         }
-        // No signed metadata published yet, offline, or rate limited: report it
-        // in the status; the UI stays quiet.
-        Err(e) => set_status(app, "error", None, e),
+        // Signed metadata missing, offline, rate-limited, or signature failure:
+        // preserve the error in the same status/event observed by Settings.
+        Err(e) => set_status(app, "error", None, format!(
+            "{} channel update check failed: {}", channel.as_str(), e,
+        )),
     }
 }
 
@@ -420,14 +428,46 @@ pub fn set_update_channel(app: AppHandle, channel: String) -> Result<UpdateStatu
     Ok(status_snapshot(&app))
 }
 
-/// The available version on the current channel, or None.
+/// Check the signed channel and publish an auditable status transition.
+/// The manual action and the background poll share one busy gate: neither can
+/// overwrite the other's result or race an in-progress installation.
 #[tauri::command]
 pub async fn check_for_update(app: AppHandle) -> Result<Option<String>, String> {
-    let updater = updater_for(&app, current_channel(&app))?;
-    match updater.check().await {
-        Ok(Some(update)) => Ok(Some(update.version)),
-        Ok(None) => Ok(None),
-        Err(e) => Err(e.to_string()),
+    if app.state::<UpdateState>().busy.swap(true, Ordering::SeqCst) {
+        return Err("An update check or installation is already in progress.".to_string());
+    }
+    let _guard = BusyGuard(app.clone());
+    let channel = current_channel(&app);
+    set_status(&app, "checking", None, format!(
+        "Checking the signed {} update feed…", channel.as_str(),
+    ));
+    let checked = match updater_for(&app, channel) {
+        Ok(updater) => updater.check().await.map_err(|e| e.to_string()),
+        Err(e) => Err(e),
+    };
+    match checked {
+        Ok(Some(update)) => {
+            let version = update.version;
+            set_status(&app, "available", Some(version.clone()), format!(
+                "Signed {} update found; choose Update & Restart to install it.",
+                channel.as_str(),
+            ));
+            let _ = app.emit(AVAILABLE_EVENT, version.clone());
+            Ok(Some(version))
+        }
+        Ok(None) => {
+            set_status(&app, "up_to_date", None, format!(
+                "Signed {} channel checked; no newer version is available.",
+                channel.as_str(),
+            ));
+            Ok(None)
+        }
+        Err(error) => {
+            set_status(&app, "error", None, format!(
+                "{} channel update check failed: {}", channel.as_str(), error,
+            ));
+            Err(error)
+        }
     }
 }
 
