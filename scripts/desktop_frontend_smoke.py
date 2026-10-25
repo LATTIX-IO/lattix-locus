@@ -51,7 +51,76 @@ def validate_static(url: str, *, timeout: float = 3.0) -> None:
             raise RuntimeError("packaged static chunk is missing or empty")
 
 
-def smoke(frontend: Path, *, node: str, version: str, deadline_seconds: float = 50.0) -> None:
+def validate_rendered_ui(base: str, *, browser_channel: str) -> None:
+    """Run real React in Windows Edge: HTTP 200 alone is insufficient.
+
+    Exercise both normal web rendering and a simulated Tauri global. The test
+    intentionally has no backend; the visible session gate must still render.
+    Browser smoke cannot replace installed Tauri/WebView2 acceptance.
+    """
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(channel=browser_channel, headless=True)
+        try:
+            for desktop in (False, True):
+                context = browser.new_context()
+                try:
+                    if desktop:
+                        context.add_init_script('''window.__TAURI__ = {
+                          core: { invoke: async () => null },
+                          app: { getVersion: async () => "0.10.0" },
+                          event: { listen: async () => () => {} }
+                        };''')
+                    page = context.new_page()
+                    errors: list[str] = []
+                    missing_chunks: list[str] = []
+                    page.on("pageerror", lambda error: errors.append(str(error)[:450]))
+                    page.on(
+                        "response",
+                        lambda response: missing_chunks.append(
+                            str(response.status) + ": " + response.url.split("?")[0][-180:]
+                        ) if "/_next/static/" in response.url and response.status >= 400 else None,
+                    )
+                    page.goto(base + "/home", wait_until="domcontentloaded", timeout=30000)
+                    page.wait_for_function(
+                        '''() => {
+                          const main = document.querySelector("main");
+                          if (!main) return false;
+                          const content = main.innerText || "";
+                          return content.includes("Starting Locus") ||
+                            content.includes("Can't reach the Locus backend") ||
+                            content.includes("Opening Home") ||
+                            content.includes("Skip to content");
+                        }''',
+                        timeout=25000,
+                    )
+                    page.wait_for_timeout(1500)
+                    main = page.locator("main")
+                    if not main.is_visible() or not main.inner_text().strip():
+                        raise RuntimeError("browser rendered an empty/invisible main element")
+                    if "The interface could not load" in page.locator("body").inner_text():
+                        raise RuntimeError("React root global-error boundary rendered")
+                    if errors or missing_chunks:
+                        raise RuntimeError(
+                            "browser frontend errors: "
+                            + "; ".join((errors + missing_chunks)[:8])
+                        )
+                    print(
+                        "Desktop frontend rendered in Edge: "
+                        + ("simulated Tauri" if desktop else "browser")
+                        + ", visible main (" + str(len(main.inner_text())) + " chars), 0 JS faults"
+                    )
+                finally:
+                    context.close()
+        finally:
+            browser.close()
+
+
+def smoke(
+    frontend: Path, *, node: str, version: str,
+    deadline_seconds: float = 50.0, browser_channel: str | None = None,
+) -> None:
     server = frontend / "server.js"
     static = frontend / ".next" / "static"
     if not server.is_file():
@@ -96,6 +165,8 @@ def smoke(frontend: Path, *, node: str, version: str, deadline_seconds: float = 
                         f"Desktop frontend HTTP acceptance passed: build {version}, "
                         f"HTML /home, static /_next/static/{relative}"
                     )
+                    if browser_channel:
+                        validate_rendered_ui(base, browser_channel=browser_channel)
                     return
                 except (OSError, RuntimeError, urllib.error.URLError, TimeoutError) as exc:
                     last_error = f"{type(exc).__name__}: {exc}"
@@ -118,10 +189,17 @@ def main() -> None:
     parser.add_argument("--frontend", type=Path, required=True)
     parser.add_argument("--node", required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument(
+        "--browser-channel", choices=("msedge", "chrome", "chromium"),
+        default=None, help="render/hydrate real React UI and reject blank WebViews",
+    )
     options = parser.parse_args()
     if not options.version or len(options.version) > 64:
         parser.error("a bounded, nonempty version is required")
-    smoke(options.frontend.resolve(), node=options.node, version=options.version)
+    smoke(
+        options.frontend.resolve(), node=options.node, version=options.version,
+        browser_channel=options.browser_channel,
+    )
 
 
 if __name__ == "__main__":
