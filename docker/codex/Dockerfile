@@ -10,8 +10,9 @@ RUN apt-get update \
 RUN npm install --global --no-audit --no-fund "@openai/codex@${CODEX_CLI_VERSION}" \
     && test "$(codex --version)" = "codex-cli ${CODEX_CLI_VERSION}"
 COPY docker/codex/stdio_runner.py /usr/local/bin/locus-codex-stdio
-RUN chmod 0555 /usr/local/bin/locus-codex-stdio \
-    && python3 -m py_compile /usr/local/bin/locus-codex-stdio
+COPY docker/codex/stage_writer.py /usr/local/bin/locus-stage-writer
+RUN chmod 0555 /usr/local/bin/locus-codex-stdio /usr/local/bin/locus-stage-writer \
+    && python3 -m py_compile /usr/local/bin/locus-codex-stdio /usr/local/bin/locus-stage-writer
 # Never mount the Docker socket, host profile, Git config or provider credentials.
 # StageDockerBroker always overrides the entrypoint and host UID/GID.
 # Other standalone Docker invocations must also default to nonroot.
