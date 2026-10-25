@@ -103,10 +103,11 @@ Copy-Item ".next/static/*" (Join-Path $dest ".next/static") -Recurse -Force
 if (Test-Path "public") { Copy-Item "public" (Join-Path $dest "public") -Recurse -Force }
 Pop-Location
 Write-Host "== verifying staged desktop frontend before installer build =="
+$nodeExe = (Get-Command node).Source
 & $Py (Join-Path $root "scripts/desktop_frontend_smoke.py") `
-  --frontend $dest --node (Get-Command node).Source --version $desktopVersion
+  --frontend $dest --node $nodeExe --version $desktopVersion
 CheckExit "desktop frontend standalone smoke"
-Copy-Item (Get-Command node).Source (Join-Path $bin "node.exe") -Force
+Copy-Item $nodeExe (Join-Path $bin "node.exe") -Force
 
 # 3) Icons — ALWAYS regenerate from icon-source.png so logo updates take effect
 #    (the generated icons/ dir is not committed; a stale set would otherwise stick).
