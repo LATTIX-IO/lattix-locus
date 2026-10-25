@@ -139,6 +139,9 @@ jobs:
       - name: Build frontend (Next.js standalone)
         shell: bash
         working-directory: apps/frontend
+        env:
+          # Same validated release version that Tauri reports on startup.
+          LOCUS_DESKTOP_BUILD_VERSION: ${{ needs.plan.outputs.version }}
         run: |
           npm ci
           npm run build
@@ -146,6 +149,13 @@ jobs:
           cp -r .next/standalone/. ../../apps/desktop-tauri/src-tauri/resources/frontend/
           cp -r .next/static ../../apps/desktop-tauri/src-tauri/resources/frontend/.next/static
           cp -r public ../../apps/desktop-tauri/src-tauri/resources/frontend/public || true
+
+      - name: Smoke staged standalone desktop frontend
+        shell: bash
+        run: |
+          python scripts/desktop_frontend_smoke.py \
+            --frontend apps/desktop-tauri/src-tauri/resources/frontend \
+            --node "$(command -v node)" --version "$VERSION"
 
       - name: Vendor Node runtime into the bundle
         shell: bash
