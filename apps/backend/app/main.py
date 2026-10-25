@@ -24128,6 +24128,30 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
             artifacts_payload = (
                 detail.get("artifacts") if isinstance(detail.get("artifacts"), list) else []
             )
+            # A legacy 0.10.5 GET may already have manufactured a
+            # placeholder artifact and a misleading provider/auth event.
+            # Repair the label and attach an honest retrospective report,
+            # without pretending the original exception can be recovered.
+            if not isinstance(detail.get("error"), dict):
+                legacy_repaired = False
+                for artifact in artifacts_payload:
+                    if (
+                        isinstance(artifact, dict)
+                        and artifact.get("name") == "Agent Execution Failure Report"
+                        and not artifact.get("content")
+                    ):
+                        artifact["content"] = historical_failure_report(run_id=run_id)
+                        legacy_repaired = True
+                if legacy_repaired:
+                    for event in store.run_events.get(run_id, []):
+                        if (
+                            event.type == "artifact_created"
+                            and event.summary
+                            == "Captured provider/auth configuration failure details."
+                        ):
+                            event.summary = "Historical failure details were not captured."
+                    detail_changed = True
+
             if len(artifacts_payload) == 0:
                 failure_artifact = ArtifactSummary(
                     id=str(uuid4()),
