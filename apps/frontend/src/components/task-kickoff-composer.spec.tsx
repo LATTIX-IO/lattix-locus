@@ -1,10 +1,15 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const refreshMock = vi.fn();
 const pushMock = vi.fn();
+const modelState = vi.hoisted(() => ({
+  ready: true,
+  reason: "",
+  selected: "ollama/gpt-oss:20b-ctx32k",
+}));
 
 const {
   createWorkflowRunMock,
@@ -28,7 +33,19 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("@/components/composer-controls", () => ({
-  ComposerControls: () => null,
+  ComposerControls: ({
+    onChange,
+    onModelReadinessChange,
+  }: {
+    onChange: (options: { model?: string }) => void;
+    onModelReadinessChange: (ready: boolean, reason: string) => void;
+  }) => {
+    useEffect(() => {
+      onChange({ model: modelState.selected || undefined });
+      onModelReadinessChange(modelState.ready, modelState.reason);
+    }, [onChange, onModelReadinessChange]);
+    return null;
+  },
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -40,6 +57,9 @@ vi.mock("@/lib/api", () => ({
 import { TaskKickoffComposer } from "@/components/task-kickoff-composer";
 
 beforeEach(() => {
+  modelState.ready = true;
+  modelState.reason = "";
+  modelState.selected = "ollama/gpt-oss:20b-ctx32k";
   refreshMock.mockReset();
   pushMock.mockReset();
   createWorkflowRunMock.mockReset();
@@ -67,11 +87,28 @@ describe("TaskKickoffComposer", () => {
     expect(createWorkflowRunMock).toHaveBeenCalledWith(expect.objectContaining({
       session_kind: "task",
       prompt: "Line one",
+      model: "ollama/gpt-oss:20b-ctx32k",
       tokens: [],
     }), { timeoutMs: 120000 });
     expect(pushMock).toHaveBeenCalledWith("/activity?session=run-2");
     expect(refreshMock).toHaveBeenCalled();
     expect(screen.getByText("Task started. Opening run run-2...")).toBeInTheDocument();
+  });
+
+  it("refuses tasks while the model inventory is not ready", async () => {
+    modelState.ready = false;
+    modelState.reason = "Checking available models…";
+    modelState.selected = "";
+    render(<TaskKickoffComposer />);
+    const textarea = screen.getByPlaceholderText(/draft outreach sequence/i);
+    fireEvent.change(textarea, { target: { value: "Draft a research note" } });
+
+    const button = screen.getByRole("button", { name: /start task/i });
+    expect(button).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent(/checking available models/i);
+    fireEvent.click(button);
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
+    expect(createWorkflowRunMock).not.toHaveBeenCalled();
   });
 
   it("surfaces backend run-creation failures with the original error detail", async () => {
