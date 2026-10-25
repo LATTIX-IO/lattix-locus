@@ -14,6 +14,11 @@ for (const [key, value] of Object.entries(process.env)) {
   }
 }
 
+// Written only by the desktop installer build from its validated VERSION.
+// Used by the native shell to reject a stale/wrong process on port 3000.
+// Do not accept this identifier from incoming requests.
+const desktopBuildVersion = process.env.LOCUS_DESKTOP_BUILD_VERSION?.trim() || "";
+
 const nextConfig: NextConfig = {
   output: "standalone",
   reactCompiler: true,
@@ -70,6 +75,9 @@ const nextConfig: NextConfig = {
       {
         source: "/(.*)",
         headers: [
+          ...(desktopBuildVersion
+            ? [{ key: "X-Locus-Desktop-Build", value: desktopBuildVersion }]
+            : []),
           { key: "X-Frame-Options", value: "DENY" },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
