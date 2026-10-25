@@ -68,7 +68,7 @@ def prepare_verified_handoff(
     ):
         raise AdmissionDenied("trusted bounded cross-specialist handoff required")
     recipient_lease._ledger.require_active(recipient_lease.reservation_id)
-    receiving = stages.inspect_executable(recipient_lease, recipient_stage_id)
+    receiving = stages.inspect(recipient_lease, recipient_stage_id)
     row = escrow._row(source.escrow_id)
     escrow._inspect(row, eligible=("ready",))
     if (
