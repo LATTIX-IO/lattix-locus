@@ -12,6 +12,7 @@ on:
       - "scripts/desktop_frontend_smoke.py"
       - "scripts/desktop-installed-diagnostics.ps1"
       - "scripts/windows-uat-run-diagnostics.ps1"
+      - "scripts/windows-uat-webview-profile.ps1"
       - "scripts/desktop_installer_smoke.py"
       - "tests/unit/test_desktop_installer_smoke.py"
       - "tests/unit/test_desktop_frontend_smoke.py"
@@ -52,7 +53,8 @@ jobs:
           $parseErrors = $null
           foreach ($script in @(
             'scripts/desktop-installed-diagnostics.ps1',
-            'scripts/windows-uat-run-diagnostics.ps1'
+            'scripts/windows-uat-run-diagnostics.ps1',
+            'scripts/windows-uat-webview-profile.ps1'
           )) {
             $tokens = $null
             $parseErrors = $null
