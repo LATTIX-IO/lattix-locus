@@ -150,6 +150,10 @@ export function ComposerControls({ onChange }: Props) {
   const currentMode = MODES.find((m) => m.value === mode) ?? MODES[2];
   const selectedModel = useMemo(() => models.find((m) => m.value === model), [models, model]);
   const reasoningCapable = selectedModel?.reasoning ?? isReasoningModel(model);
+  // The operator may have a persisted default that is no longer installed.
+  // Do not silently substitute another provider/model for an intentional
+  // choice; expose the mismatch and require explicit selection.
+  const unavailableSelection = Boolean(model && models.length > 0 && !selectedModel);
 
   function toggle(p: Panel) {
     setPanel((cur) => (cur === p ? null : p));
@@ -224,6 +228,11 @@ export function ComposerControls({ onChange }: Props) {
         ) : null}
       </div>
 
+      {unavailableSelection ? (
+        <span role="alert" className="max-w-[300px] text-[11px] text-[var(--fx-danger)]">
+          Saved model unavailable. Open Model and select an installed or configured model.
+        </span>
+      ) : null}
       {/* Model (+ reasoning folded in) */}
       <div className="relative">
         <button type="button" className={btn} onClick={() => toggle("model")} title="Model (and reasoning effort)" aria-label="Model">
