@@ -71,3 +71,21 @@ def test_handoff_is_no_filesystem_write_or_publish_api():
     assert ".write_text(" not in source
     assert "subprocess" not in source
     assert "shell=True" not in source
+
+from locus_runtime.harness.native_draft_worker import NativeLocusDraftWorker
+from locus_runtime.pod_workspace_staging import staged_workspace
+from tests.unit.test_stage_docker_launch import ONLY_LINUX_UNPRIVILEGED, rig
+
+
+@ONLY_LINUX_UNPRIVILEGED
+def test_native_worker_rejects_foreign_engine_before_model_or_docker(tmp_path):
+    source, lease, _, receipts, stages, broker = rig(tmp_path)
+    with staged_workspace(source, staging_parent=tmp_path) as snap:
+        stage = stages.bind(lease, snap)
+        with pytest.raises(AdmissionDenied, match="native engine stage pin"):
+            NativeLocusDraftWorker(broker).run(
+                lease, stage.stage_id, task="Write a noncoding brief."
+            )
+        with receipts.reservations._connect() as db:
+            assert db.execute("SELECT count(*) FROM pod_action_receipt").fetchone()[0] == 0
+    assert not (source / "draft.txt").exists()
