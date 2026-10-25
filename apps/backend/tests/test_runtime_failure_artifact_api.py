@@ -99,3 +99,36 @@ def test_legacy_failure_report_admits_root_cause_was_not_recorded(
         ids.update(a["id"] for a in original_artifacts)
         store.artifacts[:] = [a for a in store.artifacts if a.id not in ids]
         _cleanup_run(run_id)
+
+
+def test_existing_0105_placeholder_is_relabelled_not_misrepresented(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(main_module, "_resolve_user_scoped_runtime", lambda: None)
+    monkeypatch.setattr(main_module, "_run_agent_iterations", _explode_secretly)
+    run_id = _create_run_and_collect(monkeypatch)
+    try:
+        # Reconstruct exactly the owner's 0.10.5 state: generic Failed run,
+        # placeholder artifact with no content, and false provider/auth event.
+        artifacts = store.run_details[run_id]["artifacts"]
+        assert len(artifacts) == 1
+        artifacts[0].pop("content", None)
+        store.run_details[run_id].pop("error", None)
+        for event in store.run_events[run_id]:
+            if event.type == "artifact_created":
+                event.title = "Failure artifact created"
+                event.summary = "Captured provider/auth configuration failure details."
+
+        response = client.get(f"/workflow-runs/{run_id}", headers=AUTH_HEADERS)
+        assert response.status_code == 200
+        assert response.json()["artifacts"][0]["content"]
+        detail = _artifact_from_run(run_id)
+        report = json.loads(detail["content"])
+        assert report["error"]["code"] == "historical_failure_details_unavailable"
+        events = client.get(f"/workflow-runs/{run_id}/events", headers=AUTH_HEADERS)
+        assert "Captured provider/auth" not in json.dumps(events.json())
+        assert "Historical failure details were not captured." in json.dumps(events.json())
+    finally:
+        ids = {a["id"] for a in store.run_details.get(run_id, {}).get("artifacts", [])}
+        store.artifacts[:] = [a for a in store.artifacts if a.id not in ids]
+        _cleanup_run(run_id)
