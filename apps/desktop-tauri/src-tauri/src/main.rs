@@ -27,7 +27,9 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
-const FRONTEND_URL: &str = "http://127.0.0.1:3000";
+// Navigate to the exact route that passed the build-identity/readiness probe.
+// Avoid a redundant / -> /home redirect in the embedded WebView2 runtime.
+const FRONTEND_URL: &str = "http://127.0.0.1:3000/home";
 const HEALTH_TIMEOUT_SECS: u64 = 180;
 // The backend can need a slow first-run import; the frontend is already a
 // staged local Node bundle and must become ready much sooner.
