@@ -25,6 +25,7 @@ from locus_runtime.harness.tools import CodingToolset
 from locus_runtime.harness.workspace import Workspace
 from locus_runtime.model_client import (
     GatewayModelGate, ModelClient, ModelEndpoint, ModelRouter, ModelTier,
+    provenance_denial,
 )
 from locus_runtime.pod_artifact_escrow import DetachedArtifactEscrow, EscrowRecord
 from locus_runtime.pod_reservations import AdmissionDenied, PodLease, ResourceBudget
@@ -101,6 +102,8 @@ class NativeLocusDraftWorker:
             raise AdmissionDenied("native model must not have host write capabilities")
         if "model:ollama" not in lease._session.capabilities.allowed_tools:
             raise AdmissionDenied("native model Gateway grant missing")
+        if provenance_denial("ollama", self.model, "http://127.0.0.1:11434/v1"):
+            raise AdmissionDenied("native local model provenance is not authorized")
         if STAGE_WRITER not in lease._session.capabilities.allowed_executables:
             raise AdmissionDenied("stage writer executable not granted")
         target = ModelEndpoint(
