@@ -10,6 +10,7 @@ on:
       - "apps/desktop-tauri/src-tauri/src/**"
       - "apps/desktop-tauri/src-tauri/loading/**"
       - "scripts/desktop_frontend_smoke.py"
+      - "scripts/desktop-installed-diagnostics.ps1"
       - "scripts/desktop_installer_smoke.py"
       - "tests/unit/test_desktop_installer_smoke.py"
       - "tests/unit/test_desktop_frontend_smoke.py"
@@ -43,6 +44,19 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Validate the installed-Windows diagnostic script syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path (Get-Location) 'scripts/desktop-installed-diagnostics.ps1'),
+            [ref]$tokens, [ref]$parseErrors
+          ) | Out-Null
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | Format-List | Out-String | Write-Host
+            throw 'PowerShell installed diagnostic script failed syntax validation'
+          }
       - name: Build the desktop Next.js standalone bundle
         shell: bash
         working-directory: apps/frontend
