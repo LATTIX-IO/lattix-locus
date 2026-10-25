@@ -397,3 +397,36 @@ def test_ci_runs_the_release_version_check_from_env_only() -> None:
     assert "${{" not in body  # the untrusted PR body reaches the script only through env
     assert "python locus_tooling/versioning.py check --base-ref 'HEAD^1'" in body
     assert "python locus_tooling/versioning.py check" in body
+
+
+
+def test_manual_update_check_sets_native_status_and_reuses_busy_gate() -> None:
+    """The button must not be a silent check bypassing background status."""
+    rust = (TAURI / "src" / "updates.rs").read_text(encoding="utf-8")
+    manual = rust.split("pub async fn check_for_update(", 1)[1].split(
+        "/// The user's click:", 1
+    )[0]
+    assert "busy.swap(true, Ordering::SeqCst)" in manual
+    assert "BusyGuard(app.clone())" in manual
+    assert 'set_status(&app, "checking"' in manual
+    assert 'set_status(&app, "available"' in manual
+    assert 'set_status(&app, "up_to_date"' in manual
+    assert 'set_status(&app, "error"' in manual
+    assert "updater.check().await" in manual
+    assert "app.emit(AVAILABLE_EVENT" in manual
+
+
+def test_desktop_panel_does_not_hide_or_duplicate_signed_feed_errors() -> None:
+    """Both sidebar and settings use status, never a silent mount-time check."""
+    path = ROOT / "apps/frontend/src/components/navigation/platform-update-panel.tsx"
+    ui = path.read_text(encoding="utf-8")
+    mount = ui.split("useEffect(() => {", 1)[1].split(
+        "}, [isDesktop]);", 1
+    )[0]
+    assert "checkDesktopUpdate()" not in mount
+    assert "getDesktopUpdateStatus()" in mount
+    assert "update-status" in mount
+    assert "setCheckedUpdate(null)" not in mount
+    assert 'role="alert"' in ui
+    assert "updates.status?.state === \"error\"" in ui
+    assert 'disabled={updates.busy || updates.status?.state === "checking"}' in ui
