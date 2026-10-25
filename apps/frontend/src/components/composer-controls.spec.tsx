@@ -48,6 +48,11 @@ describe("ComposerControls model readiness", () => {
       preferred_reasoning_effort: "",
       default_working_folder: "",
     });
+    // A configured generic Ollama provider must not reintroduce its stale default.
+    api.getModelsOverview.mockResolvedValue({
+      providers: { ollama: { available: true, installed_models: installed } },
+      external: [{ id: "ollama", label: "Ollama", configured: true, default_model: "llama3.2:3b" }],
+    });
     const onReadiness = vi.fn();
     const onChange = vi.fn();
     render(<ComposerControls onChange={onChange} onModelReadinessChange={onReadiness} />);
@@ -59,6 +64,7 @@ describe("ComposerControls model readiness", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Model" }));
     expect(screen.queryByRole("button", { name: /nomic-embed-text/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /llama3.2:3b/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /gpt-oss:20b-ctx32k/i }));
 
     await waitFor(() => expect(onReadiness).toHaveBeenLastCalledWith(true, ""));
