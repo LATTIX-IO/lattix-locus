@@ -145,10 +145,20 @@ jobs:
         run: |
           npm ci
           npm run build
-          mkdir -p ../../apps/desktop-tauri/src-tauri/resources/frontend
-          cp -r .next/standalone/. ../../apps/desktop-tauri/src-tauri/resources/frontend/
-          cp -r .next/static ../../apps/desktop-tauri/src-tauri/resources/frontend/.next/static
-          cp -r public ../../apps/desktop-tauri/src-tauri/resources/frontend/public || true
+          # Stage one coherent build. Reusing the destination mixes content-hashed
+          # JS/CSS from earlier runs; copying static onto an existing static/
+          # directory can also create an unintended nested static/static tree.
+          stage=../../apps/desktop-tauri/src-tauri/resources/frontend
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          cp -r .next/standalone/. "$stage/"
+          rm -rf "$stage/.next/static"
+          mkdir -p "$stage/.next"
+          cp -r .next/static "$stage/.next/"
+          if [ -d public ]; then
+            rm -rf "$stage/public"
+            cp -r public "$stage/"
+          fi
 
       - name: Smoke staged standalone desktop frontend
         shell: bash
