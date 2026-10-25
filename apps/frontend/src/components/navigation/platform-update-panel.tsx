@@ -64,7 +64,9 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
   // undefined = not yet checked, null = up to date, string = update available.
   const [checkedUpdate, setCheckedUpdate] = useState<string | null | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [statusReadError, setStatusReadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isDesktop) return;
@@ -82,22 +84,25 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
       });
     getDesktopUpdateStatus()
       .then((next) => {
-        if (!cancelled && next) setStatus(next);
+        if (!cancelled && next) {
+          setStatus(next);
+          setStatusReadError(null);
+        }
       })
-      .catch(() => {
-        /* older shell without channels: the check below still works */
+      .catch((reason) => {
+        if (!cancelled) {
+          setStatusReadError(`Could not read the desktop update status: ${String(reason)}`);
+        }
       });
-    checkDesktopUpdate()
-      .then((version) => {
-        if (!cancelled) setCheckedUpdate(version);
-      })
-      .catch(() => {
-        // No signed metadata published yet, or offline: nothing to install.
-        if (!cancelled) setCheckedUpdate(null);
-      });
+    // The native supervisor owns background checks and publishes status events.
+    // Do not initiate a second silent check from each sidebar/settings mount:
+    // those compete for the same busy gate and formerly hid feed failures.
     tauri?.event
       ?.listen?.("update-status", (event) => {
-        if (!cancelled) setStatus(event.payload as DesktopUpdateStatus);
+        if (!cancelled) {
+          setStatus(event.payload as DesktopUpdateStatus);
+          setStatusReadError(null);
+        }
       })
       .then((unlisten) => {
         if (cancelled) unlisten();
@@ -140,11 +145,26 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
   );
 
   const checkNow = useCallback(async () => {
+    setChecking(true);
+    setBusy(true);
     setError(null);
+    setCheckedUpdate(undefined);
     try {
-      setCheckedUpdate(await checkDesktopUpdate());
+      const version = await checkDesktopUpdate();
+      setCheckedUpdate(version);
+      // Keep the displayed result current even when Tauri event listening is
+      // unavailable or a status event arrived before the listener registered.
+      setStatus(await getDesktopUpdateStatus());
     } catch (reason) {
       setError(`Update check failed: ${String(reason)}`);
+      try {
+        setStatus(await getDesktopUpdateStatus());
+      } catch {
+        // Keep the original error; the native shell may be an older version.
+      }
+    } finally {
+      setChecking(false);
+      setBusy(false);
     }
   }, []);
 
@@ -174,12 +194,16 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
       ? `v${platformVersion.current_version}`
       : "Version unavailable";
   const backendUpdate = !isDesktop && platformVersion?.status === "update_available" ? platformVersion : null;
+  // A completed native poll takes precedence over a stale manual result.
+  // Older desktop shells can still report a manual result while status is idle.
   const availableUpdate = isDesktop
     ? status?.state === "available" && status.version
       ? status.version
-      : typeof checkedUpdate === "string"
-        ? checkedUpdate
-        : null
+      : status && status.state !== "idle" && status.state !== "checking"
+        ? null
+        : typeof checkedUpdate === "string"
+          ? checkedUpdate
+          : null
     : null;
 
   return {
@@ -191,7 +215,9 @@ export function usePlatformUpdates(platformVersion?: PlatformVersionStatus | nul
     backendUpdate,
     currentLabel,
     busy,
+    checking,
     error,
+    statusReadError,
     changeChannel,
     checkNow,
     updateNow,
@@ -304,20 +330,35 @@ export function UpdatesPanel({ platformVersion }: { platformVersion?: PlatformVe
       <div className="flex flex-wrap items-center justify-between gap-2 text-[13px]">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono">{updates.currentLabel}</span>
-          <Badge variant={updates.availableUpdate ? "warning" : "secondary"}>
-            {updates.availableUpdate
-              ? `v${updates.availableUpdate} available`
-              : updates.status
-                ? STATE_LABEL[updates.status.state]
-                : updates.checkedUpdate === null
-                  ? "Up to date"
-                  : "Not checked"}
-          </Badge>
-          {updates.status?.detail ? <span className="text-xs text-muted-foreground">{updates.status.detail}</span> : null}
+          <span role="status" aria-live="polite" aria-atomic="true">
+            <Badge variant={updates.availableUpdate ? "warning" : "secondary"}>
+              {updates.checking
+                ? "Checking…"
+                : updates.availableUpdate
+                  ? `v${updates.availableUpdate} available`
+                  : updates.status && updates.status.state !== "idle"
+                    ? STATE_LABEL[updates.status.state]
+                    : updates.checkedUpdate === null
+                      ? "Up to date"
+                      : updates.status
+                        ? STATE_LABEL[updates.status.state]
+                        : "Not checked"}
+            </Badge>
+          </span>
+          {updates.status?.detail && updates.status.state !== "error" ? (
+            <span aria-live="polite" className="text-xs text-muted-foreground">
+              {updates.status.detail}
+            </span>
+          ) : null}
         </div>
         <div className="flex gap-2">
-          <Button variant="secondary" size="sm" onClick={() => void updates.checkNow()}>
-            Check now
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={updates.busy || updates.status?.state === "checking"}
+            onClick={() => void updates.checkNow()}
+          >
+            {updates.busy || updates.status?.state === "checking" ? "Checking…" : "Check now"}
           </Button>
           {updates.availableUpdate ? (
             <Button size="sm" disabled={updates.busy} onClick={() => void updates.updateNow(updates.availableUpdate as string)}>
@@ -326,9 +367,9 @@ export function UpdatesPanel({ platformVersion }: { platformVersion?: PlatformVe
           ) : null}
         </div>
       </div>
-      {updates.error ? (
+      {updates.error || updates.statusReadError || updates.status?.state === "error" ? (
         <p role="alert" className="text-xs text-destructive">
-          {updates.error}
+          {updates.error ?? updates.statusReadError ?? updates.status?.detail ?? "The update feed could not be checked."}
         </p>
       ) : null}
     </div>
