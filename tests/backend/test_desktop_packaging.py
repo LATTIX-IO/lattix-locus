@@ -377,6 +377,22 @@ def test_app_manifest_declares_every_registered_command():
     assert declared == _handler_commands() == _UI_COMMANDS
 
 
+
+def test_windows_desktop_uses_single_instance_before_starting_supervisor():
+    # Owner Windows UAT observed two concurrently running Tauri shells, each
+    # potentially spawning its own backend. The plugin must be registered FIRST
+    # so duplicate launches focus the existing window instead of racing ports.
+    cargo = (_TAURI_DIR / "Cargo.toml").read_text(encoding="utf-8")
+    main_rs = (_TAURI_DIR / "src" / "main.rs").read_text(encoding="utf-8")
+    assert 'tauri-plugin-single-instance = "=2.4.5"' in cargo
+    assert 'rust-version = "1.77.2"' in cargo
+    marker = ".plugin(tauri_plugin_single_instance::init("
+    first = main_rs.index(marker)
+    assert first < main_rs.index(".plugin(tauri_plugin_shell::init())")
+    assert first < main_rs.index(".plugin(tauri_plugin_updater::Builder::new()")
+    assert "show_main(app);" in main_rs[first: first + 170]
+    assert main_rs.index("fn main()") < first < main_rs.index("start_backend(app.handle())")
+
 def test_ui_capability_grants_exactly_the_app_commands_to_the_ui_origin():
     cap = _capability("desktop-ui.json")
     assert cap["windows"] == ["main"]
