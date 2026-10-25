@@ -113,6 +113,27 @@ describe("Locus desktop update check", () => {
     expect(checkMock).not.toHaveBeenCalled();
   });
 
+  it("recovers an initial status-read failure on a later valid native update event", async () => {
+    statusMock.mockRejectedValueOnce(new Error("initial connection failed"));
+    render(<UpdatesPanel />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("initial connection failed");
+    const handler = listenMock.mock.calls.find(([eventName]) => eventName === "update-status")?.[1];
+    expect(typeof handler).toBe("function");
+    act(() => handler({ payload: status("up_to_date", "dev channel checked; no newer version was announced.") }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(screen.getByRole("status")).toHaveTextContent("Up to date");
+  });
+
+  it("shows an explicit completed result from an older shell that still reports idle", async () => {
+    checkMock.mockResolvedValueOnce(null);
+    statusMock.mockResolvedValue(status("idle"));
+    render(<UpdatesPanel />);
+    await screen.findByText("Idle");
+    fireEvent.click(screen.getByRole("button", { name: "Check now" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Up to date"));
+    expect(checkMock).toHaveBeenCalledTimes(1);
+  });
+
   it("disables repeated checks and exposes progress while an update check is pending", async () => {
     let finish: (version: string | null) => void = () => {};
     checkMock.mockImplementationOnce(
