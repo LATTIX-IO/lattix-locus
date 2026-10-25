@@ -60,7 +60,10 @@ class _IndependentEscrowVerifier:
             return False
         import json
         manifest = json.loads(str(row["manifest_json"]))
-        return manifest.get("plan_digest") == plan_digest
+        if not isinstance(manifest, dict):
+            return False
+        observed = manifest.get("plan_digest")
+        return isinstance(observed, str) and observed == plan_digest
 
 
 @dataclass(frozen=True, slots=True)
