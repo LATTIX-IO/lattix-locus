@@ -457,13 +457,13 @@ def test_frontend_shell_actions_mirror_the_backend_rules():
 
 def test_desktop_shell_requires_http_responses_and_exact_frontend_build() -> None:
     """No TCP-only readiness: an occupied port can serve stale/error content."""
-    shell = (ROOT / "apps/desktop-tauri/src-tauri/src/main.rs").read_text(
+    shell = (_REPO_ROOT / "apps/desktop-tauri/src-tauri/src/main.rs").read_text(
         encoding="utf-8"
     )
-    health = (ROOT / "apps/desktop-tauri/src-tauri/src/desktop_health.rs").read_text(
+    health = (_REPO_ROOT / "apps/desktop-tauri/src-tauri/src/desktop_health.rs").read_text(
         encoding="utf-8"
     )
-    next_config = (ROOT / "apps/frontend/next.config.ts").read_text(
+    next_config = (_REPO_ROOT / "apps/frontend/next.config.ts").read_text(
         encoding="utf-8"
     )
     assert "mod desktop_health;" in shell
@@ -499,7 +499,7 @@ def test_desktop_installer_builds_pin_and_smoke_real_staged_frontend() -> None:
     smoke = (root / "scripts/desktop_frontend_smoke.py").read_text(
         encoding="utf-8"
     )
-    assert '"/home"' in smoke
+    assert 'validate_home(f"{base}/home"' in smoke
     assert '"X-Locus-Desktop-Build"' in smoke
-    assert '"/_next/static/' in smoke
+    assert '/_next/static/' in smoke
     assert "frontend /home did not render an HTML document" in smoke
