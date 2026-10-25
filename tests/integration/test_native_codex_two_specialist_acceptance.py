@@ -15,8 +15,7 @@ import pytest
 
 from locus_runtime.action_receipts import PodActionReceipts
 from locus_runtime.gateway import BudgetFigures, Capabilities, Gateway, RiskClass
-from locus_runtime.harness.codex_cli_worker import ENGINE_ID as CODEX_ENGINE, ENTRYPOINT
-from locus_runtime.harness.native_draft_worker import NATIVE_ENGINE_ID
+from locus_runtime.harness.codex_cli_worker import ENTRYPOINT
 from locus_runtime.pod_artifact_escrow import DetachedArtifactEscrow
 from locus_runtime.pod_reservations import AdmissionDenied, PodReservationLedger
 from locus_runtime.pod_stage_bindings import PodStageBindings
@@ -147,11 +146,8 @@ def test_escalated_or_wrong_engine_plan_refused_before_any_child(tmp_path):
     source, plan, parent, scheduler, broker, stages = _rig(tmp_path)
     # No direct engine substitution or replay of a branch-supplied identity.
     with pytest.raises(AdmissionDenied):
-        execute_two_specialists(
-            plan, parent, scheduler, broker,
-            source=source, staging_parent=tmp_path,
-            task="a",
-            rubric="b",
-            model="llama3.2:1b",
+        scheduler.claim_next(
+            plan, parent,
+            expected_engine_pins=(("codex", "untrusted/engine"), ("native", "untrusted/engine")),
         )
     assert not (source / "answer.txt").exists()
