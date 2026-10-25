@@ -61,7 +61,7 @@ if (Test-Path -LiteralPath $serverFile) {
     Write-Output "Server.js modified: $((Get-Item -LiteralPath $serverFile).LastWriteTime)"
 }
 
-foreach ($url in @("http://127.0.0.1:8000/healthz", "$base/", "$base/home")) {
+foreach ($url in @("http://127.0.0.1:8000/healthz", "$base/", "$base/home", "$base/api/auth/session")) {
     try {
         $res = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
         Write-Output "HTTP $($res.StatusCode): $url; Content-Type=$($res.Headers['Content-Type']); Desktop-Build=$($res.Headers['X-Locus-Desktop-Build'])"
