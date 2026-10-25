@@ -34,7 +34,13 @@ def _artifact_from_run(run_id: str) -> dict:
 def test_unexpected_error_creates_real_sanitized_failure_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(main_module, "_resolve_user_scoped_runtime", lambda: None)
+    # The runtime selector is nested in create_workflow_run, not a module
+    # attribute. Force its documented 412/no-user-credentials fallback so the
+    # execution reaches the mainline iterative agent model call.
+    def _no_user_runtime(**_kwargs: object) -> None:
+        raise main_module.HTTPException(status_code=412, detail="not configured")
+
+    monkeypatch.setattr(main_module, "_resolve_request_chat_runtime", _no_user_runtime)
     monkeypatch.setattr(main_module, "_run_agent_iterations", _explode_secretly)
     run_id = _create_run_and_collect(monkeypatch)
     try:
@@ -70,7 +76,13 @@ def test_unexpected_error_creates_real_sanitized_failure_report(
 def test_legacy_failure_report_admits_root_cause_was_not_recorded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(main_module, "_resolve_user_scoped_runtime", lambda: None)
+    # The runtime selector is nested in create_workflow_run, not a module
+    # attribute. Force its documented 412/no-user-credentials fallback so the
+    # execution reaches the mainline iterative agent model call.
+    def _no_user_runtime(**_kwargs: object) -> None:
+        raise main_module.HTTPException(status_code=412, detail="not configured")
+
+    monkeypatch.setattr(main_module, "_resolve_request_chat_runtime", _no_user_runtime)
     monkeypatch.setattr(main_module, "_run_agent_iterations", _explode_secretly)
     run_id = _create_run_and_collect(monkeypatch)
     try:
@@ -105,7 +117,13 @@ def test_legacy_failure_report_admits_root_cause_was_not_recorded(
 def test_existing_0105_placeholder_is_relabelled_not_misrepresented(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(main_module, "_resolve_user_scoped_runtime", lambda: None)
+    # The runtime selector is nested in create_workflow_run, not a module
+    # attribute. Force its documented 412/no-user-credentials fallback so the
+    # execution reaches the mainline iterative agent model call.
+    def _no_user_runtime(**_kwargs: object) -> None:
+        raise main_module.HTTPException(status_code=412, detail="not configured")
+
+    monkeypatch.setattr(main_module, "_resolve_request_chat_runtime", _no_user_runtime)
     monkeypatch.setattr(main_module, "_run_agent_iterations", _explode_secretly)
     run_id = _create_run_and_collect(monkeypatch)
     try:
