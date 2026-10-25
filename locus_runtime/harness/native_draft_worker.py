@@ -103,7 +103,7 @@ class NativeLocusDraftWorker:
             raise AdmissionDenied("authenticated native child lease required")
         if not isinstance(task, str) or not 1 <= len(task.encode("utf-8")) <= 2048:
             raise AdmissionDenied("bounded supervisor-authored brief required")
-        stage = self.broker.stages.inspect_executable(lease, stage_id)
+        stage = self.broker.stages.inspect(lease, stage_id)
         if stage.engine_id != NATIVE_ENGINE_ID or stage.state not in ("bound", "receipt-linked"):
             raise AdmissionDenied("native engine stage pin mismatch")
         if lease._session.capabilities.write_roots:
