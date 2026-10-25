@@ -503,3 +503,16 @@ def test_desktop_installer_builds_pin_and_smoke_real_staged_frontend() -> None:
     assert '"X-Locus-Desktop-Build"' in smoke
     assert '/_next/static/' in smoke
     assert "frontend /home did not render an HTML document" in smoke
+
+
+def test_local_windows_installer_stamps_and_smokes_exact_tauri_version() -> None:
+    script = (_REPO_ROOT / "scripts/build-desktop.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert 'ConvertFrom-Json).version' in script
+    assert '$env:LOCUS_DESKTOP_BUILD_VERSION = $desktopVersion' in script
+    assert 'desktop_frontend_smoke.py' in script
+    assert '--frontend $dest --node $nodeExe --version $desktopVersion' in script
+    assert script.index('desktop_frontend_smoke.py') < script.index(
+        'cargo tauri build'
+    )
