@@ -31,6 +31,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile and run the native HTTP readiness tests
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'locus-desktop-health-tests.exe'
+          rustc --edition 2021 --test apps/desktop-tauri/src-tauri/src/desktop_health.rs -o $exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build the desktop Next.js standalone bundle
         shell: bash
         working-directory: apps/frontend
