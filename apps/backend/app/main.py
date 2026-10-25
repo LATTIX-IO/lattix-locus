@@ -62,6 +62,11 @@ from app import cron as app_cron
 from app import knowledge as app_knowledge
 from app import local_models, mcp_client, policy_gateway, skills_catalog
 from app import user_browser as app_user_browser
+from app.runtime_failure_diagnostics import (
+    describe_unexpected_failure,
+    historical_failure_report,
+    make_failure_report,
+)
 from app.run_approvals import bind_legacy_compiled_reviews, decide_run_approval
 from locus_runtime.run_approval_contract import InvalidApprovalTransition
 from app.control_status import (
@@ -23156,7 +23161,7 @@ def create_workflow_run(
                             id=f"evt-{uuid4()}",
                             type="artifact_created",
                             title="Failure artifact created",
-                            summary="Captured provider/auth configuration failure details.",
+                            summary="Model/provider runtime unavailable; failure details recorded.",
                             createdAt=_now_iso(),
                             metadata={
                                 "artifact_id": failure_artifact.id,
@@ -23172,7 +23177,19 @@ def create_workflow_run(
                 )
                 store.run_details[run_id] = {
                     **failed_prior_detail,
-                    "artifacts": [*existing_artifacts, failure_artifact.model_dump()],
+                    "artifacts": [
+                        *existing_artifacts,
+                        {
+                            **failure_artifact.model_dump(),
+                            # Capture bounded provider failure metadata; never
+                            # substitute the run's model output for this report.
+                            "content": make_failure_report({
+                                "run_id": run_id,
+                                "code": error_code,
+                                "message": "Model/provider runtime unavailable.",
+                            }),
+                        },
+                    ],
                     "status": "Failed",
                     "graph": {"nodes": graph_nodes, "links": graph_links},
                     "agent_traces": [
@@ -23472,7 +23489,19 @@ def create_workflow_run(
             _persist_store_state()
             _finish_stream()
         except Exception as exc:  # noqa: BLE001
+            # Unexpected failures must preserve bounded evidence, not raw
+            # exception text, prompt contents or authentication secrets.
+            failure = describe_unexpected_failure(exc, run_id=run_id)
             message = _sanitize_runtime_error_message(exc)
+            failure["message"] = message
+            failure_report = make_failure_report(failure)
+            failure_artifact = ArtifactSummary(
+                id=str(uuid4()),
+                name="Agent Execution Failure Report",
+                status="Blocked",
+                version=1,
+            )
+            _upsert_artifact_summary(failure_artifact)
             store.runs[run_id] = WorkflowRunSummary(
                 id=run_id,
                 title=title,
@@ -23487,9 +23516,32 @@ def create_workflow_run(
                     id=f"evt-{uuid4()}",
                     type="error",
                     title="Agent execution failed",
-                    summary=message,
+                    # Safe, actionable classification in the operator UI;
+                    # the diagnostic report contains the bounded source site.
+                    summary=(
+                        f"{message} [{failure['code']}] "
+                        f"({failure['exception_type']}); see failure report."
+                    ),
                     createdAt=_now_iso(),
-                    metadata={"selected_agent_id": selected_agent_id},
+                    metadata={
+                        "selected_agent_id": selected_agent_id,
+                        "error_code": failure["code"],
+                        "exception_type": failure["exception_type"],
+                        "failure_site": failure["failure_site"],
+                    },
+                )
+            )
+            store.run_events.setdefault(run_id, []).append(
+                WorkflowRunEvent(
+                    id=f"evt-{uuid4()}",
+                    type="artifact_created",
+                    title="Execution diagnostic recorded",
+                    summary="Bounded failure facts captured; no raw exception content stored.",
+                    createdAt=_now_iso(),
+                    metadata={
+                        "artifact_id": failure_artifact.id,
+                        "artifact_name": failure_artifact.name,
+                    },
                 )
             )
             failed_detail = (
@@ -23497,16 +23549,34 @@ def create_workflow_run(
                 if isinstance(store.run_details.get(run_id), dict)
                 else {}
             )
+            current_artifacts = (
+                failed_detail.get("artifacts")
+                if isinstance(failed_detail.get("artifacts"), list)
+                else []
+            )
+            failed_detail["artifacts"] = [
+                *current_artifacts,
+                {**failure_artifact.model_dump(), "content": failure_report},
+            ]
             failed_detail["status"] = "Failed"
             failed_detail["response_text"] = str(failed_detail.get("response_text") or "")
+            failed_detail["error"] = failure
             failed_detail["access"] = access_context
             store.run_details[run_id] = failed_detail
-            _append_run_stream_event(run_id, "error", {"message": message})
+            _append_run_stream_event(
+                run_id, "error", {"message": message, "code": failure["code"]}
+            )
             _append_audit_event(
                 "workflow.run.execute",
                 actor,
                 "error",
-                {"run_id": run_id, "status": "failed_execution", "message": message},
+                {
+                    "run_id": run_id,
+                    "status": "failed_execution",
+                    "error_code": failure["code"],
+                    "exception_type": failure["exception_type"],
+                    "failure_site": failure["failure_site"],
+                },
             )
             _persist_store_state()
             _finish_stream()
@@ -24063,6 +24133,30 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
             artifacts_payload = (
                 detail.get("artifacts") if isinstance(detail.get("artifacts"), list) else []
             )
+            # A legacy 0.10.5 GET may already have manufactured a
+            # placeholder artifact and a misleading provider/auth event.
+            # Repair the label and attach an honest retrospective report,
+            # without pretending the original exception can be recovered.
+            if not isinstance(detail.get("error"), dict):
+                legacy_repaired = False
+                for artifact in artifacts_payload:
+                    if (
+                        isinstance(artifact, dict)
+                        and artifact.get("name") == "Agent Execution Failure Report"
+                        and not artifact.get("content")
+                    ):
+                        artifact["content"] = historical_failure_report(run_id=run_id)
+                        legacy_repaired = True
+                if legacy_repaired:
+                    for event in store.run_events.get(run_id, []):
+                        if (
+                            event.type == "artifact_created"
+                            and event.summary
+                            == "Captured provider/auth configuration failure details."
+                        ):
+                            event.summary = "Historical failure details were not captured."
+                    detail_changed = True
+
             if len(artifacts_payload) == 0:
                 failure_artifact = ArtifactSummary(
                     id=str(uuid4()),
@@ -24071,7 +24165,12 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
                     version=1,
                 )
                 _upsert_artifact_summary(failure_artifact)
-                detail["artifacts"] = [failure_artifact.model_dump()]
+                # Legacy versions did not persist exception metadata. A read
+                # cannot reconstruct the original failure or blame provider auth.
+                detail["artifacts"] = [{
+                    **failure_artifact.model_dump(),
+                    "content": historical_failure_report(run_id=run_id),
+                }]
                 detail_changed = True
 
                 has_artifact_event = any(
@@ -24086,7 +24185,7 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
                             id=f"evt-{uuid4()}",
                             type="artifact_created",
                             title="Failure artifact created",
-                            summary="Captured provider/auth configuration failure details.",
+                            summary="Historical failure has no captured exception details.",
                             createdAt=_now_iso(),
                             metadata={
                                 "artifact_id": failure_artifact.id,
@@ -28001,6 +28100,7 @@ def get_artifact(artifact_id: str, request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="artifact.read")
     artifact_summary: ArtifactSummary | None = None
     run_id: str | None = None
+    stored_artifact_content: str | None = None
 
     run_id = _find_run_id_for_artifact(artifact_id)
     if run_id is not None:
@@ -28016,6 +28116,8 @@ def get_artifact(artifact_id: str, request: Request) -> dict[str, Any]:
             if str(artifact.get("id") or "").strip() != artifact_id:
                 continue
             artifact_summary = _artifact_summary_from_payload(artifact_id, artifact)
+            if isinstance(artifact.get("content"), str):
+                stored_artifact_content = artifact["content"]
             break
 
     if artifact_summary is None:
@@ -28066,7 +28168,15 @@ def get_artifact(artifact_id: str, request: Request) -> dict[str, Any]:
         if not created_at and run_events:
             created_at = run_events[-1].createdAt
 
-    if not response_text:
+    if artifact_summary.name == "Agent Execution Failure Report":
+        # A failure report is never the run's partial assistant response.
+        # For old runs the original exception was simply not captured.
+        response_text = (
+            stored_artifact_content
+            if stored_artifact_content is not None
+            else historical_failure_report(run_id=run_id or "unknown")
+        )
+    elif not response_text:
         response_text = f"Artifact '{artifact_summary.name}' has no captured output body."
 
     return {
