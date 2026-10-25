@@ -416,7 +416,7 @@ def test_manual_update_check_sets_native_status_and_reuses_busy_gate() -> None:
     assert "app.emit(AVAILABLE_EVENT" in manual
 
 
-def test_desktop_panel_does_not_hide_or_duplicate_signed_feed_errors() -> None:
+def test_desktop_panel_does_not_hide_or_duplicate_update_feed_errors() -> None:
     """Both sidebar and settings use status, never a silent mount-time check."""
     path = ROOT / "apps/frontend/src/components/navigation/platform-update-panel.tsx"
     ui = path.read_text(encoding="utf-8")
