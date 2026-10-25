@@ -301,6 +301,22 @@ jobs:
           WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
           WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
 
+      # LOCUS-475: a staged tree can render even when the produced NSIS
+      # omits or relocates its content-hashed JS/CSS. Never publish such a build.
+      - name: Verify extracted Windows NSIS frontend payload
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          nsis_dir="apps/desktop-tauri/src-tauri/target/${{ matrix.triple }}/release/bundle/nsis"
+          mapfile -t installers < <(find "$nsis_dir" -maxdepth 1 -type f -name '*-setup.exe')
+          if [ "${#installers[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one NSIS installer"; exit 1
+          fi
+          python scripts/desktop_installer_smoke.py \
+            --installer "${installers[0]}" \
+            --frontend apps/desktop-tauri/src-tauri/resources/frontend \
+            --version "$VERSION"
+
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
