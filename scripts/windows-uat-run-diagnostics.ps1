@@ -17,15 +17,90 @@ function Get-LocusApi {
 }
 
 try {
-    $runs = @(Get-LocusApi -Route "/workflow-runs")
+    # Invoke-RestMethod returns JSON arrays as one pipeline object. Never
+    # wrap the command expression directly in @(...): it can create an array
+    # containing ONE array; $_.status then becomes an array of all statuses.
+    # Capture first, and explicitly unwrap actual run records.
+    $response = Get-LocusApi -Route "/workflow-runs"
+    if ($null -eq $response) {
+        Write-Output "Local workflow API returned null."
+        return
+    }
+    if ($response -is [array]) {
+        $runs = @($response)
+    } elseif ($response.PSObject.Properties['items']) {
+        $runs = @($response.items)
+    } elseif ($response.PSObject.Properties['runs']) {
+        $runs = @($response.runs)
+    } else {
+        $runs = @($response)
+    }
+    if ($runs.Count -eq 1 -and $runs[0] -is [array]) {
+        $runs = @($runs[0])
+    }
     if ($runs.Count -eq 0) {
         Write-Output "No workflow runs returned from the local API."
         return
     }
+    Write-Output ("Total run records: {0}" -f $runs.Count)
+    $runs | Group-Object -Property status | Sort-Object Name |
+        ForEach-Object {
+            Write-Output ("Status {0}: {1}" -f $_.Name, $_.Count)
+        }
 
     if ([string]::IsNullOrWhiteSpace($RunId)) {
         $failed = @($runs | Where-Object {
-            [string]$_.status -in @("Failed", "Blocked")
+            [string]$_.status -match '^(?i:failed|blocked|error)
+        if ($failed.Count -eq 0) {
+            Write-Output "No Failed or Blocked run found."
+            $runs | Sort-Object -Property updatedAt -Descending |
+                Select-Object -First 5 id, status, updatedAt |
+                Format-Table -AutoSize
+            return
+        }
+        $RunId = [string]$failed[0].id
+    }
+    if ($RunId -notmatch '^[a-zA-Z0-9_-]{8,100}$') {
+        throw "Invalid run identifier. Refusing to request an untrusted URL."
+    }
+
+    $selectedRun = Get-LocusApi -Route ("/workflow-runs/{0}" -f $RunId)
+    if ($null -eq $selectedRun -or [string]$selectedRun.id -ne $RunId) {
+        throw "Run identity mismatch; refusing to use an unrelated response."
+    }
+    $eventList = @(Get-LocusApi -Route ("/workflow-runs/{0}/events" -f $RunId))
+    Write-Output ("Run ID: {0}" -f $RunId)
+    Write-Output ("Run status: {0}" -f $selectedRun.status)
+    Write-Output ("Events received: {0}" -f $eventList.Count)
+
+    $errors = @($eventList | Where-Object {
+        $_.type -eq "error" -or
+        $_.title -match "error|fail|block|denied|refused|unavailable" -or
+        $_.summary -match "admission denied|model unavailable|execution error"
+    })
+    if ($errors.Count -eq 0) {
+        Write-Output "No explicit error event; last five event types/titles:"
+        $eventList | Select-Object -Last 5 type, title | Format-Table -AutoSize
+        return
+    }
+
+    Write-Output "Failure events (review locally for sensitive details before sharing):"
+    foreach ($record in ($errors | Select-Object -Last 8)) {
+        # Do not expose metadata/payload/tool arguments. Bound event text.
+        $label = [string]$record.title
+        $summary = [string]$record.summary
+        if ($label.Length -gt 150) { $label = $label.Substring(0, 150) }
+        if ($summary.Length -gt 500) { $summary = $summary.Substring(0, 500) }
+        [PSCustomObject]@{
+            Type = [string]$record.type
+            Title = $label
+            Summary = $summary
+        } | Format-List
+    }
+} catch {
+    Write-Error ("Local workflow diagnostic stopped: {0}" -f $_.Exception.Message)
+}
+
         } | Sort-Object -Property updatedAt -Descending)
         if ($failed.Count -eq 0) {
             Write-Output "No Failed or Blocked run found."
