@@ -23161,7 +23161,7 @@ def create_workflow_run(
                             id=f"evt-{uuid4()}",
                             type="artifact_created",
                             title="Failure artifact created",
-                            summary="Captured provider/auth configuration failure details.",
+                            summary="Model/provider runtime unavailable; failure details recorded.",
                             createdAt=_now_iso(),
                             metadata={
                                 "artifact_id": failure_artifact.id,
@@ -23516,7 +23516,12 @@ def create_workflow_run(
                     id=f"evt-{uuid4()}",
                     type="error",
                     title="Agent execution failed",
-                    summary=message,
+                    # Safe, actionable classification in the operator UI;
+                    # the diagnostic report contains the bounded source site.
+                    summary=(
+                        f"{message} [{failure['code']}] "
+                        f"({failure['exception_type']}); see failure report."
+                    ),
                     createdAt=_now_iso(),
                     metadata={
                         "selected_agent_id": selected_agent_id,
