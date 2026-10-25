@@ -47,6 +47,8 @@ class _LeaseBoundModel:
         self.model = model
         self.client = client
         self.calls = 0
+        self.text_turns = 0
+        self.tool_turns = 0
 
     def complete(
         self,
@@ -78,10 +80,15 @@ class _LeaseBoundModel:
             used.tokens + len(serialized) + cap,
             used.wall_seconds, used.spend_microunits,
         ))
-        return self.client.complete(
+        response = self.client.complete(
             messages, tools=tools, temperature=temperature, top_p=top_p,
             max_tokens=cap, reasoning_effort=reasoning_effort, extra=extra,
         )
+        if response.tool_calls:
+            self.tool_turns += 1
+        else:
+            self.text_turns += 1
+        return response
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +129,7 @@ class NativeLocusDraftWorker:
             provider="ollama", model=self.model, base_url="http://127.0.0.1:11434/v1",
         )
         gate = GatewayModelGate(session=lease._session)
-        client = ModelClient(target, gate=gate, max_retries=0, timeout=40, run_id=lease.run_id)
+        client = ModelClient(target, gate=gate, max_retries=0, timeout=35, run_id=lease.run_id)
         router = ModelRouter(
             [ModelTier("ollama", self.model)], client_factory=lambda _: client,
         )
@@ -140,7 +147,7 @@ class NativeLocusDraftWorker:
                 write_roots=(), egress_hosts=("127.0.0.1",),
             ),
             budget=RunBudget(
-                max_steps=8, max_seconds=40, max_tokens=28000,
+                max_steps=8, max_seconds=55, max_tokens=28000,
                 max_cost_usd=0.01, max_actions=8,
             ),
         )
@@ -190,7 +197,12 @@ class NativeLocusDraftWorker:
             raise AdmissionDenied(
                 "native runtime did not independently verify a bounded draft "
                 f"(state={result.end_state}, verified={result.verified}, "
-                f"blocker={blocker_kind}, stop={stop_kind}, calls={native_model.calls}, "
+                f"blocker={blocker_kind}, stop={stop_kind}, "
+                f"stop_dimension={str(result.stop.get('dimension', ''))[:30] if isinstance(result.stop, dict) else 'none'}, "
+                f"calls={native_model.calls}, text_turns={native_model.text_turns}, "
+                f"tool_turns={native_model.tool_turns}, "
+                f"elapsed_seconds={float(result.usage.get('elapsed_seconds') or 0):.1f}, "
+                f"steps={int(result.usage.get('steps') or 0)}, "
                 f"answer_bytes={answer_size}, "
                 f"verification_attempts={result.verification_attempts})"
             )
