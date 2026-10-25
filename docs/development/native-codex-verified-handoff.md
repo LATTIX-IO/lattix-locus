@@ -1,0 +1,9 @@
+# LOCUS-472 / LOCUS-470/C — verified specialist handoff
+
+**Status:** preliminary backend slice, **NOT** a qualified two-specialist workflow and **NOT** authorized for production use.
+
+The `prepare_verified_handoff` supervisor helper receives a separately admitted recipient `PodLease`/StageLease and an existing independent `DetachedArtifactEscrow` record. It refuses nonmatching parent run, source revision, TaskPlan digest, recipient engine, missing/expired/modified escrow evidence, replayed stage identity, oversized context or non-UTF-8 material. The only output is an immutable typed context object containing the draft and digest-bound provenance; it does not write to the second stage or promote any file. `codex_review_prompt` marks source text untrusted and supplies an operator-owned bounded rubric.
+
+This is not evidence of a *native* Locus runtime invocation or successful Codex handoff. Complete LOCUS-470/C requires the native Deep Agents runtime to execute under a distinct scoped Gateway child lease, produce a staged artifact with a successful stage-only process receipt, seal it, and close the lease. A second real Codex CLI stage must be admitted with its own scope, inspect the escrow and consume the bounded verified context. Its independently verified revised output must be sealed and both child leases closed before a separate human Gateway session reviews, approves, and promotes exactly one file through `DetachedArtifactEscrow`.
+
+Release blockers: full real-host/native+Codex test using actual Ollama inference and official pinned Codex CLI; tamper/stale/denied/replay/crash/resume tests; proof of independent lease budgets, no policy escalation or original host writes; zero skipped live acceptance; reviewed exact-head green CI/DAST/CodeQL. Do not mark LOCUS-472 Done or merge merely because helper unit tests pass.
