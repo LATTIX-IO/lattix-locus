@@ -38,7 +38,11 @@ _WRITER = (
     "if not data or len(data)>32768: sys.exit(41)\n"
     "fd=os.open('/workspace/draft.txt',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)\n"
     "try:\n"
-    " os.write(fd,data)\n"
+    " view=memoryview(data)\n"
+    " while view:\n"
+    "  sent=os.write(fd,view)\n"
+    "  if sent<=0: sys.exit(43)\n"
+    "  view=view[sent:]\n"
     " os.fsync(fd)\n"
     "finally: os.close(fd)\n"
 )
