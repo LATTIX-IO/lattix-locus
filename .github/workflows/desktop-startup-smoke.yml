@@ -11,6 +11,7 @@ on:
       - "apps/desktop-tauri/src-tauri/loading/**"
       - "scripts/desktop_frontend_smoke.py"
       - "scripts/desktop-installed-diagnostics.ps1"
+      - "scripts/windows-uat-run-diagnostics.ps1"
       - "scripts/desktop_installer_smoke.py"
       - "tests/unit/test_desktop_installer_smoke.py"
       - "tests/unit/test_desktop_frontend_smoke.py"
@@ -49,13 +50,20 @@ jobs:
         run: |
           $tokens = $null
           $parseErrors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Join-Path (Get-Location) 'scripts/desktop-installed-diagnostics.ps1'),
-            [ref]$tokens, [ref]$parseErrors
-          ) | Out-Null
-          if ($parseErrors.Count -gt 0) {
-            $parseErrors | Format-List | Out-String | Write-Host
-            throw 'PowerShell installed diagnostic script failed syntax validation'
+          foreach ($script in @(
+            'scripts/desktop-installed-diagnostics.ps1',
+            'scripts/windows-uat-run-diagnostics.ps1'
+          )) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path (Get-Location) $script),
+              [ref]$tokens, [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count -gt 0) {
+              $parseErrors | Format-List | Out-String | Write-Host
+              throw "PowerShell script failed syntax validation: $script"
+            }
           }
       - name: Build the desktop Next.js standalone bundle
         shell: bash
