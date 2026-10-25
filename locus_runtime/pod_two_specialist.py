@@ -72,6 +72,8 @@ class TwoSpecialistPendingReview:
     handoff_fingerprint: str
     native_model_calls: int
     codex_model_calls: int
+    native_action_id: str
+    codex_action_id: str
     parent_run_id: str
     plan_digest: str
 
@@ -207,6 +209,8 @@ def execute_two_specialists(
         handoff_fingerprint=handoff.fingerprint,
         native_model_calls=produced.model_calls,
         codex_model_calls=revised.model_calls,
+        native_action_id=produced.action_id,
+        codex_action_id=revised.action_id,
         parent_run_id=parent.caller.run_id,
         plan_digest=plan.digest,
     )
