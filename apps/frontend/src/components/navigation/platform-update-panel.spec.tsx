@@ -69,27 +69,27 @@ describe("Locus desktop update check", () => {
   it("reports the discovered version and exposes the manual install action", async () => {
     statusMock
       .mockResolvedValueOnce(status("idle"))
-      .mockResolvedValueOnce(status("available", "Signed dev update found.", "0.10.3"));
+      .mockResolvedValueOnce(status("available", "dev channel reports an update; bytes are verified before installation.", "0.10.3"));
     checkMock.mockResolvedValueOnce("0.10.3");
     render(<UpdatesPanel />);
     await screen.findByText("Idle");
     fireEvent.click(screen.getByRole("button", { name: "Check now" }));
     await screen.findByText("v0.10.3 available");
-    expect(screen.getByText("Signed dev update found.")).toBeInTheDocument();
+    expect(screen.getByText("dev channel reports an update; bytes are verified before installation.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Update & Restart" })).toBeEnabled();
     expect(installMock).not.toHaveBeenCalled();
   });
 
   it("provides explicit up-to-date feedback instead of silently remaining Idle", async () => {
     statusMock.mockResolvedValueOnce(status("idle")).mockResolvedValueOnce(
-      status("up_to_date", "Signed dev channel checked; no newer version is available."),
+      status("up_to_date", "dev channel checked; no newer version was announced."),
     );
     checkMock.mockResolvedValueOnce(null);
     render(<UpdatesPanel />);
     await screen.findByText("Idle");
     fireEvent.click(screen.getByRole("button", { name: "Check now" }));
     await screen.findByText("Up to date");
-    expect(screen.getByText(/Signed dev channel checked;/)).toBeInTheDocument();
+    expect(screen.getByText(/dev channel checked;/)).toBeInTheDocument();
   });
 
   it("does not misreport feed errors as up to date", async () => {
@@ -119,7 +119,7 @@ describe("Locus desktop update check", () => {
       () => new Promise<string | null>((resolve) => { finish = resolve; }),
     );
     statusMock.mockResolvedValueOnce(status("idle")).mockResolvedValueOnce(
-      status("up_to_date", "Signed dev channel checked; no newer version is available."),
+      status("up_to_date", "dev channel checked; no newer version was announced."),
     );
     render(<UpdatesPanel />);
     await screen.findByText("Idle");
