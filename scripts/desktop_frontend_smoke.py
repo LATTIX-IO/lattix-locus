@@ -128,7 +128,7 @@ def validate_rendered_ui(base: str, *, browser_channel: str) -> None:
     real backend, or production API mutations are used. This remains distinct
     from full installed Windows UAT.
     """
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import Route, sync_playwright
 
     session = {
         "authenticated": True,
@@ -145,7 +145,7 @@ def validate_rendered_ui(base: str, *, browser_channel: str) -> None:
         "oidc": {"configured": False, "issuer": "", "audience": "", "provider": ""},
     }
 
-    def synthetic_backend(route: object) -> None:
+    def synthetic_backend(route: Route) -> None:
         # The route handler is installed only in the isolated headless smoke.
         # Do not turn this into a production auth bypass or persist the session.
         path = urlsplit(route.request.url).path
