@@ -10,6 +10,8 @@ on:
       - "apps/desktop-tauri/src-tauri/src/**"
       - "apps/desktop-tauri/src-tauri/loading/**"
       - "scripts/desktop_frontend_smoke.py"
+      - "scripts/desktop_installer_smoke.py"
+      - "tests/unit/test_desktop_installer_smoke.py"
       - "tests/unit/test_desktop_frontend_smoke.py"
       - ".github/workflows/desktop-startup-smoke.yml"
       - ".github/workflows/desktop-dev.yml"
@@ -21,7 +23,7 @@ permissions:
 jobs:
   windows-standalone-ui:
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,7 +71,7 @@ jobs:
           python -m pip install pytest==8.4.2
           # This smoke test is stdlib-only. Do not import the repository-wide
           # backend conftest (FastAPI/database deps are deliberately absent).
-          python -m pytest -q --noconftest tests/unit/test_desktop_frontend_smoke.py
+          python -m pytest -q --noconftest tests/unit/test_desktop_frontend_smoke.py tests/unit/test_desktop_installer_smoke.py
       - name: Require actual Windows Edge client rendering
         shell: bash
         run: |
@@ -78,3 +80,36 @@ jobs:
             --frontend apps/desktop-tauri/src-tauri/resources/frontend \
             --node node --version 0.10.0-pr-smoke \
             --browser-channel msedge
+      # PR-only NSIS inspection: no signing key, no release, no artifact upload,
+      # and no startup of the dummy backend/policy executables. Their only
+      # purpose is satisfying Tauri's externalBin packaging contract so the
+      # real Tauri NSIS resource layout is exercised before merge.
+      - name: Build unsigned resource-inspection NSIS (no publication)
+        shell: bash
+        run: |
+          triple=x86_64-pc-windows-msvc
+          tauri=apps/desktop-tauri/src-tauri
+          mkdir -p "$tauri/bin" "$tauri/sidecars"
+          node_exe="$(command -v node)"
+          cp "$node_exe" "$tauri/bin/node.exe"
+          cp "$node_exe" "$tauri/bin/locus-backend-$triple.exe"
+          cp "$node_exe" "$tauri/sidecars/locus-opa-$triple.exe"
+          rustup target add "$triple"
+          cargo install tauri-cli --version "^2" --locked
+          (
+            cd "$tauri"
+            cargo tauri icon ../icon-source.png
+            cargo tauri build --target "$triple" --bundles nsis
+          )
+      - name: Verify extracted NSIS contains all staged frontend bytes
+        shell: bash
+        run: |
+          nsis_dir=apps/desktop-tauri/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis
+          mapfile -t installers < <(find "$nsis_dir" -maxdepth 1 -type f -name '*-setup.exe')
+          if [ "${#installers[@]}" -ne 1 ]; then
+            echo "::error::NSIS inspection build missing or ambiguous"; exit 1
+          fi
+          python scripts/desktop_installer_smoke.py \
+            --installer "${installers[0]}" \
+            --frontend apps/desktop-tauri/src-tauri/resources/frontend \
+            --version 0.10.0-pr-smoke
