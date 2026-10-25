@@ -16,6 +16,7 @@ import pytest
 from locus_runtime.action_receipts import PodActionReceipts
 from locus_runtime.gateway import BudgetFigures, Capabilities, Gateway, RiskClass
 from locus_runtime.harness.codex_cli_worker import ENTRYPOINT
+from locus_runtime.harness.native_draft_worker import STAGE_WRITER
 from locus_runtime.pod_artifact_escrow import DetachedArtifactEscrow
 from locus_runtime.pod_reservations import AdmissionDenied, PodReservationLedger
 from locus_runtime.pod_stage_bindings import PodStageBindings
@@ -47,7 +48,7 @@ def _rig(tmp_path: Path):
         allow_child_delegation=True,
         capabilities=Capabilities(
             allowed_tools=frozenset({"run_command", "model:ollama", "read_file"}),
-            allowed_executables=(ENTRYPOINT, "/usr/bin/python3"),
+            allowed_executables=(ENTRYPOINT, STAGE_WRITER),
             allowed_egress_hosts=("127.0.0.1",),
             read_roots=(str(source), str(tmp_path)),
             write_roots=(),
