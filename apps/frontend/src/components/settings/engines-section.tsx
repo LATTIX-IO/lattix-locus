@@ -228,6 +228,11 @@ export function LocalModelsPanel({ overview, onRefresh }: { overview: ModelsOver
   }
 
   const ollama = overview?.providers.ollama;
+  const configuredDefault = String(ollama?.default_model ?? "").trim();
+  const missingDefault = Boolean(
+    ollama?.available && configuredDefault &&
+    !ollama.installed_models.some((item) => item.id === configuredDefault),
+  );
   return (
     <div className="flex flex-col gap-3">
       <p className="text-[13px]">
@@ -241,6 +246,13 @@ export function LocalModelsPanel({ overview, onRefresh }: { overview: ModelsOver
             : "Install or start Ollama to run open-weight models on this machine."}
         </span>
       </p>
+      {missingDefault ? (
+        <p role="alert" className="text-xs text-[var(--fx-warning)]">
+          Configured Ollama default "{configuredDefault}" is not installed.
+          Choose an installed model under Providers → Local (Ollama) and save the default;
+          no model was downloaded or changed automatically.
+        </p>
+      ) : null}
       {overview?.catalog.length ? (
         <div className="overflow-x-auto rounded-[10px] border border-border">
           <table className="w-full text-[13px]">
