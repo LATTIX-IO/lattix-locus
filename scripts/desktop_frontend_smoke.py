@@ -75,7 +75,7 @@ def validate_static(
 # not evidence that the app's required CSS/JS exists: owner v0.10.4 had 6
 # missing assets among the first 12, despite a 200 /home response.
 _ASSET_REF = re.compile(
-    r"/_next/static/[A-Za-z0-9._~%+/-]+?\\.(?:js|css)(?:\\?[A-Za-z0-9_.~%=&+-]*)?",
+    r"/_next/static/[A-Za-z0-9._~%+/-]+?\.(?:js|css)(?:\?[A-Za-z0-9_.~%=&+-]*)?",
     flags=re.IGNORECASE,
 )
 
@@ -100,7 +100,7 @@ def validate_referenced_assets(
             raise RuntimeError("invalid Next.js asset reference")
         relative = path[len("/_next/static/"):]
         segments = relative.split("/")
-        if not relative or any(part in ("", ".", "..") for part in segments) or "\\\\" in relative:
+        if not relative or any(part in ("", ".", "..") for part in segments) or "\\" in relative:
             raise RuntimeError("unsafe Next.js asset reference")
         expected_type = "js" if relative.lower().endswith(".js") else "css"
         installed_file = static.joinpath(*segments)
