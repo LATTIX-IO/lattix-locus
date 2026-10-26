@@ -30004,7 +30004,8 @@ def _harness_model_chain(resolution: Any) -> list[model_calls.ModelTier]:
     * ``model_source == "default"`` (the node/agent named no engine) -> the D-21
       agent chain (NIM -> Ollama, ``LOCUS_AGENT_MODEL_CHAIN``);
     * an explicit local engine -> just that engine;
-    * an explicit hosted engine (e.g. NIM) -> it, then the local Ollama tier.
+    * an explicit hosted engine (e.g. NIM) -> it alone, unless a separate
+      operator-authorized fallback scope is deliberately granted.
     """
     provider = str(getattr(resolution, "provider", "") or "ollama").strip().lower()
     if provider not in model_calls.PROVIDERS:
@@ -30015,6 +30016,7 @@ def _harness_model_chain(resolution: Any) -> list[model_calls.ModelTier]:
         str(getattr(resolution, "model", "") or ""),
         explicit=explicit,
         settings=_BACKEND_PROVIDER_SETTINGS,
+        allow_fallback=False,  # Pinned orchestrators/workers require separate reroute consent.
     )
 
 
@@ -30024,8 +30026,9 @@ def _make_harness_chat_client(
     """Build the harness ChatClient for a code/team/chat node (LOCUS-336).
 
     Honours the resolved provider/model (so code and team nodes can run on NIM),
-    walks the D-21 tiers with an explicit, recorded fallback, and authorizes
-    every turn as a gateway ``model_call`` attributed to ``run_id``.
+    uses D-21 fallback only for a separately eligible default/Auto chain.
+    Pinned engines cannot silently switch providers. Every turn remains a
+    gateway ``model_call`` attributed to ``run_id``.
     """
     from locus_runtime.harness.llm import GatedChatClient
 
