@@ -4124,8 +4124,19 @@ def _resolve_auto_local_chat_plan(
                 "message": "Auto requires a running Ollama service or explicit hosted-model selection.",
             },
         )
+    # Provenance is an authority boundary, not a ranking feature.
+    # A locally installed P28-listed model is only eligible after a
+    # passing D-29 digest attestation; other models remain unaffected.
+    admitted_installed = [
+        item
+        for item in local_models.installed_models()
+        if isinstance(item, dict)
+        and not model_calls.provenance_denial(
+            "ollama", str(item.get("id") or ""), local_models.ollama_openai_base_url()
+        )
+    ]
     plan = auto_model_routing.plan_local_auto(
-        local_models.installed_models(),
+        admitted_installed,
         prompt=prompt,
         preferred=_default_ollama_model(),
         allowed_models=policy.get("allowed_models"),
