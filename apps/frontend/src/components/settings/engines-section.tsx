@@ -350,7 +350,7 @@ function DefaultsGroup({ overview }: { overview: ModelsOverview | null }) {
     }
     for (const provider of overview?.external ?? []) {
       if (provider.configured && provider.default_model) {
-        options.push(provider.id === "openai" ? provider.default_model : `${provider.id}/${provider.default_model}`);
+        options.push(`${provider.id}/${provider.default_model}`);
       }
     }
     if (preferredModel && preferredModel !== "auto" && !options.includes(preferredModel)) options.unshift(preferredModel);
