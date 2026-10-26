@@ -23,6 +23,11 @@ def local_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
         "installed_models",
         lambda: [{"id": MODEL}, {"id": "nomic-embed-text:latest"}],
     )
+    monkeypatch.setattr(
+        main_module.local_models,
+        "model_capabilities",
+        lambda model, **_kwargs: ["completion", "tools"] if model == MODEL else ["embedding"],
+    )
     monkeypatch.setenv("LOCUS_SYNC_RUN_EXECUTION", "1")
 
 
