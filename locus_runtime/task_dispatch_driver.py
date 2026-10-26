@@ -205,8 +205,11 @@ class GatewayTaskDriver:
             binding = registered.get(engine_id)
             if self.model_routes is not None:
                 chosen = self._node_models[node_id]
-                if (chosen.engine_adapter_id != engine_id
-                        or not callable(getattr(binding.worker, "run_bound", None)) if binding is not None else True):
+                if (
+                    binding is None
+                    or chosen.engine_adapter_id != engine_id
+                    or not callable(getattr(binding.worker, "run_bound", None))
+                ):
                     raise AdmissionDenied("pinned engine does not support model-bound execution")
             if (
                 binding is None
@@ -260,6 +263,14 @@ class GatewayTaskDriver:
         # Do not log/return exception content, which may contain model input,
         # credentials, filesystem paths or browser/computer observations.
         chosen_model = self._node_models.get(node.node_id)
+
+        def outcome(status: str, reason: str) -> DispatchOutcome:
+            return DispatchOutcome(
+                node.node_id, adapter.engine_id, status, reason,
+                chosen_model.model if chosen_model else "",
+                chosen_model.compute_id if chosen_model else "",
+            )
+
         try:
             if chosen_model is None:
                 report = adapter.worker.run(lease, node=node, intent=plan.plan.intent)
@@ -273,22 +284,18 @@ class GatewayTaskDriver:
                     model_id=chosen_model.model, compute_id=chosen_model.compute_id,
                 )
         except Exception:
-            return DispatchOutcome(
-                node.node_id, adapter.engine_id, "uncertain", "worker_interrupted",
-                chosen_model.model if chosen_model else "",
-                chosen_model.compute_id if chosen_model else "",
-            )
+            return outcome("uncertain", "worker_interrupted")
         if (
             not isinstance(report, WorkReport)
             or not isinstance(report.artifact_sha256, str)
             or _ARTIFACT.fullmatch(report.artifact_sha256) is None
             or not isinstance(report.consumed, ResourceBudget)
         ):
-            return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "worker_report_invalid")
+            return outcome("uncertain", "worker_report_invalid")
         try:
             lease.close(total=report.consumed, evidence=report.artifact_sha256)
         except Exception:
-            return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "worker_settlement_failed")
+            return outcome("uncertain", "worker_settlement_failed")
         try:
             self.scheduler.verify_closed(
                 plan, parent, claim,
@@ -303,17 +310,17 @@ class GatewayTaskDriver:
                     plan, parent, claim, artifact_digest=report.artifact_sha256,
                 )
             except Exception:
-                return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "artifact_reconciliation")
-            return DispatchOutcome(node.node_id, adapter.engine_id, "blocked", "artifact_not_verified")
+                return outcome("uncertain", "artifact_reconciliation")
+            return outcome("blocked", "artifact_not_verified")
         except VerificationUnavailable:
             # No verdict: preserve closed evidence for manual reconciliation,
             # rather than turning a transient outage into a false rejection.
-            return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "verifier_unavailable")
+            return outcome("uncertain", "verifier_unavailable")
         except AdmissionDenied:
-            return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "verification_integrity")
+            return outcome("uncertain", "verification_integrity")
         except Exception:
-            return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "verifier_error")
-        return DispatchOutcome(node.node_id, adapter.engine_id, "verified", "evidence_accepted")
+            return outcome("uncertain", "verifier_error")
+        return outcome("verified", "evidence_accepted")
 
     def run_wave(
         self,
