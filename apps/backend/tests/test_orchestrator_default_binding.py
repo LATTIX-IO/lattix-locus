@@ -82,16 +82,16 @@ def test_explicit_run_override_wins_over_user_default(
         json={
             "session_kind": "chat",
             "prompt": "Design an API service.",
-            "model": "ollama/sol",
+            "model": "hosted/sol",
         },
         headers=AUTH_HEADERS,
     )
     assert response.status_code == 200, response.text
     run_id = response.json()["id"]
     try:
-        assert store.run_details[run_id]["orchestrator_binding"]["model"] == "ollama/sol"
+        assert store.run_details[run_id]["orchestrator_binding"]["model"] == "hosted/sol"
         assert store.run_details[run_id]["orchestrator_binding"]["source"] == "request_override"
-        assert orchestrator_runtime == ["ollama/sol"]
+        assert orchestrator_runtime == ["hosted/sol"]
     finally:
         _cleanup_run(run_id)
 
@@ -160,5 +160,31 @@ def test_provider_qualified_openai_default_does_not_use_a_different_user_provide
         assert observed["payload"]["runtime"]["model"] == "gpt-test"
         assert observed["runtime"]["model"] == "gpt-test"
         assert store.run_details[run_id]["orchestrator_binding"]["model"] == "openai/gpt-test"
+    finally:
+        _cleanup_run(run_id)
+
+
+def test_same_run_model_replacement_denied_before_mutation(
+    orchestrator_runtime: list[str],
+) -> None:
+    response = client.post(
+        "/workflow-runs",
+        json={"session_kind": "chat", "prompt": "Pin this orchestrator."},
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    run_id = response.json()["id"]
+    try:
+        events_before = len(store.run_events[run_id])
+        denied = client.post(
+            f"/workflow-runs/{run_id}/messages",
+            json={"message": "Switch without consent.", "model": "hosted/other"},
+            headers=AUTH_HEADERS,
+        )
+        assert denied.status_code == 409, denied.text
+        assert denied.json()["detail"]["code"] == "orchestrator_binding_conflict"
+        assert len(store.run_events[run_id]) == events_before
+        assert orchestrator_runtime == ["hosted/astra"]
+        assert store.run_details[run_id]["orchestrator_binding"]["model"] == "hosted/astra"
     finally:
         _cleanup_run(run_id)

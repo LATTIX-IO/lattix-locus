@@ -4112,6 +4112,92 @@ def _extract_openai_responses_payload(response: Any) -> tuple[str, list[str]]:
     return text.strip(), summaries
 
 
+def _admit_explicit_local_chat_model(
+    *, request: Request, payload: dict[str, Any], selected_model: str
+) -> bool:
+    """Admit an explicitly selected Ollama chat model before persisting a run.
+
+    The user-credential runtime selector handles hosted providers and can
+    otherwise mistakenly override an explicit local model with a saved
+    preferred OpenAI account. Local inference must be bound to ModelClient and
+    still pass the tenant's runtime policy and provenance enforcement.
+    """
+    if not selected_model.lower().startswith("ollama/"):
+        return False
+    model_id = selected_model[len("ollama/") :].strip()
+    if not model_id or len(model_id) > 256:
+        raise HTTPException(status_code=400, detail="A valid installed Ollama model is required")
+
+    requested_provider = str(payload.get("provider") or "").strip().lower()
+    runtime = payload.get("runtime")
+    runtime_provider = (
+        str(runtime.get("provider") or "").strip().lower()
+        if isinstance(runtime, dict)
+        else ""
+    )
+    if (requested_provider and requested_provider != "ollama") or (
+        runtime_provider and runtime_provider != "ollama"
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="A local Ollama model cannot use a different provider runtime",
+        )
+
+    policy = _effective_chat_runtime_policy(payload, request=request)
+    _enforce_chat_provider_policy("ollama", policy, context_label="Local chat runtime")
+    # An explicitly selected local model must obey the same tenant model
+    # restriction as hosted providers. Never pick a different allowed model
+    # here: explicit pins are binding, and denial cannot cause fallback.
+    models_allowed = policy.get("allowed_models") or []
+    if models_allowed and model_id not in models_allowed and selected_model not in models_allowed:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "model_call_denied",
+                "message": "Selected Ollama model is denied by tenant runtime policy",
+            },
+        )
+    if not local_models.ollama_available():
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "code": "local_runtime_unavailable",
+                "message": "Ollama is not running; select another authorized model.",
+            },
+        )
+    installed = {
+        str(item.get("id") or "").strip()
+        for item in local_models.installed_models()
+        if isinstance(item, dict)
+    }
+    if model_id not in installed:
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "code": "local_model_not_installed",
+                "message": "The selected Ollama model is not installed; refresh the model list.",
+            },
+        )
+    capabilities = local_models.model_capabilities(model_id)
+    if not ("completion" in capabilities or "tools" in capabilities):
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "code": "local_model_not_chat_capable",
+                "message": "The selected Ollama model has no verified chat capability.",
+            },
+        )
+    denial = model_calls.provenance_denial(
+        "ollama", model_id, local_models.ollama_openai_base_url()
+    )
+    if denial:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "model_call_denied", "message": denial},
+        )
+    return True
+
+
 def _resolve_agent_chat_model(agent: AgentDefinition | None) -> str:
     if agent is None:
         return _default_openai_model()
@@ -5261,7 +5347,13 @@ def _effective_chat_runtime_policy(
             source,
             ("allowed_providers", "allowed_runtime_providers", "allowed_chat_providers"),
         ):
-            providers.append(_normalize_chat_provider(item))
+            # Credentialed chat runtime selection remains restricted; policy
+            # may additionally name locally mediated Ollama without promoting
+            # it to a hosted user-credential adapter.
+            providers.append(
+                "ollama" if str(item).strip().lower() == "ollama"
+                else _normalize_chat_provider(item)
+            )
         models = _chat_runtime_policy_source_values(
             source,
             ("allowed_models", "allowed_runtime_models", "allowed_chat_models"),
@@ -5271,10 +5363,17 @@ def _effective_chat_runtime_policy(
         if models:
             model_groups.append(models)
 
-    return {
-        "allowed_providers": _intersect_policy_values(provider_groups),
-        "allowed_models": _intersect_policy_values(model_groups),
-    }
+    allowed_providers = _intersect_policy_values(provider_groups)
+    allowed_models = _intersect_policy_values(model_groups)
+    # A disjoint intersection is explicitly *deny*, not unrestricted. The
+    # empty-list sentinel means no constraint for legacy callers, so reject
+    # conflicting policy sources before that sentinel could erase a restriction.
+    if (provider_groups and not allowed_providers) or (model_groups and not allowed_models):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "runtime_policy_conflict", "message": "Runtime policy allowlists conflict"},
+        )
+    return {"allowed_providers": allowed_providers, "allowed_models": allowed_models}
 
 
 def _enforce_chat_provider_policy(
@@ -22880,6 +22979,10 @@ def create_workflow_run(
                 "message": "Auto orchestrator admission is not available; select an explicit model.",
             },
         )
+    # A locally pinned orchestrator must pass live admission before run creation.
+    _admit_explicit_local_chat_model(
+        request=request, payload=payload, selected_model=selected_model
+    )
     request_prompt = _with_architecture_contract(
         model_prompt or "Execute the requested workflow task.",
         enabled=_should_enforce_architecture_contract(
@@ -23031,6 +23134,10 @@ def create_workflow_run(
         mainline client path; a missing user runtime (412) falls back to it. Any
         other policy rejection is re-raised so the run fails closed.
         """
+        if explicit_local_chat_model:
+            # The local candidate has already passed admission. In particular,
+            # a saved preferred hosted account may not override its transport.
+            return None
         explicitly_requested = isinstance(payload.get("runtime"), dict) or bool(
             str(payload.get("provider") or "").strip()
         )
@@ -23951,6 +24058,19 @@ def send_run_message(
                 "message": "Auto orchestrator admission is not available; select an explicit model.",
             },
         )
+
+    # An existing run has one primary orchestrator; switching requires a new run.
+    if bound_primary and requested_primary and requested_primary != bound_primary:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "orchestrator_binding_conflict",
+                "message": "The run has a pinned orchestrator; start a new run to change it.",
+            },
+        )
+    _admit_explicit_local_chat_model(
+        request=request, payload=payload, selected_model=tentative_primary
+    )
 
     events = store.run_events.setdefault(run_id, [])
     events.append(
@@ -26289,6 +26409,16 @@ def get_models_overview(request: Request) -> dict[str, Any]:
     nim_configured = bool(nim_key) and "change" not in nim_key.lower()
     ollama_up = local_models.ollama_available()
     installed = {item["id"]: item for item in local_models.installed_models()} if ollama_up else {}
+    if installed:
+        # /api/show probes are bounded and cacheable. Limit concurrency so a
+        # busy local model cannot serialize seven 3-second UI requests.
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(4, len(installed))) as pool:
+            capabilities = list(pool.map(local_models.model_capabilities, installed))
+        for item, model_caps in zip(installed.values(), capabilities, strict=True):
+            # Unknown remains in the inventory but is not chat-eligible.
+            item["capabilities"] = model_caps
     pulls = local_models.pull_states()
 
     catalog: list[dict[str, Any]] = []

@@ -346,7 +346,13 @@ function DefaultsGroup({ overview }: { overview: ModelsOverview | null }) {
   const modelOptions = useMemo(() => {
     const options: string[] = [];
     if (overview?.providers.ollama.available) {
-      for (const item of overview.providers.ollama.installed_models) options.push(`ollama/${item.id}`);
+      for (const item of overview.providers.ollama.installed_models) {
+        // Do not allow an embedding-only or unverified model as the chat default.
+        const capabilities = (item as { capabilities?: string[] }).capabilities ?? [];
+        if (capabilities.includes("completion") || capabilities.includes("tools")) {
+          options.push(`ollama/${item.id}`);
+        }
+      }
     }
     for (const provider of overview?.external ?? []) {
       if (provider.configured && provider.default_model) {

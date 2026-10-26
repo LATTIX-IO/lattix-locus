@@ -68,9 +68,8 @@ type Props = {
 };
 
 function isChatModel(id: string, capabilities?: string[]): boolean {
-  // /api/tags also lists embedding-only models, which cannot answer tasks.
-  if (capabilities?.length) return capabilities.includes("completion") || capabilities.includes("tools");
-  return !/(?:^|\/)(?:nomic-embed-text|mxbai-embed-large|all-minilm|bge-m3)(?::|$)/i.test(id);
+  // Positive /api/show capability is required; names are not trustworthy.
+  return Boolean(id && capabilities?.some((capability) => capability === "completion" || capability === "tools"));
 }
 
 export function ComposerControls({ onChange, onModelReadinessChange }: Props) {

@@ -15,8 +15,8 @@ vi.mock("@/lib/api", () => api);
 import { ComposerControls } from "@/components/composer-controls";
 
 const installed = [
-  { id: "gpt-oss:20b-ctx32k" },
-  { id: "nomic-embed-text:latest" },
+  { id: "gpt-oss:20b-ctx32k", capabilities: ["completion", "tools"] },
+  { id: "nomic-embed-text:latest", capabilities: ["embedding"] },
 ];
 
 function setOverview(models = installed) {
@@ -136,7 +136,7 @@ describe("ComposerControls model readiness", () => {
   });
 
   it("excludes embedding-only models and refuses an empty chat inventory", async () => {
-    setOverview([{ id: "nomic-embed-text:latest" }]);
+    setOverview([{ id: "nomic-embed-text:latest", capabilities: ["embedding"] }]);
     const onReadiness = vi.fn();
     render(<ComposerControls onChange={vi.fn()} onModelReadinessChange={onReadiness} />);
     await waitFor(() => expect(onReadiness).toHaveBeenLastCalledWith(
