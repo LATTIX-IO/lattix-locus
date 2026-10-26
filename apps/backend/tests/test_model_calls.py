@@ -143,26 +143,27 @@ def test_harness_client_runs_on_nim_when_configured(server: MockServer, permissi
     assert NIM_KEY not in json.dumps([e.model_dump() for e in main_module.store.audit_events])
 
 
-def test_harness_fallback_nim_to_ollama_is_recorded(server: MockServer) -> None:
+def test_harness_pinned_nim_does_not_automatically_fallback_to_ollama(
+    server: MockServer,
+) -> None:
     server.fail_hosts.add("integrate.api.nvidia.com")
     main_module._MODEL_KEYS.set("nim", NIM_KEY)
-    run_id = "run-fallback-1"
+    run_id = "run-pinned-nim-failure"
     harness = main_module._make_harness_chat_client(
         _resolution("nim", NIM_MODEL), run_id=run_id, principal="alice"
     )
-    assert harness.complete([{"role": "user", "content": "hi"}]).text == "done"
-    assert server.hosts() == ["integrate.api.nvidia.com", "127.0.0.1"]
-    assert harness.provider == "ollama"
+    with pytest.raises(mc.ModelProviderError) as error:
+        harness.complete([{"role": "user", "content": "hi"}])
+    assert error.value.code == mc.PROVIDER_CALL_FAILED
+    assert server.hosts() == ["integrate.api.nvidia.com"]
+    assert harness.provider == "nim"
+    assert harness.fallbacks == []
     events = [
-        e
-        for e in main_module.store.run_events.get(run_id, [])
+        e for e in main_module.store.run_events.get(run_id, [])
         if (e.metadata or {}).get("phase") == "model_fallback"
     ]
-    assert len(events) == 1
-    meta = events[0].metadata or {}
-    assert (meta["from_provider"], meta["to_provider"]) == ("nim", "ollama")
-    assert meta["reason_code"] == "provider_call_failed" and "503" in meta["reason"]
-    assert any(item.get("run_id") == run_id for item in _audit("model.fallback"))
+    assert events == []
+    assert not any(item.get("run_id") == run_id for item in _audit("model.fallback"))
 
 
 def test_agent_naming_no_engine_uses_the_d21_chain(server: MockServer) -> None:
