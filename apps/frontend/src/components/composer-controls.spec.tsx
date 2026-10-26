@@ -155,6 +155,6 @@ describe("ComposerControls model readiness", () => {
     const onChange = vi.fn();
     render(<ComposerControls onChange={onChange} onModelReadinessChange={onReadiness} />);
     await waitFor(() => expect(onReadiness).toHaveBeenLastCalledWith(true, ""));
-    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ model: "gpt-test" }));
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ model: "openai/gpt-test" }));
   });
 });
