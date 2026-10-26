@@ -6049,9 +6049,11 @@ def _run_model_chain_chat(
                     reason="Model returned an empty response; retrying an eligible local model.",
                 )
         except ProviderUnavailableError as exc:
+            # A gateway/policy denial is not a transient capacity failure.
+            # Switching models to evade the denial would widen authority.
+            if exc.code == "model_call_denied":
+                raise
             errors.append(exc)
-            if exc.code == "model_call_denied" and index == len(chain) - 1:
-                break
             if index + 1 < len(chain):
                 nxt = chain[index + 1]
                 event = FallbackEvent(
