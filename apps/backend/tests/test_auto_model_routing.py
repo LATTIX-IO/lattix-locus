@@ -31,7 +31,7 @@ def test_auto_skips_stale_uninstalled_preferred_model() -> None:
     assert all("nomic-embed-text" not in model for model in plan.candidates)
     assert "ollama/llama3.2:3b" not in plan.candidates
     assert plan.task_class == "analysis"
-    assert plan.considered_count == 4
+    assert plan.considered_count == 3
 
 
 def test_listed_lineages_are_not_implicitly_auto_candidates() -> None:
