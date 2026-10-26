@@ -23134,10 +23134,6 @@ def create_workflow_run(
         mainline client path; a missing user runtime (412) falls back to it. Any
         other policy rejection is re-raised so the run fails closed.
         """
-        if explicit_local_chat_model:
-            # The local candidate has already passed admission. In particular,
-            # a saved preferred hosted account may not override its transport.
-            return None
         explicitly_requested = isinstance(payload.get("runtime"), dict) or bool(
             str(payload.get("provider") or "").strip()
         )
