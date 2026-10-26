@@ -4170,6 +4170,15 @@ def _admit_explicit_local_chat_model(
                 "message": "The selected Ollama model is not installed; refresh the model list.",
             },
         )
+    capabilities = local_models.model_capabilities(model_id)
+    if not ("completion" in capabilities or "tools" in capabilities):
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "code": "local_model_not_chat_capable",
+                "message": "The selected Ollama model has no verified chat capability.",
+            },
+        )
     denial = model_calls.provenance_denial(
         "ollama", model_id, local_models.ollama_openai_base_url()
     )
@@ -26237,6 +26246,10 @@ def get_models_overview(request: Request) -> dict[str, Any]:
     nim_configured = bool(nim_key) and "change" not in nim_key.lower()
     ollama_up = local_models.ollama_available()
     installed = {item["id"]: item for item in local_models.installed_models()} if ollama_up else {}
+    for item in installed.values():
+        # Live /api/tags is the inventory; /api/show is the capability source.
+        # Unavailable metadata stays unknown (empty), never assumed to be chat.
+        item["capabilities"] = local_models.model_capabilities(str(item["id"]))
     pulls = local_models.pull_states()
 
     catalog: list[dict[str, Any]] = []
