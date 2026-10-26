@@ -114,6 +114,9 @@ class DispatchOutcome:
     # verified / blocked / uncertain; never translate these into success.
     status: str
     reason_code: str
+    # Only set for immutable model-bound worker attempts; safe audit identifiers.
+    model_id: str = ""
+    compute_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +151,7 @@ class GatewayTaskDriver:
         verifier: IndependentVerifier,
         max_parallel: int = 2,
         engine_pins: TrustedEnginePins | None = None,
+        model_routes: "BoundTaskModels | None" = None,
     ) -> None:
         if type(max_parallel) is not int or not 1 <= max_parallel <= scheduler.max_inflight:
             raise ValueError("parallelism must fit the durable supervisor limit")
@@ -157,11 +161,26 @@ class GatewayTaskDriver:
             raise ValueError("independent verifier must be supplied by trusted supervisor")
         if engine_pins is not None and not isinstance(engine_pins, TrustedEnginePins):
             raise ValueError("engine pins require a trusted immutable contract")
+        if model_routes is not None:
+            # Import at use time to avoid the declared Bidirectional contract
+            # importing this module while it initializes TrustedEnginePins.
+            from locus_runtime.task_model_binding import BoundTaskModels
+
+            if not isinstance(model_routes, BoundTaskModels):
+                raise ValueError("model routes require a trusted immutable contract")
+            if engine_pins is not None and engine_pins != model_routes.engine_pins:
+                raise ValueError("model routing and engine pins must name the same DAG")
+            engine_pins = model_routes.engine_pins
         self.scheduler = scheduler
         self.engines = engines
         self.verifier = verifier
         self.max_parallel = max_parallel
         self.engine_pins = engine_pins
+        self.model_routes = model_routes
+        self._node_models = (
+            {entry.node_id: entry for entry in model_routes.workers}
+            if model_routes is not None else {}
+        )
 
     def _preflight_engine_pins(
         self, plan: CompiledTaskPlan, parent: GatewaySession,
@@ -178,8 +197,17 @@ class GatewayTaskDriver:
         if set(assigned) != set(node_by_id):
             raise AdmissionDenied("trusted engine pins do not cover exact DAG nodes")
         registered = {binding.engine_id: binding for binding in self.engines}
+        if self.model_routes is not None:
+            if (self.model_routes.plan_digest != plan.digest
+                    or set(self._node_models) != set(node_by_id)):
+                raise AdmissionDenied("model routes do not cover this exact task revision")
         for node_id, engine_id in assigned.items():
             binding = registered.get(engine_id)
+            if self.model_routes is not None:
+                chosen = self._node_models[node_id]
+                if (chosen.engine_adapter_id != engine_id
+                        or not callable(getattr(binding.worker, "run_bound", None)) if binding is not None else True):
+                    raise AdmissionDenied("pinned engine does not support model-bound execution")
             if (
                 binding is None
                 or not node_by_id[node_id].authority.capabilities.issubset(
@@ -231,10 +259,25 @@ class GatewayTaskDriver:
     ) -> DispatchOutcome:
         # Do not log/return exception content, which may contain model input,
         # credentials, filesystem paths or browser/computer observations.
+        chosen_model = self._node_models.get(node.node_id)
         try:
-            report = adapter.worker.run(lease, node=node, intent=plan.plan.intent)
+            if chosen_model is None:
+                report = adapter.worker.run(lease, node=node, intent=plan.plan.intent)
+            else:
+                # Only administrator-installed model-aware adapters receive
+                # the trusted route. Their ModelClient MUST independently
+                # authorize each real model_call against the child Gateway
+                # session; this selector is not an egress grant.
+                report = adapter.worker.run_bound(
+                    lease, node=node, intent=plan.plan.intent,
+                    model_id=chosen_model.model, compute_id=chosen_model.compute_id,
+                )
         except Exception:
-            return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "worker_interrupted")
+            return DispatchOutcome(
+                node.node_id, adapter.engine_id, "uncertain", "worker_interrupted",
+                chosen_model.model if chosen_model else "",
+                chosen_model.compute_id if chosen_model else "",
+            )
         if (
             not isinstance(report, WorkReport)
             or not isinstance(report.artifact_sha256, str)
