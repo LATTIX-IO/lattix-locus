@@ -157,9 +157,9 @@ def test_missing_or_duplicate_worker_route_cannot_be_sealed() -> None:
         with pytest.raises(InvalidModelBinding):
             bind_models_to_task_plan(
                 compiled=admitted_plan(), routes=malformed, registered_adapters=REGISTERED,
-        current_catalog_snapshot_id="inventory-3",
-        current_policy_version="policy-12",
-        expected_orchestrator_model="openai/astra",
+                current_catalog_snapshot_id="inventory-3",
+                current_policy_version="policy-12",
+                expected_orchestrator_model="openai/astra",
             )
 
 
@@ -169,9 +169,9 @@ def test_stale_or_modified_task_waves_cannot_be_sealed() -> None:
         bind_models_to_task_plan(
             compiled=replace(compiled, waves=(("security",), ("implement", "synthesize"))),
             routes=routes(), registered_adapters=REGISTERED,
-        current_catalog_snapshot_id="inventory-3",
-        current_policy_version="policy-12",
-        expected_orchestrator_model="openai/astra",
+            current_catalog_snapshot_id="inventory-3",
+            current_policy_version="policy-12",
+            expected_orchestrator_model="openai/astra",
         )
 
 
