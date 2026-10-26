@@ -9,6 +9,10 @@ on:
       - "locus_runtime/harness/codex_cli_worker.py"
       - "docker/codex/**"
       - "tests/integration/test_codex_ollama_kernel_acceptance.py"
+      - "tests/integration/test_native_codex_two_specialist_acceptance.py"
+      - "locus_runtime/pod_specialist_handoff.py"
+      - "locus_runtime/pod_two_specialist.py"
+      - "locus_runtime/harness/native_draft_worker.py"
       - "tests/unit/test_stage_codex_worker.py"
       - ".github/workflows/codex-ollama-acceptance.yml"
   workflow_dispatch:
@@ -84,11 +88,13 @@ jobs:
       - name: Verify full real local inference, kernel isolation and escrow
         env:
           LOCUS_REAL_CODEX_ACCEPTANCE: "1"
+          LOCUS_REAL_TWO_SPECIALIST_ACCEPTANCE: "1"
         run: |
           python -m pytest -q -rs \
             --junitxml="$RUNNER_TEMP/codex-acceptance.xml" \
             tests/unit/test_stage_codex_worker.py \
-            tests/integration/test_codex_ollama_kernel_acceptance.py
+            tests/integration/test_codex_ollama_kernel_acceptance.py \
+            tests/integration/test_native_codex_two_specialist_acceptance.py
           # A successful pytest exit can still mean skipped live tests.
           # This release gate explicitly prohibits skipped or missing cases.
           python - "$RUNNER_TEMP/codex-acceptance.xml" <<'PY'
@@ -102,6 +108,7 @@ jobs:
               "test_real_codex_calls_ollama_and_escrows_single_artifact",
               "test_real_codex_inflight_cancel_is_uncertain_not_replayed",
               "test_cancelled_codex_pod_does_not_prepare_dispatch",
+              "test_genuine_native_and_codex_handoff_only_human_can_promote",
           }
           if not cases or skipped or not required.issubset(executed):
               raise SystemExit(
