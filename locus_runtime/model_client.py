@@ -1503,13 +1503,17 @@ def chain_for(
     *,
     explicit: bool,
     settings: ProviderSettings | None = None,
+    allow_fallback: bool = False,
 ) -> list[ModelTier]:
     """Tiers for a resolved engine choice.
 
-    * not explicit → :func:`default_agent_chain`;
-    * an explicit local engine → just that engine (honoured, no hosted escalation);
-    * an explicit hosted engine → that engine, then the local Ollama tier (P13)
-      unless ``LOCUS_MODEL_LOCAL_FALLBACK=0``.
+    * not explicit: legacy :func:`default_agent_chain` (opt-in Auto only);
+    * explicit local engine: only that engine, no hosted escalation;
+    * explicit hosted engine: only that engine by default. A *trusted*
+      consent-aware caller may set ``allow_fallback=True`` only after checking
+      the alternative provider/model and data/cost/egress approval envelope.
+      The local fallback kill switch still applies. The legacy environment
+      variable alone must never grant consent to change a pinned model.
     """
     if not explicit:
         return default_agent_chain(settings)
@@ -1519,6 +1523,10 @@ def chain_for(
     )
     spec = PROVIDERS.get(provider_id)
     if spec is not None and spec.local:
+        return [primary]
+    if not allow_fallback:
+        # A user-picked orchestrator or explicitly pinned worker must never
+        # be silently replaced after quota/transport/provider failure.
         return [primary]
     if str(os.getenv(LOCAL_FALLBACK_ENV) or "1").strip().lower() in {"0", "false", "no", "off"}:
         return [primary]
