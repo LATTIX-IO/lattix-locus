@@ -137,3 +137,93 @@ The initial executable task graph admission contract is `locus_runtime/task_grap
 The existing **D-11 local Laya default remains active**. The October 5 preference for **Clef on Cloudflare Workers AI** is recorded in D-36 as a **conditional proposal, not an allowed provider**: Clef is Qwen-derived, and hosted Qwen-lineage inference is explicitly denied by `SECURITY.md`, P28/D-29 and `provenance_denial()` in `locus_runtime/model_client.py`. A US-hosted endpoint does not remove the lineage restriction. Do not implement Clef as a fallback, issue tokens, widen network egress or disable the provenance gate from this documentation decision. The principal must separately authorize a scoped security exception with a protected code/policy change, negative gateway/model-client tests, per-area consent, egress audits and rollback before considering Clef the primary judge.
 
 The `DecisionModel` adapter continues to use the typed `/v1/systemone` protocol. Calibrated Laya can deny/escalate only; absent/uncalibrated offline judging pauses for principal review, never a synthetic permit. Any permitted hosted judge must independently satisfy the existing area policy and credential, redaction and metering controls. See [third-party assessment §3.3](../third-party-assessment.md#33-judge-and-decision-tier) and [D-36](20-roadmap-and-decisions.md).
+
+
+## 11. Availability-first Auto model routing (LOCUS-479; implementation phases)
+
+The v0.10.7 owner UAT found an installed Ollama service with seven models but a
+Default Chat Agent failure on unconfigured OpenAI. The UI and backend previously
+conflated *registered provider*, *configured credential*, *installed model* and
+*admitted execution*. These are distinct predicates.
+
+### Source of truth
+
+| Registry | Discovery signal | Only evidence that qualifies a candidate |
+|---|---|---|
+| Local inference | Live Ollama /api/version + /api/tags | Model installed, reachable, chat-capable, provenance and policy admitted |
+| Hosted API | Platform/user provider registry | Credential valid, endpoint accessible, model supported, quota/budget and egress authorized |
+| Vendor CLI engine | Pinned official Codex/Claude Code/OpenCode adapter | CLI installed, signed-in under supported flow, account entitlement, version and sandbox/approval contract verified |
+| Third-party integration | MCP/A2A registry | Registered tool or remote agent only; **not** proof of an inference-provider entitlement |
+
+A ChatGPT/Claude subscription is **not a generic API key**. When supported by
+the official product, a subscription-backed CLI task consumes the official
+client's own allowance and operates as a *separate governed agent engine*,
+not an OpenAI-compatible HTTP chat model. Never scrape OAuth files or
+repurpose browser sessions as model-call credentials. The quota observer
+must expose `available / exhausted / unknown`; an undocumented balance is
+**unknown**, not unlimited.
+
+### Deterministic router sequence
+
+1. Classify the workload (T0 rules / T1 judge / T2-T3 model / agent-engine task).
+   Task hints are provisional and must not override explicitly selected engines.
+2. Determine capabilities: input modalities, minimum effective context,
+   tool-calling support, provenance status, data ceiling and resource limits.
+3. **Filter** candidates: installed/credentialed, healthy/fresh, policy-allowed
+   by tenant, data class, egress, budget, API terms, per-run grant and user consent.
+   Unknown local fine-tunes require explicit capability enrollment; D-29
+   provenance for P28-listed lineages must pass before admission.
+4. **Rank** the eligible set using task profile, measured quality, measured
+   latency, available compute, remaining quota and expected cost. A heuristic
+   score is not a calibrated quality claim; record score version and rationale.
+5. **Reserve** a capability-attenuated model slot (quota concurrency, tokens,
+   cost, time). Prevent duplicate retries using an idempotent step/attempt
+   identity. A vendor CLI slot is not fungible with a raw model-call slot.
+6. **Execute** via the Gateway with an exact provider, model, endpoint,
+   capability and budget. Every call rechecks authorization; the router is
+   not itself a privileged bypass.
+7. **Validate** the result against typed task-specific acceptance criteria:
+   transport complete, no truncated response, required schema, evidence
+   provenance, tool-output consistency, and artifact quality rubric.
+8. **Escalate** only on a classified retryable failure and only to a still-eligible
+   model of sufficient capability. Apply cooldown and hard limits, record
+   every transition with `from`, `to`, reason, spend, and previous attempt.
+9. **Review** before publishing artifacts or crossing trust/data boundaries.
+   The original human approval and signed artifact contract remain authoritative.
+
+### Retry and consent contract
+
+| Failure | Allowed behavior |
+|---|---|
+| Unconfigured provider or uninstalled model | Exclude at admission; show choices; no simulation |
+| Local timeout / 429 / 5xx / empty response before tools or stream | Retry a bounded number of locally eligible candidates; record selected model and fallback |
+| Provider authorization or Gateway denial | Fail closed; never use a second provider to bypass the denial |
+| Schema invalid or artifact verification failed | Keep draft; bounded stronger-model revision only after evaluator proves incompatibility |
+| Partial stream or tools already executed | **No blind replay**. Checkpoint, review effects, and request explicit retry/compensation |
+| Hosted-to-local | Permitted only if the run's approved scope accepts quality degradation; show the switch |
+| Local-to-hosted or CLI/API billing-mode transition | Requires separately authorized egress/data ceiling and explicit operator approval (or preapproved scoped policy) |
+| Unknown subscription quota | Do not invent an allowance; show unknown, reserve conservatively, pause on an official limit |
+
+### Increment status and acceptance
+
+- **A — Immediate local MVP (PR #148 draft):** explicit `Auto · local`
+  selection, live Ollama installed-model intersection, no implicit hosted
+  egress, policy/provenance filtering, recorded selection, bounded local
+  fallback for pure model calls. Uses explainable static heuristics only.
+- **B — Hosted/API capacity router (LOCUS-479 follow-on):** credential+model
+  probes, provider concurrency/rate-limit backoff, scorecards and actual spend.
+  No cloud escalation before per-area consent and request/response audit.
+- **C — CLI subscription engines (LOCUS-472 + LOCUS-479):** pin official
+  adapters, read-only auth/entitlement detection, budget type and per-run
+  fenced workspace. The existing native+Codex draft is not equivalent to
+  Claude Code support.
+- **D — Adaptive quality escalation:** measure task-specific validators,
+  route evaluation and failure recovery via held-out tests before enabling
+  automatic stronger-model resubmission. Heuristic disagreement alone must
+  not authorize side effects or unbounded replays.
+
+A usable local MVP requires actual native Windows UAT: installed Ollama must
+answer a Default Chat Agent task, model identity must be visible and audited,
+one pre-output failure must cause a recorded local-only fallback, local
+unavailability must block without OpenAI egress, and a tool-using step must
+not replay side effects. Do not close LOCUS-476 for code-only or simulated tests.
