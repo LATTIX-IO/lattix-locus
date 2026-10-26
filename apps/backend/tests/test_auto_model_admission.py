@@ -136,3 +136,48 @@ def test_auto_does_not_retry_calls_with_tools_after_empty_output(
     )
     assert result == ""
     assert len(calls) == 1
+
+
+def test_explicit_local_model_ignores_hosted_user_preference(
+    monkeypatch: pytest.MonkeyPatch, fake_installed_ollama: None
+) -> None:
+    def should_not_resolve_hosted(**_kwargs: Any) -> None:
+        raise AssertionError("Implicit hosted runtime selection is forbidden")
+
+    invoked: list[str] = []
+
+    def fake_iterations(*_args: Any, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+        invoked.append(kwargs["model"])
+        return "LOCAL_OK", {"mode": "live", "provider": "ollama", "model": "gpt-oss:20b"}
+
+    monkeypatch.setattr(main_module, "_resolve_request_chat_runtime", should_not_resolve_hosted)
+    monkeypatch.setattr(main_module, "_run_agent_iterations", fake_iterations)
+    response = client.post(
+        "/workflow-runs",
+        json={"title": "Local", "prompt": "Just answer", "model": "ollama/gpt-oss:20b"},
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    run_id = str(response.json()["id"])
+    try:
+        assert invoked == ["ollama/gpt-oss:20b"]
+    finally:
+        _cleanup_run(run_id)
+
+
+def test_local_model_rejects_conflicting_hosted_runtime_pre_admission(
+    fake_installed_ollama: None,
+) -> None:
+    count = len(store.runs)
+    response = client.post(
+        "/workflow-runs",
+        json={
+            "title": "Conflicted",
+            "prompt": "Just answer",
+            "model": "ollama/gpt-oss:20b",
+            "runtime": {"provider": "openai", "model": "gpt-5.2"},
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 400
+    assert len(store.runs) == count
