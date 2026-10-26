@@ -57,7 +57,7 @@ try:  # optional — YAML export/import; JSON always works without it
 except Exception:  # noqa: BLE001
     _yaml = None
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
-from app import capability_widening
+from app import auto_model_routing, capability_widening
 from app import cron as app_cron
 from app import knowledge as app_knowledge
 from app import local_models, mcp_client, policy_gateway, skills_catalog
@@ -3800,6 +3800,11 @@ def _generate_workflow_run_title(
         return _heuristic_workflow_run_title(prompt_text, run_kind), "system"
 
     fallback = _heuristic_workflow_run_title(cleaned_prompt, run_kind)
+    # Title generation must not initiate an implicit hosted OpenAI call when
+    # the operator chose Auto-local or explicitly selected local inference.
+    title_model = str(payload.get("model") or "").strip().lower()
+    if title_model == "auto" or title_model.startswith("ollama/"):
+        return fallback, "system"
 
     try:
         system_prompt, _ = _resolve_agent_system_prompt(agent_definition)
@@ -4099,6 +4104,56 @@ def _extract_openai_responses_payload(response: Any) -> tuple[str, list[str]]:
                 text = "\n".join(chunks)
 
     return text.strip(), summaries
+
+
+def _resolve_auto_local_chat_plan(
+    *, request: Request, actor: str, payload: dict[str, Any], prompt: str
+) -> auto_model_routing.AutoLocalPlan:
+    """Select only installed Ollama models inside the current tenant's policy.
+
+    Auto v1 is deliberately local-only. The user did not authorize hosted
+    egress or account spending merely by selecting Auto.
+    """
+    policy = _effective_chat_runtime_policy(payload, request=request)
+    _enforce_chat_provider_policy("ollama", policy, context_label="Auto model routing")
+    if not local_models.ollama_available():
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "code": "auto_no_local_runtime",
+                "message": "Auto requires a running Ollama service or explicit hosted-model selection.",
+            },
+        )
+    plan = auto_model_routing.plan_local_auto(
+        local_models.installed_models(),
+        prompt=prompt,
+        preferred=_default_ollama_model(),
+        allowed_models=policy.get("allowed_models"),
+    )
+    if plan is None:
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "code": "auto_no_eligible_model",
+                "message": (
+                    "No installed, chat-capable local model is eligible for Auto. "
+                    "Choose a model explicitly or update policy and installed models."
+                ),
+            },
+        )
+    _append_audit_event(
+        "model.route.auto",
+        actor,
+        "allowed",
+        {
+            "selected": plan.selected,
+            "candidate_count": len(plan.candidates),
+            "considered_count": plan.considered_count,
+            "task_class": plan.task_class,
+            "scope": "local-only",
+        },
+    )
+    return plan
 
 
 def _resolve_agent_chat_model(agent: AgentDefinition | None) -> str:
@@ -5966,9 +6021,22 @@ def _run_model_chain_chat(
     """Run ``_run_openai_chat`` down a tier chain (D-21); every fallback is recorded."""
     errors: list[ProviderUnavailableError] = []
     fallbacks: list[dict[str, str]] = []
+    local_chain = all(tier.provider == "ollama" for tier in chain)
     for index, tier in enumerate(chain):
         try:
             text, meta = _run_openai_chat(model=tier.qualified, **kwargs)
+            if (
+                local_chain
+                and not kwargs.get("tools")
+                and str(meta.get("mode") or "") == "live"
+                and not auto_model_routing.valid_response_body(text)
+            ):
+                raise ProviderUnavailableError(
+                    code="empty_model_output",
+                    provider=tier.provider,
+                    model=tier.model,
+                    reason="Model returned an empty response; retrying an eligible local model.",
+                )
         except ProviderUnavailableError as exc:
             errors.append(exc)
             if exc.code == "model_call_denied" and index == len(chain) - 1:
@@ -22019,6 +22087,7 @@ def _run_agent_iterations(
     thread_id: str | None = None,
     parent_event_id: str | None = None,
     reasoning_effort: str = "",
+    auto_local_chain: list[model_calls.ModelTier] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Run an agent as an iterative work loop with a live progress log.
 
@@ -22057,6 +22126,9 @@ def _run_agent_iterations(
             max_tool_calls=max_tool_calls,
             on_tool_event=on_tool_event,
             reasoning_effort=reasoning_effort,
+            # Replay of side-effecting tools is forbidden. A local-only
+            # alternative may retry ONLY a pure model call before tool use.
+            model_chain=auto_local_chain if not tools else None,
         )
         final_meta = meta
         if str(meta.get("mode")) != "live":
@@ -22795,7 +22867,16 @@ def create_workflow_run(
         system_prompt, selected_skill_ids=composer_opts["skill_ids"]
     )
 
-    selected_model = composer_opts["model"] or _resolve_agent_chat_model(selected_agent_definition)
+    auto_plan: auto_model_routing.AutoLocalPlan | None = None
+    if composer_opts["model"] == "auto":
+        auto_plan = _resolve_auto_local_chat_plan(
+            request=request, actor=actor, payload=payload, prompt=model_prompt
+        )
+    selected_model = (
+        auto_plan.selected
+        if auto_plan is not None
+        else composer_opts["model"] or _resolve_agent_chat_model(selected_agent_definition)
+    )
     request_prompt = _with_architecture_contract(
         model_prompt or "Execute the requested workflow task.",
         enabled=_should_enforce_architecture_contract(
@@ -22916,7 +22997,26 @@ def create_workflow_run(
         "graph": workflow_graph_json or {"nodes": graph_nodes, "links": graph_links},
         "agent_traces": list(existing_agent_traces),
         "approvals": {"required": False, "pending": False},
-        "runtime": {"mode": "live", "state": "queued"},
+        "runtime": {
+            "mode": "live",
+            "state": "queued",
+            **(
+                {"provider": "ollama", "model": auto_plan.selected.removeprefix("ollama/")}
+                if auto_plan is not None
+                else {}
+            ),
+        },
+        "model_selection": (
+            {
+                "mode": "auto",
+                "scope": "local-only",
+                "selected": auto_plan.selected,
+                "candidates": list(auto_plan.candidates),
+                "task_class": auto_plan.task_class,
+            }
+            if auto_plan is not None
+            else {"mode": "explicit-or-agent-default", "selected": selected_model}
+        ),
         "response_text": "",
         "access": access_context,
         "mode": composer_opts["mode"],
@@ -22941,6 +23041,10 @@ def create_workflow_run(
         mainline client path; a missing user runtime (412) falls back to it. Any
         other policy rejection is re-raised so the run fails closed.
         """
+        if auto_plan is not None:
+            # Auto v1 never implicitly uses an account credential or changes
+            # trust domains. Gated Ollama ModelClient handles the selected ID.
+            return None
         explicitly_requested = isinstance(payload.get("runtime"), dict) or bool(
             str(payload.get("provider") or "").strip()
         )
@@ -23104,6 +23208,14 @@ def create_workflow_run(
                         ),
                         on_tool_event=_emit_tool_event,
                         reasoning_effort=composer_opts["reasoning_effort"],
+                        auto_local_chain=(
+                            [
+                                model_calls.ModelTier("ollama", model.removeprefix("ollama/"))
+                                for model in auto_plan.candidates
+                            ]
+                            if auto_plan is not None
+                            else None
+                        ),
                     )
             except ProviderUnavailableError as exc:
                 # No echo text: the run fails with the typed, actionable error.
