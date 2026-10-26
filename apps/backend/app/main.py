@@ -20620,10 +20620,18 @@ def save_user_settings(
     request: Request, payload: dict[str, Any] = Body(default_factory=dict)
 ) -> dict[str, Any]:
     actor = _enforce_request_authn(request, payload=payload, action="user.settings.save")
-    normalized = _normalize_user_settings(payload)
+    existing = _user_settings_for(actor)
+    # Older clients PUT preferred_model without knowing orchestrator_model.
+    # Do not drop their explicit selection or reset other saved preferences.
+    merged = {**existing, **payload}
+    if "orchestrator_model" not in payload and "preferred_model" in payload:
+        merged["orchestrator_model"] = _normalize_user_settings(
+            {"preferred_model": payload["preferred_model"]}
+        )["orchestrator_model"]
+    normalized = _normalize_user_settings(merged)
     # Only a higher default chat mode widens; the other fields are UI defaults
     # (each run states its own workspace and model) (LOCUS-357).
-    if capability_widening.user_settings_widening(_user_settings_for(actor), normalized):
+    if capability_widening.user_settings_widening(existing, normalized):
         _require_shell_proof(request, action="user.settings.save", actor=actor)
     store.user_settings[str(actor)] = normalized
     _persist_store_state()
