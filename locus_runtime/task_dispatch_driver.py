@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol, cast
 
 from locus_runtime.action_fencing import action_lock
 from locus_runtime.gateway import GatewaySession
@@ -25,6 +25,9 @@ from locus_runtime.task_scheduler import (
     VerificationRejected,
     VerificationUnavailable,
 )
+
+if TYPE_CHECKING:
+    from locus_runtime.task_model_binding import BoundTaskModels
 
 _ENGINE_ID = re.compile(r"[A-Za-z][A-Za-z0-9_.:/-]{0,127}\Z", re.ASCII)
 _ARTIFACT = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
@@ -85,6 +88,20 @@ class TrustedWorker(Protocol):
 
     def run(
         self, lease: PodLease, *, node: TaskNode, intent: TaskIntent,
+    ) -> WorkReport: ...
+
+
+class ModelAwareTrustedWorker(TrustedWorker, Protocol):
+    """Trusted adapter receives exact worker model/compute with the child lease.
+
+    Its implementation must perform inference through a lease-scoped
+    ModelClient with PodModelCallGate; this contract never gives the model
+    direct access to a GatewaySession or unmediated tool execution.
+    """
+
+    def run_bound(
+        self, lease: PodLease, *, node: TaskNode, intent: TaskIntent,
+        model_id: str, compute_id: str,
     ) -> WorkReport: ...
 
 
@@ -279,7 +296,8 @@ class GatewayTaskDriver:
                 # the trusted route. Their ModelClient MUST independently
                 # authorize each real model_call against the child Gateway
                 # session; this selector is not an egress grant.
-                report = adapter.worker.run_bound(
+                bound_worker = cast(ModelAwareTrustedWorker, adapter.worker)
+                report = bound_worker.run_bound(
                     lease, node=node, intent=plan.plan.intent,
                     model_id=chosen_model.model, compute_id=chosen_model.compute_id,
                 )
