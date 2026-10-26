@@ -113,3 +113,52 @@ def test_unavailable_auto_orchestrator_does_not_fall_through_to_openai(
     assert response.status_code == 412, response.text
     assert response.json()["detail"]["code"] == "orchestrator_auto_unavailable"
     assert set(store.runs) == before
+
+
+def test_provider_qualified_openai_default_does_not_use_a_different_user_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, Any] = {}
+
+    def settings(_actor: str) -> dict[str, str]:
+        return {"orchestrator_model": "openai/gpt-test", "worker_routing": "auto"}
+
+    def resolved_user_provider(**kwargs: Any) -> dict[str, Any]:
+        observed["payload"] = kwargs["payload"]
+        return {
+            "source": "user_config",
+            "provider": "openai",
+            "model": "gpt-test",
+            "principal_id": "test",
+            "available_models": ["gpt-test"],
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "no-real-credential",
+        }
+
+    def fake_chunks(**kwargs: Any) -> tuple[list[str], dict[str, Any]]:
+        observed["runtime"] = kwargs["runtime"]
+        return ["Synthetic credential-adapter fixture"], {
+            "mode": "live", "provider": "openai", "model": "gpt-test",
+        }
+
+    monkeypatch.setenv("LOCUS_SYNC_RUN_EXECUTION", "1")
+    monkeypatch.setattr(main_module, "_user_settings_for", settings)
+    monkeypatch.setattr(main_module, "_resolve_request_chat_runtime", resolved_user_provider)
+    monkeypatch.setattr(main_module, "_collect_chat_response_chunks", fake_chunks)
+
+    response = client.post(
+        "/workflow-runs",
+        json={"session_kind": "chat", "prompt": "Use my primary orchestrator."},
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    run_id = response.json()["id"]
+    try:
+        assert observed["payload"]["provider"] == "openai"
+        assert observed["payload"]["model"] == "gpt-test"
+        assert observed["payload"]["runtime"]["provider"] == "openai"
+        assert observed["payload"]["runtime"]["model"] == "gpt-test"
+        assert observed["runtime"]["model"] == "gpt-test"
+        assert store.run_details[run_id]["orchestrator_binding"]["model"] == "openai/gpt-test"
+    finally:
+        _cleanup_run(run_id)
