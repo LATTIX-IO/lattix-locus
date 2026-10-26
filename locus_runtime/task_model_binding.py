@@ -53,13 +53,19 @@ def bind_models_to_task_plan(
     compiled: CompiledTaskPlan,
     routes: ModelRoutingPlan,
     registered_adapters: Mapping[tuple[str, str], str],
+    current_catalog_snapshot_id: str,
+    current_policy_version: str,
+    expected_orchestrator_model: str,
 ) -> BoundTaskModels:
     """Validate the complete immutable model selection before a child lease.
 
     The server supplies registered_adapters as (exact model ID, exact compute
     ID) -> trusted engine adapter ID; it MUST NOT be model-provided input.
     The existing dispatcher checks model-independent tool capabilities and
-    Gateway authority. A separate model_call Gateway check is still required.
+    Gateway authority. The caller supplies the *current* trusted inventory
+    snapshot, policy version and user-pinned orchestrator so stale or altered
+    route plans cannot be sealed. A separate model_call Gateway check is still
+    required at execution time.
     """
     if not isinstance(compiled, CompiledTaskPlan) or not isinstance(routes, ModelRoutingPlan):
         raise InvalidModelBinding("typed task plan and routing plan are required")
@@ -68,8 +74,16 @@ def bind_models_to_task_plan(
     waves = validate_task_plan(compiled.plan)
     if waves != compiled.waves:
         raise InvalidModelBinding("task waves differ from admitted canonical dependency graph")
-    if not routes.catalog_snapshot_id or not routes.policy_version:
-        raise InvalidModelBinding("catalog and policy revisions must be recorded")
+    # These values are supplied by the trusted control plane at seal time,
+    # not by an LLM-generated plan. A route selected under an older catalog,
+    # revoked attestation, or superseded policy cannot be reused after change.
+    if not current_catalog_snapshot_id or not current_policy_version:
+        raise InvalidModelBinding("current catalog and policy versions are required")
+    if (routes.catalog_snapshot_id != current_catalog_snapshot_id
+            or routes.policy_version != current_policy_version):
+        raise InvalidModelBinding("stale catalog or policy: rebuild and re-admit model routes")
+    if not expected_orchestrator_model or routes.orchestrator.model != expected_orchestrator_model:
+        raise InvalidModelBinding("orchestrator route does not match its trusted run binding")
     if routes.orchestrator.role != "orchestrator" or routes.orchestrator.authorized:
         raise InvalidModelBinding("orchestrator binding is an unprivileged selection")
     if not routes.orchestrator.model or not routes.orchestrator.compute_id:
