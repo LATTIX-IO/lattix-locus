@@ -249,6 +249,9 @@ describe("RunFollowupComposer", () => {
 
     expect(createWorkflowRunMock).not.toHaveBeenCalled();
 
+    // New admission contract: keyboard shortcut cannot launch a task before
+    // asynchronous provider/model discovery has yielded a valid selection.
+    await waitFor(() => expect(screen.getByRole("button", { name: /^send$/i })).toBeEnabled());
     fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
 
     await waitFor(() => expect(createWorkflowRunMock).toHaveBeenCalledTimes(1));
