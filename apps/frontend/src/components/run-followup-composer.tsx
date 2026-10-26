@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -234,6 +234,15 @@ export function RunFollowupComposer({
   const [publishedWorkflows, setPublishedWorkflows] = useState<WorkflowDefinition[]>([]);
   const [publishedPlaybooks, setPublishedPlaybooks] = useState<PlaybookDefinition[]>([]);
   const [composerOpts, setComposerOpts] = useState<ComposerOptions>({});
+  const [modelReadiness, setModelReadiness] = useState({
+    ready: false,
+    reason: "Checking available models…",
+  });
+  const updateModelReadiness = useCallback((ready: boolean, reason: string) => {
+    setModelReadiness((previous) =>
+      previous.ready === ready && previous.reason === reason ? previous : { ready, reason },
+    );
+  }, []);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitInfo, setSubmitInfo] = useState<string | null>(null);
@@ -586,6 +595,11 @@ export function RunFollowupComposer({
     setSubmitInfo(null);
     setCreatedRunId(null);
 
+    if (sameRun && (!modelReadiness.ready || !composerOpts.model)) {
+      setSubmitError(modelReadiness.reason || "Choose an available model before continuing.");
+      return;
+    }
+
     if (sameRun) {
       try {
         setIsSubmitting(true);
@@ -729,7 +743,7 @@ export function RunFollowupComposer({
             </button>
           ) : null}
 
-          <button type="submit" disabled={isSubmitting} className="fx-btn-primary h-9 px-3.5 text-xs font-medium disabled:opacity-60">
+          <button type="submit" disabled={isSubmitting || (sameRun && (!modelReadiness.ready || !composerOpts.model))} className="fx-btn-primary h-9 px-3.5 text-xs font-medium disabled:opacity-60">
             {isSubmitting ? "Sending..." : "Send"}
           </button>
         </div>
@@ -845,7 +859,7 @@ export function RunFollowupComposer({
 
       {sameRun ? (
         <div className="rounded-[12px] border border-[var(--ui-border)] bg-[hsl(var(--card))] px-3 py-1.5">
-          <ComposerControls onChange={setComposerOpts} />
+          <ComposerControls onChange={setComposerOpts} onModelReadinessChange={updateModelReadiness} />
         </div>
       ) : null}
 
@@ -855,6 +869,9 @@ export function RunFollowupComposer({
         </p>
       </div>
 
+      {sameRun && modelReadiness.reason ? (
+        <p role="status" className="text-xs text-[var(--fx-warning)]">{modelReadiness.reason}</p>
+      ) : null}
       {!onStatusChange && submitInfo ? <p className="text-xs text-[hsl(var(--state-success))]">{submitInfo}</p> : null}
       {!onStatusChange && createdRunId ? (
         <p className="text-xs text-[var(--foreground)]">

@@ -39,7 +39,7 @@ export const ENGINE_PROVIDERS: Array<{ id: string; label: string; keyHint: strin
   { id: "mistral", label: "Mistral", keyHint: "Mistral API key", endpointHint: "https://api.mistral.ai/v1", modelHint: "mistral-large-latest", keyRequired: true },
   { id: "xai", label: "xAI Grok", keyHint: "xai-…", endpointHint: "https://api.x.ai/v1", modelHint: "grok-4", keyRequired: true },
   { id: "nim", label: "NVIDIA NIM", keyHint: "nvapi-…", endpointHint: "blank = NVIDIA-hosted", modelHint: "meta/llama-3.3-70b-instruct", keyRequired: true },
-  { id: "ollama", label: "Local (Ollama)", keyHint: "", endpointHint: "http://127.0.0.1:11434", modelHint: "llama3.2:3b", keyRequired: false },
+  { id: "ollama", label: "Local (Ollama)", keyHint: "", endpointHint: "http://127.0.0.1:11434", modelHint: "installed model ID", keyRequired: false },
 ];
 
 /* ------------------------------ providers ------------------------------ */
@@ -228,6 +228,11 @@ export function LocalModelsPanel({ overview, onRefresh }: { overview: ModelsOver
   }
 
   const ollama = overview?.providers.ollama;
+  const configuredDefault = String(ollama?.default_model ?? "").trim();
+  const missingDefault = Boolean(
+    ollama?.available && configuredDefault &&
+    !ollama.installed_models.some((item) => item.id === configuredDefault),
+  );
   return (
     <div className="flex flex-col gap-3">
       <p className="text-[13px]">
@@ -241,6 +246,13 @@ export function LocalModelsPanel({ overview, onRefresh }: { overview: ModelsOver
             : "Install or start Ollama to run open-weight models on this machine."}
         </span>
       </p>
+      {missingDefault ? (
+        <p role="alert" className="text-xs text-[var(--fx-warning)]">
+          Configured Ollama default &ldquo;{configuredDefault}&rdquo; is not installed.
+          Choose an installed model under Providers → Local (Ollama) and save the default;
+          no model was downloaded or changed automatically.
+        </p>
+      ) : null}
       {overview?.catalog.length ? (
         <div className="overflow-x-auto rounded-[10px] border border-border">
           <table className="w-full text-[13px]">

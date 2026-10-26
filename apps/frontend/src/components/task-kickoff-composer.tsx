@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   createWorkflowRun,
@@ -126,7 +126,17 @@ export function TaskKickoffComposer({
   const [activePlaybooks, setActivePlaybooks] = useState<PlaybookDefinition[]>([]);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
   const [composerOpts, setComposerOpts] = useState<ComposerOptions>({});
+  const [modelReadiness, setModelReadiness] = useState({
+    ready: false,
+    reason: "Checking available models…",
+  });
+  const updateModelReadiness = useCallback((ready: boolean, reason: string) => {
+    setModelReadiness((previous) =>
+      previous.ready === ready && previous.reason === reason ? previous : { ready, reason },
+    );
+  }, []);
 
   const tokens = useMemo(() => parseTokens(draft), [draft]);
 
@@ -309,6 +319,13 @@ export function TaskKickoffComposer({
     if (!draft.trim()) return;
     setSubmitError(null);
     setSubmitInfo(null);
+    // A new task must name a model already present in the discovered
+    // inventory. Never fall through to the backend's unconfigured OpenAI
+    // default or silently replace a stale user preference.
+    if (!modelReadiness.ready || !composerOpts.model) {
+      setSubmitError(modelReadiness.reason || "Select an available model before starting a task.");
+      return;
+    }
 
     try {
       setIsSubmitting(true);
@@ -373,8 +390,12 @@ export function TaskKickoffComposer({
         />
 
         <div className="mt-1 rounded-lg border border-[var(--ui-border)] bg-[hsl(var(--card))] px-3 py-2">
-          <ComposerControls onChange={setComposerOpts} />
+          <ComposerControls onChange={setComposerOpts} onModelReadinessChange={updateModelReadiness} />
         </div>
+
+        {modelReadiness.reason ? (
+          <p role="status" className="text-xs text-[var(--fx-warning)]">{modelReadiness.reason}</p>
+        ) : null}
 
         {activeMention && mentionSuggestions.length > 0 ? (
           <div className="border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)]">
@@ -423,7 +444,7 @@ export function TaskKickoffComposer({
         ) : null}
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <button type="submit" disabled={isSubmitting} className="fx-btn-primary px-3 py-2 text-sm font-medium disabled:opacity-60">
+          <button type="submit" disabled={isSubmitting || !modelReadiness.ready || !composerOpts.model} className="fx-btn-primary px-3 py-2 text-sm font-medium disabled:opacity-60">
             {isSubmitting ? "Starting..." : "Start task"}
           </button>
           {createdRunId ? (

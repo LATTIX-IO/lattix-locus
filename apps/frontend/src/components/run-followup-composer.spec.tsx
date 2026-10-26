@@ -1,10 +1,15 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const pushMock = vi.fn();
 const refreshMock = vi.fn();
+const sameRunModel = vi.hoisted(() => ({
+  ready: true,
+  reason: "",
+  value: "ollama/gpt-oss:20b-ctx32k",
+}));
 
 const {
   createWorkflowRunMock,
@@ -12,12 +17,14 @@ const {
   getPublishedWorkflowsMock,
   getRuntimeProvidersMock,
   getUserRuntimeProvidersMock,
+  sendRunMessageMock,
 } = vi.hoisted(() => ({
   createWorkflowRunMock: vi.fn(),
   getAgentDefinitionsMock: vi.fn(),
   getPublishedWorkflowsMock: vi.fn(),
   getRuntimeProvidersMock: vi.fn(),
   getUserRuntimeProvidersMock: vi.fn(),
+  sendRunMessageMock: vi.fn(),
 }));
 
 vi.mock("next/link", () => ({
@@ -37,11 +44,33 @@ vi.mock("@/lib/api", () => ({
   getPublishedWorkflows: getPublishedWorkflowsMock,
   getRuntimeProviders: getRuntimeProvidersMock,
   getUserRuntimeProviders: getUserRuntimeProvidersMock,
+  sendRunMessage: sendRunMessageMock,
+}));
+
+vi.mock("@/components/composer-controls", () => ({
+  ComposerControls: ({
+    onChange,
+    onModelReadinessChange,
+  }: {
+    onChange: (options: { model?: string }) => void;
+    onModelReadinessChange: (ready: boolean, reason: string) => void;
+  }) => {
+    useEffect(() => {
+      onChange({ model: sameRunModel.value || undefined });
+      onModelReadinessChange(sameRunModel.ready, sameRunModel.reason);
+    }, [onChange, onModelReadinessChange]);
+    return null;
+  },
 }));
 
 import { RunFollowupComposer } from "@/components/run-followup-composer";
 
 beforeEach(() => {
+  sameRunModel.ready = true;
+  sameRunModel.reason = "";
+  sameRunModel.value = "ollama/gpt-oss:20b-ctx32k";
+  sendRunMessageMock.mockReset();
+  sendRunMessageMock.mockResolvedValue({ ok: true });
   pushMock.mockReset();
   refreshMock.mockReset();
   createWorkflowRunMock.mockReset();
@@ -76,6 +105,31 @@ beforeEach(() => {
 });
 
 describe("RunFollowupComposer", () => {
+  it("blocks same-run messages while model discovery is incomplete", async () => {
+    sameRunModel.ready = false;
+    sameRunModel.reason = "Checking available models…";
+    sameRunModel.value = "";
+    render(<RunFollowupComposer runId="run-1" delivery="same-run" />);
+    fireEvent.change(screen.getByRole("textbox", { name: /message this run/i }), {
+      target: { value: "Continue the architectural review." },
+    });
+    expect(screen.getByRole("button", { name: /^send$/i })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent(/checking available models/i);
+    expect(sendRunMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("sends explicit qualified Ollama model for same-run messages", async () => {
+    render(<RunFollowupComposer runId="run-1" delivery="same-run" />);
+    const textarea = screen.getByRole("textbox", { name: /message this run/i });
+    fireEvent.change(textarea, { target: { value: "Continue the architecture review." } });
+    await waitFor(() => expect(screen.getByRole("button", { name: /^send$/i })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+    await waitFor(() => expect(sendRunMessageMock).toHaveBeenCalledWith(
+      "run-1", "Continue the architecture review.",
+      expect.objectContaining({ model: "ollama/gpt-oss:20b-ctx32k" }),
+    ));
+  });
+
   it("starts as a single-line composer and can collapse after expanding", async () => {
     render(<RunFollowupComposer runId="run-1" recentContext="User: Need a follow-up" />);
 
