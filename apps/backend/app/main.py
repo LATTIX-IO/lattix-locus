@@ -20528,6 +20528,17 @@ def _normalize_user_settings(prefs: dict[str, Any]) -> dict[str, Any]:
     orchestrator = str(value or "").strip()
     if len(orchestrator) > 256 or any(ch.isspace() for ch in orchestrator):
         orchestrator = ""
+    # Earlier versions stored bare OpenAI model IDs as preferred_model.
+    # Canonicalize that existing selection rather than silently picking an
+    # unrelated provider. New orchestrator_model fields must be qualified.
+    if orchestrator and orchestrator != "auto" and not re.fullmatch(
+        r"[a-z][a-z0-9_-]{0,31}/\\S+", orchestrator, flags=re.ASCII
+    ):
+        orchestrator = (
+            f"openai/{orchestrator}"
+            if "orchestrator_model" not in src
+            else ""
+        )
     worker_routing = str(src.get("worker_routing") or "auto").strip().lower()
     if worker_routing not in {"auto", "manual"}:
         worker_routing = "auto"
