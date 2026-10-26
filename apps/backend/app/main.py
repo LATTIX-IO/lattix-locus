@@ -26246,10 +26246,16 @@ def get_models_overview(request: Request) -> dict[str, Any]:
     nim_configured = bool(nim_key) and "change" not in nim_key.lower()
     ollama_up = local_models.ollama_available()
     installed = {item["id"]: item for item in local_models.installed_models()} if ollama_up else {}
-    for item in installed.values():
-        # Live /api/tags is the inventory; /api/show is the capability source.
-        # Unavailable metadata stays unknown (empty), never assumed to be chat.
-        item["capabilities"] = local_models.model_capabilities(str(item["id"]))
+    if installed:
+        # /api/show probes are bounded and cacheable. Limit concurrency so a
+        # busy local model cannot serialize seven 3-second UI requests.
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(4, len(installed))) as pool:
+            capabilities = list(pool.map(local_models.model_capabilities, installed))
+        for item, model_caps in zip(installed.values(), capabilities, strict=True):
+            # Unknown remains in the inventory but is not chat-eligible.
+            item["capabilities"] = model_caps
     pulls = local_models.pull_states()
 
     catalog: list[dict[str, Any]] = []
