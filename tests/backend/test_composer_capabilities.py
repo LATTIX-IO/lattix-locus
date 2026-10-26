@@ -192,3 +192,11 @@ def test_invalid_orchestrator_choice_does_not_authorize_a_new_provider() -> None
     })
     assert settings["orchestrator_model"] == ""
     assert settings["worker_routing"] == "auto"
+
+
+def test_legacy_unqualified_openai_default_is_canonicalized_not_reinterpreted() -> None:
+    migrated = main._normalize_user_settings({"preferred_model": "gpt-5.2"})
+    assert migrated["orchestrator_model"] == "openai/gpt-5.2"
+    assert migrated["preferred_model"] == "openai/gpt-5.2"
+    new_ambiguous = main._normalize_user_settings({"orchestrator_model": "astra"})
+    assert new_ambiguous["orchestrator_model"] == ""
