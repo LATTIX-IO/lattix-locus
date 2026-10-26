@@ -117,6 +117,10 @@ def plan_local_auto(
         caps = item.get("capabilities")
         if not chat_capable_model(name, caps if isinstance(caps, list) else None):
             continue
+        # A custom Hugging Face fine-tune is not automatically eligible
+        # merely because its filename contains a familiar model family.
+        if name.lower().startswith("hf.co/"):
+            continue
         if not any(family in name.lower() for family in _KNOWN_FAMILIES):
             continue
         if allowed and name not in allowed and f"ollama/{name}" not in allowed:
