@@ -353,7 +353,7 @@ function DefaultsGroup({ overview }: { overview: ModelsOverview | null }) {
         options.push(provider.id === "openai" ? provider.default_model : `${provider.id}/${provider.default_model}`);
       }
     }
-    if (preferredModel && !options.includes(preferredModel)) options.unshift(preferredModel);
+    if (preferredModel && preferredModel !== "auto" && !options.includes(preferredModel)) options.unshift(preferredModel);
     return options;
   }, [preferredModel, overview]);
 
@@ -376,7 +376,7 @@ function DefaultsGroup({ overview }: { overview: ModelsOverview | null }) {
           id="default-model"
           label="Primary orchestrator model"
           description="The user's selected orchestrator coordinates work. Specialist models are routed separately."
-          value={draft.orchestrator_model ?? draft.preferred_model ?? "__unset__"}
+          value={(draft.orchestrator_model ?? draft.preferred_model) || "__unset__"}
           onValueChange={(value) => update("orchestrator_model", value === "__unset__" ? "" : value)}
           options={[
             { value: "__unset__", label: "No model selected" },
