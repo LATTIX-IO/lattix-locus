@@ -34,6 +34,15 @@ def test_auto_skips_stale_uninstalled_preferred_model() -> None:
     assert plan.considered_count == 4
 
 
+def test_listed_lineages_are_not_implicitly_auto_candidates() -> None:
+    plan = plan_local_auto([
+        {"id": "qwen3:8b"}, {"id": "deepseek-r1:8b"},
+        {"id": "glm-4:9b"}, {"id": "gpt-oss:20b"},
+    ])
+    assert plan is not None
+    assert plan.candidates == ("ollama/gpt-oss:20b",)
+
+
 def test_auto_does_not_guess_an_openai_model_without_local_inventory() -> None:
     assert plan_local_auto([], prompt="Write a Rust program.") is None
 
