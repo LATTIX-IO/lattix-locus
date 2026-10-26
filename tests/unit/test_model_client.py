@@ -208,10 +208,18 @@ def test_default_chain_is_nim_then_ollama_and_configurable(
 
 def test_chain_for_honours_explicit_engines(monkeypatch: pytest.MonkeyPatch) -> None:
     assert [t.provider for t in mc.chain_for("ollama", "gpt-oss:20b", explicit=True)] == ["ollama"]
+    # A user-selected hosted orchestrator may not silently become a local
+    # model, even when the legacy environment allows fallback.
     hosted = mc.chain_for("nim", "meta/llama-3.3-70b-instruct", explicit=True)
-    assert [t.provider for t in hosted] == ["nim", "ollama"]
+    assert [t.provider for t in hosted] == ["nim"]
+    # Only a trusted caller with separate routing consent may request fallback.
+    approved = mc.chain_for(
+        "nim", "meta/llama-3.3-70b-instruct",
+        explicit=True, allow_fallback=True,
+    )
+    assert [t.provider for t in approved] == ["nim", "ollama"]
     monkeypatch.setenv(mc.LOCAL_FALLBACK_ENV, "0")
-    assert [t.provider for t in mc.chain_for("nim", "x", explicit=True)] == ["nim"]
+    assert [t.provider for t in mc.chain_for("nim", "x", explicit=True, allow_fallback=True)] == ["nim"]
     assert [t.provider for t in mc.chain_for("ollama", "", explicit=False)] == ["nim", "ollama"]
 
 
