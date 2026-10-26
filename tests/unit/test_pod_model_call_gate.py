@@ -11,6 +11,7 @@ from locus_runtime.model_client import ModelCall, ModelCallDenied, ModelUsage
 from locus_runtime.pod_model_call_gate import PodModelCallGate
 from locus_runtime.pod_reservations import AdmissionDenied
 from locus_runtime.task_model_binding import PinnedWorkerModel
+from tests.gateway_support import FakeEngine
 from tests.unit.test_task_scheduler import build, start
 
 
@@ -92,8 +93,10 @@ def test_gateway_is_called_for_every_matching_child_inference(tmp_path, monkeypa
 def test_real_child_gateway_denial_prevents_model_inference(tmp_path):
     lease, selected, call = admitted_child(tmp_path)
     gate = PodModelCallGate(lease, binding=selected, egress_host="127.0.0.1")
-    # The test's child envelope has no authorized model egress. The real
-    # policy decision must not be reinterpreted as permission for local Auto.
+    # Keep the real child Gateway and durable PodLease, but force the policy
+    # engine to deny the action; this is deterministic even when local-model
+    # egress defaults change in a later product release.
+    lease._session.gateway._engine = FakeEngine(default=False)
     with pytest.raises(ModelCallDenied) as error:
         gate.authorize(call)
     assert error.value.code == "model_call_denied"
