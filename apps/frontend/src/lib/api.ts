@@ -1336,7 +1336,10 @@ export type ComposerOptions = {
 
 export type UserSettings = {
   default_working_folder: string;
+  /** Legacy alias retained for older clients. New preference is orchestrator_model. */
   preferred_model: string;
+  orchestrator_model: string;
+  worker_routing: "auto" | "manual";
   preferred_reasoning_effort: "" | "low" | "medium" | "high";
   default_mode: "chat" | "plan" | "execute";
 };
