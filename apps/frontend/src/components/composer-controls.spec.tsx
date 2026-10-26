@@ -109,7 +109,18 @@ describe("ComposerControls model readiness", () => {
     expect(screen.getByText("No models configured")).toBeInTheDocument();
   });
 
-  it("honors a configured hosted model when no Ollama models are available", async () => {
+  it("starts in explicit local-only Auto when a usable Ollama model is discovered", async () => {
+    const onReadiness = vi.fn();
+    const onChange = vi.fn();
+    render(<ComposerControls onChange={onChange} onModelReadinessChange={onReadiness} />);
+    await waitFor(() => expect(onReadiness).toHaveBeenLastCalledWith(true, ""));
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ model: "auto" }));
+    expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("Auto · local");
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    expect(screen.getByRole("button", { name: /Auto · available local models/ })).toBeInTheDocument();
+  });
+
+  it("requires operator intent before selecting a hosted provider", async () => {
     api.getModelsOverview.mockResolvedValue({
       providers: { ollama: { available: false, installed_models: [] } },
       external: [{ id: "openai", label: "OpenAI", configured: true, default_model: "gpt-test" }],
@@ -117,6 +128,12 @@ describe("ComposerControls model readiness", () => {
     const onReadiness = vi.fn();
     const onChange = vi.fn();
     render(<ComposerControls onChange={onChange} onModelReadinessChange={onReadiness} />);
+    await waitFor(() => expect(onReadiness).toHaveBeenLastCalledWith(
+      false, expect.stringContaining("Select an available model"),
+    ));
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ model: undefined }));
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.click(screen.getByRole("button", { name: /gpt-test/ }));
     await waitFor(() => expect(onReadiness).toHaveBeenLastCalledWith(true, ""));
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ model: "gpt-test" }));
   });
