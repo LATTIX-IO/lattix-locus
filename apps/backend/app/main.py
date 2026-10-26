@@ -4137,6 +4137,18 @@ def _admit_explicit_local_chat_model(
 
     policy = _effective_chat_runtime_policy(payload, request=request)
     _enforce_chat_provider_policy("ollama", policy, context_label="Local chat runtime")
+    # An explicitly selected local model must obey the same tenant model
+    # restriction as hosted providers. Never pick a different allowed model
+    # here: explicit pins are binding, and denial cannot cause fallback.
+    models_allowed = policy.get("allowed_models") or []
+    if models_allowed and model_id not in models_allowed and selected_model not in models_allowed:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "model_call_denied",
+                "message": "Selected Ollama model is denied by tenant runtime policy",
+            },
+        )
     if not local_models.ollama_available():
         raise HTTPException(
             status_code=412,
@@ -5318,7 +5330,13 @@ def _effective_chat_runtime_policy(
             source,
             ("allowed_providers", "allowed_runtime_providers", "allowed_chat_providers"),
         ):
-            providers.append(_normalize_chat_provider(item))
+            # Credentialed chat runtime selection remains restricted; policy
+            # may additionally name locally mediated Ollama without promoting
+            # it to a hosted user-credential adapter.
+            providers.append(
+                "ollama" if str(item).strip().lower() == "ollama"
+                else _normalize_chat_provider(item)
+            )
         models = _chat_runtime_policy_source_values(
             source,
             ("allowed_models", "allowed_runtime_models", "allowed_chat_models"),
@@ -5328,10 +5346,17 @@ def _effective_chat_runtime_policy(
         if models:
             model_groups.append(models)
 
-    return {
-        "allowed_providers": _intersect_policy_values(provider_groups),
-        "allowed_models": _intersect_policy_values(model_groups),
-    }
+    allowed_providers = _intersect_policy_values(provider_groups)
+    allowed_models = _intersect_policy_values(model_groups)
+    # A disjoint intersection is explicitly *deny*, not unrestricted. The
+    # empty-list sentinel means no constraint for legacy callers, so reject
+    # conflicting policy sources before that sentinel could erase a restriction.
+    if (provider_groups and not allowed_providers) or (model_groups and not allowed_models):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "runtime_policy_conflict", "message": "Runtime policy allowlists conflict"},
+        )
+    return {"allowed_providers": allowed_providers, "allowed_models": allowed_models}
 
 
 def _enforce_chat_provider_policy(
