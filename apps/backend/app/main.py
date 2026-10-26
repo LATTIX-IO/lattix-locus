@@ -22890,6 +22890,19 @@ def create_workflow_run(
         if auto_plan is not None
         else composer_opts["model"] or _resolve_agent_chat_model(selected_agent_definition)
     )
+    if selected_model.lower().startswith("ollama/"):
+        explicitly_hosted = str(payload.get("provider") or "").strip()
+        runtime_override = payload.get("runtime")
+        if (
+            explicitly_hosted and explicitly_hosted != "ollama"
+        ) or (
+            isinstance(runtime_override, dict)
+            and str(runtime_override.get("provider") or "").strip() not in {"", "ollama"}
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Local model and hosted runtime selection cannot be combined",
+            )
     request_prompt = _with_architecture_contract(
         model_prompt or "Execute the requested workflow task.",
         enabled=_should_enforce_architecture_contract(
@@ -23054,9 +23067,10 @@ def create_workflow_run(
         mainline client path; a missing user runtime (412) falls back to it. Any
         other policy rejection is re-raised so the run fails closed.
         """
-        if auto_plan is not None:
-            # Auto v1 never implicitly uses an account credential or changes
-            # trust domains. Gated Ollama ModelClient handles the selected ID.
+        if auto_plan is not None or selected_model.lower().startswith("ollama/"):
+            # An explicitly local model is bound to the local gated ModelClient.
+            # Never let a previously saved preferred OpenAI credential silently
+            # override it through the user-scoped provider selection adapter.
             return None
         explicitly_requested = isinstance(payload.get("runtime"), dict) or bool(
             str(payload.get("provider") or "").strip()
