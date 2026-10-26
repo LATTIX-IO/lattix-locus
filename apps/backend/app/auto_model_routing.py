@@ -30,7 +30,9 @@ _ANALYSIS_TASK = re.compile(
     r"complex|compare|design|risk|reason|evaluation)\b",
     flags=re.IGNORECASE,
 )
-_KNOWN_FAMILIES = ("gpt-oss", "qwen", "llama", "gemma", "mistral", "deepseek")
+# Auto avoids lineages requiring separate D-29 provenance attestations. They may
+# still be explicitly eligible after verification at the ModelClient boundary.
+_KNOWN_FAMILIES = ("gpt-oss", "llama", "gemma", "mistral", "phi", "granite")
 
 
 @dataclass(frozen=True)
@@ -76,14 +78,12 @@ def _score(model_id: str, task_class: str, preferred: str) -> int:
         score = 72
     elif "coder" in name:
         score = 68
-    elif any(family in name for family in ("qwen", "gemma", "llama", "mistral")):
+    elif any(family in name for family in ("gemma", "llama", "mistral", "phi", "granite")):
         score = 50
-    elif "deepseek" in name:
-        score = 60
     if task_class == "coding":
         score += 14 if "coder" in name else (8 if "gpt-oss" in name else 0)
     elif task_class == "analysis":
-        score += 8 if "gpt-oss" in name or "deepseek" in name else 0
+        score += 8 if "gpt-oss" in name else 0
     else:
         score += 9 if "gpt-oss-t3" in name else 0
     if "ctx32k" in name:
