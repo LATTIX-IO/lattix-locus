@@ -116,6 +116,9 @@ REGISTERED = {
 def test_two_independent_nodes_route_to_distinct_models_and_merge_after_verification() -> None:
     bound = bind_models_to_task_plan(
         compiled=admitted_plan(), routes=routes(), registered_adapters=REGISTERED,
+        current_catalog_snapshot_id="inventory-3",
+        current_policy_version="policy-12",
+        expected_orchestrator_model="openai/astra",
     )
     assert bound.waves == (("implement", "security"), ("synthesize",))
     assert bound.orchestrator.model == "openai/astra"
@@ -138,6 +141,9 @@ def test_missing_registered_adapter_fails_before_worker_leases() -> None:
         bind_models_to_task_plan(
             compiled=admitted_plan(), routes=routes(),
             registered_adapters={("ollama/sol", "gpu-1"): "engine-local-gpu-1"},
+            current_catalog_snapshot_id="inventory-3",
+            current_policy_version="policy-12",
+            expected_orchestrator_model="openai/astra",
         )
 
 
@@ -151,6 +157,9 @@ def test_missing_or_duplicate_worker_route_cannot_be_sealed() -> None:
         with pytest.raises(InvalidModelBinding):
             bind_models_to_task_plan(
                 compiled=admitted_plan(), routes=malformed, registered_adapters=REGISTERED,
+        current_catalog_snapshot_id="inventory-3",
+        current_policy_version="policy-12",
+        expected_orchestrator_model="openai/astra",
             )
 
 
@@ -160,12 +169,63 @@ def test_stale_or_modified_task_waves_cannot_be_sealed() -> None:
         bind_models_to_task_plan(
             compiled=replace(compiled, waves=(("security",), ("implement", "synthesize"))),
             routes=routes(), registered_adapters=REGISTERED,
+        current_catalog_snapshot_id="inventory-3",
+        current_policy_version="policy-12",
+        expected_orchestrator_model="openai/astra",
         )
 
 
 def test_no_binding_is_a_model_call_authorization() -> None:
     bound = bind_models_to_task_plan(
         compiled=admitted_plan(), routes=routes(), registered_adapters=REGISTERED,
+        current_catalog_snapshot_id="inventory-3",
+        current_policy_version="policy-12",
+        expected_orchestrator_model="openai/astra",
     )
     assert bound.orchestrator.authorized is False
     assert all(worker.authorized is False for worker in bound.workers)
+
+
+def test_rejects_stale_catalog_even_when_worker_adapter_is_registered() -> None:
+    """Model capability, health and attestation changes invalidate old plans."""
+    with pytest.raises(InvalidModelBinding, match="stale catalog or policy"):
+        bind_models_to_task_plan(
+            compiled=admitted_plan(), routes=routes(),
+            registered_adapters=REGISTERED,
+            current_catalog_snapshot_id="inventory-4",
+            current_policy_version="policy-12",
+            expected_orchestrator_model="openai/astra",
+        )
+
+
+def test_rejects_stale_policy_after_provider_or_data_ceiling_change() -> None:
+    with pytest.raises(InvalidModelBinding, match="stale catalog or policy"):
+        bind_models_to_task_plan(
+            compiled=admitted_plan(), routes=routes(),
+            registered_adapters=REGISTERED,
+            current_catalog_snapshot_id="inventory-3",
+            current_policy_version="policy-13",
+            expected_orchestrator_model="openai/astra",
+        )
+
+
+def test_rejects_replaced_primary_orchestrator_after_user_pin_change() -> None:
+    with pytest.raises(InvalidModelBinding, match="orchestrator route"):
+        bind_models_to_task_plan(
+            compiled=admitted_plan(), routes=routes(),
+            registered_adapters=REGISTERED,
+            current_catalog_snapshot_id="inventory-3",
+            current_policy_version="policy-12",
+            expected_orchestrator_model="ollama/other",
+        )
+
+
+def test_cannot_seal_without_current_trusted_revision_identifiers() -> None:
+    with pytest.raises(InvalidModelBinding, match="current catalog"):
+        bind_models_to_task_plan(
+            compiled=admitted_plan(), routes=routes(),
+            registered_adapters=REGISTERED,
+            current_catalog_snapshot_id="",
+            current_policy_version="policy-12",
+            expected_orchestrator_model="openai/astra",
+        )
