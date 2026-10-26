@@ -321,6 +321,58 @@ def installed_models() -> list[dict[str, Any]]:
     return [item for item in results if item["id"]]
 
 
+# Ollama /api/tags exposes installed identifiers, but not whether a model
+# supports chat. /api/show supplies authoritative capabilities; a bounded
+# cache avoids re-probing every frontend render. Cache keys include endpoint
+# and digest, so replacing model weights invalidates an old capability claim.
+_CAPABILITY_CACHE: dict[tuple[str, str, str], tuple[float, tuple[str, ...]]] = {}
+_CAPABILITY_LOCK = threading.Lock()
+_CAPABILITY_TTL_SECONDS = 90.0
+
+
+def model_capabilities(model_id: str, *, digest: str = "") -> list[str]:
+    """Return positive Ollama /api/show capabilities, or [] when unverified.
+
+    Unknown means *not eligible for chat* in the picker, not an embedding
+    classification inferred from a filename. No model weights are loaded.
+    """
+    model = str(model_id or "").strip()
+    if not model or len(model) > 256:
+        return []
+    cache_key = (ollama_base_url(), model, str(digest or ""))
+    now = time.monotonic()
+    with _CAPABILITY_LOCK:
+        cached = _CAPABILITY_CACHE.get(cache_key)
+        if cached is not None and cached[0] > now:
+            return list(cached[1])
+    try:
+        overview = _request_json(
+            "/api/show", method="POST", payload={"model": model}, timeout=3.0
+        )
+        raw = overview.get("capabilities", []) if isinstance(overview, dict) else []
+        capabilities = tuple(
+            sorted(
+                {
+                    str(value).strip().lower()
+                    for value in raw if isinstance(raw, list) and isinstance(value, str)
+                    and str(value).strip()
+                }
+            )
+        )
+    except Exception:  # noqa: BLE001 - unavailable is not a positive capability
+        capabilities = ()
+    with _CAPABILITY_LOCK:
+        _CAPABILITY_CACHE[cache_key] = (now + _CAPABILITY_TTL_SECONDS, capabilities)
+        if len(_CAPABILITY_CACHE) > 512:
+            # Bound process memory without keeping stale capability evidence.
+            expired = [key for key, (expiry, _) in _CAPABILITY_CACHE.items() if expiry <= now]
+            for key in expired:
+                _CAPABILITY_CACHE.pop(key, None)
+            if len(_CAPABILITY_CACHE) > 512:
+                _CAPABILITY_CACHE.clear()
+    return list(capabilities)
+
+
 def is_catalog_model(model_id: str) -> bool:
     return str(model_id or "").strip() in _CATALOG_IDS
 

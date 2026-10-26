@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   createWorkflowRun,
   getAgentDefinitions,
+  getModelsOverview,
   getPlaybooks,
   getPublishedWorkflows,
   getRuntimeProviders,
@@ -49,6 +50,18 @@ type ComposerRuntimeOption = {
   source: "user" | "environment";
   preferred: boolean;
 };
+
+type LiveOllamaInventory = {
+  available?: boolean;
+  installed_models?: Array<{ id: string; capabilities?: string[] }>;
+};
+
+function canUseForChat(model: { id: string; capabilities?: string[] }): boolean {
+  // A filename is not capability evidence: /api/show must positively attest
+  // completion or tools. Unknown and embedding-only models stay in Settings
+  // inventory but are not executable chat-model choices.
+  return Boolean(model.id && model.capabilities?.some((capability) => capability === "completion" || capability === "tools"));
+}
 
 type ComposerModelOption = {
   value: string;
@@ -164,6 +177,7 @@ function buildRuntimeOptions(
     source: "user" | "environment";
   }>,
   runtimeProviders: Array<{ provider: string; configured: boolean; model: string }>,
+  ollamaInventory?: LiveOllamaInventory,
 ): ComposerRuntimeOption[] {
   const options = new Map<string, ComposerRuntimeOption>();
 
@@ -196,6 +210,29 @@ function buildRuntimeOptions(
     });
   }
 
+  // The legacy runtime/providers endpoint excludes keyless Ollama entirely.
+  // Local availability is authoritative only when we can see real installed
+  // model IDs. Never offer an absent default from provider configuration.
+  const installed = ollamaInventory?.available
+    ? [...new Set((ollamaInventory.installed_models ?? [])
+        .filter(canUseForChat)
+        .map((entry) => entry.id))]
+    : [];
+  if (installed.length > 0) {
+    const old = options.get("ollama");
+    options.set("ollama", {
+      provider: "ollama",
+      label: "Local (Ollama)",
+      model: old && installed.includes(old.model) ? old.model : installed[0],
+      models: installed,
+      source: "environment",
+      preferred: Boolean(old?.preferred),
+    });
+  } else {
+    // An API registry can report Ollama "configured" even if /api/tags
+    // finds no runnable chat models. Fail closed.
+    options.delete("ollama");
+  }
   return [...options.values()].sort((left, right) => {
     if (left.preferred !== right.preferred) {
       return left.preferred ? -1 : 1;
@@ -254,6 +291,7 @@ export function RunFollowupComposer({
   const [selectedModel, setSelectedModel] = useState(initialRuntime?.model ?? "");
   const [controlsOpen, setControlsOpen] = useState(false);
   const [runtimeLoadError, setRuntimeLoadError] = useState<string | null>(null);
+  const [runtimeRetry, setRuntimeRetry] = useState(0);
   const [commandQuery, setCommandQuery] = useState("");
 
   useEffect(() => {
@@ -261,13 +299,14 @@ export function RunFollowupComposer({
 
     async function loadComposerData() {
       // Each loader is wrapped so a synchronous throw becomes a settled rejection.
-      const [agentDefs, workflowDefs, playbookDefs, userProviders, runtimeProviders] = await Promise.allSettled([
+      const [agentDefs, workflowDefs, playbookDefs, userProviders, runtimeProviders, localModels] = await Promise.allSettled([
         Promise.resolve().then(() => getAgentDefinitions()),
         Promise.resolve().then(() => getPublishedWorkflows()),
         Promise.resolve().then(() => getPlaybooks()),
         // Same-run delivery uses ComposerControls for model selection instead.
         sameRun ? Promise.resolve([]) : Promise.resolve().then(() => getUserRuntimeProviders()),
         sameRun ? Promise.resolve({ providers: [] }) : Promise.resolve().then(() => getRuntimeProviders()),
+        sameRun ? Promise.resolve(null) : Promise.resolve().then(() => getModelsOverview()),
       ]);
       if (cancelled) {
         return;
@@ -283,17 +322,21 @@ export function RunFollowupComposer({
         setPublishedPlaybooks(playbookDefs.value.filter((playbook) => playbook.status === "published"));
       }
 
-      if (userProviders.status === "fulfilled" || runtimeProviders.status === "fulfilled") {
-        const nextRuntimeOptions = buildRuntimeOptions(
-          userProviders.status === "fulfilled" ? userProviders.value : [],
-          runtimeProviders.status === "fulfilled" ? runtimeProviders.value.providers : [],
-        );
-        setRuntimeOptions(nextRuntimeOptions);
-        setRuntimeLoadError(null);
-      } else {
-        setRuntimeOptions([]);
-        setRuntimeLoadError("Runtime settings are unavailable right now.");
-      }
+      if (sameRun) return;
+      const overview = localModels.status === "fulfilled" ? localModels.value : null;
+      const options = buildRuntimeOptions(
+        userProviders.status === "fulfilled" ? userProviders.value : [],
+        runtimeProviders.status === "fulfilled" ? runtimeProviders.value.providers : [],
+        overview?.providers?.ollama,
+      );
+      setRuntimeOptions(options);
+      setRuntimeLoadError(
+        overview === null
+          ? "Local model discovery failed. Check the backend and retry to refresh Ollama models."
+          : options.length > 0
+            ? null
+            : "No available chat models. Start Ollama and install a chat model, or configure a hosted provider.",
+      );
     }
 
     void loadComposerData();
@@ -301,7 +344,7 @@ export function RunFollowupComposer({
     return () => {
       cancelled = true;
     };
-  }, [sameRun]);
+  }, [sameRun, runtimeRetry]);
 
   useEffect(() => {
     if (runtimeOptions.length === 0) {
@@ -599,6 +642,10 @@ export function RunFollowupComposer({
       setSubmitError(modelReadiness.reason || "Choose an available model before continuing.");
       return;
     }
+    if (!sameRun && (!activeRuntimeOption || !selectedModel || !activeRuntimeOption.models.includes(selectedModel))) {
+      setSubmitError(runtimeLoadError || "Select an available model before creating a follow-up run.");
+      return;
+    }
 
     if (sameRun) {
       try {
@@ -640,11 +687,13 @@ export function RunFollowupComposer({
       return true;
     });
     const playbooks = filteredTokens.filter((token) => token.kind === "playbook").map((token) => token.value);
-    const runtimePayload = activeRuntimeOption && selectedModel
-      ? {
-          provider: activeRuntimeOption.provider,
-          model: selectedModel,
-        }
+    // A keyless local provider uses the gated platform ModelClient path. Do NOT
+    // send runtime.provider=ollama: the user-credential runtime adapter does
+    // not admit Ollama and would reject it as an unsupported hosted provider.
+    const isLocal = activeRuntimeOption?.provider === "ollama";
+    const qualifiedLocalModel = isLocal ? `ollama/${selectedModel}` : "";
+    const runtimePayload = !isLocal && activeRuntimeOption && selectedModel
+      ? { provider: activeRuntimeOption.provider, model: selectedModel }
       : undefined;
 
     try {
@@ -659,8 +708,8 @@ export function RunFollowupComposer({
           mode: "follow_up",
           recent_context: recentContext,
         },
-        runtime: runtimePayload,
-        ...(runtimePayload ? runtimePayload : {}),
+        ...(runtimePayload ? { runtime: runtimePayload, ...runtimePayload } : {}),
+        ...(isLocal ? { model: qualifiedLocalModel } : {}),
         source_run_id: runId,
         follow_up_to_run_id: runId,
       }, {
@@ -743,7 +792,7 @@ export function RunFollowupComposer({
             </button>
           ) : null}
 
-          <button type="submit" disabled={isSubmitting || (sameRun && (!modelReadiness.ready || !composerOpts.model))} className="fx-btn-primary h-9 px-3.5 text-xs font-medium disabled:opacity-60">
+          <button type="submit" disabled={isSubmitting || (sameRun ? (!modelReadiness.ready || !composerOpts.model) : (!activeRuntimeOption || !selectedModel || !activeRuntimeOption.models.includes(selectedModel)))} className="fx-btn-primary h-9 px-3.5 text-xs font-medium disabled:opacity-60">
             {isSubmitting ? "Sending..." : "Send"}
           </button>
         </div>
@@ -776,7 +825,7 @@ export function RunFollowupComposer({
                 onChange={(event) => handleModelSelection(event.target.value)}
                 disabled={modelOptions.length === 0}
               >
-                {modelOptions.length === 0 ? <option value="">No configured runtimes</option> : null}
+                {modelOptions.length === 0 ? <option value="">No available chat models</option> : null}
                 {modelOptions.map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
@@ -784,7 +833,17 @@ export function RunFollowupComposer({
             </label>
             )}
 
-            {!sameRun && runtimeLoadError ? <p className="text-[11px] text-[var(--fx-danger)]">{runtimeLoadError}</p> : null}
+            {!sameRun && runtimeLoadError ? (
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p role="status" className="text-[11px] text-[var(--fx-danger)]">{runtimeLoadError}</p>
+                <button
+                  type="button"
+                  onClick={() => setRuntimeRetry((value) => value + 1)}
+                  aria-label="Retry model discovery"
+                  className="fx-btn-secondary px-2 py-1 text-[11px]"
+                >Retry discovery</button>
+              </div>
+            ) : null}
 
             <div className="space-y-2">
               <p className="text-[11px] font-medium tracking-[0.04em] text-[var(--fx-muted)]">Command Insert</p>

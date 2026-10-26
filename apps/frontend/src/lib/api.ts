@@ -1108,7 +1108,7 @@ export type ModelsOverview = {
       available: boolean;
       base_url: string;
       default_model: string;
-      installed_models: { id: string; size_bytes: number; modified_at: string }[];
+      installed_models: { id: string; size_bytes: number; modified_at: string; capabilities?: string[] }[];
     };
   };
   external: {

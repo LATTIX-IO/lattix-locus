@@ -14,6 +14,7 @@ const sameRunModel = vi.hoisted(() => ({
 const {
   createWorkflowRunMock,
   getAgentDefinitionsMock,
+  getModelsOverviewMock,
   getPublishedWorkflowsMock,
   getRuntimeProvidersMock,
   getUserRuntimeProvidersMock,
@@ -21,6 +22,7 @@ const {
 } = vi.hoisted(() => ({
   createWorkflowRunMock: vi.fn(),
   getAgentDefinitionsMock: vi.fn(),
+  getModelsOverviewMock: vi.fn(),
   getPublishedWorkflowsMock: vi.fn(),
   getRuntimeProvidersMock: vi.fn(),
   getUserRuntimeProvidersMock: vi.fn(),
@@ -41,6 +43,7 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/lib/api", () => ({
   createWorkflowRun: createWorkflowRunMock,
   getAgentDefinitions: getAgentDefinitionsMock,
+  getModelsOverview: getModelsOverviewMock,
   getPublishedWorkflows: getPublishedWorkflowsMock,
   getRuntimeProviders: getRuntimeProvidersMock,
   getUserRuntimeProviders: getUserRuntimeProvidersMock,
@@ -75,6 +78,7 @@ beforeEach(() => {
   refreshMock.mockReset();
   createWorkflowRunMock.mockReset();
   getAgentDefinitionsMock.mockReset();
+  getModelsOverviewMock.mockReset();
   getPublishedWorkflowsMock.mockReset();
   getRuntimeProvidersMock.mockReset();
   getUserRuntimeProvidersMock.mockReset();
@@ -87,6 +91,21 @@ beforeEach(() => {
   ]);
   getRuntimeProvidersMock.mockResolvedValue({
     providers: [{ provider: "openai", configured: true, model: "gpt-5.4", mode: "live" }],
+  });
+  getModelsOverviewMock.mockResolvedValue({
+    providers: {
+      ollama: {
+        available: true,
+        default_model: "llama3.2:3b", // stale default is not installed
+        installed_models: [
+          { id: "gpt-oss:20b-ctx32k", capabilities: ["completion", "tools"] },
+          { id: "nomic-embed-text:latest", capabilities: ["embedding"] },
+          { id: "hf.co/yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M", capabilities: ["completion"] },
+        ],
+      },
+    },
+    external: [],
+    catalog: [],
   });
   getUserRuntimeProvidersMock.mockResolvedValue([
     {
@@ -130,6 +149,119 @@ describe("RunFollowupComposer", () => {
     ));
   });
 
+  it("discovers Ollama models for a follow-up with zero hosted API credentials", async () => {
+    getRuntimeProvidersMock.mockResolvedValue({ providers: [
+      { provider: "openai", configured: false, model: "gpt-5.2" },
+    ] });
+    getUserRuntimeProvidersMock.mockResolvedValue([]);
+    render(<RunFollowupComposer runId="run-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /show follow-up controls/i }));
+    const selector = screen.getByRole("combobox", { name: /follow-up current model/i });
+    await waitFor(() => expect(selector).toHaveValue("ollama::gpt-oss:20b-ctx32k"));
+    expect(selector).toHaveTextContent("Local (Ollama)");
+    expect(selector).not.toHaveTextContent("nomic-embed-text");
+
+    fireEvent.change(screen.getByRole("textbox", { name: /message this run/i }), {
+      target: { value: "Draft a project brief." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+
+    await waitFor(() => expect(createWorkflowRunMock).toHaveBeenCalledTimes(1));
+    const payload = createWorkflowRunMock.mock.calls[0]?.[0];
+    expect(payload?.model).toBe("ollama/gpt-oss:20b-ctx32k");
+    expect(payload?.runtime).toBeUndefined();
+    expect(payload?.provider).toBeUndefined();
+  });
+
+  it("retains provider-qualified hf.co local model IDs without a credential adapter", async () => {
+    getRuntimeProvidersMock.mockResolvedValue({ providers: [] });
+    getUserRuntimeProvidersMock.mockResolvedValue([]);
+    render(<RunFollowupComposer runId="run-1" />);
+    fireEvent.click(await screen.findByRole("button", { name: /show follow-up controls/i }));
+    const selector = screen.getByRole("combobox", { name: /follow-up current model/i });
+    const modelId = "hf.co/yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M";
+    await waitFor(() => expect(selector).toHaveTextContent(modelId));
+    fireEvent.change(selector, { target: { value: `ollama::${modelId}` } });
+    fireEvent.change(screen.getByRole("textbox", { name: /message this run/i }), {
+      target: { value: "Review this architecture." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+    await waitFor(() => expect(createWorkflowRunMock).toHaveBeenCalledTimes(1));
+    expect(createWorkflowRunMock.mock.calls[0]?.[0]?.model).toBe(`ollama/${modelId}`);
+  });
+
+  it("fails closed when there is no installed local chat model and no hosted provider", async () => {
+    getRuntimeProvidersMock.mockResolvedValue({ providers: [] });
+    getUserRuntimeProvidersMock.mockResolvedValue([]);
+    getModelsOverviewMock.mockResolvedValue({
+      providers: { ollama: { available: true, installed_models: [{ id: "nomic-embed-text:latest", capabilities: ["embedding"] }] } },
+      external: [], catalog: [],
+    });
+    render(<RunFollowupComposer runId="run-1" />);
+    fireEvent.click(screen.getByRole("button", { name: /show follow-up controls/i }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/No available chat models/i));
+    expect(screen.getByRole("combobox", { name: /follow-up current model/i })).toHaveTextContent("No available chat models");
+    expect(screen.getByRole("button", { name: /^send$/i })).toBeDisabled();
+    expect(createWorkflowRunMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when Ollama is unavailable even if its registry default exists", async () => {
+    getRuntimeProvidersMock.mockResolvedValue({ providers: [
+      { provider: "ollama", configured: true, model: "llama3.2:3b" },
+    ] });
+    getUserRuntimeProvidersMock.mockResolvedValue([]);
+    getModelsOverviewMock.mockResolvedValue({
+      providers: { ollama: { available: false, installed_models: [] } },
+      external: [], catalog: [],
+    });
+    render(<RunFollowupComposer runId="run-1" />);
+    fireEvent.click(screen.getByRole("button", { name: /show follow-up controls/i }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/No available chat models/i));
+    expect(screen.getByRole("button", { name: /^send$/i })).toBeDisabled();
+    expect(createWorkflowRunMock).not.toHaveBeenCalled();
+  });
+
+  it("offers a retry when Ollama inventory discovery fails independently of provider calls", async () => {
+    getRuntimeProvidersMock.mockResolvedValue({ providers: [] });
+    getUserRuntimeProvidersMock.mockResolvedValue([]);
+    getModelsOverviewMock.mockRejectedValueOnce(new Error("backend unavailable"));
+    render(<RunFollowupComposer runId="run-1" />);
+    fireEvent.click(screen.getByRole("button", { name: /show follow-up controls/i }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/Local model discovery failed/i));
+    expect(screen.getByRole("button", { name: /^send$/i })).toBeDisabled();
+    getModelsOverviewMock.mockResolvedValue({
+      providers: {
+        ollama: { available: true, installed_models: [
+          { id: "gpt-oss:20b", capabilities: ["completion"] },
+        ] },
+      },
+      external: [],
+      catalog: [],
+    });
+    fireEvent.click(screen.getByRole("button", { name: /retry model discovery/i }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: /follow-up current model/i }))
+      .toHaveValue("ollama::gpt-oss:20b"));
+    expect(screen.getByRole("button", { name: /^send$/i })).toBeEnabled();
+  });
+
+  it("excludes arbitrary embedding-only models even with unfamiliar names", async () => {
+    getRuntimeProvidersMock.mockResolvedValue({ providers: [] });
+    getUserRuntimeProvidersMock.mockResolvedValue([]);
+    getModelsOverviewMock.mockResolvedValue({
+      providers: { ollama: { available: true, installed_models: [
+        { id: "hf.co/custom/my-embedding-model:latest", capabilities: ["embedding"] },
+        { id: "gpt-oss:20b", capabilities: ["completion"] },
+      ] } }, external: [], catalog: [],
+    });
+    render(<RunFollowupComposer runId="run-1" />);
+    fireEvent.click(screen.getByRole("button", { name: /show follow-up controls/i }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: /follow-up current model/i }))
+      .toHaveValue("ollama::gpt-oss:20b"));
+    expect(screen.getByRole("combobox", { name: /follow-up current model/i }))
+      .not.toHaveTextContent("my-embedding-model");
+  });
+
   it("starts as a single-line composer and can collapse after expanding", async () => {
     render(<RunFollowupComposer runId="run-1" recentContext="User: Need a follow-up" />);
 
@@ -160,6 +292,9 @@ describe("RunFollowupComposer", () => {
 
     expect(createWorkflowRunMock).not.toHaveBeenCalled();
 
+    // New admission contract: keyboard shortcut cannot launch a task before
+    // asynchronous provider/model discovery has yielded a valid selection.
+    await waitFor(() => expect(screen.getByRole("button", { name: /^send$/i })).toBeEnabled());
     fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
 
     await waitFor(() => expect(createWorkflowRunMock).toHaveBeenCalledTimes(1));
