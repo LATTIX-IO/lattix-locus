@@ -158,3 +158,37 @@ def test_plan_mode_forces_chat_not_code():
     )
     assert out["mode"] == "live"  # chat path, not the SweAgent code path
     assert "patch" not in out  # no code delegation happened
+
+
+def test_legacy_user_model_migrates_to_explicit_orchestrator_choice() -> None:
+    settings = main._normalize_user_settings({"preferred_model": "hosted/astra"})
+    assert settings["orchestrator_model"] == "hosted/astra"
+    assert settings["preferred_model"] == "hosted/astra"
+    assert settings["worker_routing"] == "auto"
+
+
+def test_orchestrator_choice_is_independent_of_worker_policy() -> None:
+    settings = main._normalize_user_settings({
+        "preferred_model": "openai/old-default",
+        "orchestrator_model": "ollama/sol",
+        "worker_routing": "manual",
+    })
+    assert settings["orchestrator_model"] == "ollama/sol"
+    assert settings["preferred_model"] == "ollama/sol"
+    assert settings["worker_routing"] == "manual"
+    auto = main._normalize_user_settings({
+        "preferred_model": "openai/stale",
+        "orchestrator_model": "auto",
+        "worker_routing": "auto",
+    })
+    assert auto["orchestrator_model"] == "auto"
+    assert auto["preferred_model"] == ""
+
+
+def test_invalid_orchestrator_choice_does_not_authorize_a_new_provider() -> None:
+    settings = main._normalize_user_settings({
+        "orchestrator_model": "anthropic/claude model with spaces",
+        "worker_routing": "untrusted",
+    })
+    assert settings["orchestrator_model"] == ""
+    assert settings["worker_routing"] == "auto"
