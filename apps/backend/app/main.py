@@ -23874,6 +23874,31 @@ def send_run_message(
     if blocked_terms:
         raise HTTPException(status_code=400, detail="Message blocked by keyword policy")
 
+    # A saved explicit orchestrator remains pinned to this conversation. The
+    # interim Auto choice must not accidentally become an OpenAI model string.
+    requested_primary = str(
+        payload.get("orchestrator_model") or payload.get("model") or ""
+    ).strip()
+    prior = store.run_details.get(run_id)
+    bound_primary = (
+        str((prior.get("orchestrator_binding") or {}).get("model") or "")
+        if isinstance(prior, dict)
+        and isinstance(prior.get("orchestrator_binding"), dict)
+        else ""
+    )
+    tentative_primary = (
+        requested_primary or bound_primary
+        or _user_settings_for(actor)["orchestrator_model"]
+    )
+    if tentative_primary == "auto":
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "code": "orchestrator_auto_unavailable",
+                "message": "Auto orchestrator admission is not available; select an explicit model.",
+            },
+        )
+
     events = store.run_events.setdefault(run_id, [])
     events.append(
         WorkflowRunEvent(
@@ -23992,17 +24017,28 @@ def send_run_message(
                 + plan_directive
             )
             followup_work_id = f"work-{uuid4()}"
+            reply_model, reply_model_source = _resolve_primary_orchestrator_binding(
+                actor=actor, payload=payload,
+                agent_definition=captured_agent, run_id=run_id,
+            )
             response_text, model_meta = _run_agent_iterations(
                 run_id,
                 captured_agent,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                model=composer_opts["model"] or _resolve_agent_chat_model(captured_agent),
+                model=reply_model,
                 work_id=followup_work_id,
                 max_iterations=_resolve_agent_max_iterations(captured_agent, payload),
                 temperature=0.3,
                 reasoning_effort=composer_opts["reasoning_effort"],
             )
+            if str(model_meta.get("mode") or "") == "live":
+                details = store.run_details.setdefault(run_id, {})
+                details["orchestrator_binding"] = {
+                    "model": reply_model,
+                    "source": reply_model_source,
+                    "selection_role": "orchestrator",
+                }
             display = (
                 _redact_sensitive_text(response_text)
                 if store.platform_settings.mask_secrets_in_events
