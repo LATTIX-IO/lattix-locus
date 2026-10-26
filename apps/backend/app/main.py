@@ -20532,7 +20532,7 @@ def _normalize_user_settings(prefs: dict[str, Any]) -> dict[str, Any]:
     # Canonicalize that existing selection rather than silently picking an
     # unrelated provider. New orchestrator_model fields must be qualified.
     if orchestrator and orchestrator != "auto" and not re.fullmatch(
-        r"[a-z][a-z0-9_-]{0,31}/\\S+", orchestrator, flags=re.ASCII
+        r"[a-z][a-z0-9_-]{0,31}/\S+", orchestrator, flags=re.ASCII
     ):
         orchestrator = (
             f"openai/{orchestrator}"
