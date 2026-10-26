@@ -9,6 +9,7 @@ import pytest
 
 from locus_runtime.model_client import ModelCall, ModelCallDenied, ModelUsage
 from locus_runtime.pod_model_call_gate import PodModelCallGate
+from locus_runtime.pod_reservations import AdmissionDenied
 from locus_runtime.task_model_binding import PinnedWorkerModel
 from tests.unit.test_task_scheduler import build, start
 
@@ -101,6 +102,11 @@ def test_real_child_gateway_denial_prevents_model_inference(tmp_path):
 def test_expired_or_closed_child_lease_never_authorizes_model_call(tmp_path):
     lease, selected, call = admitted_child(tmp_path)
     gate = PodModelCallGate(lease, binding=selected, egress_host="127.0.0.1")
-    lease._ledger.revoke_parent("work-session-001")
-    with pytest.raises(Exception):
+    with lease._ledger._connect() as db:
+        lease._ledger._tx(db)
+        db.execute(
+            "UPDATE pod_attempt SET state = 'revoked' WHERE id = ?",
+            (lease.reservation_id,),
+        )
+    with pytest.raises(AdmissionDenied, match="revoked"):
         gate.authorize(call)
