@@ -1,6 +1,6 @@
 [package]
 name = "lattix-locus-desktop"
-version = "0.10.0"
+version = "0.11.0"
 description = "Lattix Locus desktop shell"
 edition = "2021"
 rust-version = "1.77.2"
