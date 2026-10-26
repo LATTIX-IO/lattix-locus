@@ -121,7 +121,7 @@ export function ComposerControls({ onChange, onModelReadinessChange }: Props) {
         // only the live installed-model inventory grants selection.
         if (p.id === "ollama") continue;
         if (p.configured && p.default_model) {
-          const value = p.id === "openai" ? p.default_model : `${p.id}/${p.default_model}`;
+          const value = `${p.id}/${p.default_model}`;
           if (!opts.some((item) => item.value === value)) {
             opts.push({ value, label: `${p.default_model} · ${p.label}`, reasoning: isReasoningModel(value) });
           }
