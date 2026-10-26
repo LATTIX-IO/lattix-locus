@@ -12303,9 +12303,9 @@ class InMemoryStore:
         # id -> {id, name, created_at, run_ids: [str]}.
         self.inbox_groups: dict[str, dict[str, Any]] = {}
 
-        # Per-user composer/chat preferences, keyed by actor/principal id.
-        # actor -> {default_working_folder, preferred_model,
-        #           preferred_reasoning_effort, default_mode}.
+        # Per-user defaults: orchestrator_model binds the primary inference;
+        # worker_routing independently controls subordinate task placement.
+        # preferred_model remains a backwards-compatible orchestrator alias.
         self.user_settings: dict[str, dict[str, Any]] = {}
 
         # Approved out-of-bounds folder grants, keyed by resolved repo_path.
@@ -20506,9 +20506,25 @@ def _normalize_user_settings(prefs: dict[str, Any]) -> dict[str, Any]:
     effort = str(src.get("preferred_reasoning_effort") or "").strip().lower()
     if effort not in _REASONING_EFFORTS:
         effort = ""
+    # Legacy preferred_model is the primary orchestrator selection, NOT a
+    # blanket instruction for every child/worker model. An explicit new field
+    # wins over the legacy alias, including an intentional empty selection.
+    value = (
+        src.get("orchestrator_model")
+        if "orchestrator_model" in src
+        else src.get("preferred_model")
+    )
+    orchestrator = str(value or "").strip()
+    if len(orchestrator) > 256 or any(ch.isspace() for ch in orchestrator):
+        orchestrator = ""
+    worker_routing = str(src.get("worker_routing") or "auto").strip().lower()
+    if worker_routing not in {"auto", "manual"}:
+        worker_routing = "auto"
     return {
         "default_working_folder": str(src.get("default_working_folder") or "").strip(),
-        "preferred_model": str(src.get("preferred_model") or "").strip(),
+        "preferred_model": orchestrator if orchestrator != "auto" else "",
+        "orchestrator_model": orchestrator,
+        "worker_routing": worker_routing,
         "preferred_reasoning_effort": effort,
         "default_mode": mode,
     }
