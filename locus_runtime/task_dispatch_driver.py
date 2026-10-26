@@ -215,9 +215,20 @@ class GatewayTaskDriver:
             raise AdmissionDenied("trusted engine pins do not cover exact DAG nodes")
         registered = {binding.engine_id: binding for binding in self.engines}
         if self.model_routes is not None:
-            if (self.model_routes.plan_digest != plan.digest
-                    or set(self._node_models) != set(node_by_id)):
+            routes = self.model_routes
+            if (
+                routes.plan_digest != plan.digest
+                or set(self._node_models) != set(node_by_id)
+                or len(self._node_models) != len(routes.workers)
+            ):
                 raise AdmissionDenied("model routes do not cover this exact task revision")
+            if (
+                not routes.catalog_snapshot_id
+                or not routes.policy_version
+                or routes.orchestrator.authorized
+                or any(worker.authorized for worker in routes.workers)
+            ):
+                raise AdmissionDenied("model route contains untrusted or privileged selection")
         for node_id, engine_id in assigned.items():
             binding = registered.get(engine_id)
             if self.model_routes is not None:
