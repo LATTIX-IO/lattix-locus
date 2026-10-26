@@ -23915,6 +23915,15 @@ def send_run_message(
     if blocked_terms:
         raise HTTPException(status_code=400, detail="Message blocked by keyword policy")
 
+    # Route and authorize Auto before appending the message or mutating the
+    # run. An unavailable/denied runtime must not leave a phantom Running turn.
+    composer_opts = _composer_options(payload)
+    auto_followup_plan: auto_model_routing.AutoLocalPlan | None = None
+    if composer_opts["model"] == "auto":
+        auto_followup_plan = _resolve_auto_local_chat_plan(
+            request=request, actor=actor, payload=payload, prompt=message
+        )
+
     events = store.run_events.setdefault(run_id, [])
     events.append(
         WorkflowRunEvent(
@@ -23973,7 +23982,34 @@ def send_run_message(
             recent.append(f"{speaker}: {meta.get('full_text') or event.summary}")
     transcript = "\n".join(recent[-10:])
     captured_agent = agent_def
-    composer_opts = _composer_options(payload)
+
+    if auto_followup_plan is not None:
+        store.run_events.setdefault(run_id, []).append(
+            WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="step_started",
+                title="Auto model selected",
+                summary=(
+                    f"{auto_followup_plan.selected} selected from installed local models; "
+                    "hosted egress not enabled."
+                ),
+                createdAt=_now_iso(),
+                metadata={
+                    "selected_model": auto_followup_plan.selected,
+                    "candidate_count": len(auto_followup_plan.candidates),
+                    "task_class": auto_followup_plan.task_class,
+                    "selection_scope": "local-only",
+                },
+            )
+        )
+        details = store.run_details.setdefault(run_id, {})
+        details["model_selection"] = {
+            "mode": "auto",
+            "scope": "local-only",
+            "selected": auto_followup_plan.selected,
+            "candidates": list(auto_followup_plan.candidates),
+            "task_class": auto_followup_plan.task_class,
+        }
 
     # Remember the working folder for the session so later turns inherit it.
     if (composer_opts.get("workspace") or {}).get("repo_path"):
@@ -24038,11 +24074,23 @@ def send_run_message(
                 captured_agent,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                model=composer_opts["model"] or _resolve_agent_chat_model(captured_agent),
+                model=(
+                    auto_followup_plan.selected
+                    if auto_followup_plan is not None
+                    else composer_opts["model"] or _resolve_agent_chat_model(captured_agent)
+                ),
                 work_id=followup_work_id,
                 max_iterations=_resolve_agent_max_iterations(captured_agent, payload),
                 temperature=0.3,
                 reasoning_effort=composer_opts["reasoning_effort"],
+                auto_local_chain=(
+                    [
+                        model_calls.ModelTier("ollama", model.removeprefix("ollama/"))
+                        for model in auto_followup_plan.candidates
+                    ]
+                    if auto_followup_plan is not None
+                    else None
+                ),
             )
             display = (
                 _redact_sensitive_text(response_text)
