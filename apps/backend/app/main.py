@@ -3800,6 +3800,17 @@ def _generate_workflow_run_title(
         return _heuristic_workflow_run_title(prompt_text, run_kind), "system"
 
     fallback = _heuristic_workflow_run_title(cleaned_prompt, run_kind)
+    # A user-selected orchestrator must not trigger title-generation inference
+    # through an unrelated stored provider. The deterministic title avoids an
+    # unapproved hosted egress/cost boundary.
+    orchestrator_hint = str(
+        payload.get("orchestrator_model")
+        or payload.get("model")
+        or _user_settings_for(actor).get("orchestrator_model")
+        or ""
+    ).strip()
+    if orchestrator_hint:
+        return fallback, "system"
 
     try:
         system_prompt, _ = _resolve_agent_system_prompt(agent_definition)
@@ -20535,6 +20546,31 @@ def _user_settings_for(actor: str) -> dict[str, Any]:
     return _normalize_user_settings(stored or {})
 
 
+def _resolve_primary_orchestrator_binding(
+    *, actor: str, payload: dict[str, Any],
+    agent_definition: AgentDefinition | None, run_id: str = "",
+) -> tuple[str, str]:
+    """Bind the primary model independently from every specialist worker.
+
+    Explicit per-message choices win; continuation reuses the run's pinned
+    orchestrator; a user preference overrides legacy default-agent behavior.
+    This is a *selection* only, not authorization to call a provider.
+    """
+    opts = _composer_options(payload)
+    requested = str(payload.get("orchestrator_model") or opts["model"] or "").strip()
+    if requested:
+        return requested, "request_override"
+    previous = store.run_details.get(run_id) if run_id else None
+    if isinstance(previous, dict):
+        bound = previous.get("orchestrator_binding")
+        if isinstance(bound, dict) and str(bound.get("model") or "").strip():
+            return str(bound["model"]).strip(), "existing_run"
+    saved = str(_user_settings_for(actor).get("orchestrator_model") or "").strip()
+    if saved:
+        return saved, "user_default"
+    return _resolve_agent_chat_model(agent_definition), "legacy_agent_default"
+
+
 def _composer_options(payload: dict[str, Any]) -> dict[str, Any]:
     """Extract + normalize the per-chat composer selections from a run payload:
     model, reasoning_effort, mode, mcp_server_ids, skill_ids, workspace."""
@@ -22811,7 +22847,20 @@ def create_workflow_run(
         system_prompt, selected_skill_ids=composer_opts["skill_ids"]
     )
 
-    selected_model = composer_opts["model"] or _resolve_agent_chat_model(selected_agent_definition)
+    selected_model, orchestrator_model_source = _resolve_primary_orchestrator_binding(
+        actor=actor, payload=payload,
+        agent_definition=selected_agent_definition, run_id=run_id if existing_run else "",
+    )
+    # Auto orchestrator requires an eligible, policy-admitted server-side
+    # resolver. Until integrated, refuse instead of treating "auto" as OpenAI.
+    if selected_model == "auto":
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "code": "orchestrator_auto_unavailable",
+                "message": "Auto orchestrator admission is not available; select an explicit model.",
+            },
+        )
     request_prompt = _with_architecture_contract(
         model_prompt or "Execute the requested workflow task.",
         enabled=_should_enforce_architecture_contract(
@@ -22934,6 +22983,12 @@ def create_workflow_run(
         "approvals": {"required": False, "pending": False},
         "runtime": {"mode": "live", "state": "queued"},
         "response_text": "",
+        "orchestrator_binding": {
+            "model": selected_model,
+            "source": orchestrator_model_source,
+            "selection_role": "orchestrator",
+        },
+        "worker_routing": _user_settings_for(actor)["worker_routing"],
         "access": access_context,
         "mode": composer_opts["mode"],
         "working_folder": (composer_opts["workspace"] or {}).get("repo_path", ""),
