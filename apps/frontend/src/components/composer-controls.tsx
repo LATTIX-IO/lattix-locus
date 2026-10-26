@@ -115,6 +115,12 @@ export function ComposerControls({ onChange, onModelReadinessChange }: Props) {
           opts.push({ value: `ollama/${id}`, label: `${id} · ollama`, reasoning: isReasoningModel(id) });
         }
       }
+      const localAvailable = opts.some((item) => item.value.startsWith("ollama/"));
+      if (localAvailable) {
+        // Explicit Auto is local-only until a reviewed provider/consent policy
+        // authorizes an outbound hosted call. The backend resolves the model.
+        opts.unshift({ value: "auto", label: "Auto · available local models", reasoning: false });
+      }
       for (const p of ov?.external ?? []) {
         // The generic provider list can report Ollama "configured" even
         // when its default points to an uninstalled model. For local models
@@ -136,8 +142,10 @@ export function ComposerControls({ onChange, onModelReadinessChange }: Props) {
       const preferred = String(settings?.preferred_model || "").trim();
       const matchesPreferred = opts.some((item) => item.value === preferred);
       setMissingPreferredModel(preferred && !matchesPreferred ? preferred : "");
-      // Do not silently replace an unavailable preferred model or provider.
-      setModel(matchesPreferred ? preferred : preferred ? "" : (opts[0]?.value ?? ""));
+      // A missing saved model is never silently replaced. A new user with
+      // installed local models starts in the explicitly displayed Auto-local
+      // route. Hosted models always require intentional model selection.
+      setModel(matchesPreferred ? preferred : preferred ? "" : localAvailable ? "auto" : "");
       setModelDiscovery(ov ? "ready" : "error");
       if (settings?.default_working_folder) setWorkingFolder(settings.default_working_folder);
     })();
@@ -269,7 +277,7 @@ export function ComposerControls({ onChange, onModelReadinessChange }: Props) {
       <div className="relative">
         <button type="button" className={btn} onClick={() => toggle("model")} title="Model (and reasoning effort)" aria-label="Model">
           <Icon d={I.cpu} />
-          <span className="max-w-[110px] truncate">{shortModel(model)}</span>
+          <span className="max-w-[140px] truncate">{model === "auto" ? "Auto · local" : shortModel(model)}</span>
           {reasoningCapable && reasoning ? <span className="text-[10px] text-[var(--fx-muted)]">·{reasoning}</span> : null}
           <Icon d={I.chevron} className="h-3 w-3 opacity-50" />
         </button>
