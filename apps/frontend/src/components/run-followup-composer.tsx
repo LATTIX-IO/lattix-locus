@@ -291,6 +291,7 @@ export function RunFollowupComposer({
   const [selectedModel, setSelectedModel] = useState(initialRuntime?.model ?? "");
   const [controlsOpen, setControlsOpen] = useState(false);
   const [runtimeLoadError, setRuntimeLoadError] = useState<string | null>(null);
+  const [runtimeRetry, setRuntimeRetry] = useState(0);
   const [commandQuery, setCommandQuery] = useState("");
 
   useEffect(() => {
@@ -330,10 +331,11 @@ export function RunFollowupComposer({
       );
       setRuntimeOptions(options);
       setRuntimeLoadError(
-        options.length > 0 ? null :
-        overview === null && userProviders.status === "rejected" && runtimeProviders.status === "rejected"
-          ? "Model discovery failed. Check the local backend connection."
-          : "No available chat models. Start Ollama and install a chat model, or configure a hosted provider.",
+        overview === null
+          ? "Local model discovery failed. Check the backend and retry to refresh Ollama models."
+          : options.length > 0
+            ? null
+            : "No available chat models. Start Ollama and install a chat model, or configure a hosted provider.",
       );
     }
 
@@ -342,7 +344,7 @@ export function RunFollowupComposer({
     return () => {
       cancelled = true;
     };
-  }, [sameRun]);
+  }, [sameRun, runtimeRetry]);
 
   useEffect(() => {
     if (runtimeOptions.length === 0) {
@@ -831,7 +833,17 @@ export function RunFollowupComposer({
             </label>
             )}
 
-            {!sameRun && runtimeLoadError ? <p className="text-[11px] text-[var(--fx-danger)]">{runtimeLoadError}</p> : null}
+            {!sameRun && runtimeLoadError ? (
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p role="status" className="text-[11px] text-[var(--fx-danger)]">{runtimeLoadError}</p>
+                <button
+                  type="button"
+                  onClick={() => setRuntimeRetry((value) => value + 1)}
+                  aria-label="Retry model discovery"
+                  className="fx-btn-secondary px-2 py-1 text-[11px]"
+                >Retry discovery</button>
+              </div>
+            ) : null}
 
             <div className="space-y-2">
               <p className="text-[11px] font-medium tracking-[0.04em] text-[var(--fx-muted)]">Command Insert</p>
