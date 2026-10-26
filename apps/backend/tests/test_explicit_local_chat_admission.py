@@ -199,3 +199,54 @@ def test_disjoint_tenant_model_policies_fail_closed(
     assert response.status_code == 403, response.text
     assert response.json()["detail"]["code"] == "runtime_policy_conflict"
     assert set(store.runs) == before
+
+
+def test_same_run_explicit_local_followup_keeps_local_binding(
+    monkeypatch: pytest.MonkeyPatch, local_ollama: None
+) -> None:
+    used: list[str] = []
+
+    def reject_hosted(**_kwargs: Any) -> None:
+        raise AssertionError("Preferred hosted runtime must not be selected")
+
+    def local_iteration(*_args: Any, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+        used.append(str(kwargs["model"]))
+        return "Local only", {"mode": "live", "provider": "ollama", "model": MODEL}
+
+    monkeypatch.setattr(main_module, "_resolve_request_chat_runtime", reject_hosted)
+    monkeypatch.setattr(main_module, "_run_agent_iterations", local_iteration)
+    created = client.post(
+        "/workflow-runs",
+        json={"session_kind": "chat", "prompt": "Initial.", "model": f"ollama/{MODEL}"},
+        headers=AUTH_HEADERS,
+    )
+    assert created.status_code == 200, created.text
+    run_id = created.json()["id"]
+    try:
+        reply = client.post(
+            f"/workflow-runs/{run_id}/messages",
+            json={"message": "Continue locally.", "model": f"ollama/{MODEL}"},
+            headers=AUTH_HEADERS,
+        )
+        assert reply.status_code == 200, reply.text
+        assert used == [f"ollama/{MODEL}", f"ollama/{MODEL}"]
+    finally:
+        _cleanup_run(run_id)
+
+
+def test_installed_model_without_chat_capability_cannot_be_admitted(
+    monkeypatch: pytest.MonkeyPatch, local_ollama: None
+) -> None:
+    monkeypatch.setattr(
+        main_module.local_models, "model_capabilities",
+        lambda _model, **_kwargs: ["embedding"],
+    )
+    before = set(store.runs)
+    response = client.post(
+        "/workflow-runs",
+        json={"prompt": "Chat with embedding weights", "model": f"ollama/{MODEL}"},
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 412, response.text
+    assert response.json()["detail"]["code"] == "local_model_not_chat_capable"
+    assert set(store.runs) == before
