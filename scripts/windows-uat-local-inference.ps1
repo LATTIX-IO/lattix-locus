@@ -20,8 +20,8 @@ foreach ($url in @($LocusApi, $OllamaApi)) {
     }
 }
 
-$tags = Invoke-RestMethod -Method Get -Uri "$($OllamaApi.TrimEnd('/'))/api/tags" -TimeoutSec 20
-$overview = Invoke-RestMethod -Method Get -Uri "$($LocusApi.TrimEnd('/'))/models/overview" -TimeoutSec 25
+$tags = Invoke-RestMethod -Method Get -Uri "$($OllamaApi.TrimEnd('/'))/api/tags" -TimeoutSec 20 -MaximumRedirection 0
+$overview = Invoke-RestMethod -Method Get -Uri "$($LocusApi.TrimEnd('/'))/models/overview" -TimeoutSec 25 -MaximumRedirection 0
 
 $ollamaModels = @($tags.models | ForEach-Object { [string]$_.name } | Where-Object { $_ })
 $locus = $overview.providers.ollama
@@ -35,6 +35,10 @@ $unseen = @($ollamaModels | Where-Object { $locusModels -notcontains $_ })
 if ($unseen.Count -gt 0) {
     throw "Locus inventory omits $($unseen.Count) installed Ollama model(s): $($unseen -join ', ')"
 }
+$stale = @($locusModels | Where-Object { $ollamaModels -notcontains $_ })
+if ($stale.Count -gt 0) {
+    throw "Locus inventory includes $($stale.Count) model(s) absent from Ollama: $($stale -join ', ')"
+}
 
 $body = @{
     model = $ModelId
@@ -42,7 +46,7 @@ $body = @{
     messages = @(@{ role = 'user'; content = 'Reply with a short confirmation that local inference is available.' })
     options = @{ num_predict = 48; temperature = 0 }
 } | ConvertTo-Json -Depth 8
-$answer = Invoke-RestMethod -Method Post -Uri "$($OllamaApi.TrimEnd('/'))/api/chat" -ContentType 'application/json' -Body $body -TimeoutSec 180
+$answer = Invoke-RestMethod -Method Post -Uri "$($OllamaApi.TrimEnd('/'))/api/chat" -ContentType 'application/json' -Body $body -TimeoutSec 180 -MaximumRedirection 0
 if (-not ([string]$answer.message.content).Trim()) {
     throw 'Ollama completed without a usable response.'
 }
