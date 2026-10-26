@@ -23026,13 +23026,47 @@ def create_workflow_run(
         explicitly_requested = isinstance(payload.get("runtime"), dict) or bool(
             str(payload.get("provider") or "").strip()
         )
+        selected_provider, selected_bare = _resolve_chat_provider(selected_model)
+        qualified = selected_model.lower().startswith(f"{selected_provider}/")
+        if qualified:
+            requested_provider = str(payload.get("provider") or "").strip().lower()
+            runtime_override = (
+                payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+            )
+            runtime_provider = str(runtime_override.get("provider") or "").strip().lower()
+            if any(
+                provider_name and provider_name != selected_provider
+                for provider_name in (requested_provider, runtime_provider)
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Selected orchestrator model conflicts with its provider runtime",
+                )
+            if selected_provider not in {"openai", "anthropic", "gemini", "openai-compatible"}:
+                # Local Ollama, NIM, etc. use their provider-qualified gated
+                # ModelClient. A saved user credential must not replace them.
+                return None
+            # The credential adapter's model allowlist stores *bare* model IDs;
+            # do not send an entire provider-qualified identifier as the ID.
+            runtime_payload = {
+                **payload,
+                "provider": selected_provider,
+                "model": selected_bare,
+                "runtime": {
+                    **runtime_override,
+                    "provider": selected_provider,
+                    "model": selected_bare,
+                },
+            }
+        else:
+            runtime_payload = payload
         try:
             candidate_runtime = _resolve_request_chat_runtime(
                 request=request,
                 actor=actor,
-                payload=payload,
+                payload=runtime_payload,
                 agent_definition=selected_agent_definition,
-                fallback_model=selected_model,
+                fallback_model=selected_bare if qualified else selected_model,
             )
         except HTTPException as exc:
             if exc.status_code == 412:
