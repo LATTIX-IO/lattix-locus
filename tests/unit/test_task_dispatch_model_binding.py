@@ -7,6 +7,7 @@ They exercise existing Gateway child leases and independent DAG verification.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 
 import pytest
 
@@ -148,3 +149,33 @@ def test_model_routes_and_engine_pins_must_match_at_construction(tmp_path) -> No
             ),
             model_routes=chosen,
         )
+
+
+@pytest.mark.parametrize("forge", ["duplicate", "orchestrator", "worker"])
+def test_forged_or_privileged_routes_fail_before_worker_claim(tmp_path, forge) -> None:
+    scheduler, ledger, plan, parent = build(tmp_path)
+    routes = bound_models(plan)
+    if forge == "duplicate":
+        routes = replace(routes, workers=routes.workers + (routes.workers[0],))
+    elif forge == "orchestrator":
+        routes = replace(
+            routes,
+            orchestrator=replace(routes.orchestrator, authorized=True),
+        )
+    else:
+        routes = replace(
+            routes, workers=(replace(routes.workers[0], authorized=True),) + routes.workers[1:],
+        )
+    subject = GatewayTaskDriver(
+        scheduler,
+        engines=(
+            EngineBinding("engine/sol", frozenset({"list_issues"}), ModelBoundWorker()),
+            EngineBinding("engine/terra", frozenset({"list_issues"}), ModelBoundWorker()),
+        ),
+        verifier=IndependentVerifier(),
+        model_routes=routes,
+    )
+    with pytest.raises(AdmissionDenied):
+        subject.run_wave(plan, parent)
+    assert ledger.snapshot(parent.caller.run_id).held.actions == 0
+    assert scheduler.ready(plan, parent) == ("research", "triage")
