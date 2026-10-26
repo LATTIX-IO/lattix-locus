@@ -19,7 +19,7 @@ Locus owns the task, context, memory and policy. **Engines** do the thinking. Th
 ## 2. Local inference
 
 - **Runtimes:** Ollama (default, already integrated), any OpenAI-compatible local server (llama.cpp `llama-server`, LM Studio, vLLM on a GPU box on the LAN). Detected at first run and in Library → Engines.
-- **Catalog:** a curated, provenance-filtered list (P28): for example gpt-oss, Llama, Gemma, Mistral, Phi and Granite families. Qwen, DeepSeek, Yi, GLM and Kimi families are excluded. The catalog records license, size, context window, tool-calling quality and measured speed on this machine.
+- **Catalog and eligibility:** the curated download catalog is provenance-filtered (P28); live discovery independently lists all installed models, including custom `hf.co/...` identifiers. *Discovered* does not mean *admitted*: hosted P28-listed lineages remain denied, while a local model of a listed lineage requires a passing digest-bound provenance attestation under D-29. The eligible catalog also records license, actual capabilities, size, context window, tool-calling quality and measured speed on this machine.
 - **Roles:** classification fallback, summarization, extraction, embeddings, private-area drafting, offline operation. Larger local models handle T3 work in areas that forbid hosted engines.
 - **Note on OpenCode:** OpenCode is an open-source coding-agent harness, not an inference runtime. It is supported as a vendor-agent-style engine running on API keys or local models.
 
@@ -30,7 +30,7 @@ Locus owns the task, context, memory and policy. **Engines** do the thinking. Th
 ### Why
 
 - **Anthropic:** since the February 2026 terms update, Claude Free/Pro/Max OAuth tokens may not be used in third-party tools, and server-side checks reject non-Claude-Code clients. Since April 2026, subscriptions don't cover third-party agent usage, and since June 2026 subscribers get metered Agent SDK credits for use outside Claude Code. **Open question O-01:** whether launching the official `claude` CLI headless from Locus draws on the plan, on Agent SDK credits, or requires an API key. Verify against current terms before H1 ships; the adapter supports all three billing modes and shows which is in use.
-- **OpenAI:** Codex CLI supports ChatGPT sign-in and API-key sign-in. ChatGPT sign-in is interactive by design and not meant for headless CI, so Locus relies on the user's own interactive login on their own machine and falls back to an API key for unattended runs if the plan path is disallowed.
+- **OpenAI:** Codex CLI supports ChatGPT-account and API-key sign-in through its official client. OpenAI additionally documents a consent-based *Sign in with ChatGPT* path for eligible locally running open-source tools, including a Codex app-server integration. This is **not** blanket permission for every Locus distribution, tenant, subscription or unattended workflow: eligibility, deployment/monetization restrictions and the exact OAuth permission must be verified before enabling. Under D-04 Locus does not extract or reuse the Codex CLI's own tokens; an SIWC adapter would be a separately reviewed, user-authorized provider with managed credentials, explicit billing provenance, and its own security decision. See [official SIWC guide](https://developers.openai.com/siwc/token-sharing-open-source), [Codex app-server](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server) and [preview restrictions](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations).
 - **Microsoft 365 Copilot** is not a general model engine. See §4.
 
 ### How an agent engine runs
@@ -137,3 +137,87 @@ The initial executable task graph admission contract is `locus_runtime/task_grap
 The existing **D-11 local Laya default remains active**. The October 5 preference for **Clef on Cloudflare Workers AI** is recorded in D-36 as a **conditional proposal, not an allowed provider**: Clef is Qwen-derived, and hosted Qwen-lineage inference is explicitly denied by `SECURITY.md`, P28/D-29 and `provenance_denial()` in `locus_runtime/model_client.py`. A US-hosted endpoint does not remove the lineage restriction. Do not implement Clef as a fallback, issue tokens, widen network egress or disable the provenance gate from this documentation decision. The principal must separately authorize a scoped security exception with a protected code/policy change, negative gateway/model-client tests, per-area consent, egress audits and rollback before considering Clef the primary judge.
 
 The `DecisionModel` adapter continues to use the typed `/v1/systemone` protocol. Calibrated Laya can deny/escalate only; absent/uncalibrated offline judging pauses for principal review, never a synthetic permit. Any permitted hosted judge must independently satisfy the existing area policy and credential, redaction and metering controls. See [third-party assessment §3.3](../third-party-assessment.md#33-judge-and-decision-tier) and [D-36](20-roadmap-and-decisions.md).
+
+
+## 11. Adaptive model selection contract (LOCUS-479; proposed)
+
+**Status:** implementation target, not a claim that the v0.10.7 chat path implements it. The backend is the authoritative router; frontend selectors display a server-approved capability snapshot and request a route, but may not independently authorize a model call. The Task Orchestrator owns decomposition and specialist assignment (D-32/D-33); this router decides *which permitted model/engine serves each admitted specialist task*.
+
+### 11.1 Authoritative live inventory
+
+Merge sources into one normalized snapshot, with provider-typed entries and explicit freshness:
+
+| Source | Discovery | Availability and limits |
+|---|---|---|
+| Ollama local | \`/api/tags\`, then bounded \`/api/show\` only when capability metadata is needed; \`/api/ps\` is optional | Installed exact ID, capabilities, digest, context, memory/VRAM fit, transport health. Never pull a model during discovery |
+| Hosted API | User/platform provider configuration, supported model catalog and probe metadata | Key present is *configured*, not *authorized, in quota, or healthy*. Track provider limits, cost and recent failures separately |
+| Codex/Claude Code/OpenCode | Supported official CLI presence, version, documented authentication/readiness interface | Vendor-agent engine, **not** an API-key-backed chat model. Do not read CLI token files or synthesize subscription access |
+| Other local compatible servers | Explicit registered endpoint and bounded capability probe | Treat a LAN endpoint as network egress, not equivalent to loopback. No auto-discovery across arbitrary addresses |
+
+Each record carries a stable \`provider_id\`, \`engine_kind\`, exact \`model_id\`, \`context_limit\`, \`capabilities\` (reasoning, tools, JSON/schema, vision, modalities), \`health\`, \`auth_state\`, \`quota_state\`, \`price_version\`, \`locality\`, \`provenance_state\`, and \`observed_at\`. Report unknown information as **unknown**, not as a positive capability or zero cost. Cache briefly with bounded probes and invalidate on provider settings changes, explicit refresh, 401/403/429, network failure, model deletion, or attestation change.
+
+Present three different concepts in every selector: **installed/discovered**, **eligible for this run**, and **selected/active**. An installed but provenance-denied, out-of-budget, out-of-context or unhealthy model remains visible with its reason but cannot be admitted. An embedding-only model must not be selectable for chat; unknown custom families require actual capability negotiation or a conservative explicit operator declaration.
+
+### 11.2 Eligibility before ranking
+
+For each task/step, construct a server-side requirement vector: task category, expected reasoning depth, modality, tool and structured-output requirements, estimated input/output tokens, data classification/taint, latency objective, remaining run budget, hardware fit, explicit agent pin, and requested privacy/offline constraints.
+
+Hard-filter candidates in this order:
+
+1. Explicit provider/model pin semantics; supported engine and capability; installed or authenticated, currently runnable, and not in a quota/circuit-breaker cooldown.
+2. Data-ceiling, area/tenant policy, P28/D-29 provenance, network egress, provider allowlists, and valid Gateway authorization *for each candidate*. A model's own selection must never confer tool or egress authority.
+3. Context/output capacity (with tool and safety margin), resource/concurrency capacity, and budget admission (tokens, spend, wall time, retries). Unknown hosted price is not interpreted as free.
+4. Routing consent scope (11.3), including whether changing from local to hosted, API key to subscription, or one vendor to another is approved.
+
+If the resulting set is empty, return a typed \`no_eligible_engine\` decision and preserve the queued user message; do not substitute OpenAI or another provider, fabricate output, or start an unauthorized call.
+
+### 11.3 Ranking and route explanation
+
+After hard gates, use deterministic, inspectable ranking over **measured** suitability and availability: verified task-specific success rate, model/tool capability, reasoning/context adequacy, estimated latency, monetary and hardware cost, resource contention, and route reliability. Static name-based assumptions (e.g. "larger model is always better") are not sufficient evidence. Until enough benchmark data exist, use conservative labeled heuristics and produce a reason with confidence/unknown fields, not false precision.
+
+Use a route plan rather than one global model string: \`task_id\`, \`requirements_version\`, \`policy_version\`, \`catalog_snapshot_id\`, ordered \`eligible_candidates\`, \`chosen_candidate\`, \`reason_codes\`, \`cost_ceiling\`, \`fallback_scope\`, and \`approval_reference\`. Pin the chosen engine for an execution attempt; re-evaluate on a meaningful runtime change or a new step, not arbitrarily mid-tool-call. Record revisions and fallback decisions without prompt or credential disclosure.
+
+### 11.4 Permission-aware switching
+
+Routing consent is **subordinate** to existing Zero Trust policy, budget controls, R-class approvals and area data ceilings. It is not a privileged alternative to them.
+
+| Operator routing preference | May switch silently | Requires explicit approval |
+|---|---|---|
+| Ask before rerouting | Nothing beyond a retry of the same approved transport under bounded limits | Changing model, engine, billing source or egress |
+| Auto within approved scope | Eligible same-boundary models within an already approved provider set and cost cap | New external destination, higher data exposure, increased spend ceiling |
+| Trusted auto within approved envelope | Any *pre-authorized* eligible route within grants, data ceiling, time/cost cap and audited provider allowlist | Outside the envelope, high-risk actions, irreversible effects, policy exceptions |
+
+An explicit model pin remains binding unless the operator separately enables fallback for that run/agent. A user may promote a one-use reroute or a narrowly scoped, revocable standing grant; record scope, expiry, cost ceiling and data classification. "Trusted" never disables the Gateway, sandboxes, provenance checks, human approvals, or network controls.
+
+### 11.5 Send, queue and consent UX
+
+The **Send** action should accept and durably queue the operator's message even when the last engine is unavailable, subject to ordinary authentication and message admission. The *execution* remains blocked until an eligible route is authorized. Surface a persistent \`Awaiting engine\` / \`Awaiting reroute approval\` status and a concise notification with current route, reason, proposed eligible alternative, locality, estimated cost, and choices to approve one attempt, change model, keep queued, or cancel. Do not rely on a transient toast as the only record.
+
+When a permitted same-boundary fallback is automatic, show a nonblocking \`Routed to ...\` notice and a link to its audit trace. In strict mode, ask before switching; lack of an acceptable alternative is not permission to make a hosted call. Both same-run messages and follow-up runs must share this server-owned admission and consent behavior.
+
+## 12. Error classification and bounded escalation (LOCUS-479)
+
+| Failure class | Action |
+|---|---|
+| Temporary timeout, 429 rate limit, transient 5xx | Respect documented retry hints and exponential backoff; bounded same-engine retry; move to another already approved candidate if needed |
+| Usage exhausted, account not eligible, invalid login/key | Mark that engine unavailable for its proper scope and cooldown; do not infer all API or plan capacity is exhausted. Choose only another explicitly admitted billing/provider path |
+| Model missing, unsupported tools/modality/context, resource exhaustion | Refresh inventory and requirements; re-plan an eligible candidate. An explicit pin requires consent to change |
+| P28/D-29 provenance denial, Gateway/policy denial, data-ceiling or budget denial | **Fail closed**; never use fallback to evade the denial. Surface policy/approval path rather than rerunning unchanged |
+| Task rubric failed, structured output invalid, verifiable quality below threshold | Retry with repaired context or increased supported reasoning budget, then consider a stronger **eligible** model/agent engine; require independent verification and bound all attempts |
+| Any partial external side effect | Stop autonomous replay until idempotency receipts and current state are reconciled; new model may reason, but cannot blindly repeat the action |
+
+The default escalation ladder is **same eligible model, bounded correction → increased reasoning effort if supported → alternative eligible model/engine → human**. A feedback message such as "think harder" may trigger a new route decision; preserve original task criteria and prior evidence. Do not route by an uncalibrated model's self-reported confidence alone. Use executable tests, schema assertions, citations/source checks, deterministic task-specific rubrics, and a separate permitted verifier where available.
+
+Record each attempt with \`decision_id\`, \`failure_class\`, \`source_engine\`, \`destination_engine\`, \`reasoning_budget\`, \`permission_decision\`, \`verification_result\`, \`tokens\`, \`cost\`, and \`side_effect_checkpoint\`. Enforce per-step retry, total run cost and wall-time ceilings.
+
+## 13. Implementation order and release acceptance (LOCUS-479/480)
+
+1. **P0 — close inventory parity.** Qualify LOCUS-480/PR #147. Ensure all chat surfaces consume the live local inventory, not only provider credentials; exclude non-chat models. Installed Windows owner UAT verifies all seven installed IDs, custom \`hf.co/...\` entries, offline removal and actual local inference. A model denied by provenance stays visible but cannot execute.
+2. **P0 — authoritative route admission.** Create one backend route-preview/admission contract consumed by task kickoff, same-run and follow-up composers; honor \`Auto\` as a server-side decision, never empty string → OpenAI. Route within local installed policy-eligible models without hosted credentials, and show selection provenance. Keep explicit model pins.
+3. **P1 — consent and availability.** Integrate health/quota/cooldown/billing-source tracking, policy-enforced fallback and queued-message reroute approval through existing grant/approval infrastructure. No implicit local→hosted promotion, no unauthorized CLI subscription use.
+4. **P1 — verification and escalation.** Introduce task-specific acceptance rubrics, bounded reasoning escalation and independently verified fallback results; track effectiveness and the full retry budget.
+5. **P2 — vendor-agent parity.** Enable supported and explicitly consented Codex/Claude Code/OpenCode CLI adapters only after separate sandbox/tool mediation and current vendor billing/auth verification. ChatGPT SIWC eligibility is a separate, opt-in architecture decision, not a credential shortcut.
+
+**Minimum regression matrix:** installed-only Ollama; missing/stale configured default; embed-only inventory; custom model ID; P28 listed-lineage without attestation; signed local attestation; missing hosted key; eligible hosted-only; explicit pin; no candidates; plan/API quota and 429; provider outage; context/capability mismatch; unknown price; R-class/high-data-denial; strict confirmation; bounded within-boundary auto switch; failed structured output/quality; partial tool effects; close-and-resume pending approval; trace/cost/secret-redaction; Windows native task, same-run reply and follow-up.
+
+**Ship gate:** no claim of working Auto until a real Windows Locus run chooses an installed admitted model, makes a gated inference call, preserves run context, reports actual provider/model and usage, completes an independently verifiable artifact, and shows an auditable authorized fallback. All relevant policy, backend and frontend tests and protected CI gates must pass; retain an explicit rollback switch for the new router.
