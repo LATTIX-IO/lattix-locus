@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lattix Operational Interface System — component kit</title>
+<!-- Canonical theme: the only token source for this page. Generated from canonical/lattix-tokens.json. -->
+<link rel="stylesheet" href="lattix-theme.css">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:var(--font);font-size:var(--text-body);line-height:1.5;color:var(--fg);background:var(--bg);-webkit-font-smoothing:antialiased}
+button,input,select{font:inherit;color:inherit}
+:focus-visible{outline:var(--focus-width) solid var(--focus);outline-offset:var(--focus-offset)}
+.label{font-size:var(--text-caption);font-weight:500;color:var(--muted)}
+.mono-num,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* Shell */
+.shell{display:grid;grid-template-columns:216px minmax(0,1fr) 320px;grid-template-rows:44px minmax(0,1fr);height:100vh}
+.side{grid-row:1/3;border-right:1px solid var(--border);background:var(--surface);display:flex;flex-direction:column;min-height:0}
+.side-brand{height:44px;display:flex;align-items:center;gap:8px;padding:0 16px;border-bottom:1px solid var(--border)}
+.side-brand img{height:20px;width:auto}
+.logo-dark{display:none}[data-theme="dark"] .logo-light{display:none}[data-theme="dark"] .logo-dark{display:block}
+.side nav{padding:12px 8px;overflow:auto;flex:1}
+.nav-group+.nav-group{margin-top:16px}
+.nav-group .label{padding:0 8px 4px}
+.nav-item{display:flex;align-items:center;gap:8px;width:100%;height:28px;padding:0 8px;border:0;background:none;border-radius:var(--radius);text-align:left;cursor:pointer;font-size:var(--text-body);color:var(--fg-secondary);text-decoration:none}
+.nav-item:hover{background:var(--hover);color:var(--fg)}
+.nav-item[aria-current="page"]{background:var(--selected);color:var(--fg);font-weight:600;box-shadow:inset 2px 0 0 var(--primary-bg)}
+.nav-item .count{margin-left:auto;font-size:var(--text-caption);color:var(--muted)}
+.side-foot{border-top:1px solid var(--border);padding:12px 16px;font-size:var(--text-caption);color:var(--muted)}
+.top{grid-column:2/4;display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--surface);position:relative}
+.crumbs{display:flex;gap:8px;font-size:var(--text-small);color:var(--muted)}
+.crumbs a{color:var(--muted);text-decoration:none}.crumbs a:hover{color:var(--fg);text-decoration:underline}
+.crumbs [aria-current]{color:var(--fg)}
+.top-search{margin-left:auto;display:flex;align-items:center;gap:8px;height:28px;width:280px;padding:0 8px;border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--bg);color:var(--muted);cursor:pointer;font-size:var(--text-small)}
+.top-search:hover{background:var(--hover);color:var(--fg)}
+.kbd{margin-left:auto;font-size:var(--text-caption);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0 4px;color:var(--muted)}
+main{overflow:auto;min-width:0}
+.inspector{border-left:1px solid var(--border);background:var(--elevated);overflow:auto}
+
+/* Page */
+.page-head{display:flex;align-items:flex-end;gap:16px;padding:20px 24px 16px;border-bottom:1px solid var(--border)}
+.page-head h1{font-size:var(--text-h1);font-weight:600;letter-spacing:-.01em;line-height:1.2}
+.page-head p{color:var(--muted);font-size:var(--text-small);margin-top:4px;max-width:72ch}
+.page-head .actions{margin-left:auto;display:flex;gap:8px}
+.section{padding:20px 24px;border-bottom:1px solid var(--border)}
+.section-head{display:flex;align-items:baseline;gap:12px;margin-bottom:12px}
+.section-head h2{font-size:var(--text-h3);font-weight:600}
+.section-head .idx{font-size:var(--text-caption);color:var(--muted);font-family:var(--mono)}
+.section-head p{color:var(--muted);font-size:var(--text-small)}
+.panel{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface)}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:var(--control-height);padding:0 14px;border:1px solid transparent;border-radius:var(--radius);font-size:var(--text-body);font-weight:500;cursor:pointer;white-space:nowrap}
+.btn-sm{height:var(--control-height-sm);padding:0 8px;font-size:var(--text-small)}
+.btn-primary{background:var(--primary-bg);color:var(--primary-fg)}
+.btn-primary:hover,.btn-primary.is-hover{background:var(--primary-bg-hover)}
+.btn-primary:active{background:var(--primary-bg-active)}
+.btn-secondary{background:var(--surface);color:var(--secondary-fg);border-color:var(--secondary-border)}
+.btn-secondary:hover,.btn-secondary.is-hover{background:var(--secondary-bg-hover);border-color:var(--muted)}
+.btn-tertiary{background:transparent;color:var(--tertiary-fg)}
+.btn-tertiary:hover,.btn-tertiary.is-hover{background:var(--tertiary-bg-hover)}
+.btn-destructive{background:var(--destructive-bg);color:var(--destructive-fg)}
+.btn-destructive:hover,.btn-destructive.is-hover{background:var(--destructive-bg-hover)}
+.btn.is-focus{outline:var(--focus-width) solid var(--focus);outline-offset:var(--focus-offset)}
+.btn:disabled{background:var(--disabled-bg);color:var(--disabled-fg);border-color:var(--border);cursor:not-allowed}
+.btn-primary:disabled{border-color:transparent}
+.btn-icon{width:var(--control-height);padding:0}
+.btn-icon.btn-sm{width:var(--control-height-sm)}
+.btn svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.5}
+.matrix{display:grid;grid-template-columns:120px repeat(4,minmax(0,1fr));border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface)}
+.matrix>*{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center}
+.matrix>*:nth-last-child(-n+5){border-bottom:0}
+.matrix .label{padding-top:8px;padding-bottom:8px}
+
+/* Status */
+.status{display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 6px;border-radius:var(--radius-sm);font-size:var(--text-small);font-weight:500;white-space:nowrap}
+.status::before{content:"";width:7px;height:7px;background:currentColor;flex:none}
+/* normal: neutral text, small dot, no fill */
+.s-success{color:var(--success-fg);background:transparent;padding-left:0}
+.s-success::before{background:var(--normal);border-radius:var(--radius-pill)}
+/* P1 critical: tint + leading bar + triangle */
+.s-critical{color:var(--critical-fg);background:var(--critical-bg);font-weight:600;box-shadow:inset 2px 0 0 var(--critical)}
+.s-critical::before{background:var(--critical);clip-path:polygon(50% 0,100% 100%,0 100%);width:8px;height:8px}
+/* P2 warning: tint + filled diamond */
+.s-warning{color:var(--warning-fg);background:var(--warning-bg)}
+.s-warning::before{background:var(--warning);transform:rotate(45deg);width:6px;height:6px}
+/* P3 advisory: neutral, outlined diamond */
+.s-advisory{color:var(--advisory-fg);background:transparent;padding-left:0}
+.s-advisory::before{background:transparent;border:1.5px solid var(--advisory);transform:rotate(45deg);width:6px;height:6px}
+/* not-real: simulated, proposal, shadow mode, draft — violet, outlined square */
+.s-info{color:var(--sim-fg);background:var(--sim-bg)}
+.s-info::before{background:transparent;border:1.5px solid var(--sim)}
+/* unknown / pending: dashed circle */
+.s-neutral{color:var(--neutral-fg);background:transparent;padding-left:0}
+.s-neutral::before{background:transparent;border:1px dashed var(--neutral-fg);border-radius:var(--radius-pill)}
+.status-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:1px;background:var(--border);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
+.status-grid>div{background:var(--surface);padding:12px;display:flex;flex-direction:column;gap:8px}
+.status-grid b{font-size:var(--text-caption);font-weight:600;color:var(--fg)}
+/* operating-mode frame + priority counts */
+.mode-band{position:absolute;left:0;right:0;top:0;height:var(--mode-band);background:repeating-linear-gradient(135deg,var(--sim) 0 10px,var(--sim-bg) 10px 20px)}
+[data-mode="governed"] .mode-band{background:var(--governed);height:4px}
+[data-mode="observe"] .mode-band{background:var(--border-strong)}
+.mode-pill{display:inline-flex;align-items:center;gap:8px;height:28px;padding:0 10px;border-radius:var(--radius);background:var(--sim-bg);color:var(--sim-fg);font-size:var(--text-small);white-space:nowrap}
+.mode-pill i{width:8px;height:8px;border-radius:2px;background:currentColor}
+.mode-pill b{font-weight:600}.mode-pill span{color:var(--fg-secondary)}
+[data-mode="governed"] .mode-pill{background:var(--critical-bg);color:var(--critical-fg)}
+[data-mode="observe"] .mode-pill{background:var(--recess);color:var(--fg)}
+.pri{display:inline-flex;gap:2px;height:28px;align-items:center;font-family:var(--mono);font-size:var(--text-small);font-weight:600;border:0;background:none;cursor:pointer;padding:0 2px;border-radius:var(--radius)}
+.pri:hover{background:var(--hover)}
+.pri .p{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 8px;border-radius:var(--radius-sm)}
+.pri .p1{background:var(--critical-bg);color:var(--critical-fg)}.pri .p1 i{width:8px;height:8px;background:var(--critical);clip-path:polygon(50% 0,100% 100%,0 100%)}
+.pri .p2{background:var(--warning-bg);color:var(--warning-fg)}.pri .p2 i{width:6px;height:6px;background:var(--warning);transform:rotate(45deg)}
+.modes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.mode-card{position:relative;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface);padding:18px 14px 14px;display:flex;flex-direction:column;gap:8px;overflow:hidden}
+.mode-card p{color:var(--muted);font-size:var(--text-small)}
+.status-grid small{color:var(--muted);font-size:var(--text-small)}
+
+/* Form */
+.form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 20px;padding:16px;max-width:760px}
+.field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.field.full{grid-column:1/-1}
+.field label,.field legend{font-size:var(--text-caption);font-weight:500;color:var(--fg-secondary)}
+.field .req{color:var(--critical-fg)}
+.input,.select{height:var(--control-height);padding:0 10px;border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--surface);font-size:var(--text-body);width:100%}
+.input:hover,.select:hover{border-color:var(--muted)}
+.input:focus-visible,.select:focus-visible{outline:var(--focus-width) solid var(--focus);outline-offset:0}
+.input[aria-invalid="true"]{border-color:var(--critical-fg)}
+.hint{font-size:var(--text-small);color:var(--muted)}
+.err{font-size:var(--text-small);color:var(--critical-fg);display:none}
+.field.invalid .err{display:block}
+.radios{display:flex;gap:2px;padding:2px;background:var(--recess);border-radius:var(--radius);width:max-content}
+.radios label{display:flex;align-items:center;height:calc(var(--control-height) - 6px);padding:0 14px;cursor:pointer;font-size:var(--text-body);color:var(--muted);border-radius:var(--radius-sm)}
+
+.radios input{position:absolute;opacity:0}
+.radios label:has(input:checked){background:var(--surface);color:var(--fg);font-weight:600;box-shadow:0 0 0 1px var(--border-strong)}
+.radios label:has(input:focus-visible){outline:var(--focus-width) solid var(--focus);outline-offset:2px}
+.toggle{display:flex;align-items:center;gap:10px;cursor:pointer;font-size:var(--text-body);text-transform:none;letter-spacing:0;color:var(--fg)}
+.toggle input{appearance:none;width:32px;height:18px;border:1px solid var(--border-strong);border-radius:var(--radius-pill);background:var(--surface);position:relative;cursor:pointer;flex:none;transition:background var(--dur-fast)}
+.toggle input::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:var(--radius-pill);background:var(--muted);transition:transform var(--dur-fast) var(--ease)}
+.toggle input:checked{background:var(--primary-bg);border-color:var(--primary-bg)}
+.toggle input:checked::after{transform:translateX(14px);background:var(--primary-fg)}
+.form-actions{grid-column:1/-1;display:flex;gap:8px;padding-top:12px;border-top:1px solid var(--border)}
+
+/* Table */
+.toolbar{display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid var(--border)}
+.toolbar .input,.toolbar .select{height:28px;font-size:var(--text-small)}
+.toolbar .input{width:240px}.toolbar .select{width:170px}
+.bulk{display:none;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--border);background:var(--selected);font-size:var(--text-small)}
+.bulk.on{display:flex}
+table{width:100%;border-collapse:collapse;font-size:var(--text-small)}
+th{position:sticky;top:0;background:var(--surface);text-align:left;font-weight:500;font-size:var(--text-caption);color:var(--muted);height:30px;padding:0 10px;border-bottom:1px solid var(--border);white-space:nowrap}
+th button{border:0;background:none;cursor:pointer;font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit;display:inline-flex;gap:4px;align-items:center}
+th button:hover{color:var(--fg)}
+th[aria-sort="ascending"] button::after{content:"▲";font-size:8px}
+th[aria-sort="descending"] button::after{content:"▼";font-size:8px}
+td{height:var(--row-height);padding:0 10px;border-bottom:1px solid var(--border);white-space:nowrap}
+tbody tr{cursor:pointer}
+tbody tr:hover{background:var(--hover)}
+tbody tr[aria-selected="true"]{background:var(--selected);box-shadow:inset 2px 0 0 var(--primary-bg)}
+tbody tr:focus-visible{outline-offset:-2px}
+td.name{white-space:normal;min-width:200px}
+td.res{white-space:normal;overflow-wrap:anywhere;min-width:120px}
+.inspector .kv{grid-template-columns:96px minmax(0,1fr)}
+td .sub{color:var(--muted)}
+input[type="checkbox"]{accent-color:var(--primary-bg);width:14px;height:14px}
+.empty{padding:24px;text-align:center;color:var(--muted);display:none}
+
+/* Trace */
+.trace{list-style:none}
+.trace li{display:grid;grid-template-columns:28px 1fr;column-gap:12px}
+.trace .rail{display:flex;flex-direction:column;align-items:center}
+.trace .node{width:12px;height:12px;border:1px solid var(--border-strong);background:var(--bg);margin-top:14px;flex:none}
+.trace li.deny .node{background:var(--critical);border-color:var(--critical)}
+.trace li.ok .node{background:var(--fg);border-color:var(--fg)}
+.trace .line{width:1px;flex:1;background:var(--border)}
+.trace li:last-child .line{display:none}
+.trace details{border-bottom:1px solid var(--border)}
+.trace summary{display:flex;align-items:center;gap:12px;padding:10px 8px 10px 0;cursor:pointer;list-style:none}
+.trace summary::-webkit-details-marker{display:none}
+.trace summary:hover .step-title{text-decoration:underline}
+.trace .step-title{font-weight:500}
+.trace .step-meta{color:var(--muted);font-size:var(--text-small);margin-left:auto}
+.trace .chev{width:12px;height:12px;stroke:var(--muted);fill:none;transition:transform var(--dur-fast)}
+.trace details[open] .chev{transform:rotate(90deg)}
+.evidence{margin:0 0 12px;padding:10px 12px;background:var(--recess);border-radius:var(--radius-lg);font-size:var(--text-small)}
+.kv{display:grid;grid-template-columns:140px 1fr;gap:4px 12px}
+.kv dt{color:var(--muted)}
+.kv dd{overflow-wrap:anywhere}
+.decision{display:flex;align-items:center;gap:12px;padding:12px;border-radius:var(--radius-lg);margin-bottom:12px;background:var(--critical-bg);box-shadow:inset 3px 0 0 var(--critical);font-size:var(--text-small)}
+.decision code{font-family:var(--mono);color:var(--fg)}
+
+/* Graph */
+.graph-wrap{display:grid;grid-template-columns:minmax(0,1fr) 200px}
+.graph svg{display:block;width:100%;height:auto}
+.g-boundary{fill:none;stroke:var(--border-strong);stroke-dasharray:4 4}
+.g-boundary-label{fill:var(--muted);font-size:10px}
+.g-edge{stroke:var(--border-strong);stroke-width:1}
+.g-edge.hot{stroke:var(--primary-bg);stroke-width:2}
+.g-edge.fail{stroke:var(--critical);stroke-dasharray:3 3}
+.g-node rect{fill:var(--surface);stroke:var(--border-strong)}
+.g-node text{fill:var(--fg);font-size:11px}
+.g-node .sub{fill:var(--muted);font-size:9px}
+.g-node{cursor:pointer}
+.g-node:hover rect{fill:var(--hover)}
+.g-node.sel rect{stroke:var(--primary-bg);stroke-width:2}
+.g-node:focus{outline:none}.g-node:focus-visible rect{stroke:var(--focus);stroke-width:2;stroke-dasharray:3 2}
+.g-node .h{stroke:none}
+.graph.dim .g-node:not(.rel){opacity:.45}.graph.dim .g-edge:not(.hot){opacity:.45}
+.legend{border-left:1px solid var(--border);padding:12px;display:flex;flex-direction:column;gap:8px;font-size:var(--text-small)}
+.graph-table{display:none}
+.graph-alt .graph-wrap{display:none}.graph-alt .graph-table{display:block}
+
+/* Inspector */
+.insp-head{padding:14px 16px;border-bottom:1px solid var(--border)}
+.insp-head h3{font-size:var(--text-ui);font-weight:600;margin:4px 0 8px;overflow-wrap:anywhere}
+.insp-body{padding:12px 16px;display:flex;flex-direction:column;gap:16px}
+.insp-actions{display:flex;gap:8px;flex-wrap:wrap}
+
+/* Dialog, command, toast */
+dialog{margin:auto;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--elevated);color:var(--fg);width:440px;max-width:calc(100vw - 32px)}
+dialog::backdrop{background:var(--overlay)}
+.dlg-head{padding:14px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:var(--text-ui)}
+.dlg-body{padding:14px 16px;font-size:var(--text-body);display:flex;flex-direction:column;gap:12px}
+.dlg-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--border)}
+#cmd{width:560px;margin-top:12vh}
+#cmd .input{border:0;border-bottom:1px solid var(--border);border-radius:0;height:44px;padding:0 16px}
+#cmd .input:focus-visible{outline:none}
+.cmd-list{list-style:none;max-height:300px;overflow:auto;padding:4px}
+.cmd-list li{display:flex;justify-content:space-between;padding:8px 12px;border-radius:var(--radius);cursor:pointer;font-size:var(--text-body)}
+.cmd-list li[aria-selected="true"]{background:var(--selected)}
+.cmd-list li span{color:var(--muted);font-size:var(--text-small)}
+.toast{position:fixed;right:340px;bottom:16px;display:flex;align-items:center;gap:12px;padding:10px 14px;border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--elevated);font-size:var(--text-small);transform:translateY(8px);opacity:0;pointer-events:none;transition:opacity var(--dur) var(--ease),transform var(--dur) var(--ease)}
+.toast.on{opacity:1;transform:none;pointer-events:auto}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+@media (max-width:1100px){.status-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.modes{grid-template-columns:1fr}.shell{grid-template-columns:200px minmax(0,1fr)}.inspector{display:block;grid-column:2/3;grid-row:3;max-height:42vh;border-top:1px solid var(--border);border-left:0}.shell{grid-template-rows:44px minmax(0,1fr) minmax(220px,auto)}.top{grid-column:2/3}.toast{right:16px}}
+</style>
+</head>
+<body>
+<div class="shell" data-od-id="app-shell">
+  <aside class="side" data-od-id="sidebar" aria-label="Primary">
+    <div class="side-brand">
+      <img class="logo-light" src="logos/Lattix-Logo---Mono-Black.svg" alt="Lattix" width="63" height="20">
+      <img class="logo-dark" src="logos/Lattix-Logo---White.svg" alt="Lattix" width="63" height="20">
+    </div>
+    <nav>
+      <div class="nav-group"><div class="label">Operations</div>
+        <a class="nav-item" href="#s-actions">Overview</a>
+        <a class="nav-item" href="#s-trace">Decision log</a>
+      </div>
+      <div class="nav-group"><div class="label">Policy</div>
+        <a class="nav-item" href="#s-table" aria-current="page">Policies <span class="count mono-num">8</span></a>
+        <a class="nav-item" href="#s-form">Rule authoring</a>
+      </div>
+      <div class="nav-group"><div class="label">Mesh</div>
+        <a class="nav-item" href="#s-graph">Topology</a>
+        <a class="nav-item" href="#s-status">Health states</a>
+      </div>
+      <div class="nav-group"><div class="label">Governance</div>
+        <a class="nav-item" href="#s-trace">Provenance ledger</a>
+        <a class="nav-item" href="#s-trace">AI data control</a>
+      </div>
+    </nav>
+    <div class="side-foot">Lattix Mesh Dashboard<br>Operational Interface System · blended</div>
+  </aside>
+
+  <header class="top" data-od-id="topbar" data-mode="sim">
+    <span class="mode-band" aria-hidden="true"></span>
+    <nav class="crumbs" aria-label="Breadcrumb"><a href="#">Mesh</a><span aria-hidden="true">/</span><a href="#">Design system</a><span aria-hidden="true">/</span><span aria-current="page">Component kit</span></nav>
+    <button class="top-search" id="open-cmd" data-od-id="command-search" aria-haspopup="dialog">
+      <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true" style="stroke:currentColor;fill:none;stroke-width:1.5"><circle cx="7" cy="7" r="5"/><path d="m11 11 4 4"/></svg>
+      Search or run a command<span class="kbd">Ctrl K</span>
+    </button>
+    <button class="pri" data-od-id="priority-counts" aria-label="Alerts: 1 priority 1, 2 priority 2"><span class="p p1"><i aria-hidden="true"></i>1</span><span class="p p2"><i aria-hidden="true"></i>2</span></button>
+    <span class="mode-pill" role="status" data-od-id="mode-frame" title="Operating mode"><i aria-hidden="true"></i><b>Simulation</b><span>No enforcement connection</span></span>
+    <button class="btn btn-secondary btn-sm" id="theme-toggle" data-od-id="theme-toggle" aria-pressed="false">Dark theme</button>
+  </header>
+
+  <main id="main" data-od-id="workspace">
+    <div class="page-head" data-od-id="page-head">
+      <div>
+        <div class="label">Lattix Operational Interface System</div>
+        <h1>Component kit</h1>
+        <p>Blended model: Lattix brand, Kumo-style components, ISA-101 status rules. Every value on this page resolves from lattix-theme.css. Sample data is illustrative.</p>
+      </div>
+    </div>
+
+    <section class="section" id="s-actions" data-od-id="section-actions">
+      <div class="section-head"><span class="idx">01</span><h2>Actions</h2><p>Primary uses the interaction colour — one per decision point. Secondary is the default. Red is reserved for destructive operations.</p></div>
+      <div class="matrix" role="table" aria-label="Button variants by state">
+        <div class="label" role="columnheader">Variant</div><div class="label" role="columnheader">Default</div><div class="label" role="columnheader">Hover</div><div class="label" role="columnheader">Focus</div><div class="label" role="columnheader">Disabled</div>
+        <div class="label">Primary</div><div><button class="btn btn-primary" data-od-id="btn-primary">Enforce policy</button></div><div><button class="btn btn-primary is-hover" tabindex="-1">Enforce policy</button></div><div><button class="btn btn-primary is-focus" tabindex="-1">Enforce policy</button></div><div><button class="btn btn-primary" disabled>Enforce policy</button></div>
+        <div class="label">Secondary</div><div><button class="btn btn-secondary" data-od-id="btn-secondary">Run simulation</button></div><div><button class="btn btn-secondary is-hover" tabindex="-1">Run simulation</button></div><div><button class="btn btn-secondary is-focus" tabindex="-1">Run simulation</button></div><div><button class="btn btn-secondary" disabled>Run simulation</button></div>
+        <div class="label">Tertiary</div><div><button class="btn btn-tertiary" data-od-id="btn-tertiary">View evidence</button></div><div><button class="btn btn-tertiary is-hover" tabindex="-1">View evidence</button></div><div><button class="btn btn-tertiary is-focus" tabindex="-1">View evidence</button></div><div><button class="btn btn-tertiary" disabled>View evidence</button></div>
+        <div class="label">Destructive</div><div><button class="btn btn-destructive" data-od-id="btn-destructive">Revoke key</button></div><div><button class="btn btn-destructive is-hover" tabindex="-1">Revoke key</button></div><div><button class="btn btn-destructive is-focus" tabindex="-1">Revoke key</button></div><div><button class="btn btn-destructive" disabled>Revoke key</button></div>
+        <div class="label">Icon only</div>
+        <div style="gap:4px"><button class="btn btn-secondary btn-icon" aria-label="Refresh" data-od-id="btn-icon"><svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.5M13 2v3h-3"/></svg></button><button class="btn btn-tertiary btn-icon" aria-label="Copy identifier"><svg viewBox="0 0 16 16"><rect x="5" y="5" width="8" height="8"/><path d="M3 11V3h8"/></svg></button></div>
+        <div><button class="btn btn-secondary btn-icon is-hover" tabindex="-1" aria-label="Refresh"><svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.5M13 2v3h-3"/></svg></button></div>
+        <div><button class="btn btn-secondary btn-icon is-focus" tabindex="-1" aria-label="Refresh"><svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.5M13 2v3h-3"/></svg></button></div>
+        <div><button class="btn btn-secondary btn-icon" disabled aria-label="Refresh"><svg viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.5M13 2v3h-3"/></svg></button></div>
+      </div>
+    </section>
+
+    <section class="section" id="s-status" data-od-id="section-status">
+      <div class="section-head"><span class="idx">02</span><h2>Status grammar</h2><p>Normal is quiet. Colour scales with priority. Every state has a shape and a word.</p></div>
+      <div class="status-grid" data-od-id="status-grammar">
+        <div><b>P1 · critical</b><span class="status s-critical">Blocked</span><small>Failed, denied, restricted. Tint, leading bar, triangle.</small></div>
+        <div><b>P2 · warning</b><span class="status s-warning">Degraded</span><small>Attention required. Tint, filled diamond.</small></div>
+        <div><b>P3 · advisory</b><span class="status s-advisory">At risk</span><small>Watch. Neutral, outlined diamond.</small></div>
+        <div><b>Normal</b><span class="status s-success">Enforced</span><small>Healthy, permitted. Neutral text, dot only.</small></div>
+        <div><b>Not real</b><span class="status s-info">Shadow mode</span><small>Simulated, proposal, draft. Violet — never an action.</small></div>
+        <div><b>Unknown</b><span class="status s-neutral">Pending</span><small>No data yet. Dashed circle.</small></div>
+      </div>
+    </section>
+
+    <section class="section" id="s-modes" data-od-id="section-modes">
+      <div class="section-head"><span class="idx">02b</span><h2>Operating modes</h2><p>The mode is a frame on every page: a band on the top edge plus a labelled pill. Never colour-only.</p></div>
+      <div class="modes">
+        <div class="mode-card" data-mode="observe"><span class="mode-band" aria-hidden="true"></span><span class="mode-pill"><i aria-hidden="true"></i><b>Observation</b></span><p>Read-only telemetry. Neutral band.</p></div>
+        <div class="mode-card" data-mode="sim"><span class="mode-band" aria-hidden="true"></span><span class="mode-pill"><i aria-hidden="true"></i><b>Simulation</b></span><p>No enforcement or equipment connection. Hatched violet band.</p></div>
+        <div class="mode-card" data-mode="governed"><span class="mode-band" aria-hidden="true"></span><span class="mode-pill"><i aria-hidden="true"></i><b>Governed execution</b></span><p>Commands reach live systems. Solid red band; entering requires confirmation.</p></div>
+      </div>
+    </section>
+
+    <section class="section" id="s-table" data-od-id="section-policy-table">
+      <div class="section-head"><span class="idx">03</span><h2>Policy table</h2><p>Sort, filter, select. Select a row to inspect it.</p></div>
+      <div class="panel">
+        <div class="toolbar">
+          <label class="sr" for="q">Filter policies</label>
+          <input class="input" id="q" type="search" placeholder="Filter by ID, name, resource" data-od-id="table-filter">
+          <label class="sr" for="fstatus">Status</label>
+          <select class="select" id="fstatus" data-od-id="table-status-filter"><option value="">All statuses</option><option>Enforced</option><option>Shadow mode</option><option>Degraded</option><option>Compile failed</option><option>Draft</option></select>
+          <span class="hint mono-num" id="rowcount" style="margin-left:auto" aria-live="polite"></span>
+        </div>
+        <div class="bulk" id="bulk" data-od-id="bulk-bar"><span id="bulkcount" class="mono-num"></span><button class="btn btn-secondary btn-sm" id="bulk-shadow">Move to shadow mode</button><button class="btn btn-tertiary btn-sm" id="bulk-clear">Clear selection</button></div>
+        <div style="overflow:auto;max-height:340px">
+          <table aria-label="Policies" data-od-id="policy-table">
+            <thead><tr>
+              <th style="width:32px"><input type="checkbox" id="selall" aria-label="Select all visible policies"></th>
+              <th aria-sort="none" data-k="id"><button>ID</button></th>
+              <th aria-sort="none" data-k="name"><button>Policy</button></th>
+              <th aria-sort="none" data-k="effect"><button>Effect</button></th>
+              <th aria-sort="none" data-k="resource"><button>Resource</button></th>
+              <th aria-sort="none" data-k="status"><button>Status</button></th>
+              <th aria-sort="descending" data-k="updated"><button>Updated (UTC)</button></th>
+            </tr></thead>
+            <tbody id="rows"></tbody>
+          </table>
+          <div class="empty" id="empty">No policies match the current filter. <button class="btn btn-tertiary btn-sm" id="reset-filter">Reset filter</button></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="s-trace" data-od-id="section-decision-trace">
+      <div class="section-head"><span class="idx">04</span><h2>Policy decision trace</h2><p>Each step expands to its evidence.</p></div>
+      <div class="decision"><span class="status s-critical">Deny</span><code>agent:analyst-copilot → READ → data-room/cui/contract-7741.pdf</code><span class="hint" style="margin-left:auto">Decision 7f3c·e912 · pdp-01 · 4 ms</span></div>
+      <ol class="trace" id="trace" data-od-id="decision-trace"></ol>
+    </section>
+
+    <section class="section" id="s-graph" data-od-id="section-topology">
+      <div class="section-head"><span class="idx">05</span><h2>Mesh topology</h2><p>Select a node to trace its dependencies.</p>
+        <button class="btn btn-tertiary btn-sm" id="graph-alt" aria-pressed="false" style="margin-left:auto">View as table</button></div>
+      <div class="panel graph" id="graph" data-od-id="topology-graph">
+        <div class="graph-wrap">
+          <svg viewBox="0 0 660 300" role="group" aria-label="Mesh topology. Use Tab to move between nodes; Enter selects. A table alternative is available." id="svg"></svg>
+          <div class="legend">
+            <div class="label">Health</div>
+            <span class="status s-success">Healthy</span><span class="status s-warning">Degraded</span><span class="status s-critical">Unreachable</span><span class="status s-advisory">Stale</span>
+            <div class="label" style="margin-top:8px">Boundary</div>
+            <span class="hint">Dashed frame marks a trust boundary. Dashed red edge marks a failed link.</span>
+          </div>
+        </div>
+        <div class="graph-table"><table aria-label="Mesh nodes"><thead><tr><th>Node</th><th>Role</th><th>Boundary</th><th>Health</th><th>Depends on</th></tr></thead><tbody id="graph-rows"></tbody></table></div>
+      </div>
+    </section>
+
+    <section class="section" id="s-form" data-od-id="section-form">
+      <div class="section-head"><span class="idx">06</span><h2>Rule authoring form</h2><p>Inline validation on submit and on blur.</p></div>
+      <form class="panel form" id="rule-form" novalidate data-od-id="rule-form">
+        <div class="field full"><label for="f-name">Rule name <span class="req" aria-hidden="true">*</span></label>
+          <input class="input" id="f-name" aria-describedby="f-name-err" placeholder="Restrict export of CUI to US persons" required minlength="6">
+          <span class="err" id="f-name-err">Enter at least 6 characters.</span></div>
+        <fieldset class="field" style="border:0"><legend>Effect</legend>
+          <div class="radios"><label><input type="radio" name="effect" value="Permit">Permit</label><label><input type="radio" name="effect" value="Deny" checked>Deny</label></div></fieldset>
+        <div class="field"><label for="f-res">Resource scope</label>
+          <select class="select" id="f-res"><option>data-room/cui/*</option><option>ledger/provenance/*</option><option>ai/context-sources/*</option><option>kms/keys/tenant-a/*</option></select></div>
+        <div class="field"><label for="f-subj">Subject <span class="req" aria-hidden="true">*</span></label>
+          <input class="input" id="f-subj" aria-describedby="f-subj-err f-subj-hint" placeholder="group:contractors-ext" required pattern="^(user|group|agent|service):[a-z0-9-]+$">
+          <span class="hint" id="f-subj-hint">Format: type:identifier</span>
+          <span class="err" id="f-subj-err">Use user:, group:, agent: or service: followed by an identifier.</span></div>
+        <div class="field"><label for="f-ttl">Decision cache TTL (s)</label>
+          <input class="input mono-num" id="f-ttl" type="number" value="30" min="0" max="300" aria-describedby="f-ttl-err">
+          <span class="err" id="f-ttl-err">Enter a value from 0 to 300.</span></div>
+        <div class="field full" style="gap:10px">
+          <label class="toggle"><input type="checkbox" id="f-shadow" role="switch"> Shadow mode — log decisions without enforcing</label>
+          <label class="toggle"><input type="checkbox" id="f-attest" role="switch" checked> Require device attestation</label>
+        </div>
+        <div class="form-actions"><button class="btn btn-primary" type="submit" data-od-id="form-submit">Save rule</button><button class="btn btn-tertiary" type="reset">Discard</button></div>
+      </form>
+    </section>
+  </main>
+
+  <aside class="inspector" id="inspector" aria-label="Inspector" data-od-id="inspector"></aside>
+</div>
+
+<dialog id="confirm" aria-labelledby="confirm-title" data-od-id="dialog-revoke">
+  <div class="dlg-head" id="confirm-title">Revoke policy</div>
+  <div class="dlg-body"><p id="confirm-text"></p><p class="hint">Enforcement stops on all decision points within one sync interval. This action is recorded in the provenance ledger.</p></div>
+  <div class="dlg-foot"><button class="btn btn-tertiary" value="cancel" id="confirm-cancel">Cancel</button><button class="btn btn-destructive" id="confirm-ok">Revoke policy</button></div>
+</dialog>
+<dialog id="cmd" aria-label="Command search" data-od-id="dialog-command">
+  <input class="input" id="cmd-q" placeholder="Type a command or policy ID" aria-controls="cmd-list" autocomplete="off">
+  <ul class="cmd-list" id="cmd-list" role="listbox"></ul>
+</dialog>
+<div class="toast" id="toast" role="status" aria-live="polite" data-od-id="toast"><span id="toast-text"></span><button class="btn btn-tertiary btn-sm" id="toast-close" aria-label="Dismiss">Dismiss</button></div>
+
+<script>
+(function(){
+const $=s=>document.querySelector(s), html=document.documentElement;
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ST={"Enforced":"s-success","Shadow mode":"s-info","Degraded":"s-warning","Compile failed":"s-critical","Draft":"s-neutral","Healthy":"s-success","Unreachable":"s-critical","Permit":"s-success","Deny":"s-critical"};
+const status=t=>`<span class="status ${ST[t]||'s-neutral'}">${esc(t)}</span>`;
+
+/* Theme */
+const tbtn=$('#theme-toggle');
+function syncTheme(){const d=html.dataset.theme==='dark';tbtn.textContent=d?'Light theme':'Dark theme';tbtn.setAttribute('aria-pressed',String(d));}
+tbtn.onclick=()=>{html.dataset.theme=html.dataset.theme==='dark'?'light':'dark';syncTheme();};syncTheme();
+
+/* Toast */
+let tt;function toast(m){$('#toast-text').textContent=m;$('#toast').classList.add('on');clearTimeout(tt);tt=setTimeout(()=>$('#toast').classList.remove('on'),4000);}
+$('#toast-close').onclick=()=>$('#toast').classList.remove('on');
+
+/* Policies */
+const P=[
+ {id:'POL-0142',name:'Restrict export of CUI to US persons',effect:'Deny',resource:'data-room/cui/*',subject:'group:contractors-ext',status:'Enforced',updated:'2026-10-08 14:02',version:'v7',owner:'sec-arch'},
+ {id:'POL-0139',name:'Block retrieval of ITAR material into AI context',effect:'Deny',resource:'ai/context-sources/itar/*',subject:'agent:*',status:'Enforced',updated:'2026-10-07 09:41',version:'v3',owner:'ai-governance'},
+ {id:'POL-0151',name:'Permit provenance read for auditors',effect:'Permit',resource:'ledger/provenance/*',subject:'group:auditors',status:'Shadow mode',updated:'2026-10-08 11:20',version:'v1',owner:'compliance'},
+ {id:'POL-0127',name:'Require attestation for key unwrap',effect:'Deny',resource:'kms/keys/tenant-a/*',subject:'service:*',status:'Degraded',updated:'2026-10-06 22:15',version:'v12',owner:'crypto-ops'},
+ {id:'POL-0148',name:'Partner mesh: deny bulk export',effect:'Deny',resource:'mesh/partner/*',subject:'group:partner-analysts',status:'Compile failed',updated:'2026-10-08 13:55',version:'v2',owner:'sec-arch'},
+ {id:'POL-0118',name:'Permit enclave replication east-west',effect:'Permit',resource:'mesh/enclave-a/*',subject:'service:replicator',status:'Enforced',updated:'2026-09-30 17:04',version:'v5',owner:'platform'},
+ {id:'POL-0153',name:'Redact PII in model output',effect:'Deny',resource:'ai/outputs/*',subject:'agent:analyst-copilot',status:'Draft',updated:'2026-10-08 15:31',version:'v0',owner:'ai-governance'},
+ {id:'POL-0101',name:'Default deny — unclassified resources',effect:'Deny',resource:'*',subject:'*',status:'Enforced',updated:'2026-08-12 08:00',version:'v9',owner:'sec-arch'}];
+let sortK='updated',sortDir=-1,sel=new Set(),inspected='POL-0142';
+function visible(){const q=$('#q').value.trim().toLowerCase(),f=$('#fstatus').value;
+ return P.filter(p=>(!f||p.status===f)&&(!q||[p.id,p.name,p.resource].join(' ').toLowerCase().includes(q))).sort((a,b)=>a[sortK]<b[sortK]?-sortDir:a[sortK]>b[sortK]?sortDir:0);}
+function renderRows(){const v=visible();
+ $('#rows').innerHTML=v.map(p=>`<tr tabindex="0" data-id="${p.id}" aria-selected="${p.id===inspected}"><td><input type="checkbox" aria-label="Select ${p.id}" ${sel.has(p.id)?'checked':''}></td><td class="mono-num">${p.id}</td><td class="name">${esc(p.name)}<div class="sub">${esc(p.subject)}</div></td><td>${esc(p.effect)}</td><td class="res">${esc(p.resource)}</td><td>${status(p.status)}</td><td class="mono-num">${p.updated.slice(5)}</td></tr>`).join('');
+ $('#empty').style.display=v.length?'none':'block';
+ $('#rowcount').textContent=`${v.length} of ${P.length} policies`;
+ $('#bulk').classList.toggle('on',sel.size>0);$('#bulkcount').textContent=`${sel.size} selected`;
+ $('#selall').checked=v.length>0&&v.every(p=>sel.has(p.id));}
+document.querySelectorAll('th[data-k]').forEach(th=>th.querySelector('button').onclick=()=>{const k=th.dataset.k;sortDir=sortK===k?-sortDir:1;sortK=k;
+ document.querySelectorAll('th[data-k]').forEach(t=>t.setAttribute('aria-sort',t.dataset.k===k?(sortDir>0?'ascending':'descending'):'none'));renderRows();});
+$('#q').oninput=renderRows;$('#fstatus').onchange=renderRows;
+$('#reset-filter').onclick=()=>{$('#q').value='';$('#fstatus').value='';renderRows();};
+$('#rows').addEventListener('click',e=>{const tr=e.target.closest('tr');if(!tr)return;const id=tr.dataset.id;
+ if(e.target.type==='checkbox'){e.target.checked?sel.add(id):sel.delete(id);renderRows();return;}
+ inspected=id;renderRows();inspectPolicy(id);});
+$('#rows').addEventListener('keydown',e=>{const tr=e.target.closest('tr');if(!tr)return;
+ if(e.key==='Enter'){inspected=tr.dataset.id;renderRows();inspectPolicy(inspected);$(`tr[data-id="${inspected}"]`).focus();}
+ if(e.key===' '&&e.target===tr){e.preventDefault();const id=tr.dataset.id;sel.has(id)?sel.delete(id):sel.add(id);renderRows();$(`tr[data-id="${id}"]`).focus();}
+ if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();const n=e.key==='ArrowDown'?tr.nextElementSibling:tr.previousElementSibling;n&&n.focus();}});
+$('#selall').onchange=e=>{visible().forEach(p=>e.target.checked?sel.add(p.id):sel.delete(p.id));renderRows();};
+$('#bulk-clear').onclick=()=>{sel.clear();renderRows();};
+$('#bulk-shadow').onclick=()=>{const n=sel.size;P.forEach(p=>{if(sel.has(p.id))p.status='Shadow mode'});sel.clear();renderRows();if(P.find(p=>p.id===inspected))inspectPolicy(inspected);toast(`${n} ${n===1?'policy':'policies'} moved to shadow mode. Change recorded in ledger.`);};
+
+/* Inspector */
+const kv=o=>'<dl class="kv">'+Object.entries(o).map(([k,v])=>`<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')+'</dl>';
+function inspectPolicy(id){const p=P.find(x=>x.id===id);if(!p)return;
+ $('#inspector').innerHTML=`<div class="insp-head"><div class="label">Policy · ${p.id}</div><h3>${esc(p.name)}</h3>${status(p.status)}</div>
+ <div class="insp-body">
+  <div class="insp-actions"><button class="btn btn-primary btn-sm" id="i-sim">Simulate</button><button class="btn btn-secondary btn-sm" id="i-trace">Open last decision</button><button class="btn btn-tertiary btn-sm" id="i-revoke" style="color:var(--critical-fg)">Revoke</button></div>
+  <div><div class="label" style="margin-bottom:6px">Definition</div>${kv({Effect:status(p.effect),Subject:esc(p.subject),Resource:esc(p.resource),'Cache TTL':p.cacheTtl == null ? 'Default' : String(p.cacheTtl)+' s',Attestation:p.requireAttestation == null ? 'Default' : p.requireAttestation ? 'Required' : 'Not required',Version:p.version,Owner:esc(p.owner),Updated:p.updated+' UTC'})}</div>
+  <div><div class="label" style="margin-bottom:6px">Integrity</div>${kv({'Bundle hash':'sha256:9be1…44c0','Signed by':'kms/keys/policy-signer','Ledger entry':'#418 220'})}</div>
+ </div>`;
+ $('#i-sim').onclick=()=>toast(`Simulation queued for ${p.id} against the last 24 h of requests.`);
+ $('#i-trace').onclick=()=>{location.hash='s-trace';};
+ $('#i-revoke').onclick=()=>{$('#confirm-text').textContent=`Revoke ${p.id} — ${p.name}?`;$('#confirm').showModal();};
+}
+$('#confirm-cancel').onclick=()=>$('#confirm').close();
+$('#confirm-ok').onclick=()=>{const p=P.find(x=>x.id===inspected);$('#confirm').close();if(p){p.status='Draft';renderRows();inspectPolicy(p.id);toast(`${p.id} revoked. Enforcement removed; ledger entry written.`);}};
+
+/* Decision trace */
+const T=[
+ {c:'ok',t:'Request received',m:'gw-edge-01 · 14:02:11.204Z',e:{Subject:'agent:analyst-copilot',Action:'READ',Resource:'data-room/cui/contract-7741.pdf',Channel:'mTLS · SPIFFE ID verified'}},
+ {c:'ok',t:'Subject resolved',m:'identity · 1 ms',e:{Principal:'agent:analyst-copilot',Delegator:'user:j.ortiz (US person: unverified)',Attestation:'Device posture passed'}},
+ {c:'ok',t:'Resource classified',m:'catalog · 1 ms',e:{Classification:'CUI // SP-EXPT',Owner:'contracts-office',Labels:'export-controlled'}},
+ {c:'deny',t:'Rules evaluated — POL-0142 matched',m:'pdp-01 · 2 ms',e:{'POL-0101':'Not applicable (resource classified)','POL-0142':'Match → DENY (delegator US-person status unverified)','POL-0139':'Not applicable (not AI context retrieval)'}},
+ {c:'deny',t:'Enforcement applied',m:'gw-edge-01 · 0 ms',e:{Outcome:'403 returned; payload not decrypted',Obligation:'Notify data owner',Ledger:'Entry #418 233 · signature verified'}}];
+$('#trace').innerHTML=T.map((s,i)=>`<li class="${s.c}"><div class="rail"><span class="node" aria-hidden="true"></span><span class="line"></span></div>
+ <details ${i===3?'open':''}><summary><svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 2l4 4-4 4"/></svg><span class="step-title">${esc(s.t)}</span>${s.c==='deny'?status('Deny'):'<span class="status s-success">Pass</span>'}<span class="step-meta mono-num">${esc(s.m)}</span></summary>
+ <div class="evidence">${kv(Object.fromEntries(Object.entries(s.e).map(([k,v])=>[k,esc(v)])))}</div></details></li>`).join('');
+
+/* Topology */
+const N=[
+ {id:'gw-edge-01',role:'Gateway',b:'Enclave A',x:40,y:130,h:'Healthy'},
+ {id:'pdp-01',role:'Decision point',b:'Enclave A',x:200,y:60,h:'Healthy'},
+ {id:'pdp-02',role:'Decision point',b:'Enclave A',x:200,y:200,h:'Degraded'},
+ {id:'kms-hsm-01',role:'Key service',b:'Enclave A',x:360,y:60,h:'Healthy'},
+ {id:'ledger-01',role:'Provenance ledger',b:'Enclave A',x:360,y:200,h:'Healthy'},
+ {id:'mesh-east',role:'Mesh node',b:'Partner mesh',x:520,y:60,h:'Healthy'},
+ {id:'mesh-west',role:'Mesh node',b:'Partner mesh',x:520,y:200,h:'Unreachable'}];
+const E=[['gw-edge-01','pdp-01'],['gw-edge-01','pdp-02'],['pdp-01','kms-hsm-01'],['pdp-02','kms-hsm-01'],['pdp-01','ledger-01'],['pdp-02','ledger-01'],['kms-hsm-01','mesh-east'],['ledger-01','mesh-east'],['ledger-01','mesh-west']];
+const W=110,H=40,svg=$('#svg'),hc={Healthy:'var(--success)',Degraded:'var(--warning)',Unreachable:'var(--critical)'};
+const nb=id=>N.find(n=>n.id===id);
+let s='<rect class="g-boundary" x="20" y="24" width="460" height="246"/><text class="g-boundary-label" x="28" y="40">ENCLAVE A · IL5</text><rect class="g-boundary" x="500" y="24" width="150" height="246"/><text class="g-boundary-label" x="508" y="40">PARTNER MESH</text>';
+E.forEach(([a,b],i)=>{const A=nb(a),B=nb(b);const fail=A.h==='Unreachable'||B.h==='Unreachable';s+=`<line class="g-edge${fail?' fail':''}" data-e="${i}" x1="${A.x+W}" y1="${A.y+H/2}" x2="${B.x}" y2="${B.y+H/2}"/>`;});
+N.forEach(n=>{s+=`<g class="g-node" tabindex="0" role="button" data-id="${n.id}" aria-label="${n.id}, ${n.role}, ${n.h}" transform="translate(${n.x},${n.y})"><rect width="${W}" height="${H}" rx="2"/><rect class="h" x="0" y="0" width="3" height="${H}" fill="${hc[n.h]}"/><text x="10" y="17">${n.id}</text><text class="sub" x="10" y="31">${n.role.toUpperCase()} · ${n.h.toUpperCase()}</text></g>`;});
+svg.innerHTML=s;
+$('#graph-rows').innerHTML=N.map(n=>`<tr><td>${n.id}</td><td>${n.role}</td><td>${n.b}</td><td>${status(n.h)}</td><td>${E.filter(e=>e[0]===n.id).map(e=>e[1]).join(', ')||'—'}</td></tr>`).join('');
+function selectNode(id){const rel=new Set([id]);svg.querySelectorAll('.g-edge').forEach(l=>{const [a,b]=E[l.dataset.e];const hot=a===id||b===id;l.classList.toggle('hot',hot&&!l.classList.contains('fail'));if(hot){rel.add(a);rel.add(b);}});
+ svg.querySelectorAll('.g-node').forEach(g=>{g.classList.toggle('sel',g.dataset.id===id);g.classList.toggle('rel',rel.has(g.dataset.id));});$('#graph').classList.add('dim');
+ const n=nb(id),up=E.filter(e=>e[1]===id).map(e=>e[0]),down=E.filter(e=>e[0]===id).map(e=>e[1]);
+ $('#inspector').innerHTML=`<div class="insp-head"><div class="label">Mesh node</div><h3>${n.id}</h3>${status(n.h)}</div><div class="insp-body">
+ <div class="insp-actions"><button class="btn btn-primary btn-sm" id="n-diag">Run diagnostics</button><button class="btn btn-tertiary btn-sm" id="n-clear">Clear selection</button></div>
+ ${kv({Role:n.role,'Trust boundary':n.b,Upstream:up.join(', ')||'—',Downstream:down.join(', ')||'—'})}
+ ${n.h==='Unreachable'?'<div class="evidence">Last heartbeat 14:01:52Z. Link ledger-01 → mesh-west failing mTLS handshake: certificate expired.</div>':n.h==='Degraded'?'<div class="evidence">Policy bundle sync lagging by 2 versions. Decisions served from cache.</div>':''}</div>`;
+ $('#n-diag').onclick=()=>toast(`Diagnostics started on ${n.id}.`);$('#n-clear').onclick=()=>{$('#graph').classList.remove('dim');svg.querySelectorAll('.g-node,.g-edge').forEach(x=>x.classList.remove('sel','rel','hot'));inspectPolicy(inspected);};}
+svg.addEventListener('click',e=>{const g=e.target.closest('.g-node');g&&selectNode(g.dataset.id);});
+svg.addEventListener('keydown',e=>{const g=e.target.closest('.g-node');if(g&&(e.key==='Enter'||e.key===' ')){e.preventDefault();selectNode(g.dataset.id);}});
+$('#graph-alt').onclick=e=>{const on=$('#graph').classList.toggle('graph-alt');e.target.setAttribute('aria-pressed',String(on));e.target.textContent=on?'View as graph':'View as table';};
+
+/* Form */
+const F=$('#rule-form');
+const rules=[['#f-name',el=>el.value.trim().length>=6],['#f-subj',el=>new RegExp(el.pattern).test(el.value.trim())],['#f-ttl',el=>el.value!==''&&+el.value>=0&&+el.value<=300]];
+function check(sel){const el=$(sel),ok=rules.find(r=>r[0]===sel)[1](el);el.setAttribute('aria-invalid',String(!ok));el.closest('.field').classList.toggle('invalid',!ok);return ok;}
+rules.forEach(([s])=>$(s).addEventListener('blur',()=>{if($(s).value!=='')check(s);}));
+F.onsubmit=e=>{e.preventDefault();const bad=rules.map(([s])=>check(s)?null:s).filter(Boolean);
+ if(bad.length){$(bad[0]).focus();return;}
+ const id='POL-0'+(154+P.length-8);P.push({id,name:$('#f-name').value.trim(),effect:F.effect.value,resource:$('#f-res').value,subject:$('#f-subj').value.trim(),cacheTtl:+$('#f-ttl').value,requireAttestation:$('#f-attest').checked,status:$('#f-shadow').checked?'Shadow mode':'Draft',updated:'2026-10-08 15:45',version:'v0',owner:'you'});
+ renderRows();F.reset();rules.forEach(([s])=>{$(s).removeAttribute('aria-invalid');$(s).closest('.field').classList.remove('invalid');});toast(`${id} saved as draft. Run a simulation before enforcing.`);};
+F.onreset=()=>rules.forEach(([s])=>{$(s).removeAttribute('aria-invalid');$(s).closest('.field').classList.remove('invalid');});
+
+/* Command search */
+const C=[['Open policy POL-0142','Policy',()=>{inspected='POL-0142';renderRows();inspectPolicy('POL-0142');}],['Inspect node mesh-west','Topology',()=>selectNode('mesh-west')],['Inspect node pdp-02','Topology',()=>selectNode('pdp-02')],['Filter: compile failed','Policies',()=>{$('#fstatus').value='Compile failed';renderRows();}],['Toggle theme','View',()=>tbtn.click()],['New policy rule','Authoring',()=>{location.hash='s-form';$('#f-name').focus();}]];
+let ci=0,cv=C;
+function drawCmd(){$('#cmd-list').innerHTML=cv.map((c,i)=>`<li role="option" id="c${i}" aria-selected="${i===ci}">${esc(c[0])}<span>${c[1]}</span></li>`).join('')||'<li>No matching commands</li>';$('#cmd-q').setAttribute('aria-activedescendant','c'+ci);}
+function openCmd(){$('#cmd-q').value='';cv=C;ci=0;drawCmd();$('#cmd').showModal();$('#cmd-q').focus();}
+function runCmd(i){const c=cv[i];if(!c)return;$('#cmd').close();c[2]();}
+$('#open-cmd').onclick=openCmd;
+$('#cmd-q').oninput=e=>{const q=e.target.value.toLowerCase();cv=C.filter(c=>c[0].toLowerCase().includes(q));ci=0;drawCmd();};
+$('#cmd-q').onkeydown=e=>{if(e.key==='ArrowDown'){e.preventDefault();ci=Math.min(cv.length-1,ci+1);drawCmd();}else if(e.key==='ArrowUp'){e.preventDefault();ci=Math.max(0,ci-1);drawCmd();}else if(e.key==='Enter'){e.preventDefault();runCmd(ci);}};
+$('#cmd-list').onclick=e=>{const li=e.target.closest('li[role=option]');li&&runCmd(+li.id.slice(1));};
+$('#cmd').addEventListener('click',e=>{if(e.target.id==='cmd')$('#cmd').close();});
+document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();openCmd();}});
+
+renderRows();inspectPolicy(inspected);
+})();
+</script>
+</body>
+</html>

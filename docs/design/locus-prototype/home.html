@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+<style>
+  .composer { border: 1px solid var(--border-strong); border-radius: var(--r); background: var(--bg); }
+  .composer:focus-within { border-color: var(--fg); box-shadow: 0 0 0 1px var(--fg); }
+  .composer textarea { width: 100%; border: 0; resize: none; padding: 16px 16px 8px; font-size: 16px; line-height: 1.5; background: none; min-height: 88px; }
+  .composer textarea:focus { outline: none; }
+  .composer-f { display: flex; align-items: center; gap: 8px; padding: 8px 10px 10px; flex-wrap: wrap; }
+  .composer-f .sp { flex: 1; }
+  .starters { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .starter { border: 1px solid var(--border); background: var(--bg); border-radius: var(--r); padding: 6px 10px; font-size: 13px; text-align: left; display: flex; gap: 8px; align-items: baseline; }
+  .starter:hover { border-color: var(--fg); background: var(--hover); }
+  .starter .label { font-size: 10px; }
+  .run-row { display: grid; grid-template-columns: minmax(0, 1fr) 170px; gap: 16px; align-items: center; }
+  @media (max-width: 860px) { .run-row { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body data-nav="home" data-crumbs='[["Northwind · Operations","home.html"],["Home",""]]'>
+<main id="main">
+  <div class="page page-narrow" style="margin-inline:auto">
+    <section data-od-id="task-composer" id="compose" style="padding-top:12px">
+      <div class="row-b" style="margin-bottom:12px;align-items:flex-end">
+        <div>
+          <p class="label" id="today">Dana Reyes</p>
+          <h1 style="font-size:26px;margin-top:6px" data-od-id="home-title">What should Locus get done?</h1>
+        </div>
+        <span class="trc trc-ex">Composer · existing</span>
+      </div>
+      <form class="composer" id="composer" autocomplete="off" novalidate>
+        <label for="objective" class="label" style="position:absolute;left:-9999px">Describe the work</label>
+        <textarea id="objective" rows="3" aria-describedby="objErr" placeholder="Describe the outcome you want. Example: Compare our three shortlisted logistics vendors on security posture and contract risk, and draft a recommendation for procurement."></textarea>
+        <p class="err-msg" id="objErr" hidden style="padding:0 16px 6px">Describe the outcome first. Locus builds the plan from it.</p>
+        <div class="composer-f">
+          <select class="select" id="proj" style="height:26px;width:auto;font-size:12px" aria-label="Project"></select>
+          <div class="seg" role="group" aria-label="Autonomy" id="autonomy">
+            <button type="button" aria-pressed="false">Plan only</button>
+            <button type="button" aria-pressed="true">Act within policy</button>
+            <button type="button" aria-pressed="false">Ask before acting</button>
+          </div>
+          <span class="sp"></span>
+          <span class="kbd hide-narrow">Ctrl Enter</span>
+          <button type="submit" class="btn btn-primary" data-od-id="composer-submit">Plan the work</button>
+        </div>
+      </form>
+      <div class="starters" data-od-id="starter-tasks" aria-label="Start from an example">
+        <button class="starter" type="button" data-fill="Compare the three shortlisted logistics vendors on security posture and contract risk, and draft a recommendation for procurement." data-proj="PRJ-014"><span class="label">Research</span>Compare shortlisted vendors</button>
+        <button class="starter" type="button" data-fill="Draft the October operations update for leadership from the tasks closed in the Operations workspace this month." data-proj="PRJ-015"><span class="label">Writing</span>Draft the October operations update</button>
+        <button class="starter" type="button" data-fill="Triage the new alerts in the SOC queue, group duplicates, and propose containment steps for anything rated high." data-proj="PRJ-009"><span class="label">Security</span>Triage new SOC alerts</button>
+        <button class="starter" type="button" data-fill="Fix the failing date-parsing test in locus-docs and open a pull request." data-proj="PRJ-012"><span class="label">Code</span>Fix a failing test</button>
+      </div>
+      <p class="small muted" style="margin-top:10px">Next you will review the proposed plan: who does the work, which engine and model run it, what it may access, what it may cost, and what will need your approval. Nothing starts until you confirm.</p>
+    </section>
+
+    <div class="grid g21" style="margin-top:28px">
+      <div class="stack">
+        <section class="panel" data-od-id="waiting-on-you">
+          <div class="panel-h"><h2>Waiting on you</h2><span class="tag tag-strong" id="waitN"></span><button class="btn btn-sm btn-ghost" data-open="inbox">Open inbox</button></div>
+          <ul class="list" id="waiting"></ul>
+        </section>
+        <section class="panel" data-od-id="active-work">
+          <div class="panel-h"><h2>Running now</h2><span class="tag" id="runN"></span><a class="btn btn-sm btn-ghost" href="activity.html">All runs</a></div>
+          <ul class="list" id="running"></ul>
+        </section>
+      </div>
+      <div class="stack">
+        <section class="panel" data-od-id="recent-outcomes">
+          <div class="panel-h"><h2>Recent outcomes</h2></div>
+          <ul class="list" id="outcomes"></ul>
+        </section>
+        <section class="panel" data-od-id="scheduled-next">
+          <div class="panel-h"><h2>Scheduled next</h2><a class="btn btn-sm btn-ghost" href="work-schedules.html">Schedules</a></div>
+          <ul class="list" id="sched"></ul>
+        </section>
+      </div>
+    </div>
+  </div>
+</main>
+<script src="locus-state.js"></script>
+<script src="locus.js"></script>
+<script>
+  const {H, A} = LocusState, $ = s => document.querySelector(s);
+  $('#today').textContent = new Date().toLocaleDateString('en-US', {weekday:'long', day:'numeric', month:'long'}) + ' · Dana Reyes';
+  const ta = $('#objective');
+  $('#proj').innerHTML = '<option value="">No project (ad hoc)</option>' + H.s.projects.map(p => `<option value="${H.esc(p.id)}">Project: ${H.esc(p.name)}</option>`).join('');
+  document.querySelectorAll('[data-fill]').forEach(b => b.onclick = () => { ta.value = b.dataset.fill; $('#proj').value = b.dataset.proj; $('#objErr').hidden = true; ta.removeAttribute('aria-invalid'); ta.focus(); });
+  const go = e => { e && e.preventDefault(); const v = ta.value.trim();
+    if (!v) { $('#objErr').hidden = false; ta.setAttribute('aria-invalid', 'true'); ta.focus(); return; }
+    const aut = document.querySelector('#autonomy [aria-pressed="true"]').textContent;
+    const id = A.createDraft(v, $('#proj').value || null, aut); location.href = 'plan-review.html?draft=' + encodeURIComponent(id); };
+  $('#composer').onsubmit = go;
+  ta.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') go(e); });
+  function render() { const s = H.s;
+    const pend = H.pending();
+    $('#waitN').textContent = pend.length;
+    H.setH($('#waiting'), pend.map(a => `<li><span class="st ${H.esc(a.risk === 'crit' ? 'st-crit' : 'st-warn')}" aria-label="${H.esc(a.risk === 'crit' ? 'High impact' : 'Needs review')}"></span><div class="li-b"><b>${H.esc(a.title)}</b><span class="small muted">${H.esc(a.by)} · ${H.esc(a.why)}</span></div><a class="btn btn-sm" href="activity-run.html?run=${H.enc(a.run)}#approvals">Decide</a></li>`).join('') || '<li class="empty" style="display:block">Nothing needs a decision. Approvals appear here when policy requires a human.</li>');
+    const act = H.runsIn('active', 'waiting', 'stopping', 'attention');
+    $('#runN').textContent = act.length + ' runs';
+    H.setH($('#running'), act.map(r => { const pct = Math.round(r.cursor / r.steps.length * 100), st = r.steps[Math.min(r.cursor, r.steps.length - 1)];
+      return `<li><div class="li-b run-row"><div><a class="li-link" href="activity-run.html?run=${H.enc(r.id)}"><b>${H.esc(r.title)}</b></a><span class="small muted">${H.assignee(r.plan.assignee)} · step ${Math.min(r.cursor + 1, r.steps.length)} of ${r.steps.length}: ${H.esc(st.title)}</span></div><div><div class="meter ${H.esc(H.phaseOf(r) === 'attention' ? 'crit' : r.status === 'running' || r.status === 'queued' ? '' : 'warn')}"><i style="width:${pct}%"></i></div><span class="small" style="display:block;margin-top:6px">${H.runChip(r)}</span></div></div></li>`; }).join('') || '<li class="empty" style="display:block">No runs in progress.</li>');
+    const done = s.runs.filter(r => r.status === 'completed').slice(0, 4);
+    H.setH($('#outcomes'), done.map(r => `<li>${Locus.icon('file')}<div class="li-b"><a class="li-link" href="activity-run.html?run=${H.enc(r.id)}#outcome"><b>${H.esc(r.title)}</b></a><span class="small muted">${r.artifacts.length} artifact${H.esc(r.artifacts.length === 1 ? '' : 's')} · ${H.esc(r.review && r.review.status === 'closed' ? 'reviewed' : 'awaiting your review')} · ${H.ago(r.ended)}</span></div></li>`).join('') || '<li class="empty" style="display:block">Completed runs and their artifacts appear here.</li>');
+    H.setH($('#sched'), s.schedules.filter(x => x.active).slice(0, 3).map(x => `<li><span class="id num" style="width:44px">${H.esc(x.time)}</span><div class="li-b"><a class="li-link" href="work-schedules.html?sch=${H.enc(x.id)}"><b>${H.esc(x.name)}</b></a><span class="small muted">${H.esc(x.cadence)} · runs as ${H.esc(H.nameOf(x.executor))} for ${H.esc(H.nameOf(x.owner))}</span></div></li>`).join('') || '<li class="empty" style="display:block">No active schedules.</li>');
+  }
+  render(); LocusState.on(render);
+</script>
+</body>
+</html>

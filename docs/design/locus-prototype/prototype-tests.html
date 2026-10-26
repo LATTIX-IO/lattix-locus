@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prototype acceptance tests · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+<style>
+  body { padding: 28px; max-width: 1100px; margin: 0 auto; }
+  .frames { position: absolute; left: -10000px; top: 0; width: 1280px; height: 900px; }
+  .frames iframe { width: 1280px; height: 900px; }
+  td.ev { font: 12px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+  <header class="page-h" data-od-id="tests-header"><div class="t"><p class="label" id="suiteLbl">Regression suite</p><h1 style="margin-top:4px">Prototype acceptance tests</h1><p>Runs against the real pages and the shared simulator. Your current prototype state is saved before the run and restored afterwards. Open this page from the Open Design preview or any local web server; browsers block frame access on file:// URLs.</p></div>
+    <div class="acts"><button class="btn btn-primary" id="run">Run all tests</button><a class="btn" href="screen-registry.html">Screen registry</a></div></header>
+  <div class="panel tbl-wrap" data-od-id="test-results"><table class="tbl"><caption style="position:absolute;left:-9999px">Test results</caption><thead><tr><th scope="col">ID</th><th scope="col">Requirement</th><th scope="col">Result</th><th scope="col">Evidence</th></tr></thead><tbody id="out"><tr><td colspan="4" class="empty">Not run yet.</td></tr></tbody></table>
+    <div class="panel-f small" id="sum" aria-live="polite"></div></div>
+  <div class="frames" aria-hidden="true" id="frames"></div>
+<script src="locus-state.js"></script>
+<script>
+  const {H, A} = LocusState, KEY = LocusBuild.stateKey, esc = H.esc, $ = s => document.querySelector(s);
+  $('#suiteLbl').textContent = `${LocusBuild.increment} · v${LocusBuild.version} · regression suite`;
+  const XSS = '<img src=x onerror="window.top.__pwned=1">"><svg onload="window.top.__pwned=1">';
+  const results = [];
+  const rec = (id, req, ok, ev) => results.push([id, req, ok, ev]);
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  function frame(src) { return new Promise((res, rej) => { const f = document.createElement('iframe'); f.src = src; f.onload = () => setTimeout(() => { try { f.contentDocument.body; res(f); } catch (e) { rej(new Error('Frame access blocked; serve over http')); } }, 900); $('#frames').appendChild(f); }); }
+  const fresh = () => { localStorage.removeItem(KEY); A.reset(); };
+  let busy = false;
+  async function run() { if (busy) return; busy = true; $('#run').disabled = true; results.length = 0; $('#out').innerHTML = '<tr><td colspan="4" class="empty">Running…</td></tr>'; const snap = localStorage.getItem(KEY); window.__pwned = 0;
+    try {
+      fresh();
+      // T1 classification floor
+      { const p = H.proposePlan('Compare shortlisted vendors and recommend one', 'PRJ-014'); p.cls = 'Internal'; const au = H.authorize(p);
+        const d = A.createDraft(p.objective, 'PRJ-014'); const res = A.launch(d, p, true);
+        rec('T1', 'Plan below the project classification floor is refused', au.blockers.some(b => /below the project floor/.test(b)) && !!res.error && !H.s.runs.some(r => r.plan === p), `blockers: ${au.blockers.join(' | ')}\nlaunch: ${res.error ? 'refused' : 'LAUNCHED'}`); }
+      // T2 unreviewed plan cannot start
+      { const t = A.createTask({title:'Summarize supplier questionnaires', assignee:{type:'agent', id:'AGT-0042'}, project:'PRJ-014', cls:'Confidential'}); const n = H.s.runs.length; const res = A.startRun(t.id);
+        rec('T2', 'Agent task without a reviewed plan routes to authorization review', res.needsReview === true && !!res.draft && H.s.runs.length === n, `startRun → ${JSON.stringify(res)}; runs ${n} → ${H.s.runs.length}`); }
+      // T3 per-agent grants
+      { const p = H.proposePlan('Compare shortlisted vendors and recommend one', 'PRJ-014'); const gs = H.grantSet(p); const reads = gs.filter(g => g.cap === 'docstore.read'); const send = gs.filter(g => g.cap === 'email.send');
+        rec('T3', 'Grants are per agent × capability × resource', reads.length >= 3 && new Set(reads.map(g => g.agent)).size === reads.length && send.length === 1 && send[0].agent === 'AGT-0048' && gs.every(g => g.resource), gs.map(g => `${g.agent} · ${g.cap} · ${g.resource} · ${g.d}`).join('\n')); }
+      // T4 outcome separation
+      { const mk = () => { const p = H.proposePlan('Compare shortlisted vendors and recommend one', 'PRJ-014'); const d = A.createDraft(p.objective, 'PRJ-014'); const res = A.launch(d, p, true); const r = H.run(res.run);
+          r.status = 'completed'; r.ended = Date.now(); r.review = {status:'pending', memory:[{text:'Test memory', scope:'tenant', ns:'projects/vendor-q4', state:'accepted', from:r.id}]}; LocusState.commit(); return r; };
+        const m0 = H.s.memory.length; const r1 = mk(); A.closeOutcome(r1.id, {deliverable:'Rejected', objective:'Not achieved'}); const t1 = H.task(r1.task);
+        const m1 = H.s.memory.length; const r2 = mk(); A.closeOutcome(r2.id, {deliverable:'Accepted', objective:'Too early to tell'}); const t2 = H.task(r2.task);
+        rec('T4', 'Execution, deliverable and objective are recorded separately; rejection does not close the task or write memory', t1.status === 'Needs rework' && m1 === m0 && t2.status === 'Done' && H.s.memory.length === m0 + 1 && r1.review.execution && r1.review.objective === 'Not achieved',
+          `rejected → task ${t1.status}, memory ${m0}→${m1}, execution "${r1.review.execution}"\naccepted → task ${t2.status}, memory → ${H.s.memory.length}`); }
+      // T5 / T6 injection
+      { const p = H.proposePlan('Injection probe', null); const d = A.createDraft('Injection probe', null); const res = A.launch(d, p, true); const r = H.run(res.run);
+        r.title = XSS; r.node = XSS; r.error = XSS; r.status = 'blocked'; r.started = Date.now();
+        r.events.push({t:Date.now(), k:XSS, actor:XSS, title:XSS, detail:XSS, apr:XSS, policy:{action:XSS, resource:XSS, d:XSS, rule:XSS}});
+        r.chat.push({t:Date.now(), from:XSS, to:XSS, text:XSS, kind:'msg', rationale:{summary:XSS, basis:[XSS], criteria:XSS}});
+        r.grants.push({agent:XSS, cap:XSS, resource:XSS, d:XSS, rule:XSS, status:XSS}); r.checkpoints.push({id:XSS, label:XSS, t:Date.now()});
+        H.s.approvals.unshift({id:'APR-X"><b>', run:r.id, task:r.task, title:XSS, why:XSS, rule:XSS, action:XSS, resource:XSS, onApprove:XSS, onDeny:XSS, agent:XSS, by:XSS, status:'pending', requested:Date.now(), risk:'warn'}); r.waiting = 'APR-X"><b>';
+        H.s.artifacts.unshift({id:XSS, run:r.id, task:r.task, title:XSS, type:XSS, version:XSS, by:XSS, t:Date.now(), hash:XSS}); r.artifacts.push(XSS); LocusState.commit();
+        const f = await frame('activity-run.html?run=' + encodeURIComponent(r.id)); const doc = f.contentDocument; ['t-trace','t-rat','t-pol','t-apr','t-out','t-ckp'].forEach(id => doc.getElementById(id).click());
+        const ev = doc.querySelector('[data-ev]'); if (ev) ev.click(); await wait(400);
+        f.contentWindow.Locus.review('APR-X"><b>'); await wait(200);
+        const bad = doc.querySelectorAll('img[src="x"], svg[onload], [onerror]').length, attrOk = [...doc.querySelectorAll('[data-review]')].some(b => b.dataset.review === 'APR-X"><b>'), dlgOk = doc.getElementById('decDlg').classList.contains('open') && doc.querySelector('#decBody').textContent.includes('onerror');
+        rec('T5', 'Run console and decision review render untrusted fields as text', bad === 0 && attrOk && dlgOk && !window.__pwned, `injected elements found: ${bad}; attribute value preserved intact: ${attrOk}; decision review shows payload as text: ${dlgOk}; script executed: ${!!window.__pwned}`);
+        const f2 = await frame('activity.html'); f2.contentDocument.getElementById('at-apr').click(); f2.contentDocument.getElementById('at-art').click(); await wait(300);
+        const bad2 = f2.contentDocument.querySelectorAll('img[src="x"], svg[onload], [onerror]').length;
+        rec('T6', 'Activity list and global approval inbox render untrusted fields as text', bad2 === 0 && !window.__pwned, `injected elements found: ${bad2}; script executed: ${!!window.__pwned}`); }
+      // T7 keyboard rows
+      { fresh(); const f = await frame('activity.html'); const rows = [...f.contentDocument.querySelectorAll('#runs tr')];
+        const ok = rows.length > 0 && rows.every(tr => !tr.hasAttribute('onclick') && !tr.hasAttribute('tabindex') && tr.querySelector('th[scope="row"] a[href^="activity-run.html?run="]'));
+        rec('T7', 'Activity rows: no mouse-only handlers; each row has a labelled link; rows are not extra focus stops', ok, `${rows.length} rows checked`); }
+      // T8 focus trap
+      { const f = await frame('library.html'); const w = f.contentWindow, doc = f.contentDocument; const trigger = doc.querySelector('[data-open="newDlg"]'); trigger.focus(); trigger.click(); await wait(200);
+        const dlg = doc.getElementById('newDlg'), inert = doc.querySelector('.app').hasAttribute('inert'); const last = [...dlg.querySelectorAll('button')].pop(); last.focus();
+        doc.dispatchEvent(new w.KeyboardEvent('keydown', {key:'Tab', bubbles:true})); const wrapped = dlg.contains(doc.activeElement);
+        doc.dispatchEvent(new w.KeyboardEvent('keydown', {key:'Escape', bubbles:true})); await wait(50);
+        rec('T8', 'Dialog traps focus, makes the page inert and restores focus on close', inert && wrapped && doc.activeElement === trigger, `inert: ${inert}; Tab stays in dialog: ${wrapped}; focus restored to trigger: ${doc.activeElement === trigger}`); }
+      // T9 registry totals
+      { const f = await frame('screen-registry.html'); const nums = [...f.contentDocument.querySelectorAll('#totals .grid .num')].map(n => +n.textContent);
+        rec('T9', 'Registry totals are computed and internally consistent', nums.length === 4 && nums[0] === nums[1] + nums[2] + nums[3], `total ${nums[0]} = designed ${nums[1]} + partial ${nums[2]} + not designed ${nums[3]}`); }
+      // T10 consequential decision: exact request, fingerprint, step-up
+      { fresh(); const a = H.pending().find(x => x.action === 'email.send'); const stale = A.decide(a.id, 'approve', '', 'fp:0'), noStep = A.decide(a.id, 'approve', '', a.fp);
+        const facts = ['agent', 'action', 'resource', 'data', 'cls', 'ns', 'grant', 'expires', 'policy', 'fp'].filter(k => !a[k]);
+        A.stepUp('Test passkey'); const ok = A.decide(a.id, 'approve', 'test', a.fp);
+        rec('T10', 'Approval binds to the reviewed request: actor, action, destination, data scope, grant, expiry and policy version; step-up required for Confidential egress', stale.changed && noStep.needsStepUp && ok.ok && !facts.length && a.decision.fp === a.fp && a.decision.bundle === 'v41' && a.decision.stepUp === 'Test passkey',
+          `stale fingerprint → ${stale.error}\nwithout step-up → ${noStep.error}\nmissing request facts: ${facts.join(', ') || 'none'}\nrecorded: ${JSON.stringify(a.decision)}`); }
+      // T11 identity layers
+      { fresh(); const a = H.pending().find(x => x.action === 'repo.write.protected'); A.expireSession(); const r1 = A.decide(a.id, 'deny', '', a.fp); const dev = H.s.session.device.method;
+        A.signOut(); const r2 = A.decide(a.id, 'deny', '', a.fp); A.signIn('sso'); const r3 = A.decide(a.id, 'deny', 'use a PR', a.fp);
+        rec('T11', 'Verified device identity alone cannot decide; expired or signed-out tenant sessions must reauthenticate; denial needs no step-up', r1.needsReauth && r2.needsReauth && r3.ok && a.status === 'denied', `device still verified (${dev}); expired → ${r1.error}; signed out → ${r2.error}; after SSO → ${a.status}`); }
+      // T12 delegation cannot widen
+      { fresh(); const t = H.team('TEAM-07'), gs = H.grantSet(H.task('TSK-3318').plan); const narrowed = !gs.some(g => g.agent === 'AGT-0042' && g.cap === 'email.draft');
+        const f = H.pick(t, H.TEAM_FIELDS); f.authority['AGT-0051'] = ['docstore.read', 'email.send']; const v = H.validateTeam(f); A.saveTeamDraft(t.id, f); const pub = A.publishTeam(t.id);
+        rec('T12', 'Team members receive an independently authorized subset; a team cannot delegate a capability the agent does not hold', narrowed && v.errors.some(e => /cannot widen/.test(e)) && !pub.ok && t.version === 'v2',
+          `Research Analyst email.draft granted in run: ${!narrowed}\nwidening attempt → ${v.errors[0]}\npublish → ${pub.ok ? 'PUBLISHED' : 'refused'}; team still ${t.version}`); }
+      // T13 agent builder
+      { fresh(); const ag = A.createAgent('Test Builder Agent', 'test'); const plan = {...H.proposePlan('Draft a summary', null), assignee:{type:'agent', id:ag.id}}; plan.steps = plan.steps.map(s => ({...s, agent:ag.id})); plan.caps = ['docstore.read'];
+        const b0 = H.authorize(plan).blockers; const f = H.pick(ag, H.AGENT_FIELDS); f.engine = 'ENG-CC'; f.caps = ['browser.interactive']; A.saveAgentDraft(ag.id, f); const bad = A.publishAgent(ag.id);
+        f.engine = 'ENG-NATIVE'; f.caps = ['docstore.read']; f.skills = ['SKL-009']; f.scopes = ['procurement']; f.instructions = 'Summarize the procurement policy for new buyers. Cite the section number for every rule, separate mandatory rules from guidance, and flag anything that needs legal review instead of interpreting it.'; f.limits = {perRun:3, maxSteps:12, maxMinutes:20}; A.saveAgentDraft(ag.id, f); A.evaluateAgent(ag.id); const good = A.publishAgent(ag.id, 'test', true); const b1 = H.authorize(plan).blockers;
+        rec('T13', 'Agents are configured as drafts and can only be used after passing publish checks (engine, model route, ceiling, permissions, limits)', b0.some(b => /never been published/.test(b)) && !!bad.errors && good.ok && ag.version === 'v1' && !b1.some(b => /never been published/.test(b)),
+          `before publish: ${b0.filter(b => /published/.test(b)).join('; ')}\ninvalid publish → ${(bad.errors || []).join('; ')}\nvalid publish → ${good.version}; blockers after: ${b1.join('; ') || 'none'}`); }
+      // T14 long-running recovery
+      { fresh(); const r = H.run('RUN-48201'); A.simulate(r.id, 'worker'); const s1 = r.status; r.recover.at -= 5000; LocusState.commit(); await wait(1300); const s2 = r.status, node = r.node;
+        A.cancel(r.id); const s3 = r.status, rev = r.grants.every(g => g.status === 'revoked'); r.cancelAt -= 5000; LocusState.commit(); await wait(1300);
+        const r2 = H.run('RUN-48213'), a = H.apr(r2.waiting), g = r2.grants.find(x => x.id === a.grant); A.revokeGrant(r2.id, g.id);
+        const r3 = H.run('RUN-48197'), a3 = H.apr(r3.waiting); a3.expires = Date.now() - 1; LocusState.commit(); await wait(1300); const exp = a3.status; const n = A.rerequest(a3.id);
+        rec('T14', 'Recovery: worker loss resumes from checkpoint on another node; stop revokes first then waits for acknowledgement; grant revocation withdraws the pending request; expired approvals are not actionable and can be re-requested', s1 === 'recovering' && s2 === 'running' && node !== 'edge-iad-01' && s3 === 'canceling' && rev && r.status === 'canceled' && a.status === 'withdrawn' && exp === 'expired' && !!n && H.apr(n).status === 'pending',
+          `worker loss: ${s1} → ${s2} on ${node}\nstop: ${s3}, grants revoked ${rev} → ${r.status}\nrevoke ${g.id}: approval ${a.status}\nexpiry: ${exp}; re-requested as ${n}`); }
+      // T15 no one-click consequential approvals anywhere
+      { fresh(); const pages = ['activity.html', 'activity-run.html?run=RUN-48213', 'home.html']; const found = [];
+        for (const p of pages) { const f = await frame(p); const d = f.contentDocument; d.getElementById('openInbox').click(); await wait(100); const tab = d.getElementById('at-apr') || d.getElementById('t-apr'); if (tab) tab.click(); await wait(150);
+          [...d.querySelectorAll('button, a')].filter(b => !b.closest('#decDlg') && /approve/i.test(b.textContent)).forEach(b => found.push(p + ': ' + b.textContent.trim())); d.querySelectorAll('[data-decide], [data-dec]').forEach(b => found.push(p + ': legacy ' + b.outerHTML.slice(0, 60))); }
+        rec('T15', 'Approve actions exist only inside the decision review; lists, inbox and run console open the review', found.length === 0, found.join('\n') || `no direct approve controls on ${pages.length} pages`); }
+      // T16 every page dialog is operable in a real browser
+      { const pages = ['activity-run.html?run=RUN-48213', 'library.html', 'library-agent.html?agent=AGT-0063', 'library-team.html?team=TEAM-07', 'memory.html', 'task.html?task=TSK-3318', 'work-projects.html', 'work-schedules.html']; const bad = []; let n = 0;
+        for (const p of pages) { const f = await frame(p); const d = f.contentDocument, w = f.contentWindow;
+          for (const dl of d.querySelectorAll('.dialog')) { n++; if (dl.closest('.app')) { bad.push(p + ' #' + dl.id + ' is inside .app'); continue; } w.Locus.open(dl.id); await wait(120); const fo = dl.querySelector('input,textarea,select,button:not([disabled])'); if (fo) fo.focus();
+            if (!dl.contains(d.activeElement)) bad.push(p + ' #' + dl.id + ' cannot take focus'); w.Locus.close(); await wait(30); } }
+        rec('T16', 'Every page dialog sits outside the inert application region and takes focus when open', bad.length === 0 && n > 0, bad.join(String.fromCharCode(10)) || `${n} dialogs on ${pages.length} pages operable`); }
+      // T17 every dynamic screen renders untrusted store data as text and builds only encoded links
+      { fresh(); const KEYS = ['title','name','desc','text','obj','why','detail','summary','note','label','what','instructions','health','cadence','time','dest','objective','src','by','topic','due','owner','executor','resolution'];
+        const poison = (o, d) => { if (!o || typeof o !== 'object' || d > 6) return; Object.keys(o).forEach(k => { const v = o[k]; if (typeof v === 'string' && KEYS.includes(k)) o[k] = XSS + v; else if (typeof v === 'object') poison(v, d + 1); }); };
+        const S0 = H.s; ['tasks','projects','schedules','conversations','memory','agents','teams','artifacts','approvals','runs','contradictions','events'].forEach(k => poison(S0[k], 0));
+        S0.conversations.forEach(c => c.msgs.forEach(m => { m[1] = XSS + m[1]; }));
+        const BAD = 'TSK-9"><img src=x onerror="window.top.__pwned=1">', JS = 'javascript:window.top.__pwned=1';
+        S0.tasks.push({...JSON.parse(JSON.stringify(S0.tasks[0])), id:BAD, runs:[], deps:[S0.tasks[1].id], source:{type:XSS, id:BAD}});
+        S0.conversations.unshift({id:'CNV-0999', title:XSS, with:'LO', link:{type:'run', id:BAD}, project:null, cls:'Internal', t:Date.now(), msgs:[['DR', XSS]]});
+        S0.conversations.unshift({id:'CNV-0998', title:XSS, with:'LO', link:{type:JS, id:JS}, project:null, cls:'Internal', t:Date.now(), msgs:[]});
+        S0.tasks[0].deps.push(BAD); S0.memory[0].ns = XSS; S0.schedules[0].history.unshift([XSS, XSS, XSS]);
+        const d = A.createDraft('Injection probe', 'PRJ-014'); H.s.drafts[0].plan.title = XSS; LocusState.commit();
+        const pages = ['home.html', 'work.html', 'work-projects.html', 'work-schedules.html', 'work-conversations.html?cnv=CNV-0999', 'work-conversations.html?cnv=CNV-0998', 'task.html?task=TSK-3318', 'task.html?task=' + encodeURIComponent(BAD), 'plan-review.html?draft=' + encodeURIComponent(d),
+          'activity.html', 'activity-run.html?run=RUN-48213', 'library.html', 'library-agent.html?agent=AGT-0042', 'library-team.html?team=TEAM-07', 'memory.html', 'control-tower.html', 'settings.html'];
+        const bad = [];
+        for (const p of pages) { const f = await frame(p), doc = f.contentDocument;
+          doc.querySelectorAll('[role="tab"]').forEach(t => t.click()); const ib = doc.getElementById('openInbox'); if (ib) ib.click();
+          const sel = doc.querySelectorAll('[data-sel]'); if (sel[1]) sel[1].click(); await wait(250);
+          const inj = doc.querySelectorAll('img[src="x"], svg[onload], [onerror], body [onload]').length; if (inj) bad.push(`${p}: ${inj} injected elements`);
+          [...doc.querySelectorAll('a[href]')].forEach(a => { const h = a.getAttribute('href'); if (/^\s*javascript:/i.test(h) || /[<>"]/.test(h)) bad.push(`${p}: unsafe href ${h.slice(0, 60)}`); }); }
+        rec('T17', 'All dynamic screens render untrusted store fields as text; links use validated, encoded ids and never javascript: URLs', bad.length === 0 && !window.__pwned, bad.slice(0, 8).join('\n') || `${pages.length} screen states checked · ${KEYS.length} poisoned field types · hostile ids and link types · script executed: ${!!window.__pwned}`); }
+      // T18 one run-state contract; no second run while one is non-terminal; idempotent creation
+      { fresh(); const all = ['queued','running','paused','recovering','blocked','canceling','failed','completed','canceled'], missing = all.filter(k => !H.RUN_STATES[k]);
+        const t = H.task('TSK-3321'), r = H.run(t.runs[0]), out = [];
+        for (const st of ['recovering','canceling','blocked','failed','paused','queued']) { r.status = st; LocusState.commit(); const res = A.startRun(t.id, 'k-' + st); out.push(`${st}: ${res.live ? 'refused' : 'STARTED'}`);
+          const f = await frame('task.html?task=' + t.id); const btn = f.contentDocument.querySelector('[data-act="run"]'); if (btn) out.push(`${st}: Start run button SHOWN`); }
+        r.status = 'canceled'; LocusState.commit(); const n0 = H.s.runs.length, a1 = A.startRun(t.id, 'same-key'), a2 = A.startRun(t.id, 'same-key'), a3 = A.startRun(t.id, 'other-key');
+        const home = await frame('home.html'), live = [...home.contentDocument.querySelectorAll('#running a')].map(a => a.textContent).length;
+        rec('T18', 'Every run status is classified by one contract; Task refuses and hides Start run while a run is recovering, stopping, blocked, failed, paused or queued; creation is idempotent per key',
+          !missing.length && out.every(x => /refused$/.test(x)) && a1.run && a2.run === a1.run && a2.duplicate && a3.live && H.s.runs.length === n0 + 1,
+          `unclassified statuses: ${missing.join(', ') || 'none'}\n${out.join('\n')}\nsame key twice → ${a1.run} / ${a2.run} (duplicate ${!!a2.duplicate}); new key while live → ${a3.live ? 'refused' : 'STARTED'}; runs ${n0} → ${H.s.runs.length}; Home lists ${live} non-terminal runs`); }
+      // T19 agent definition gate, rollback and handoff classification
+      { fresh(); const ag = H.agent('AGT-0042'), f = H.pick(ag, H.AGENT_FIELDS); f.instructions = 'Too short'; A.saveAgentDraft(ag.id, f); const v1 = A.publishAgent(ag.id);
+        f.instructions = H.pick(ag, H.AGENT_FIELDS).instructions + ' Summarize residency findings separately.'; A.saveAgentDraft(ag.id, f); const v2 = A.publishAgent(ag.id);
+        const ev = A.evaluateAgent(ag.id); f.desc += ' (edited after evaluation)'; A.saveAgentDraft(ag.id, f); const v3 = A.publishAgent(ag.id); A.evaluateAgent(ag.id); const v4 = A.publishAgent(ag.id, 'test', true);
+        const g = H.pick(ag, H.AGENT_FIELDS); g.constraints = []; A.saveAgentDraft(ag.id, g); const ev2 = A.evaluateAgent(ag.id); const v5 = A.publishAgent(ag.id); A.discardAgentDraft(ag.id);
+        const rb = A.rollbackAgent(ag.id, 'v6', true), cw = H.agent('AGT-0051'); cw.scopes = ['procurement']; const ht = H.validateTeam(H.team('TEAM-07')), blk = H.authorize(H.task('TSK-3318').plan).blockers;
+        rec('T19', 'Publishing requires instructions, a passing evaluation of the exact draft and acknowledged impact; rollback publishes a stored version as a new one; handoffs require the recipient to cover classification and scope',
+          !!v1.errors.length && v2.needsEval && ev.pass && v3.needsEval && v4.ok && !ev2.pass && !!v5.needsEval && rb.ok && H.agent('AGT-0042').versions[0].rolledFrom === 'v6' && ht.errors.some(e => /no read scope on projects\/vendor-q4/.test(e)) && blk.some(b => /Team Vendor Assessment/.test(b)),
+          `short instructions → ${v1.errors[0]}\nno evaluation → ${v2.errors[0]}\nedited after evaluation → ${v3.errors[0]}\nevaluated → published ${v4.version}\nno constraints → injection probes ${ev2.cases[2].pass ? 'PASS' : 'fail'}; publish refused ${!!v5.needsEval}\nrollback v6 → ${rb.version}\nhandoff check → ${ht.errors[0]}\nplan blocker → ${blk.find(b => /Team/.test(b))}`); }
+      // T20 escaping never swallows trusted markup: no literal tags in rendered text, no empty icons
+      { fresh(); const pages = ['home.html', 'work.html', 'work-projects.html', 'work-schedules.html', 'work-conversations.html', 'task.html?task=TSK-3318', 'activity.html', 'activity-run.html?run=RUN-48213', 'library.html', 'library-agent.html?agent=AGT-0042', 'library-team.html?team=TEAM-07', 'memory.html', 'control-tower.html', 'settings.html'], bad = [];
+        for (const p of pages) { const f = await frame(p), doc = f.contentDocument; doc.querySelectorAll('[role="tab"]').forEach(t => t.click()); const ib = doc.getElementById('openInbox'); if (ib) ib.click(); await wait(200);
+          const lit = (doc.body.innerText.match(/<\/?(span|div|b|a|p|li|ul|svg|path|button|td|tr|dl|dt|dd|i|details|summary)[\s>]/g) || []); if (lit.length) bad.push(`${p}: literal ${[...new Set(lit)].join(' ')}`);
+          const empty = [...doc.querySelectorAll('svg')].filter(s => !s.innerHTML.trim()).length; if (empty) bad.push(`${p}: ${empty} empty icons`); }
+        rec('T20', 'Encoding is applied to data, never to trusted markup: no literal tags in rendered text and no empty icons on any screen', bad.length === 0, bad.join('\n') || `${pages.length} screens clean`); }
+    } catch (e) { rec('ERR', 'Suite error', false, e.message + ' ' + (e.stack || '').split('\n')[1]); }
+    finally { $('#frames').innerHTML = ''; if (snap) localStorage.setItem(KEY, snap); else localStorage.removeItem(KEY); }
+    $('#out').innerHTML = results.map(([id, req, ok, ev]) => `<tr><th scope="row" class="mono">${esc(id)}</th><td>${esc(req)}</td><td><span class="st ${ok ? 'st-ok' : 'st-crit'}">${ok ? 'Pass' : 'Fail'}</span></td><td class="ev">${esc(ev)}</td></tr>`).join('');
+    const p = results.filter(r => r[2]).length; $('#sum').textContent = `${p} of ${results.length} passed · your prototype state was restored · run at ${new Date().toLocaleTimeString()}`; busy = false; $('#run').disabled = false; }
+  $('#run').onclick = run;
+</script>
+</body>
+</html>

@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent builder · Library · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+<style>
+  .bld { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; margin-top: 16px; }
+  .bld-side { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 16px; }
+  .sec { margin-bottom: 16px; }
+  .sec .panel-b { display: flex; flex-direction: column; gap: 12px; }
+  .pick { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r); cursor: pointer; }
+  .pick:has(input:checked) { border-color: var(--accent, var(--fg)); background: var(--select); }
+  .pick:has(input:disabled) { cursor: not-allowed; opacity: .65; }
+  .pick input { margin-top: 3px; }
+  .pick b { display: block; font-weight: 500; }
+  .picks { display: grid; gap: 8px; }
+  .picks.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lims { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .chk { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13px; }
+  .chk li { display: grid; grid-template-columns: 16px 1fr; gap: 8px; align-items: start; }
+  .instr { font: 13px/1.6 var(--font-body); min-height: 132px; }
+  .cons { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+  .cons + .cons { margin-top: 8px; }
+  .ver { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .ver:last-child { border-bottom: 0; }
+  @media (max-width: 1100px) { .bld { grid-template-columns: minmax(0, 1fr); } .bld-side { position: static; } }
+  @media (max-width: 640px) { .picks.two, .lims { grid-template-columns: minmax(0, 1fr); } }
+</style>
+</head>
+<body data-nav="library" data-crumbs='[["Library","library.html"],["Agents & teams","library.html"],["Agent builder",""]]'>
+<main id="main">
+  <div class="page">
+    <header class="page-h" data-od-id="agent-builder-header" id="hdr"></header>
+    <div class="bld">
+      <form id="f" autocomplete="off" novalidate data-od-id="agent-builder-form">
+        <section class="panel sec" aria-labelledby="s1" data-od-id="agent-identity"><div class="panel-h"><h3 id="s1">Identity</h3></div><div class="panel-b">
+          <div class="field"><label for="fName">Name</label><input id="fName" class="input" required></div>
+          <div class="field"><label for="fDesc">Summary for discovery</label><textarea id="fDesc" class="textarea" rows="2"></textarea><span class="hint">Shown to people assigning work and to the orchestrator when it plans. It is not sent to the model as instructions.</span></div>
+        </div></section>
+
+        <section class="panel sec" aria-labelledby="s1b" data-od-id="agent-instructions"><div class="panel-h"><h3 id="s1b">Instructions</h3><span class="small muted">Executable · versioned with the agent</span></div><div class="panel-b">
+          <div class="field"><label for="fInstr">Instructions to the agent</label><textarea id="fInstr" class="textarea instr" rows="6" aria-describedby="instrHint"></textarea><span class="hint" id="instrHint">The job, its method and its boundaries. Every published version stores these exactly; runs record which version they used.</span></div>
+          <fieldset style="border:0;padding:0;margin:0"><legend class="label" style="margin-bottom:8px">Behavioral constraints</legend><div id="fCons"></div>
+            <button type="button" class="btn btn-sm" id="addCons" style="margin-top:8px">Add constraint</button>
+            <p class="small muted" style="margin-top:8px">Constraints are evaluated by the prompt-injection and boundary probes before publishing. They narrow behavior; they never grant authority.</p></fieldset>
+        </div></section>
+
+        <section class="panel sec" aria-labelledby="s2" data-od-id="agent-engine"><div class="panel-h"><h3 id="s2">Execution engine and model</h3><span class="small muted">An engine runs the agent; a model route answers it</span></div><div class="panel-b">
+          <fieldset style="border:0;padding:0;margin:0"><legend class="label" style="margin-bottom:8px">Execution engine</legend><div class="picks two" id="fEng"></div></fieldset>
+          <div class="grid g2" style="gap:12px">
+            <div class="field"><label for="fRoute">Model route</label><select id="fRoute" class="select"></select><span class="hint" id="routeHint"></span></div>
+            <div class="field"><label for="fCeil">Data ceiling</label><select id="fCeil" class="select"></select><span class="hint">The highest classification this agent may receive. Engine, route and every resource scope must fit within it.</span></div>
+          </div>
+        </div></section>
+
+        <section class="panel sec" aria-labelledby="s3" data-od-id="agent-skills"><div class="panel-h"><h3 id="s3">Skills</h3><span class="small muted">Skills add know-how, not permissions</span></div><div class="panel-b"><div class="picks two" id="fSkills"></div></div></section>
+
+        <section class="panel sec" aria-labelledby="s4" data-od-id="agent-permissions"><div class="panel-h"><h3 id="s4">Permissions</h3><span class="small muted">Requested here · granted per run by the policy engine</span></div><div class="panel-b">
+          <div class="picks" id="fCaps"></div>
+          <p class="small muted">The decision shown is what policy would return at this agent's ceiling. A run can only narrow it: grants are minted per run, per resource, and a team may delegate a subset.</p>
+        </div></section>
+
+        <section class="panel sec" aria-labelledby="s4b" data-od-id="agent-scopes"><div class="panel-h"><h3 id="s4b">Resource scopes</h3><span class="small muted">Namespaces this agent may read</span></div><div class="panel-b">
+          <div class="picks two" id="fScopes"></div>
+          <p class="small muted">A scope above the agent's ceiling blocks publishing. Team handoffs are checked against the receiving agent's scopes.</p>
+        </div></section>
+
+        <section class="panel sec" aria-labelledby="s5" data-od-id="agent-limits"><div class="panel-h"><h3 id="s5">Limits</h3><span class="small muted">Enforced by the runtime; a plan that exceeds them is not authorized</span></div><div class="panel-b">
+          <div class="lims">
+            <div class="field"><label for="lSpend">Spend per run (USD)</label><input id="lSpend" class="input num" type="number" min="0.01" max="50" step="0.5"></div>
+            <div class="field"><label for="lSteps">Steps per run</label><input id="lSteps" class="input num" type="number" min="1" max="100" step="1"></div>
+            <div class="field"><label for="lMin">Minutes per step</label><input id="lMin" class="input num" type="number" min="1" max="240" step="1"></div>
+          </div>
+          <div class="field"><label for="fMem">Memory</label><select id="fMem" class="select"><option>Writes run</option><option>Reads tenant · writes run</option><option>Reads user, tenant · writes run</option><option>Reads tenant · writes run, agent</option><option>Writes run, workflow</option></select><span class="hint">Writes beyond run scope are proposed at outcome review, never written silently.</span></div>
+        </div></section>
+      </form>
+
+      <aside class="bld-side" aria-label="Publish gate and history">
+        <section class="panel" data-od-id="publish-checks"><div class="panel-h"><h3>Definition checks</h3><span id="chkSum"></span></div><div class="panel-b" id="checks" tabindex="-1"></div></section>
+        <section class="panel" data-od-id="agent-evaluation"><div class="panel-h"><h3>Evaluation</h3><span class="st st-sim">Simulated</span></div><div class="panel-b" id="evalBox" tabindex="-1"></div></section>
+        <section class="panel" data-od-id="agent-diff"><div class="panel-h"><h3>Changes from published</h3></div><div class="panel-b" id="diff"></div></section>
+        <section class="panel" data-od-id="agent-usage"><div class="panel-h"><h3>Used by</h3></div><div class="panel-b" id="usage"></div></section>
+        <section class="panel" data-od-id="agent-versions"><div class="panel-h"><h3>Versions</h3></div><div class="panel-b" id="vers"></div></section>
+      </aside>
+    </div>
+  </div>
+
+  <div class="dialog" id="pubDlg" role="dialog" aria-labelledby="pubH" data-od-id="publish-agent-dialog">
+    <div class="dialog-h"><h2 id="pubH">Publish</h2></div>
+    <div class="dialog-b"><div id="pubBody"></div><div class="field" id="noteField"><label for="pubNote">Release note</label><input id="pubNote" class="input" placeholder="What changed and why"></div></div>
+    <div class="dialog-f"><button class="btn" type="button" onclick="Locus.close()">Cancel</button><button class="btn btn-primary" id="pubGo">Publish</button></div>
+  </div>
+</main>
+<script src="locus-state.js"></script>
+<script src="locus.js"></script>
+<script>
+  const {H, A} = LocusState, $ = s => document.querySelector(s), esc = H.esc;
+  const ID = new URLSearchParams(location.search).get('agent') || 'AGT-0042';
+  const LBL = {name:'Name', desc:'Summary', instructions:'Instructions', constraints:'Constraints', engine:'Engine', route:'Model route', skills:'Skills', caps:'Permissions', scopes:'Resource scopes', ceiling:'Data ceiling', limits:'Limits', mem:'Memory'};
+  const ag = () => H.agent(ID);
+  const cur = () => { const a = ag(); return a.draft || H.pick(a, H.AGENT_FIELDS); };
+  let CONS = [], PEND = null; // working constraint list; pending publish or rollback request
+  function collect() { return {name:$('#fName').value.trim(), desc:$('#fDesc').value.trim(), instructions:$('#fInstr').value.trim(), constraints:CONS.map(c => c.trim()),
+    engine:(document.querySelector('[name=eng]:checked') || {}).value, route:$('#fRoute').value, skills:[...document.querySelectorAll('[name=skill]:checked')].map(x => x.value),
+    caps:[...document.querySelectorAll('[name=cap]:checked')].map(x => x.value), scopes:[...document.querySelectorAll('[name=scope]:checked')].map(x => x.value), ceiling:$('#fCeil').value,
+    limits:{perRun:+$('#lSpend').value, maxSteps:+$('#lSteps').value, maxMinutes:+$('#lMin').value}, mem:$('#fMem').value}; }
+  const decWord = d => d === 'approval' ? 'Ask first' : d === 'permit' ? 'Allowed' : 'Denied';
+  function drawCons() { $('#fCons').innerHTML = CONS.map((c, i) => `<div class="cons"><input class="input" data-con="${i}" value="${esc(c)}" aria-label="Constraint ${i + 1}"><button type="button" class="btn btn-sm btn-ghost" data-rmcon="${i}" aria-label="Remove constraint ${i + 1}">Remove</button></div>`).join('') || '<p class="small muted">No constraints.</p>'; }
+  function drawScopes(f) { $('#fScopes').innerHTML = H.NAMESPACES.map(n => { const over = H.CLS.indexOf(n.cls) > H.CLS.indexOf(f.ceiling); return `<label class="pick"><input type="checkbox" name="scope" value="${esc(n.ns)}" ${H.esc((f.scopes || []).includes(n.ns) ? 'checked' : '')}><span><b class="mono">${esc(n.ns)}</b><span class="small muted">${esc(n.label)}${H.esc(over ? ' · above ceiling' : '')}</span></span><span class="cls">${esc(n.cls)}</span></label>`; }).join(''); }
+  function fillForm() { const f = cur();
+    $('#fName').value = f.name; $('#fDesc').value = f.desc === '—' ? '' : f.desc; $('#fInstr').value = f.instructions || ''; CONS = (f.constraints || []).slice(); drawCons();
+    $('#fEng').innerHTML = H.ENGINES.map(e => { const off = e.state !== 'Enabled'; return `<label class="pick"><input type="radio" name="eng" value="${esc(e.id)}" ${f.engine === e.id ? 'checked' : ''} ${off ? 'disabled' : ''}><span><b>${esc(e.name)}</b><span class="small muted">${esc(e.kind)} · tools ${esc(e.tools.toLowerCase())} · up to ${esc(e.maxCls)}</span>${off ? `<span class="small" style="display:block;margin-top:2px">${esc(e.state)}: network and tool calls are not mediated</span>` : ''}</span><span class="cls">${esc(e.maxCls === '—' ? 'None' : e.maxCls)}</span></label>`; }).join('');
+    $('#fRoute').innerHTML = H.ROUTES.map(r => `<option value="${esc(r.id)}" ${f.route === r.id ? 'selected' : ''}>${esc(r.id)} · ${esc(r.primary)} · up to ${esc(r.maxCls)}</option>`).join('');
+    $('#fCeil').innerHTML = H.CLS.map(c => `<option ${f.ceiling === c ? 'selected' : ''}>${esc(c)}</option>`).join('');
+    $('#fSkills').innerHTML = H.SKILLS.map(k => `<label class="pick"><input type="checkbox" name="skill" value="${esc(k.id)}" ${f.skills.includes(k.id) ? 'checked' : ''}><span><b>${esc(k.name)}</b><span class="small muted">${esc(k.desc)} · ${esc(k.id)} · ${esc(k.v)}</span></span><span class="tag">${esc(k.scope)}</span></label>`).join('');
+    $('#fCaps').innerHTML = Object.entries(H.CAPS).map(([k, c]) => { const d = H.evalCap(k, {cls:f.ceiling, engine:f.engine}); return `<label class="pick"><input type="checkbox" name="cap" value="${esc(k)}" ${f.caps.includes(k) ? 'checked' : ''}><span><b>${esc(c.label)}</b><span class="small muted"><span class="mono">${esc(k)}</span> · ${esc(c.via)} · ${esc(c.rule)}</span></span><span class="decision ${H.esc(d.d)}">${decWord(d.d)}</span></label>`; }).join('');
+    drawScopes(f); $('#lSpend').value = f.limits.perRun; $('#lSteps').value = f.limits.maxSteps; $('#lMin').value = f.limits.maxMinutes; $('#fMem').value = f.mem; routeHint(); }
+  function routeHint() { const r = H.route($('#fRoute').value); $('#routeHint').textContent = r ? `Fallback ${r.fallback} · about $${r.costPerStep.toFixed(2)} per step` : ''; }
+  function fmt(k, v) { if (k === 'limits') return `$${v.perRun} · ${v.maxSteps} steps · ${v.maxMinutes} min`; if (k === 'instructions') return `${String(v || '').length} characters`; if (Array.isArray(v)) return k === 'constraints' ? v.length + ' constraints' : v.join(', ') || 'none'; if (k === 'engine') return (H.engine(v) || {}).name || v; return String(v == null ? '' : v); }
+  function side() { const a = ag(), f = cur(), v = H.validateAgent(f), pub = H.pick(a, H.AGENT_FIELDS), ch = a.draft ? Object.keys(LBL).filter(k => JSON.stringify(pub[k]) !== JSON.stringify(f[k])) : [];
+    const neverPub = a.state === 'Draft', next = 'v' + ((parseInt(String(a.version).replace('v', ''), 10) || 0) + 1), ev = a.evalRun, fresh = ev && ev.hash === H.defHash(f), ready = !v.errors.length && fresh && ev.pass && (a.draft || neverPub);
+    H.setH($('#hdr'), `<div class="t"><p class="id">${esc(a.id)} · published ${H.esc(neverPub ? 'never' : esc(a.version))}</p><h1>${esc(f.name || 'Untitled agent')}</h1><p>Owner ${esc(H.nameOf(a.owner))} · runs keep the version they were authorized with.</p></div>
+      <div class="acts"><span class="st ${H.esc(a.state === 'Published' ? 'st-ok' : 'st-adv')}">${esc(a.state)}</span>${a.draft && !neverPub ? '<button class="btn btn-ghost" id="discard">Discard draft</button>' : ''}<button class="btn btn-primary" id="publish" ${ready ? '' : 'aria-disabled="true"'} title="${H.esc(ready ? '' : 'Needs passing definition checks and a passing evaluation of this draft')}">Publish ${esc(next)}</button></div>`);
+    $('#chkSum').innerHTML = v.errors.length ? `<span class="st st-crit">${v.errors.length} blocking</span>` : '<span class="st st-ok">Pass</span>';
+    H.setH($('#checks'), `<ul class="chk">${v.errors.map(e => `<li><span class="st st-crit"></span><span>${esc(e)}</span></li>`).join('')}${v.warnings.map(w => `<li><span class="st st-adv"></span><span>${esc(w)}</span></li>`).join('')}${!v.errors.length ? '<li><span class="st st-ok"></span><span>Engine, route, ceiling and scopes are compatible</span></li>' : ''}</ul>`);
+    H.setH($('#evalBox'), `${ev ? `<p class="small" style="margin-bottom:8px">${fresh ? (ev.pass ? '<span class="st st-ok">Passed</span>' : '<span class="st st-crit">Failed</span>') : '<span class="st st-adv">Out of date</span>'} <span class="id">${esc(ev.hash)} · ${H.ago(ev.at)}</span></p>
+      ${fresh ? `<ul class="chk">${ev.cases.map(c => `<li><span class="st ${H.esc(c.pass ? 'st-ok' : 'st-crit')}"></span><span><b style="font-weight:500">${esc(c.k)}</b><br><span class="small muted">${esc(c.detail)}</span></span></li>`).join('')}</ul>` : '<p class="small muted">The definition changed after the last evaluation. Evaluate this draft before publishing.</p>'}` : '<p class="small muted">Not evaluated yet.</p>'}
+      <div class="row" style="margin-top:12px;flex-wrap:wrap"><button type="button" class="btn btn-sm" id="runEval">Evaluate this draft</button><span class="small muted">Regression, prompt-injection, capability and scope suites. Scores are simulated.</span></div>`);
+    H.setH($('#diff'), neverPub ? '<p class="small muted">First version. Everything on this page will be published.</p>' : ch.length ? `<ul class="chk">${ch.map(k => `<li><span class="st st-adv"></span><span><b>${H.esc(LBL[k])}</b> <span class="small muted">${esc(fmt(k, pub[k]))} → ${esc(fmt(k, f[k]))}</span></span></li>`).join('')}</ul>` : '<p class="small muted">No changes. Edits are saved as a draft automatically.</p>');
+    const teams = H.s.teams.filter(t => t.members.includes(a.id)), tasks = H.s.tasks.filter(t => t.plan && t.plan.steps.some(s => s.agent === a.id) && !['Done','Canceled'].includes(t.status));
+    H.setH($('#usage'), `<ul class="chk">${teams.map(t => `<li><span class="st st-ok"></span><span><a href="library-team.html?team=${encodeURIComponent(t.id)}">${esc(t.name)}</a> <span class="small muted">· delegates ${esc(((t.authority || {})[a.id] || []).join(', ') || 'nothing')}</span></span></li>`).join('')}${tasks.map(t => `<li><span class="st st-idle"></span><span><a href="task.html?task=${encodeURIComponent(t.id)}">${esc(t.id)}</a> <span class="small muted">${esc(t.title)}</span></span></li>`).join('') || (teams.length ? '' : '<li><span class="st st-idle"></span><span class="small muted">Not used yet</span></li>')}</ul><p class="small muted" style="margin-top:8px">Publishing shows what a narrower definition breaks before it takes effect.</p>`);
+    H.setH($('#vers'), (a.versions || []).length ? a.versions.map(x => `<div class="ver"><span><b class="mono">${esc(x.v)}</b> ${x.status === 'current' ? '<span class="tag">current</span>' : '<span class="small muted">superseded</span>'}<br><span class="small muted">${H.ago(x.at)} · ${esc(H.nameOf(x.by))}${H.esc(x.note ? ' · ' + esc(x.note) : '')}${x.evalRun ? ` · evaluation ${x.evalRun.pass ? 'passed' : 'failed'}` : ''}</span></span>${x.status !== 'current' && x.snapshot ? `<button type="button" class="btn btn-sm" data-rollback="${esc(x.v)}">Roll back</button>` : ''}</div>`).join('') + '<p class="small muted" style="margin-top:8px">Rollback publishes the stored definition as a new version. History is never rewritten; runs in progress keep their version.</p>' : '<p class="small muted">Not published yet.</p>'); }
+  function impactHtml(imp) { return imp.length ? `<p class="label" style="margin:4px 0 6px">Impact</p><ul class="chk">${imp.map(x => `<li><span class="st ${H.esc(x.breaking ? 'st-warn' : 'st-idle')}"></span><span class="small">${esc(x.text)}</span></li>`).join('')}</ul>` : '<p class="small muted">No published work depends on what changes.</p>'; }
+  function openPub(kind, ver) { const a = ag(), f = kind === 'rollback' ? (a.versions.find(x => x.v === ver) || {}).snapshot : cur(), imp = H.publishImpact(a, f), brk = imp.some(x => x.breaking); PEND = {kind, ver, ack:brk};
+    $('#pubH').textContent = kind === 'rollback' ? `Roll back ${a.name} to ${ver}` : `Publish ${f.name}`; $('#noteField').hidden = kind === 'rollback';
+    H.setH($('#pubBody'), `<p class="small">${kind === 'rollback' ? `Publishes the stored ${esc(ver)} definition as a new version.` : 'New runs use this version.'} Runs already in progress keep the version they were authorized with.</p>${impactHtml(imp)}${brk ? '<label class="row small" style="margin-top:10px"><input type="checkbox" id="ackBox"> I understand the impact above; affected plans return for re-authorization</label>' : ''}`);
+    $('#pubGo').textContent = kind === 'rollback' ? 'Roll back' : 'Publish'; $('#pubNote').value = ''; Locus.open('pubDlg'); }
+  let t0 = null;
+  function save() { clearTimeout(t0); const a = ag(), f = collect(); t0 = setTimeout(() => { if (a.state !== 'Draft' && JSON.stringify(f) === JSON.stringify(H.pick(a, H.AGENT_FIELDS))) A.discardAgentDraft(ID); else A.saveAgentDraft(ID, f); }, 250); }
+  function onEdit(e) { const c = e && e.target.closest('[data-con]'); if (c) CONS[+c.dataset.con] = c.value;
+    const f = collect(); $('#fCaps').querySelectorAll('.decision').forEach((el, i) => { const d = H.evalCap(Object.keys(H.CAPS)[i], {cls:f.ceiling, engine:f.engine}); el.className = 'decision ' + d.d; el.textContent = decWord(d.d); });
+    if (e && e.target.id === 'fCeil') drawScopes(f); routeHint(); save(); }
+  $('#f').addEventListener('input', onEdit); $('#f').addEventListener('change', onEdit);
+  $('#addCons').onclick = () => { CONS.push(''); drawCons(); const i = document.querySelectorAll('[data-con]'); i[i.length - 1].focus(); save(); };
+  document.addEventListener('click', e => { const rc = e.target.closest('[data-rmcon]'); if (rc) { CONS.splice(+rc.dataset.rmcon, 1); drawCons(); save(); return; }
+    const rb = e.target.closest('[data-rollback]'); if (rb) { openPub('rollback', rb.dataset.rollback); return; }
+    if (e.target.id === 'discard') { A.discardAgentDraft(ID); fillForm(); Locus.toast('Draft discarded. The published version is unchanged.', ID); }
+    if (e.target.id === 'runEval') { clearTimeout(t0); const a = ag(), f = collect(); if (a.state === 'Draft' || JSON.stringify(f) !== JSON.stringify(H.pick(a, H.AGENT_FIELDS))) A.saveAgentDraft(ID, f); const r = A.evaluateAgent(ID); Locus.toast(r.pass ? 'Simulated evaluation passed for this draft' : 'Simulated evaluation failed. See the failing suites.', r.hash); $('#evalBox').focus(); }
+    if (e.target.id === 'publish') { clearTimeout(t0); const a = ag(), f = collect(); if (a.state === 'Draft' || JSON.stringify(f) !== JSON.stringify(H.pick(a, H.AGENT_FIELDS))) A.saveAgentDraft(ID, f);
+      const v = H.validateAgent(cur()); if (v.errors.length) { $('#checks').focus(); Locus.toast(`Fix ${v.errors.length} blocking check${v.errors.length === 1 ? '' : 's'} before publishing`); return; }
+      const ev = ag().evalRun; if (!ev || ev.hash !== H.defHash(cur()) || !ev.pass) { $('#evalBox').focus(); Locus.toast(ev && ev.hash === H.defHash(cur()) ? 'The evaluation of this draft failed' : 'Evaluate this draft before publishing'); return; }
+      openPub('publish'); } });
+  $('#pubGo').onclick = () => { if (PEND.ack && !($('#ackBox') || {}).checked) { $('#ackBox').focus(); Locus.toast('Confirm the impact before continuing'); return; }
+    const r = PEND.kind === 'rollback' ? A.rollbackAgent(ID, PEND.ver, true) : A.publishAgent(ID, $('#pubNote').value.trim(), true); Locus.close();
+    if (r.ok) Locus.toast(`${PEND.kind === 'rollback' ? 'Rolled back as' : 'Published'} ${r.version}. New runs use it.`, ID); else Locus.toast((r.errors || ['Not published'])[0]); fillForm(); };
+  if (!ag()) { document.querySelector('.bld').innerHTML = `<div class="empty">Agent ${esc(ID)} was not found. <a href="library.html">Back to Library</a></div>`; }
+  else { fillForm(); side(); LocusState.on(side); const c = document.querySelector('.crumbs .cur'); if (c) c.textContent = ag().name; }
+</script>
+</body>
+</html>

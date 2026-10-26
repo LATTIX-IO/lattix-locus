@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run · Activity · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+<style>
+  .run-head { border-bottom: 1px solid var(--border); padding: 20px 28px 0; }
+  .run-meta { display: flex; flex-wrap: wrap; margin: 14px 0 0; border-top: 1px solid var(--border); }
+  .run-meta > div { padding: 10px 20px 10px 0; margin-right: 20px; border-right: 1px solid var(--border); }
+  .run-meta > div:last-child { border-right: 0; }
+  .run-meta .v { font: 500 13px var(--font-mono); margin-top: 2px; }
+  .tabpad { padding: 20px 28px 32px; }
+  .banner { margin: 14px 0 0; }
+  .stream-bar { display: flex; gap: 8px; align-items: center; padding: 6px 28px; font-size: 12px; border-bottom: 1px solid var(--border); color: var(--muted); flex-wrap: wrap; }
+  .stream-bar.down { background: var(--warn-bg, var(--surface)); color: var(--fg); }
+  .stream-bar.resync { color: var(--fg); }
+  .sim-ctl { padding: 8px 28px; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .sim-ctl summary { cursor: pointer; display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+  .is-stale .run-meta, .is-stale .stage-bar { opacity: .6; }
+  .cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 8px; max-width: 72ch; }
+  .cols > div { border: 1px solid var(--border); border-radius: var(--r); padding: 8px 10px; font-size: 12px; }
+  @media (max-width: 860px) { .stream-bar, .sim-ctl { padding-left: 16px; padding-right: 16px; } .run-head, .tabpad { padding-left: 16px; padding-right: 16px; } .cols { grid-template-columns: 1fr; } .run-meta > div { padding-right: 12px; margin-right: 12px; } }
+</style>
+</head>
+<body data-nav="activity" data-crumbs='[["Activity","activity.html"],["Runs","activity.html"],["Run",""]]'>
+<main id="main">
+  <div class="ws has-insp">
+    <div style="min-width:0">
+      <div class="stream-bar" id="stream" role="status" aria-live="polite" data-od-id="event-stream-status"></div>
+      <section class="run-head" data-od-id="run-header" id="head"></section>
+      <details class="sim-ctl" data-od-id="failure-simulation"><summary><span class="st st-sim"></span>Simulate a failure on this run</summary>
+        <div class="row" style="flex-wrap:wrap;margin-top:8px"><button class="btn btn-sm" data-simulate="worker">Worker loss</button><button class="btn btn-sm" data-simulate="timeout">Step timeout</button><button class="btn btn-sm" data-simulate="stream">Event stream drop</button><span class="small muted">Worker loss and timeout apply to a running step. Revoke a single grant from Policy and grants.</span></div></details>
+      <div class="tabs" role="tablist" aria-label="Run views" style="padding:0 20px">
+        <button role="tab" aria-selected="true" aria-controls="p-conv" id="t-conv" data-hash="conversation">Conversation</button>
+        <button role="tab" aria-selected="false" aria-controls="p-trace" id="t-trace" tabindex="-1" data-hash="trace">Trace</button>
+        <button role="tab" aria-selected="false" aria-controls="p-rat" id="t-rat" tabindex="-1" data-hash="rationale">Rationale</button>
+        <button role="tab" aria-selected="false" aria-controls="p-pol" id="t-pol" tabindex="-1" data-hash="policy">Policy and grants</button>
+        <button role="tab" aria-selected="false" aria-controls="p-apr" id="t-apr" tabindex="-1" data-hash="approvals">Approvals<span class="count" id="cApr"></span></button>
+        <button role="tab" aria-selected="false" aria-controls="p-out" id="t-out" tabindex="-1" data-hash="outcome">Outcome<span class="count" id="cOut"></span></button>
+        <button role="tab" aria-selected="false" aria-controls="p-ckp" id="t-ckp" tabindex="-1" data-hash="checkpoints">Checkpoints</button>
+      </div>
+      <section role="tabpanel" id="p-conv" aria-labelledby="t-conv" data-od-id="run-conversation">
+        <div class="tabpad"><div class="row-b" style="margin-bottom:14px;flex-wrap:wrap"><span class="small muted">Messages between you, the orchestrator and agents. Rationale shown is the summary each agent records, linked to trace events.</span><label class="row small"><input type="checkbox" class="toggle" id="showRat" checked> Show rationale</label></div>
+          <div class="chat" id="chat" aria-live="polite"></div></div>
+        <form class="steer-box" id="steerForm" data-od-id="steer-composer" autocomplete="off">
+          <div class="composer">
+            <label for="steerIn" style="position:absolute;left:-9999px">Message the agents</label>
+            <textarea id="steerIn" rows="2" placeholder="Message the team or steer a specific agent…"></textarea>
+            <div class="cf">
+              <select class="select" id="steerTo" style="height:26px;width:auto;font-size:12px" aria-label="Send to"></select>
+              <div class="seg" role="group" aria-label="Message type" id="steerMode"><button type="button" aria-pressed="true">Message</button><button type="button" aria-pressed="false">Redirect</button><button type="button" aria-pressed="false">Pause and ask</button></div>
+              <span style="flex:1"></span><span class="small muted hide-narrow" id="steerHint">Delivered at the next step boundary</span>
+              <button type="submit" class="btn btn-sm btn-primary" id="steerSend">Send</button>
+            </div>
+          </div>
+        </form>
+      </section>
+      <section role="tabpanel" id="p-trace" aria-labelledby="t-trace" class="tabpad" hidden data-od-id="run-trace"><div id="trace" data-select-group="trace"></div></section>
+      <section role="tabpanel" id="p-rat" aria-labelledby="t-rat" class="tabpad" hidden data-od-id="run-rationale"><div id="rat"></div></section>
+      <section role="tabpanel" id="p-pol" aria-labelledby="t-pol" class="tabpad" hidden data-od-id="run-policy"><div id="pol"></div></section>
+      <section role="tabpanel" id="p-apr" aria-labelledby="t-apr" class="tabpad" hidden data-od-id="run-approvals"><div id="apr"></div></section>
+      <section role="tabpanel" id="p-out" aria-labelledby="t-out" class="tabpad" hidden data-od-id="run-outcome"><div id="out"></div></section>
+      <section role="tabpanel" id="p-ckp" aria-labelledby="t-ckp" class="tabpad" hidden data-od-id="run-checkpoints"><div id="ckp"></div></section>
+    </div>
+    <aside class="insp" aria-label="Event inspector" data-od-id="event-inspector"><div class="insp-h"><div class="t"><p class="label" id="iKind">Event</p><h2 id="iTitle" style="margin-top:4px">Select an event</h2></div></div><div class="insp-b" id="iBody"><p class="small muted">Choose an event in the trace to inspect its actor, policy decision and evidence.</p></div></aside>
+  </div>
+  <div class="dialog" id="stopDlg" role="dialog" aria-labelledby="spH" data-od-id="stop-dialog">
+    <div class="dialog-h"><h2 id="spH">Stop this run?</h2></div>
+    <div class="dialog-b"><p class="small">Grants are revoked immediately and pending approvals are withdrawn. Artifacts produced so far are kept. Checkpoints remain available for 30 days.</p><div class="field"><label for="stopType">Type the run ID to confirm</label><input id="stopType" class="input mono" autocomplete="off"></div></div>
+    <div class="dialog-f"><button class="btn" type="button" onclick="Locus.close()">Cancel</button><button class="btn btn-danger" id="stopGo" disabled>Stop run</button></div>
+  </div>
+</main>
+<script src="locus-state.js"></script>
+<script src="locus.js"></script>
+<script>
+  /* one idempotency key per page view: double clicks and retries resolve to the same run */
+  const START_KEY = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const {H, A} = LocusState, $ = s => document.querySelector(s), esc = H.esc;
+  const setH = H.setH;
+  const RID = new URLSearchParams(location.search).get('run') || 'RUN-48213';
+  let selEv = null; const REV = {deliverable:'Accepted', objective:'Achieved', note:''};
+  /* every store value is untrusted: text goes through esc(), attribute values through esc(), URLs through enc(), CSS classes through whitelists */
+  const enc = v => encodeURIComponent(String(v == null ? '' : v)), num = v => (Number(v) || 0).toFixed(2);
+  const dcls = d => /deny/.test(d) ? 'deny' : /approval/.test(d) ? 'approval' : 'permit';
+  const dlabel = d => d === 'approval' ? 'Requires approval' : d === 'permit' ? 'Permit' : 'Deny';
+  const av = ref => ref === 'DR' ? '<span class="av">DR</span>' : `<span class="av ai">${ref === 'LO' ? 'LO' : ref === 'SYS' ? 'PE' : esc(H.nameOf(ref).split(' ').map(w => w[0]).join('').slice(0, 2))}</span>`;
+  const nodeCls = k => k === 'fail' || k === 'deny' ? 'crit' : k === 'approval' ? 'warn' : ['complete','policy','sys','goal'].includes(k) ? 'ok' : '';
+  function render() { const r = H.run(RID);
+    if (!r) { setH($('#head'), `<div class="empty" style="padding:40px 0"><b>Run ${esc(RID)} was not found.</b><br>It may belong to sample data that was reset. <a href="activity.html">Open all runs</a>.</div>`); return; }
+    document.title = r.id + ' · Activity · Lattix Locus'; const cur = document.querySelector('.crumbs .cur'); if (cur) cur.textContent = r.id;
+    const st = r.steps[Math.min(r.cursor, r.steps.length - 1)], apr = r.waiting ? H.apr(r.waiting) : null;
+    const engines = [...new Set(r.plan.steps.map(s => H.agent(s.agent)).filter(Boolean).map(a => H.engine(a.engine).name))].join(', ');
+    const ctl = {queued:['<button class="btn" data-act="stop">Stop</button>'], running:['<button class="btn" data-act="pause">Pause</button>','<button class="btn" data-act="steer">Steer</button>','<button class="btn btn-ghost" data-act="stop">Stop</button>'], paused:['<button class="btn btn-primary" data-act="resume">Resume</button>','<button class="btn" data-act="steer">Steer</button>','<button class="btn btn-ghost" data-act="stop">Stop</button>'], blocked:[apr && apr.status === 'pending' ? `<button class="btn btn-primary" data-review="${esc(apr.id)}">Review decision</button>` : apr && apr.status === 'expired' ? `<button class="btn btn-primary" data-review="${esc(apr.id)}">Request expired · review</button>` : '<button class="btn" data-act="approvals">Approvals</button>','<button class="btn" data-act="steer">Steer</button>','<button class="btn btn-ghost" data-act="stop">Stop</button>'], failed:['<button class="btn btn-primary" data-act="retry">Retry from last checkpoint</button>','<button class="btn btn-ghost" data-act="stop">Stop</button>'], completed:[r.review && r.review.status === 'pending' ? '<button class="btn btn-primary" data-act="outcome">Review outcome</button>' : '<button class="btn" data-act="outcome">View outcome</button>'], canceled:['<button class="btn" data-act="rerun">Start a new run</button>'], recovering:['<button class="btn btn-ghost" data-act="stop">Stop</button>'], canceling:[]}[r.status];
+    const stages = [['Describe','done'],['Plan and configure','done'],['Authorize', r.grants.some(g => g.status === 'denied') ? 'done' : 'done'],['Run', ['failed','canceled'].includes(r.status) ? 'bad' : r.status === 'completed' ? 'done' : 'cur'],['Review outcome', r.status === 'completed' ? (r.review.status === 'closed' ? 'done' : 'cur') : '']];
+    const banner = r.status === 'queued' ? `<div class="callout banner"><span>${Locus.icon('clock')}</span><p class="small"><b>Starting.</b> Allocating ${esc(r.node)} and minting ${r.grants.length} scoped grants. The trace begins when the policy engine admits the run.</p></div>`
+      : r.status === 'blocked' && apr && apr.status === 'expired' ? `<div class="callout warn banner"><span>${Locus.icon('clock')}</span><div class="small" style="flex:1"><b>The approval request expired.</b> ${esc(apr.title)} was not decided in time, so nothing was sent. The run stays blocked until the agent requests it again or you stop the run.</div><button class="btn btn-sm" data-review="${esc(apr.id)}">Review</button></div>`
+      : r.status === 'blocked' && apr ? `<div class="callout warn banner"><span>${Locus.icon('alert')}</span><div class="small" style="flex:1"><b>Paused for your decision.</b> ${esc(apr.title)} · ${esc(apr.why)} (${esc(apr.rule)}). Nothing has been executed for this action. Expires in <span data-exp="${esc(apr.id)}">${H.left(apr.expires)}</span>.</div><button class="btn btn-sm" data-review="${esc(apr.id)}">Review decision</button></div>`
+      : r.status === 'recovering' ? `<div class="callout warn banner"><span>${Locus.icon('node')}</span><p class="small"><b>Worker lost on ${esc(r.recover ? r.recover.from : r.node)}.</b> Reassigning the lease and resuming step ${r.cursor + 1} from ${esc((r.checkpoints[r.checkpoints.length - 1] || {id:'the run start'}).id)}. Grants are bound to the run, so nothing new is authorized. Completed tool calls are not repeated.</p></div>`
+      : r.status === 'canceling' ? `<div class="callout banner"><span>${Locus.icon('stop')}</span><p class="small"><b>Stopping.</b> All grants were revoked at ${H.hm(r.cancelAt)}; any call the worker attempts now is refused. Waiting for the worker to acknowledge.</p></div>`
+      : r.status === 'paused' ? `<div class="callout warn banner"><span>${Locus.icon('pause')}</span><p class="small"><b>Paused by you.</b> Grants stay active; the run continues from step ${r.cursor + 1} when resumed.</p></div>`
+      : r.status === 'failed' ? `<div class="callout crit banner"><span>${Locus.icon('alert')}</span><div class="small" style="flex:1"><b>Step ${r.cursor + 1} failed.</b> ${esc(r.error)}. The last checkpoint is ${esc((r.checkpoints[r.checkpoints.length - 1] || {label:'run start'}).label)}.</div><button class="btn btn-sm" data-act="retry">Retry</button></div>`
+      : r.status === 'canceled' ? `<div class="callout banner"><span>${Locus.icon('stop')}</span><p class="small"><b>Stopped.</b> All grants were revoked and pending approvals withdrawn. Artifacts and checkpoints are kept.</p></div>`
+      : r.status === 'completed' ? `<div class="callout banner"><span>${Locus.icon('check')}</span><p class="small"><b>${H.esc(r.review.status === 'closed' ? (r.review.deliverable === 'Accepted' ? 'Deliverable accepted and task closed.' : 'Reviewed: deliverable ' + esc(String(r.review.deliverable).toLowerCase()) + '; task returned for rework.') : 'Run completed. The outcome is ready for your review.')}</b> ${r.artifacts.length} artifact${H.esc(r.artifacts.length === 1 ? '' : 's')} · ${r.review.memory.length} memory proposal${H.esc(r.review.memory.length === 1 ? '' : 's')}.</p></div>` : '';
+    setH($('#head'), `<div class="stage-bar" aria-label="Task journey">${stages.map(([l, c], i) => `<div class="${H.esc(c)}" ${c === 'cur' || c === 'bad' ? 'aria-current="step"' : ''}><span class="n">${String(i + 1).padStart(2, '0')}</span>${H.esc(l)}</div>`).join('')}</div>
+      <div class="row-b" style="align-items:flex-start;flex-wrap:wrap"><div style="min-width:260px;flex:1"><div class="row" style="flex-wrap:wrap">${H.runChip(r)}<span class="cls">${esc(r.plan.cls)}</span><span class="id">${esc(r.id)}</span></div>
+      <h1 style="margin-top:8px">${esc(r.title)}</h1><p class="muted" style="margin-top:4px">Task <a class="ent" href="task.html?task=${enc(r.task)}"><i>Task</i> ${esc(r.task)}</a> · requested by Dana Reyes · executed by ${H.assignee(r.plan.assignee)}</p></div>
+      <div class="row" style="flex-wrap:wrap" data-od-id="run-controls">${ctl.join('')}</div></div>${banner}
+      <div class="run-meta"><div><p class="label">Started</p><p class="v">${H.esc(r.started ? H.hm(r.started) : '—')}</p></div><div><p class="label">Elapsed</p><p class="v" id="elapsed"></p></div><div><p class="label">Progress</p><p class="v">Step ${Math.min(r.cursor + 1, r.steps.length)} of ${r.steps.length}</p></div><div><p class="label">Model spend</p><p class="v">$${num(r.cost)} / $${num(r.plan.budget)} cap</p></div><div><p class="label">Node</p><p class="v">${esc(r.node)}</p></div><div><p class="label">Engines</p><p class="v">${esc(engines)}</p></div></div>`);
+    $('#elapsed').textContent = H.elapsed(r); $('#cApr').textContent = H.s.approvals.filter(a => a.run === r.id).length || ''; $('#cOut').textContent = r.artifacts.length || '';
+    // conversation
+    const showR = $('#showRat').checked;
+    setH($('#chat'), r.chat.map(m => `<div class="cmsg${H.esc(m.kind === 'steer' ? ' steer' : '')}">${av(m.from)}<div><div class="hd"><b>${esc(H.nameOf(m.from))}</b><span class="to">→ ${esc(m.to === 'team' ? 'team' : H.nameOf(m.to))}</span><span class="tm">${H.hm(m.t).slice(0, 5)}</span></div><div class="bd">${m.kind === 'steer' ? `<span class="steer-k">Steer · ${esc((m.mode || '').toLowerCase())}</span>` : ''}${esc(m.text)}</div>${m.rationale && showR ? `<details class="reason"><summary>Recorded rationale · ${m.rationale.basis.length} source${H.esc(m.rationale.basis.length === 1 ? '' : 's')}</summary><ol><li>${esc(m.rationale.summary)}</li>${m.rationale.basis.map(b => `<li>Evidence: ${esc(b)}</li>`).join('')}${m.rationale.criteria ? `<li>Criterion: ${esc(m.rationale.criteria)}</li>` : ''}</ol></details>` : ''}</div></div>`).join('') + (r.status === 'running' ? `<div class="typing"><span class="st st-run"></span><span>${esc(H.nameOf(st.actor))} · ${esc(st.title)}…</span></div>` : '') || '<p class="empty">The conversation starts when the run is admitted.</p>');
+    const ended = ['completed','canceled','canceling'].includes(r.status); $('#steerIn').disabled = ended; $('#steerSend').disabled = ended; $('#steerHint').textContent = ended ? 'This run has ended. Start a follow-up task to act on new instructions.' : r.status === 'blocked' ? 'Delivered when the approval is decided' : 'Delivered at the next step boundary';
+    const opts = [['team','Whole team (via orchestrator)'], ...[...new Set(r.plan.steps.map(s => s.agent))].map(a => [a, H.nameOf(a)])];
+    if ($('#steerTo').options.length !== opts.length) $('#steerTo').innerHTML = opts.map(([v, l]) => `<option value="${esc(v)}">To: ${esc(l)}</option>`).join('');
+    // trace
+    setH($('#trace'), r.events.map((e, i) => `<div class="tl-row"><span class="tm">${H.hm(e.t)}</span><span class="nd ${H.esc(nodeCls(e.k))}"></span><div><button class="ev ${selEv === i ? 'is-sel' : ''}" data-ev="${i}"><b style="font-weight:500">${esc(e.title)}</b><div class="small muted">${esc(e.detail || '')}</div>${e.policy ? `<div style="margin-top:4px"><span class="tag">${esc(e.policy.rule)}</span> <span class="decision ${dcls(e.policy.d)}">${esc(e.policy.d)}</span></div>` : ''}</button></div></div>`).join('') + (['running','queued','paused','blocked','recovering'].includes(r.status) ? r.steps.slice(r.cursor + (r.status === 'blocked' ? 1 : 0)).map(s0 => `<div class="tl-row"><span class="tm">next</span><span class="nd pend"></span><div class="small muted" style="padding:2px 0">${esc(s0.title)} · ${esc(H.nameOf(s0.actor))}</div></div>`).join('') : ''));
+    // rationale
+    const rats = r.chat.filter(m => m.rationale), asm = r.events.find(e => e.assembly);
+    setH($('#rat'), `<div class="callout" style="margin-bottom:16px"><span>${Locus.icon('info')}</span><p class="small"><b>What this shows.</b> Rationale summaries recorded by each agent at the time of action, with the evidence and criteria they cite. Locus does not expose hidden model reasoning; summaries are claims to check against the cited evidence.</p></div>`
+      + (asm ? `<div class="panel" style="margin-bottom:16px"><div class="panel-h"><h3>Assembly · reasoning columns</h3><span class="tag">locus/assembly</span></div><div class="panel-b"><div class="cols">${asm.assembly.map(([n, s0, c]) => `<div><b>${esc(n)}</b><br><span class="st ${H.esc(s0 === 'Supports' ? 'st-ok' : 'st-warn')}">${esc(s0)} · ${num(c)}</span></div>`).join('')}</div><p class="small muted" style="margin-top:8px">Weighted support fused by the assembly; dissent is recorded, not averaged away.</p></div></div>` : '')
+      + (rats.length ? `<div class="panel tbl-wrap"><table class="tbl"><thead><tr><th>When</th><th>Agent</th><th>Recorded summary</th><th>Evidence cited</th><th>Criterion</th></tr></thead><tbody>${rats.map(m => `<tr><td class="num">${H.hm(m.t)}</td><td>${esc(H.nameOf(m.from))}</td><td style="max-width:360px">${esc(m.rationale.summary)}</td><td class="small">${m.rationale.basis.map(esc).join('<br>')}</td><td class="small">${esc(m.rationale.criteria || '—')}</td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">No rationale recorded yet.</p>'));
+    // policy and grants
+    const pevs = r.events.filter(e => e.policy);
+    setH($('#pol'), `<div class="panel tbl-wrap" style="margin-bottom:16px"><div class="panel-h"><h3>Capability grants for this run</h3><span class="small muted">One grant per agent, capability and resource · pending → active → used / expired / revoked / denied</span></div><table class="tbl"><thead><tr><th scope="col">Agent</th><th scope="col">Capability</th><th scope="col">Resource</th><th scope="col">Decision</th><th scope="col">Rule</th><th scope="col">Lifecycle state</th><th scope="col"><span class="vh">Actions</span></th></tr></thead><tbody>${r.grants.map(g => `<tr><td>${g.agent ? esc(H.nameOf(g.agent)) : '<span class="muted">No agent</span>'}</td><td class="t">${esc((H.CAPS[g.cap] || {label:g.cap}).label)}<br><span class="id">${esc(g.cap)}</span></td><td class="small mono">${esc(g.resource || '—')}</td><td><span class="decision ${dcls(g.d)}">${dlabel(g.d)}</span></td><td class="id">${esc(g.rule)}</td><td><span class="st ${H.esc(/revoked|denied/.test(g.status) ? 'st-crit' : /expired|used/.test(g.status) ? 'st-idle' : /active/.test(g.status) ? 'st-ok' : '')}">${esc(g.status)}</span><br><span class="id">${esc(g.id || '')}</span></td><td class="r">${/^(active|pending)/.test(g.status) && !['completed','canceled','canceling'].includes(r.status) ? `<button class="btn btn-sm btn-ghost" data-revoke="${esc(g.id)}" aria-label="Revoke ${esc(g.cap)} for ${esc(H.nameOf(g.agent))}">Revoke</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
+      <div class="panel tbl-wrap"><div class="panel-h"><h3>Policy decisions during the run</h3></div><table class="tbl"><thead><tr><th>Time</th><th>Action</th><th>Resource</th><th>Decision</th><th>Rule</th></tr></thead><tbody>${pevs.map(e => `<tr><td class="num">${H.hm(e.t)}</td><td class="mono">${esc(e.policy.action)}</td><td>${esc(e.policy.resource)}</td><td><span class="decision ${dcls(e.policy.d)}">${esc(e.policy.d)}</span></td><td class="id">${esc(e.policy.rule)}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No per-action decisions recorded yet.</td></tr>'}</tbody></table><div class="panel-f small muted">Decisions are made by the policy engine; this view reports them.</div></div>`);
+    // approvals
+    const aps = H.s.approvals.filter(a => a.run === r.id);
+    setH($('#apr'), aps.map(a => `<div class="panel" style="margin-bottom:12px" data-od-id="approval-${esc(String(a.id).toLowerCase())}"><div class="panel-h"><h3>${esc(a.title)}</h3>${a.status === 'pending' ? '<span class="st st-warn">Pending</span>' : a.status === 'approved' ? '<span class="st st-ok">Approved once</span>' : a.status === 'denied' ? '<span class="st st-crit">Denied</span>' : a.status === 'expired' ? '<span class="st st-warn">Expired · not sent</span>' : '<span class="st st-idle">Withdrawn</span>'}</div><div class="panel-b grid g21"><div class="stack"><dl class="kv"><dt>Requested by</dt><dd>${esc(a.by)} · ${H.hm(a.requested)}</dd><dt>Action</dt><dd class="mono">${esc(a.action)}</dd><dt>Destination</dt><dd>${esc(a.resource)} · ${esc(a.egress || '')}</dd><dt>Data released</dt><dd>${esc(a.data || '—')}</dd><dt>Grant</dt><dd class="mono">${esc(a.grant || '—')} · once</dd><dt>Expires</dt><dd>${a.status === 'pending' ? `<span data-exp="${esc(a.id)}">expires in ${H.left(a.expires)}</span>` : '—'}</dd><dt>If approved</dt><dd>${esc(a.onApprove)}</dd><dt>If denied</dt><dd>${esc(a.onDeny)}</dd>${a.decidedAt ? `<dt>Decision</dt><dd>${esc(a.decidedBy)} · ${H.hm(a.decidedAt)}${H.esc(a.note ? ' · “' + esc(a.note) + '”' : '')}${a.decision ? `<br><span class="id">${esc(a.decision.fp)} · bundle ${esc(a.decision.bundle)} · step-up ${esc(a.decision.stepUp)}</span>` : ''}</dd>` : ''}</dl>
+      ${a.status === 'pending' ? `<div class="row"><button class="btn btn-primary" data-review="${esc(a.id)}">Review decision</button><span class="small muted">Shows the exact action, destination, data and expiry before you decide.</span></div>` : a.status === 'expired' && !a.replacedBy ? `<div class="row"><button class="btn" data-review="${esc(a.id)}">Review expired request</button></div>` : ''}</div>
+      <div class="panel panel-s"><div class="panel-b"><p class="label" style="margin-bottom:6px">Why you are being asked</p><dl class="kv"><dt>Rule</dt><dd>${esc(a.rule)} · bundle ${esc(a.policy ? a.policy.bundle : '—')}</dd><dt>Condition</dt><dd>${esc(a.why)}</dd><dt>Approver</dt><dd>Task owner${H.esc(a.stepUp ? ', with step-up' : '')}</dd><dt>Scope</dt><dd>This action only, once</dd></dl></div></div></div></div>`).join('') || '<p class="empty">No approvals were required in this run.</p>');
+    // outcome
+    const arts = r.artifacts.map(H.art);
+    const rv = r.review;
+    setH($('#out'), `<div class="panel tbl-wrap" style="margin-bottom:16px"><div class="panel-h"><h3>Artifacts</h3></div><table class="tbl"><thead><tr><th>Artifact</th><th>Type</th><th>Version</th><th>Produced by</th><th>Integrity</th></tr></thead><tbody>${arts.map(x => `<tr><td class="t">${esc(x.title)}<br><span class="id">${esc(x.id)}</span></td><td>${esc(x.type)}</td><td class="num">${esc(x.version)}</td><td>${esc(H.nameOf(x.by))}</td><td><span class="st st-ok">Hash recorded</span> <span class="id">${esc(x.hash)}</span></td></tr>`).join('') || '<tr><td colspan="5" class="empty">No artifacts yet.</td></tr>'}</tbody></table></div>`
+      + (r.status !== 'completed' ? `<p class="small muted">Outcome review opens when the run completes. ${H.esc(r.status === 'failed' ? 'Recover the run first.' : r.status === 'canceled' ? 'This run was stopped; start a new run from the task to produce an outcome.' : '')}</p>`
+      : `<div class="panel" data-od-id="memory-proposals"><div class="panel-h"><h3>Proposed memory</h3><span class="small muted">Nothing is written until you accept it</span></div><ul class="list">${rv.memory.map((m, i) => `<li><span class="st ${H.esc(m.state === 'accepted' ? 'st-ok' : m.state === 'rejected' ? 'st-idle' : 'st-sim')}"></span><div class="li-b"><b>${esc(m.text)}</b><span class="small muted">Scope <span class="mono">${esc(m.scope)}</span> · namespace <span class="mono">${esc(m.ns)}</span> · proposed by ${esc(r.id)}${m.mem ? ` · written as <a href="memory.html?mem=${enc(m.mem)}">${esc(m.mem)}</a>` : ''}</span></div>${rv.status === 'pending' ? `<div class="row"><button class="btn btn-sm ${H.esc(m.state === 'accepted' ? 'btn-primary' : '')}" data-mem="${i}:1" aria-pressed="${m.state === 'accepted'}">Accept</button><button class="btn btn-sm" data-mem="${i}:0" aria-pressed="${m.state === 'rejected'}">Reject</button></div>` : `<span class="small">${esc(m.state)}</span>`}</li>`).join('') || '<li class="empty" style="display:block">This run proposed no memory.</li>'}</ul>
+        </div>
+        <div class="panel" style="margin-top:16px" data-od-id="outcome-review"><div class="panel-h"><h3>Outcome review</h3><span class="small muted">Execution, deliverable and objective are judged separately</span></div>
+        ${rv.status === 'pending' ? `<div class="panel-b grid g3">
+          <div><p class="label">Execution</p><p style="margin-top:6px"><span class="st st-ok">${r.events.some(e => e.k === 'deny' || (e.policy && /deny/.test(e.policy.d))) ? 'Completed with policy denials' : 'Completed'}</span></p><p class="small muted" style="margin-top:4px">Derived from the run record; not a judgment of quality.</p></div>
+          <fieldset style="border:0;padding:0;margin:0"><legend class="label">Deliverable</legend>${['Accepted','Changes requested','Rejected'].map(v => `<label class="row small" style="margin-top:6px"><input type="radio" name="dlv" value="${H.esc(v)}" ${REV.deliverable === v ? 'checked' : ''}> ${H.esc(v)}</label>`).join('')}</fieldset>
+          <fieldset style="border:0;padding:0;margin:0"><legend class="label">Objective</legend>${['Achieved','Partly achieved','Not achieved','Too early to tell'].map(v => `<label class="row small" style="margin-top:6px"><input type="radio" name="obj" value="${H.esc(v)}" ${REV.objective === v ? 'checked' : ''}> ${H.esc(v)}</label>`).join('')}</fieldset></div>
+          <div class="panel-f" style="flex-wrap:wrap"><label for="revNote" style="position:absolute;left:-9999px">Review note</label><input id="revNote" class="input" placeholder="Note for the record (optional)" style="flex:1;min-width:200px"><span class="small muted">${rv.memory.filter(m => m.state === 'proposed').length} undecided proposals will be rejected${H.esc(REV.deliverable === 'Rejected' ? '; no memory is written for a rejected deliverable' : '')}</span>
+          <button class="btn btn-primary" data-act="close">${H.esc(REV.deliverable === 'Accepted' ? 'Accept deliverable and close task' : 'Record review and return task for rework')}</button></div>`
+        : `<div class="panel-b"><dl class="kv"><dt>Execution</dt><dd>${esc(rv.execution)}</dd><dt>Deliverable</dt><dd>${esc(rv.deliverable)}</dd><dt>Objective</dt><dd>${esc(rv.objective)}</dd><dt>Reviewed by</dt><dd>${esc(rv.by)} · ${H.hm(rv.at).slice(0, 5)}</dd>${rv.note ? `<dt>Note</dt><dd>${esc(rv.note)}</dd>` : ''}</dl><p class="small" style="margin-top:8px">Task ${esc(r.task)} is ${H.esc(rv.deliverable === 'Accepted' ? 'closed' : 'back in Work for rework')}. <a href="memory.html">Open Memory</a></p></div>`}</div>`));
+    // checkpoints
+    setH($('#ckp'), `<div class="panel"><ul class="list">${r.checkpoints.slice().reverse().map(c => `<li><span class="st st-ok"></span><div class="li-b"><b>${esc(c.id)} · ${esc(c.label)}</b><span class="small muted">${H.hm(c.t)} · ${esc(r.node)}</span></div></li>`).join('') || '<li class="empty" style="display:block">Checkpoints are written after each completed step.</li>'}</ul>${r.status === 'failed' ? '<div class="panel-f"><button class="btn btn-sm btn-primary" data-act="retry">Retry from last checkpoint</button></div>' : ''}</div>`);
+    if (selEv != null) showEv(r, selEv);
+  }
+  function showEv(r, i) { const e = r.events[i]; if (!e) return; $('#iKind').textContent = ({policy:'Policy decision', deny:'Policy decision', approval:'Approval request', fail:'Failure', handoff:'Delegation', assembly:'Reasoning assembly', artifact:'Artifact', memory:'Memory retrieval', engine:'Engine session'})[e.k] || 'Agent step'; $('#iTitle').textContent = e.title;
+    setH($('#iBody'), `<dl class="kv"><dt>Actor</dt><dd>${esc(H.nameOf(e.actor))}</dd><dt>Time</dt><dd class="mono">${H.hm(e.t)}</dd>${e.policy ? `<dt>Action</dt><dd class="mono">${esc(e.policy.action)}</dd><dt>Resource</dt><dd>${esc(e.policy.resource)}</dd><dt>Decision</dt><dd>${esc(e.policy.d)}</dd><dt>Rule</dt><dd>${esc(e.policy.rule)}</dd>` : ''}${e.apr ? `<dt>Approval</dt><dd>${esc(e.apr)}</dd>` : ''}</dl><p class="small">${esc(e.detail || '')}</p><div class="panel panel-s"><div class="panel-b small"><p class="label" style="margin-bottom:6px">Raw event</p><pre class="code" style="background:var(--bg)">${esc(JSON.stringify({run:r.id, kind:e.k, actor:e.actor, ts:e.t, policy:e.policy || undefined}, null, 1))}</pre></div></div>`); }
+  document.addEventListener('click', e => { const r = H.run(RID); if (!r) return;
+    const ev = e.target.closest('[data-ev]'); if (ev) { selEv = +ev.dataset.ev; render(); return; }
+    const rv0 = e.target.closest('[data-revoke]'); if (rv0) { if (STREAM.state !== 'live') return; A.revokeGrant(RID, rv0.dataset.revoke); Locus.toast('Grant revoked. Calls using it are refused from now on.', rv0.dataset.revoke); return; }
+    const sm = e.target.closest('[data-simulate]'); if (sm) { if (sm.dataset.simulate === 'stream') { STREAM.drop(); } else { A.simulate(RID, sm.dataset.simulate); } return; }
+    const m = e.target.closest('[data-mem]'); if (m) { if (STREAM.state !== 'live') return; const [i, a] = m.dataset.mem.split(':'); A.reviewMemory(RID, +i, a === '1'); return; }
+    const b = e.target.closest('[data-act]'); if (!b) return; const act = b.dataset.act; if (STREAM.state !== 'live' && ['pause','resume','retry','stop','rerun','close'].includes(act)) return;
+    if (act === 'pause') { A.pause(RID); Locus.toast('Paused at the current step', RID); }
+    if (act === 'resume') { A.resume(RID); Locus.toast('Resumed', RID); }
+    if (act === 'retry') { const res = A.retry(RID) || {}; Locus.toast(res.error || 'Retrying from the last checkpoint', RID); }
+    if (act === 'steer') { document.getElementById('t-conv').click(); $('#steerIn').focus(); }
+    if (act === 'approvals') document.getElementById('t-apr').click();
+    if (act === 'outcome') document.getElementById('t-out').click();
+    if (act === 'stop') { $('#stopType').value = ''; $('#stopType').placeholder = RID; $('#stopGo').disabled = true; Locus.open('stopDlg'); }
+    if (act === 'rerun') { const res = A.startRun(r.task, START_KEY); if (res.error) Locus.toast(res.error, res.run); location.href = res.run ? 'activity-run.html?run=' + res.run : 'plan-review.html?draft=' + encodeURIComponent(res.draft); }
+    if (act === 'close') { REV.note = ($('#revNote') || {}).value || ''; A.closeOutcome(RID, {...REV}); Locus.toast(REV.deliverable === 'Accepted' ? 'Deliverable accepted. Task closed; accepted memory written with provenance.' : 'Review recorded. Task returned to Work for rework.', r.task); }
+  });
+  $('#stopType').oninput = () => { $('#stopGo').disabled = STREAM.state !== 'live' || $('#stopType').value.trim() !== RID; };
+  $('#stopGo').onclick = () => { if (STREAM.state !== 'live') return; A.cancel(RID); Locus.close(); Locus.toast('Grants revoked. Waiting for the worker to acknowledge the stop.', RID); };
+  $('#showRat').onchange = render;
+  document.addEventListener('change', e => { if (e.target.name === 'dlv') { REV.deliverable = e.target.value; render(); } if (e.target.name === 'obj') { REV.objective = e.target.value; render(); } });
+  $('#steerForm').onsubmit = e => { e.preventDefault(); if (STREAM.state !== 'live') return; const t = $('#steerIn').value.trim(); if (!t) { $('#steerIn').focus(); return; } const mode = document.querySelector('#steerMode [aria-pressed="true"]').textContent; A.steer(RID, $('#steerTo').value, mode, t); $('#steerIn').value = ''; Locus.toast(mode === 'Message' ? 'Message sent' : 'Steering queued for the next step boundary', RID); };
+  $('#steerIn').addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') $('#steerForm').requestSubmit(); });
+  /* event stream: the view applies server events in sequence order. On a drop it freezes, marks itself stale and disables
+     controls; on reconnect it asks for events from the last applied sequence (at-least-once) and ignores duplicates. */
+  const STREAM = { state:'live', last:0, attempt:0, timer:null, note:'', downAt:null,
+    seqOf() { const r = H.run(RID); return r && r.events.length ? r.events[r.events.length - 1].seq || r.events.length : 0; },
+    paint() { const el = $('#stream'), r = H.run(RID); if (!el || !r) return; el.className = 'stream-bar' + (this.state === 'down' ? ' down' : this.note ? ' resync' : '');
+      el.innerHTML = this.state === 'down' ? `<span class="st st-warn"></span><b>Event stream disconnected at ${H.hm(this.downAt)}.</b> Showing events through #${H.esc(this.last)}; this view is stale and run controls are disabled. ${this.manual ? 'Waiting for the runtime connection.' : `Reconnecting · attempt ${this.attempt}, next in ${Math.max(1, Math.round((this.nextAt - Date.now()) / 1000))} s.`}`
+        : this.note ? `<span class="st st-ok"></span>${H.esc(this.note)}` : `<span class="st st-ok"></span>Live · server event stream · last event #${H.esc(this.seqOf())} at ${H.esc(r.events.length ? H.hm(r.events[r.events.length - 1].t) : '—')}`; },
+    drop(manual) { if (this.state === 'down') return; this.state = 'down'; this.manual = !!manual; this.last = this.seqOf(); this.downAt = Date.now(); this.attempt = 0; this.note = '';
+      $('#head').classList.add('is-stale'); document.querySelectorAll('#head button, #pol [data-revoke], #out [data-mem], #out [data-act="close"], #ckp [data-act="retry"], #steerSend, #stopGo').forEach(b => { b.disabled = true; }); if (!manual) this.retry(); this.paint(); },
+    retry() { this.attempt++; const wait = Math.min(8000, 1000 * 2 ** (this.attempt - 1)); this.nextAt = Date.now() + wait; clearTimeout(this.timer); this.timer = setTimeout(() => { if (this.attempt < 3) this.retry(); else this.resume(); this.paint(); }, wait); },
+    resume() { const r = H.run(RID); clearTimeout(this.timer); const replay = r ? r.events.filter(e => (e.seq || 0) >= this.last) : [], dup = replay.filter(e => (e.seq || 0) <= this.last).length, fresh = replay.length - dup;
+      this.state = 'live'; this.note = `Reconnected after ${Math.round((Date.now() - this.downAt) / 1000)} s. Resumed from #${this.last}: ${fresh} new event${fresh === 1 ? '' : 's'} applied, ${dup} duplicate ignored.`; $('#head').classList.remove('is-stale'); $('#head').__h = null; $('#pol').__h = null; render(); this.paint();
+      setTimeout(() => { this.note = ''; this.paint(); }, 8000); } };
+  document.addEventListener('locus:runtime', e => { if (e.detail.state === 'down') STREAM.drop(true); else if (STREAM.state === 'down') STREAM.resume(); });
+  render(); STREAM.paint(); LocusState.on(() => { if (STREAM.state === 'live') { render(); STREAM.paint(); } }); setInterval(() => { if (STREAM.state === 'down') STREAM.paint(); }, 1000); setInterval(() => { const r = H.run(RID), el = document.getElementById('elapsed'); if (r && el) el.textContent = H.elapsed(r); }, 1000);
+</script>
+</body>
+</html>

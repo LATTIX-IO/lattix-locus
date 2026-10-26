@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" role="img" aria-labelledby="title desc">
+  <title id="title">Locus logo</title>
+  <desc id="desc">Minimal geometric Locus logo with four locator brackets, a central node, four outer nodes, and a geometric wordmark.</desc>
+
+  <!-- Transparent background by design -->
+
+  <g id="mark" transform="translate(40 30)">
+    <!-- corner brackets -->
+    <g fill="#F4F4F2">
+      <path d="M82 42H142V54H94V102H82Z"/>
+      <path d="M178 42H238V102H226V54H178Z"/>
+      <path d="M82 138H94V186H142V198H82Z"/>
+      <path d="M226 138H238V198H178V186H226Z"/>
+    </g>
+
+    <!-- center node -->
+    <circle cx="160" cy="120" r="19" fill="#F4F4F2"/>
+
+    <!-- distributed nodes -->
+    <g fill="#9B9FA2">
+      <circle cx="160" cy="18" r="16"/>
+      <circle cx="58" cy="120" r="16"/>
+      <circle cx="262" cy="120" r="16"/>
+      <circle cx="160" cy="222" r="16"/>
+    </g>
+  </g>
+
+  <!-- wordmark -->
+  <g id="wordmark" fill="#F4F4F2" transform="translate(355 64)">
+    <!-- L -->
+    <path d="M0 0H28V142H130V170H0Z"/>
+    <!-- O -->
+    <path fill-rule="evenodd" d="M207 0C157.3 0 117 38.1 117 85s40.3 85 90 85 90-38.1 90-85S256.7 0 207 0Zm0 29c31.2 0 56.5 25.1 56.5 56S238.2 141 207 141 150.5 115.9 150.5 85 175.8 29 207 29Z"/>
+    <!-- C -->
+    <path d="M393 0c-52.3 0-94.5 38.1-94.5 85S340.7 170 393 170c30 0 54-10.4 72.2-27.8l-21-20.6C431.5 133.9 415 141 394 141c-34.7 0-61.5-24.6-61.5-56S359.3 29 394 29c20.3 0 36.8 7.2 49.5 19.4l21-20.7C446.4 10.4 422.6 0 393 0Z"/>
+    <!-- U -->
+    <path d="M495 0H528V100c0 26 15.7 41 42 41s42-15 42-41V0H645V102c0 43.7-29.7 68-75 68s-75-24.3-75-68Z"/>
+    <!-- S -->
+    <path d="M696 14.5C714.8 4.9 736.8 0 762 0c28.3 0 53.9 6.5 75.5 18.4l-14.7 25.5C804.7 34.6 784.6 29 762 29c-26.6 0-42.5 7.6-42.5 19.8 0 10.7 11.7 15.8 39.5 20.5 49.1 8.2 78 23.8 78 52.2 0 31.5-31.3 48.5-79.5 48.5-29.8 0-58.7-7.1-82-20.2l14.2-26.2c20.4 11.2 44.8 17.4 68.3 17.4 29.3 0 46-7 46-19.5 0-11.4-13.2-16.4-42.8-21.4-47.5-8-74.7-22.5-74.7-50.9 0-14.9 6.5-26.6 19.5-34.7Z"/>
+  </g>
+</svg>

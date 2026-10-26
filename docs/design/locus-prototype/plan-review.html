@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review plan · Lattix Locus</title>
+<link rel="stylesheet" href="locus.css">
+<style>
+  .pr { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
+  .auth { position: sticky; top: 16px; }
+  .obj { width: 100%; font-size: 15px; line-height: 1.5; }
+  .captbl td:first-child { width: 36px; }
+  .sk { height: 14px; background: var(--surface); border-radius: var(--r); margin: 10px 0; }
+  @media (max-width: 1100px) { .pr { grid-template-columns: 1fr; } .auth { position: static; } }
+</style>
+</head>
+<body data-nav="home" data-crumbs='[["Home","home.html"],["Plan",""],["Review plan",""]]'>
+<main id="main">
+  <div class="page page-narrow" style="margin-inline:auto">
+    <div class="stage-bar" aria-label="Task journey" data-od-id="journey-stages">
+      <div class="done"><span class="n">01</span>Describe</div><div class="cur" aria-current="step"><span class="n">02</span>Plan and configure</div><div id="stAuth"><span class="n">03</span>Authorize</div><div><span class="n">04</span>Run</div><div><span class="n">05</span>Review outcome</div>
+    </div>
+    <div id="root" aria-live="polite"><div class="panel panel-b"><p class="label">Generating plan</p><div class="sk" style="width:70%"></div><div class="sk" style="width:50%"></div><div class="sk" style="width:62%"></div></div></div>
+  </div>
+</main>
+<script src="locus-state.js"></script>
+<script src="locus.js"></script>
+<script>
+  const {H, A} = LocusState, $ = s => document.querySelector(s), esc = H.esc;
+  const id = new URLSearchParams(location.search).get('draft');
+  const draft = H.s.drafts.find(d => d.id === id);
+  let P = draft ? JSON.parse(JSON.stringify(draft.plan)) : null;
+  const ALLCAPS = Object.keys(H.CAPS);
+  const D = d => `<span class="decision ${H.esc(d.d)}">${H.esc(d.d === 'permit' ? 'Permit' : d.d === 'approval' ? 'Requires approval' : 'Deny')}</span>`;
+  function agentsInPlan() { return [...new Set(P.steps.map(s => s.agent))].map(H.agent).filter(Boolean); }
+  /* review() wraps the same authorize() the simulator enforces at launch, so preview and enforcement cannot drift */
+  function review() { const au = H.authorize(P), ags = agentsInPlan(), out = {blockers:au.blockers, grants:au.grants, floor:au.floor, est:au.estimate, items:[]};
+    out.items.push(['Model route ' + P.route, H.evalRoute(P.route, P.cls)]); ags.forEach(a => out.items.push([`${a.name} on ${H.engine(a.engine).name}`, H.evalEngine(a.engine, P.cls)]));
+    out.approvals = au.grants.filter(g => g.d === 'approval').map(g => `${H.CAPS[g.cap].label} · ${H.nameOf(g.agent)} · ${g.rule}`); out.permits = au.grants.filter(g => g.d === 'permit').length; return out; }
+  function estimate() { return H.estimate(P); }
+  function render() {
+    if (!P) { $('#root').innerHTML = `<header class="page-h"><div class="t"><h1>Plan review</h1></div></header><div class="panel"><div class="empty"><b>This draft no longer exists.</b><br>It may have been launched or discarded already. <a href="home.html">Start from Home</a> or <a href="work.html">open your tasks</a>.</div></div>`; return; }
+    const rv = review(), blocked = rv.blockers.length > 0, prj = P.project ? H.project(P.project) : null;
+    $('#stAuth').className = blocked ? 'bad' : '';
+    $('#root').innerHTML = `
+    <header class="page-h" data-od-id="plan-header"><div class="t"><p class="label">${esc(H.TEMPLATES[P.template].label)} · draft ${esc(id)}${H.esc(draft.taskId ? ' · for existing task ' + esc(draft.taskId) : '')}</p><h1 style="margin-top:4px">Review the plan before anything runs</h1><p>Locus proposed this plan from your objective and policy. Change who does the work, what it may access, and what it may cost. The backend re-checks every grant when the run starts; this page previews those decisions.</p></div></header>
+    <div class="pr">
+      <div class="stack">
+        <section class="panel" data-od-id="plan-objective"><div class="panel-h"><h2>Objective</h2></div><div class="panel-b stack">
+          <div class="field"><label for="obj">What should be achieved</label><textarea id="obj" class="textarea obj" rows="3">${esc(P.objective)}</textarea></div>
+          <div class="grid g3"><div class="field"><label for="ttl">Task title</label><input id="ttl" class="input" value="${esc(P.title || P.objective.slice(0, 70))}"></div>
+          <div class="field"><label for="prj">Project</label><select id="prj" class="select"><option value="">None (ad hoc)</option>${H.s.projects.map(p => `<option value="${H.esc(p.id)}" ${p.id === P.project ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
+          <div class="field"><label for="cls">Data classification</label><select id="cls" class="select" aria-describedby="clsHint">${H.CLS.map(c => { const below = H.CLS.indexOf(c) < H.CLS.indexOf(rv.floor); return `<option value="${H.esc(c)}" ${c === P.cls ? 'selected' : ''} ${below ? 'disabled' : ''}>${H.esc(c)}${H.esc(below ? ' (below project floor)' : '')}</option>`; }).join('')}</select><span class="hint" id="clsHint">${prj ? `Project floor: ${H.esc(prj.cls)}. Lower classes cannot be selected; the backend re-checks this at launch.` : 'Highest class of data the task will read'}</span></div></div>
+        </div></section>
+
+        <section class="panel" data-od-id="plan-assignment"><div class="panel-h"><h2>Who does the work</h2><span class="tag">${H.esc(P.assignee.type === 'team' ? 'Team · ' + esc(H.nameOf(P.assignee.id)) : 'Agent')}</span></div>
+          <div class="cfg-row small muted" style="padding-top:6px;padding-bottom:6px"><span>#</span><span>Step</span><span>Agent</span><span>Execution engine</span></div>
+          ${P.steps.map((s, i) => { const a = H.agent(s.agent), e = a ? H.engine(a.engine) : null; return `<div class="cfg-row"><span class="id">${String(i + 1).padStart(2, '0')}</span><span>${esc(s.title)}</span><select class="select" data-step="${i}" aria-label="Agent for step ${i + 1}">${H.s.agents.filter(x => x.state !== 'Draft').map(x => `<option value="${H.esc(x.id)}" ${x.id === s.agent ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select><span class="small">${H.esc(e ? esc(e.name) : '—')} <span class="muted">· ${H.esc(e ? e.tools : '')} tool mediation</span></span></div>`; }).join('')}
+          <div class="panel-f small muted">Agents are identities with instructions and granted capabilities; engines execute them. To change an agent's engine, edit the agent definition in Library.</div>
+        </section>
+
+        <section class="panel" data-od-id="plan-model"><div class="panel-h"><h2>Model route</h2></div><div class="panel-b grid g2">
+          <div class="field"><label for="route">Route for this task</label><select id="route" class="select">${H.ROUTES.map(r => `<option value="${H.esc(r.id)}" ${r.id === P.route ? 'selected' : ''}>${H.esc(r.id)} · up to ${H.esc(r.maxCls)}</option>`).join('')}</select></div>
+          <dl class="kv"><dt>Primary</dt><dd>${esc(H.route(P.route).primary)}</dd><dt>Fallback</dt><dd>${esc(H.route(P.route).fallback)}</dd></dl>
+        </div></section>
+
+        <section class="panel" data-od-id="plan-capabilities"><div class="panel-h"><h2>Tools and capability grants</h2><span class="small muted">One grant per agent, capability and resource · minted for this run only</span></div>
+          ${P.assignee && P.assignee.type === 'team' && H.team(P.assignee.id) ? `<p class="small" style="padding:10px 16px 0">Team <a href="library-team.html?team=${encodeURIComponent(P.assignee.id)}">${esc(H.team(P.assignee.id).name)}</a> ${esc(H.team(P.assignee.id).version)}: each member receives an independently authorized subset (its own definition ∩ what the team delegates ∩ run policy). Authority cannot widen through the team or an execution engine.</p>` : ''}
+          <div class="panel-b" style="padding-bottom:4px"><fieldset style="border:0;padding:0;margin:0"><legend class="label" style="margin-bottom:6px">Capabilities to request</legend><div class="row" style="flex-wrap:wrap;gap:12px">${ALLCAPS.filter(c => P.caps.includes(c) || agentsInPlan().some(a => a.caps.includes(c))).map(c => `<label class="row small"><input type="checkbox" class="toggle" data-cap="${H.esc(c)}" ${P.caps.includes(c) ? 'checked' : ''}> ${esc(H.CAPS[c].label)}</label>`).join('')}</div></fieldset></div>
+          <div class="tbl-wrap"><table class="tbl"><caption style="position:absolute;left:-9999px">Grants previewed for this run</caption><thead><tr><th scope="col">Agent</th><th scope="col">Capability</th><th scope="col">Resource</th><th scope="col">Preview decision</th><th scope="col">Rule</th></tr></thead><tbody>
+          ${rv.grants.map(g => `<tr><td>${g.agent ? esc(H.nameOf(g.agent)) : '<span class="muted">No agent</span>'}</td><td class="t">${esc(H.CAPS[g.cap].label)}<br><span class="id">${esc(g.cap)}</span></td><td class="small mono">${esc(g.resource)}</td><td>${D(g)}<div class="small muted">${esc(g.why)}</div></td><td class="id">${esc(g.rule)}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No capabilities requested.</td></tr>'}
+          </tbody></table></div>
+          ${P.caps.includes('email.send') ? `<div class="panel-f"><label class="row small"><input type="checkbox" class="toggle" id="ext" ${P.recipientExternal ? 'checked' : ''}> Recipients may be outside the tenant</label></div>` : ''}
+        </section>
+
+        <section class="panel" data-od-id="plan-limits"><div class="panel-h"><h2>Cost, time and autonomy</h2></div><div class="panel-b grid g3">
+          <div class="field"><label for="budget">Model spend cap (USD)</label><input id="budget" class="input mono" type="number" min="0.5" step="0.5" value="${H.esc(P.budget)}"><span class="hint">Estimate: $${rv.est.toFixed(2)}</span></div>
+          <div class="field"><label>Autonomy</label><div class="seg" role="group" aria-label="Autonomy" id="aut">${['Plan only','Act within policy','Ask before acting'].map(a => `<button type="button" aria-pressed="${a === P.autonomy}">${H.esc(a)}</button>`).join('')}</div></div>
+          <dl class="kv"><dt>Node</dt><dd>${H.esc(P.cls === 'Secret' ? 'edge-iad-01 (local models)' : 'Scheduler chooses · edge-sfo-01')}</dd><dt>Memory read</dt><dd>${prj ? `tenant · ${esc(prj.ns)}` : 'tenant · shared'}</dd></dl>
+        </div></section>
+      </div>
+
+      <aside class="panel auth" aria-label="Authorization review" data-od-id="authorization-review">
+        <div class="panel-h"><h2>Authorization review</h2>${blocked ? '<span class="st st-crit">Blocked</span>' : '<span class="st st-ok">Ready</span>'}</div>
+        <div class="panel-b stack">
+          <div class="grid g3" style="gap:8px;text-align:center"><div><p class="num" style="font-size:18px">${H.esc(rv.permits)}</p><span class="small muted">grants permitted</span></div><div><p class="num" style="font-size:18px">${rv.approvals.length}</p><span class="small muted">need approval</span></div><div><p class="num" style="font-size:18px">${rv.blockers.length}</p><span class="small muted">blocking</span></div></div>
+          ${blocked ? `<div class="callout crit"><span>${Locus.icon('alert')}</span><div class="small"><b>Resolve before starting</b><ul style="margin:6px 0 0;padding-left:16px">${rv.blockers.map(b => `<li>${esc(b)}</li>`).join('')}</ul></div></div>` : ''}
+          ${rv.approvals.length ? `<div><p class="label" style="margin-bottom:4px">You will be asked to approve</p><ul class="small" style="margin:0;padding-left:16px">${rv.approvals.map(a => `<li>${esc(a)}</li>`).join('')}</ul></div>` : '<p class="small muted">No approvals expected under current policy.</p>'}
+          <dl class="kv"><dt>Starts as</dt><dd>Dana Reyes · task owner</dd><dt>Executes as</dt><dd>${esc(agentsInPlan().map(a => a.name).join(', '))} · delegated, scoped to this run</dd><dt>Spend cap</dt><dd class="num">$${P.budget.toFixed(2)}</dd></dl>
+          <p class="small muted">Decisions shown are a preview from policy bundle v41. In this prototype the simulator repeats the same check at launch and refuses blocked plans. In the product the backend is authoritative: it re-validates classification, route, engine and every grant at run start and for each action.</p>
+          <button class="btn btn-primary btn-lg" id="launch" ${blocked ? 'disabled aria-disabled="true"' : ''}>${H.esc(draft.taskId ? (P.autonomy === 'Plan only' ? 'Save reviewed plan' : 'Authorize and start run') : (P.autonomy === 'Plan only' ? 'Create task' : 'Create task and start run'))}</button>
+          ${P.autonomy === 'Plan only' ? '' : `<button class="btn" id="saveOnly">${H.esc(draft.taskId ? 'Save reviewed plan without running' : 'Save as task without running')}</button>`}
+          <button class="btn btn-ghost" id="discard">Discard draft</button>
+        </div>
+      </aside>
+    </div>`;
+    wire(); }
+  function wire() {
+    $('#obj').onchange = e => { P.objective = e.target.value; persist(); };
+    $('#ttl').onchange = e => { P.title = e.target.value; persist(false); };
+    $('#prj').onchange = e => { P.project = e.target.value || null; const f = H.floorOf(P); if (H.CLS.indexOf(f) > H.CLS.indexOf(P.cls)) { P.cls = f; Locus.toast(`Classification raised to ${f}: the project floor`); } persist(); };
+    $('#cls').onchange = e => { const f = H.floorOf(P); if (H.CLS.indexOf(e.target.value) < H.CLS.indexOf(f)) { e.target.value = P.cls; Locus.toast(`Not allowed: ${f} is the floor for this project`); return; } P.cls = e.target.value; persist(); };
+    $('#route').onchange = e => { P.route = e.target.value; persist(); };
+    document.querySelectorAll('[data-step]').forEach(s => s.onchange = e => { P.steps[+s.dataset.step].agent = e.target.value; persist(); });
+    document.querySelectorAll('[data-cap]').forEach(c => c.onchange = e => { const k = c.dataset.cap; P.caps = e.target.checked ? [...P.caps, k] : P.caps.filter(x => x !== k); persist(); });
+    const ext = $('#ext'); if (ext) ext.onchange = e => { P.recipientExternal = e.target.checked; persist(); };
+    $('#budget').onchange = e => { const v = parseFloat(e.target.value); if (v > 0) P.budget = v; persist(); };
+    document.querySelectorAll('#aut button').forEach(b => b.onclick = () => { P.autonomy = b.textContent; persist(); });
+    const go = start => { const res = A.launch(id, P, start); if (res.error) { Locus.toast('Refused at launch: ' + res.error[0]); render(); return; } location.href = res.run ? 'activity-run.html?run=' + res.run : 'task.html?task=' + res.task; };
+    $('#launch').onclick = () => go(P.autonomy !== 'Plan only');
+    const so = $('#saveOnly'); if (so) so.onclick = () => go(false);
+    $('#discard').onclick = () => { const d = H.s.drafts.find(x => x.id === id); if (d) { H.s.drafts.splice(H.s.drafts.indexOf(d), 1); LocusState.commit(); } location.href = 'home.html'; };
+  }
+  function persist(rerender = true) { const f = document.activeElement && document.activeElement.id, ds = document.activeElement && document.activeElement.dataset; A.saveDraft(id, P); if (rerender) { render(); const el = f ? document.getElementById(f) : ds && ds.cap ? document.querySelector(`[data-cap="${ds.cap}"]`) : ds && ds.step ? document.querySelector(`[data-step="${ds.step}"]`) : null; if (el) el.focus(); } }
+  setTimeout(render, P ? 450 : 0);
+</script>
+</body>
+</html>
