@@ -124,3 +124,73 @@ def test_unavailable_ollama_does_not_send_to_another_provider(
     assert response.status_code == 412, response.text
     assert response.json()["detail"]["code"] == "local_runtime_unavailable"
     assert set(store.runs) == before
+
+
+def test_explicit_local_respects_tenant_model_allowlist(
+    local_ollama: None,
+) -> None:
+    previous = set(store.runs)
+    response = client.post(
+        "/workflow-runs",
+        json={
+            "prompt": "Do not widen my model access.",
+            "model": f"ollama/{MODEL}",
+            "tenant_runtime_policy": {
+                "allowed_providers": ["ollama"],
+                "allowed_models": ["ollama/a-different-approved-model"],
+            },
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"]["code"] == "model_call_denied"
+    assert set(store.runs) == previous
+
+
+def test_explicit_local_accepts_qualified_allowlist_entry(
+    monkeypatch: pytest.MonkeyPatch, local_ollama: None
+) -> None:
+    observed: list[str] = []
+
+    def local_iteration(*_args: Any, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+        observed.append(str(kwargs["model"]))
+        return "Allowed local inference", {"mode": "live", "provider": "ollama", "model": MODEL}
+
+    monkeypatch.setattr(main_module, "_run_agent_iterations", local_iteration)
+    response = client.post(
+        "/workflow-runs",
+        json={
+            "prompt": "Approved local architecture review.",
+            "model": f"ollama/{MODEL}",
+            "tenant_runtime_policy": {
+                "allowed_providers": ["ollama"],
+                "allowed_models": [f"ollama/{MODEL}"],
+            },
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    run_id = response.json()["id"]
+    try:
+        assert observed == [f"ollama/{MODEL}"]
+    finally:
+        _cleanup_run(run_id)
+
+
+def test_disjoint_tenant_model_policies_fail_closed(
+    local_ollama: None,
+) -> None:
+    before = set(store.runs)
+    response = client.post(
+        "/workflow-runs",
+        json={
+            "prompt": "Disjoint constraints must deny all engines.",
+            "model": f"ollama/{MODEL}",
+            "tenant_runtime_policy": {"allowed_models": [f"ollama/{MODEL}"]},
+            "runtime_policy": {"allowed_models": ["ollama/not-installed"]},
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"]["code"] == "runtime_policy_conflict"
+    assert set(store.runs) == before
