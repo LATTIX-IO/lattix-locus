@@ -98,9 +98,9 @@ beforeEach(() => {
         available: true,
         default_model: "llama3.2:3b", // stale default is not installed
         installed_models: [
-          { id: "gpt-oss:20b-ctx32k" },
-          { id: "nomic-embed-text:latest" },
-          { id: "hf.co/yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M" },
+          { id: "gpt-oss:20b-ctx32k", capabilities: ["completion", "tools"] },
+          { id: "nomic-embed-text:latest", capabilities: ["embedding"] },
+          { id: "hf.co/yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M", capabilities: ["completion"] },
         ],
       },
     },
@@ -195,7 +195,7 @@ describe("RunFollowupComposer", () => {
     getRuntimeProvidersMock.mockResolvedValue({ providers: [] });
     getUserRuntimeProvidersMock.mockResolvedValue([]);
     getModelsOverviewMock.mockResolvedValue({
-      providers: { ollama: { available: true, installed_models: [{ id: "nomic-embed-text:latest" }] } },
+      providers: { ollama: { available: true, installed_models: [{ id: "nomic-embed-text:latest", capabilities: ["embedding"] }] } },
       external: [], catalog: [],
     });
     render(<RunFollowupComposer runId="run-1" />);
