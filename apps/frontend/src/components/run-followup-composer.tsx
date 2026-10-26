@@ -57,11 +57,10 @@ type LiveOllamaInventory = {
 };
 
 function canUseForChat(model: { id: string; capabilities?: string[] }): boolean {
-  if (!model.id) return false;
-  if (model.capabilities?.length) {
-    return model.capabilities.includes("completion") || model.capabilities.includes("tools");
-  }
-  return !/(?:^|\/)(?:nomic-embed-text|mxbai-embed-large|all-minilm|bge-m3)(?::|$)/i.test(model.id);
+  // A filename is not capability evidence: /api/show must positively attest
+  // completion or tools. Unknown and embedding-only models stay in Settings
+  // inventory but are not executable chat-model choices.
+  return Boolean(model.id && model.capabilities?.some((capability) => capability === "completion" || capability === "tools"));
 }
 
 type ComposerModelOption = {
