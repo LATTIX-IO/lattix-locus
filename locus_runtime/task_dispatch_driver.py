@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol, cast
 
 from locus_runtime.action_fencing import action_lock
 from locus_runtime.gateway import GatewaySession
@@ -25,6 +25,9 @@ from locus_runtime.task_scheduler import (
     VerificationRejected,
     VerificationUnavailable,
 )
+
+if TYPE_CHECKING:
+    from locus_runtime.task_model_binding import BoundTaskModels
 
 _ENGINE_ID = re.compile(r"[A-Za-z][A-Za-z0-9_.:/-]{0,127}\Z", re.ASCII)
 _ARTIFACT = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
@@ -88,6 +91,20 @@ class TrustedWorker(Protocol):
     ) -> WorkReport: ...
 
 
+class ModelAwareTrustedWorker(TrustedWorker, Protocol):
+    """Trusted adapter receives exact worker model/compute with the child lease.
+
+    Its implementation must perform inference through a lease-scoped
+    ModelClient with PodModelCallGate; this contract never gives the model
+    direct access to a GatewaySession or unmediated tool execution.
+    """
+
+    def run_bound(
+        self, lease: PodLease, *, node: TaskNode, intent: TaskIntent,
+        model_id: str, compute_id: str,
+    ) -> WorkReport: ...
+
+
 @dataclass(frozen=True, slots=True)
 class EngineBinding:
     """Explicit operator-installed engine adapter; not an LLM-proposed command."""
@@ -114,6 +131,9 @@ class DispatchOutcome:
     # verified / blocked / uncertain; never translate these into success.
     status: str
     reason_code: str
+    # Only set for immutable model-bound worker attempts; safe audit identifiers.
+    model_id: str = ""
+    compute_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +168,7 @@ class GatewayTaskDriver:
         verifier: IndependentVerifier,
         max_parallel: int = 2,
         engine_pins: TrustedEnginePins | None = None,
+        model_routes: "BoundTaskModels | None" = None,
     ) -> None:
         if type(max_parallel) is not int or not 1 <= max_parallel <= scheduler.max_inflight:
             raise ValueError("parallelism must fit the durable supervisor limit")
@@ -157,11 +178,26 @@ class GatewayTaskDriver:
             raise ValueError("independent verifier must be supplied by trusted supervisor")
         if engine_pins is not None and not isinstance(engine_pins, TrustedEnginePins):
             raise ValueError("engine pins require a trusted immutable contract")
+        if model_routes is not None:
+            # Import at use time to avoid the declared Bidirectional contract
+            # importing this module while it initializes TrustedEnginePins.
+            from locus_runtime.task_model_binding import BoundTaskModels
+
+            if not isinstance(model_routes, BoundTaskModels):
+                raise ValueError("model routes require a trusted immutable contract")
+            if engine_pins is not None and engine_pins != model_routes.engine_pins:
+                raise ValueError("model routing and engine pins must name the same DAG")
+            engine_pins = model_routes.engine_pins
         self.scheduler = scheduler
         self.engines = engines
         self.verifier = verifier
         self.max_parallel = max_parallel
         self.engine_pins = engine_pins
+        self.model_routes = model_routes
+        self._node_models = (
+            {entry.node_id: entry for entry in model_routes.workers}
+            if model_routes is not None else {}
+        )
 
     def _preflight_engine_pins(
         self, plan: CompiledTaskPlan, parent: GatewaySession,
@@ -178,8 +214,31 @@ class GatewayTaskDriver:
         if set(assigned) != set(node_by_id):
             raise AdmissionDenied("trusted engine pins do not cover exact DAG nodes")
         registered = {binding.engine_id: binding for binding in self.engines}
+        if self.model_routes is not None:
+            routes = self.model_routes
+            if (
+                routes.plan_digest != plan.digest
+                or set(self._node_models) != set(node_by_id)
+                or len(self._node_models) != len(routes.workers)
+            ):
+                raise AdmissionDenied("model routes do not cover this exact task revision")
+            if (
+                not routes.catalog_snapshot_id
+                or not routes.policy_version
+                or routes.orchestrator.authorized
+                or any(worker.authorized for worker in routes.workers)
+            ):
+                raise AdmissionDenied("model route contains untrusted or privileged selection")
         for node_id, engine_id in assigned.items():
             binding = registered.get(engine_id)
+            if self.model_routes is not None:
+                chosen = self._node_models[node_id]
+                if (
+                    binding is None
+                    or chosen.engine_adapter_id != engine_id
+                    or not callable(getattr(binding.worker, "run_bound", None))
+                ):
+                    raise AdmissionDenied("pinned engine does not support model-bound execution")
             if (
                 binding is None
                 or not node_by_id[node_id].authority.capabilities.issubset(
@@ -231,21 +290,41 @@ class GatewayTaskDriver:
     ) -> DispatchOutcome:
         # Do not log/return exception content, which may contain model input,
         # credentials, filesystem paths or browser/computer observations.
+        chosen_model = self._node_models.get(node.node_id)
+
+        def outcome(status: str, reason: str) -> DispatchOutcome:
+            return DispatchOutcome(
+                node.node_id, adapter.engine_id, status, reason,
+                chosen_model.model if chosen_model else "",
+                chosen_model.compute_id if chosen_model else "",
+            )
+
         try:
-            report = adapter.worker.run(lease, node=node, intent=plan.plan.intent)
+            if chosen_model is None:
+                report = adapter.worker.run(lease, node=node, intent=plan.plan.intent)
+            else:
+                # Only administrator-installed model-aware adapters receive
+                # the trusted route. Their ModelClient MUST independently
+                # authorize each real model_call against the child Gateway
+                # session; this selector is not an egress grant.
+                bound_worker = cast(ModelAwareTrustedWorker, adapter.worker)
+                report = bound_worker.run_bound(
+                    lease, node=node, intent=plan.plan.intent,
+                    model_id=chosen_model.model, compute_id=chosen_model.compute_id,
+                )
         except Exception:
-            return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "worker_interrupted")
+            return outcome("uncertain", "worker_interrupted")
         if (
             not isinstance(report, WorkReport)
             or not isinstance(report.artifact_sha256, str)
             or _ARTIFACT.fullmatch(report.artifact_sha256) is None
             or not isinstance(report.consumed, ResourceBudget)
         ):
-            return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "worker_report_invalid")
+            return outcome("uncertain", "worker_report_invalid")
         try:
             lease.close(total=report.consumed, evidence=report.artifact_sha256)
         except Exception:
-            return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "worker_settlement_failed")
+            return outcome("uncertain", "worker_settlement_failed")
         try:
             self.scheduler.verify_closed(
                 plan, parent, claim,
@@ -260,17 +339,17 @@ class GatewayTaskDriver:
                     plan, parent, claim, artifact_digest=report.artifact_sha256,
                 )
             except Exception:
-                return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "artifact_reconciliation")
-            return DispatchOutcome(node.node_id, adapter.engine_id, "blocked", "artifact_not_verified")
+                return outcome("uncertain", "artifact_reconciliation")
+            return outcome("blocked", "artifact_not_verified")
         except VerificationUnavailable:
             # No verdict: preserve closed evidence for manual reconciliation,
             # rather than turning a transient outage into a false rejection.
-            return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "verifier_unavailable")
+            return outcome("uncertain", "verifier_unavailable")
         except AdmissionDenied:
-            return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "verification_integrity")
+            return outcome("uncertain", "verification_integrity")
         except Exception:
-            return DispatchOutcome(node.node_id, adapter.engine_id, "uncertain", "verifier_error")
-        return DispatchOutcome(node.node_id, adapter.engine_id, "verified", "evidence_accepted")
+            return outcome("uncertain", "verifier_error")
+        return outcome("verified", "evidence_accepted")
 
     def run_wave(
         self,

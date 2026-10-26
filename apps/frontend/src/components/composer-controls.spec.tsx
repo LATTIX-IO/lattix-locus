@@ -41,6 +41,43 @@ beforeEach(() => {
 });
 
 describe("ComposerControls model readiness", () => {
+
+  it("uses the explicit orchestrator default, not the stale preferred-model alias", async () => {
+    api.getUserSettings.mockResolvedValue({
+      preferred_model: "ollama/uninstalled:latest",
+      orchestrator_model: "ollama/gpt-oss:20b-ctx32k",
+      worker_routing: "auto",
+      default_mode: "execute",
+      preferred_reasoning_effort: "",
+      default_working_folder: "",
+    });
+    const readiness = vi.fn();
+    const change = vi.fn();
+    render(<ComposerControls onChange={change} onModelReadinessChange={readiness} />);
+    await waitFor(() => expect(readiness).toHaveBeenLastCalledWith(true, ""));
+    expect(change).toHaveBeenLastCalledWith(expect.objectContaining({
+      model: "ollama/gpt-oss:20b-ctx32k",
+    }));
+  });
+
+  it("never substitutes a different orchestration model for explicit Auto before admission is available", async () => {
+    api.getUserSettings.mockResolvedValue({
+      preferred_model: "ollama/gpt-oss:20b-ctx32k",
+      orchestrator_model: "auto",
+      worker_routing: "auto",
+      default_mode: "execute",
+      preferred_reasoning_effort: "",
+      default_working_folder: "",
+    });
+    const readiness = vi.fn();
+    const change = vi.fn();
+    render(<ComposerControls onChange={change} onModelReadinessChange={readiness} />);
+    await waitFor(() => expect(readiness).toHaveBeenLastCalledWith(
+      false, expect.stringContaining('Saved default model "auto" is unavailable'),
+    ));
+    expect(change).toHaveBeenLastCalledWith(expect.objectContaining({ model: undefined }));
+  });
+
   it("keeps an unavailable saved model blocked until the user selects an installed model", async () => {
     api.getUserSettings.mockResolvedValue({
       preferred_model: "ollama/llama3.2:3b",
@@ -118,6 +155,6 @@ describe("ComposerControls model readiness", () => {
     const onChange = vi.fn();
     render(<ComposerControls onChange={onChange} onModelReadinessChange={onReadiness} />);
     await waitFor(() => expect(onReadiness).toHaveBeenLastCalledWith(true, ""));
-    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ model: "gpt-test" }));
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ model: "openai/gpt-test" }));
   });
 });

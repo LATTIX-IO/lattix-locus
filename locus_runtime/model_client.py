@@ -1503,13 +1503,17 @@ def chain_for(
     *,
     explicit: bool,
     settings: ProviderSettings | None = None,
+    allow_fallback: bool = False,
 ) -> list[ModelTier]:
     """Tiers for a resolved engine choice.
 
-    * not explicit → :func:`default_agent_chain`;
-    * an explicit local engine → just that engine (honoured, no hosted escalation);
-    * an explicit hosted engine → that engine, then the local Ollama tier (P13)
-      unless ``LOCUS_MODEL_LOCAL_FALLBACK=0``.
+    * not explicit: legacy :func:`default_agent_chain` (opt-in Auto only);
+    * explicit local engine: only that engine, no hosted escalation;
+    * explicit hosted engine: only that engine by default. A *trusted*
+      consent-aware caller may set ``allow_fallback=True`` only after checking
+      the alternative provider/model and data/cost/egress approval envelope.
+      The local fallback kill switch still applies. The legacy environment
+      variable alone must never grant consent to change a pinned model.
     """
     if not explicit:
         return default_agent_chain(settings)
@@ -1520,21 +1524,27 @@ def chain_for(
     spec = PROVIDERS.get(provider_id)
     if spec is not None and spec.local:
         return [primary]
+    if not allow_fallback:
+        # A user-picked orchestrator or explicitly pinned worker must never
+        # be silently replaced after quota/transport/provider failure.
+        return [primary]
     if str(os.getenv(LOCAL_FALLBACK_ENV) or "1").strip().lower() in {"0", "false", "no", "off"}:
         return [primary]
     return [primary, ModelTier("ollama", provider_default_model("ollama", settings))]
 
 
 #: Codes after which a tier stays disabled for the router's lifetime.
-_STICKY_CODES = frozenset({PROVIDER_NOT_CONFIGURED, MODEL_CALL_DENIED})
+_STICKY_CODES = frozenset({PROVIDER_NOT_CONFIGURED})
 
 
 class ModelRouter:
     """Walks tiers in order; every move to the next tier is a recorded fallback.
 
-    A tier that is not configured or was denied by the gateway is skipped for
-    the rest of this router's life (no flapping); a failed call is retried on
-    that tier next time. A stream that already emitted text never falls back.
+    A tier that is not configured stays disabled for this router's lifetime.
+    A gateway policy denial poisons the whole route until a new authorized
+    router is constructed; it must never be treated as permission to try a
+    different provider or model. Temporary provider failures may fall back
+    only to previously approved tiers. A stream that emitted text never falls back.
     """
 
     def __init__(
@@ -1551,6 +1561,7 @@ class ModelRouter:
         self._on_fallback = on_fallback
         self._clients: dict[int, ModelClient] = {}
         self._disabled: set[int] = set()
+        self._denied: ModelProviderError | None = None
         self._active = 0
         self.fallbacks: list[FallbackEvent] = []
 
@@ -1585,6 +1596,10 @@ class ModelRouter:
                 logger.exception("model_call.fallback_listener_error")
 
     def _run(self, operation: Callable[[ModelClient], ModelResult]) -> ModelResult:
+        if self._denied is not None:
+            # Consent/policy may change only through new route admission.
+            # Never silently resume another tier after a previous denial.
+            raise self._denied
         errors: list[ModelProviderError] = []
         events: list[FallbackEvent] = []
         candidates = [i for i in range(len(self.tiers)) if i not in self._disabled]
@@ -1596,6 +1611,9 @@ class ModelRouter:
                     client = self._client(index)
                     result = operation(client)
             except ModelProviderError as exc:
+                if exc.code == MODEL_CALL_DENIED:
+                    self._denied = exc
+                    raise
                 errors.append(exc)
                 if exc.code in _STICKY_CODES:
                     self._disabled.add(index)

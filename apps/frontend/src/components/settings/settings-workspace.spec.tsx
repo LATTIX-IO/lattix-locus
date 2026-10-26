@@ -161,6 +161,14 @@ beforeEach(() => {
 });
 
 describe("SettingsWorkspace", () => {
+
+  it("distinguishes the primary orchestrator model from specialist routing", async () => {
+    render(<SettingsWorkspace />);
+    expect(await screen.findByText("Primary orchestrator model")).toBeInTheDocument();
+    expect(screen.getByText("Specialist model routing")).toBeInTheDocument();
+  });
+
+
   it("lists every section in one sub-nav and opens Engines by default", async () => {
     render(<SettingsWorkspace />);
 

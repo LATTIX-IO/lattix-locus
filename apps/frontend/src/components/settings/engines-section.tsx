@@ -342,7 +342,7 @@ function DefaultsGroup({ overview }: { overview: ModelsOverview | null }) {
 
   const { draft, dirty, saving, message, update, commit, reset } = useDraft<UserSettings>(loaded);
 
-  const preferredModel = draft?.preferred_model ?? "";
+  const preferredModel = draft?.orchestrator_model ?? draft?.preferred_model ?? "";
   const modelOptions = useMemo(() => {
     const options: string[] = [];
     if (overview?.providers.ollama.available) {
@@ -356,10 +356,10 @@ function DefaultsGroup({ overview }: { overview: ModelsOverview | null }) {
     }
     for (const provider of overview?.external ?? []) {
       if (provider.configured && provider.default_model) {
-        options.push(provider.id === "openai" ? provider.default_model : `${provider.id}/${provider.default_model}`);
+        options.push(`${provider.id}/${provider.default_model}`);
       }
     }
-    if (preferredModel && !options.includes(preferredModel)) options.unshift(preferredModel);
+    if (preferredModel && preferredModel !== "auto" && !options.includes(preferredModel)) options.unshift(preferredModel);
     return options;
   }, [preferredModel, overview]);
 
@@ -380,10 +380,15 @@ function DefaultsGroup({ overview }: { overview: ModelsOverview | null }) {
       <div className="grid gap-3 md:grid-cols-2">
         <SelectField
           id="default-model"
-          label="Default model"
-          value={draft.preferred_model || "__auto__"}
-          onValueChange={(value) => update("preferred_model", value === "__auto__" ? "" : value)}
-          options={[{ value: "__auto__", label: "Auto (agent default)" }, ...modelOptions.map((value) => ({ value, label: value }))]}
+          label="Primary orchestrator model"
+          description="The user's selected orchestrator coordinates work. Specialist models are routed separately."
+          value={(draft.orchestrator_model ?? draft.preferred_model) || "__unset__"}
+          onValueChange={(value) => update("orchestrator_model", value === "__unset__" ? "" : value)}
+          options={[
+            { value: "__unset__", label: "No model selected" },
+            { value: "auto", label: "Auto (select an eligible orchestrator)" },
+            ...modelOptions.map((value) => ({ value, label: value })),
+          ]}
         />
         <SelectField
           id="default-mode"
@@ -398,6 +403,17 @@ function DefaultsGroup({ overview }: { overview: ModelsOverview | null }) {
           ]}
         />
         <SelectField
+          id="worker-routing"
+          label="Specialist model routing"
+          description="Independent of the orchestrator model; every worker route still requires policy admission."
+          value={draft.worker_routing ?? "auto"}
+          onValueChange={(value) => update("worker_routing", value as UserSettings["worker_routing"])}
+          options={[
+            { value: "auto", label: "Auto — select eligible models for each subtask" },
+            { value: "manual", label: "Manual — require per-worker model pins" },
+          ]}
+        />
+        <SelectField
           id="default-folder"
           label="Default working folder"
           value={draft.default_working_folder || "__none__"}
@@ -407,7 +423,7 @@ function DefaultsGroup({ overview }: { overview: ModelsOverview | null }) {
         <SelectField
           id="default-reasoning"
           label="Reasoning effort"
-          description={isReasoningModel(draft.preferred_model) ? undefined : "Applies to reasoning models only."}
+          description={isReasoningModel(draft.orchestrator_model ?? draft.preferred_model) ? undefined : "Applies to reasoning models only."}
           value={draft.preferred_reasoning_effort || "__default__"}
           onValueChange={(value) => update("preferred_reasoning_effort", (value === "__default__" ? "" : value) as UserSettings["preferred_reasoning_effort"])}
           options={[

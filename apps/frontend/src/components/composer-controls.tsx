@@ -120,7 +120,7 @@ export function ComposerControls({ onChange, onModelReadinessChange }: Props) {
         // only the live installed-model inventory grants selection.
         if (p.id === "ollama") continue;
         if (p.configured && p.default_model) {
-          const value = p.id === "openai" ? p.default_model : `${p.id}/${p.default_model}`;
+          const value = `${p.id}/${p.default_model}`;
           if (!opts.some((item) => item.value === value)) {
             opts.push({ value, label: `${p.default_model} · ${p.label}`, reasoning: isReasoningModel(value) });
           }
@@ -132,7 +132,9 @@ export function ComposerControls({ onChange, onModelReadinessChange }: Props) {
       if (folderList) setFolders(folderList.folders ?? []);
       setMode((settings?.default_mode as Mode) || "execute");
       setReasoning((settings?.preferred_reasoning_effort as "" | "low" | "medium" | "high") || "");
-      const preferred = String(settings?.preferred_model || "").trim();
+      // Primary model is the saved orchestrator, not a global worker default.
+      // The legacy alias is read only for pre-LOCUS-484 persisted settings.
+      const preferred = String(settings?.orchestrator_model ?? settings?.preferred_model ?? "").trim();
       const matchesPreferred = opts.some((item) => item.value === preferred);
       setMissingPreferredModel(preferred && !matchesPreferred ? preferred : "");
       // Do not silently replace an unavailable preferred model or provider.

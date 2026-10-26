@@ -3800,8 +3800,16 @@ def _generate_workflow_run_title(
         return _heuristic_workflow_run_title(prompt_text, run_kind), "system"
 
     fallback = _heuristic_workflow_run_title(cleaned_prompt, run_kind)
-    # An explicitly local chat must not incur hidden hosted title generation.
-    if str(payload.get("model") or "").strip().lower().startswith("ollama/"):
+    # A user-selected orchestrator must not trigger title-generation inference
+    # through an unrelated stored provider. The deterministic title avoids an
+    # unapproved hosted egress/cost boundary.
+    orchestrator_hint = str(
+        payload.get("orchestrator_model")
+        or payload.get("model")
+        or _user_settings_for(actor).get("orchestrator_model")
+        or ""
+    ).strip()
+    if orchestrator_hint:
         return fallback, "system"
 
     try:
@@ -12405,9 +12413,9 @@ class InMemoryStore:
         # id -> {id, name, created_at, run_ids: [str]}.
         self.inbox_groups: dict[str, dict[str, Any]] = {}
 
-        # Per-user composer/chat preferences, keyed by actor/principal id.
-        # actor -> {default_working_folder, preferred_model,
-        #           preferred_reasoning_effort, default_mode}.
+        # Per-user defaults: orchestrator_model binds the primary inference;
+        # worker_routing independently controls subordinate task placement.
+        # preferred_model remains a backwards-compatible orchestrator alias.
         self.user_settings: dict[str, dict[str, Any]] = {}
 
         # Approved out-of-bounds folder grants, keyed by resolved repo_path.
@@ -20608,9 +20616,36 @@ def _normalize_user_settings(prefs: dict[str, Any]) -> dict[str, Any]:
     effort = str(src.get("preferred_reasoning_effort") or "").strip().lower()
     if effort not in _REASONING_EFFORTS:
         effort = ""
+    # Legacy preferred_model is the primary orchestrator selection, NOT a
+    # blanket instruction for every child/worker model. An explicit new field
+    # wins over the legacy alias, including an intentional empty selection.
+    value = (
+        src.get("orchestrator_model")
+        if "orchestrator_model" in src
+        else src.get("preferred_model")
+    )
+    orchestrator = str(value or "").strip()
+    if len(orchestrator) > 256 or any(ch.isspace() for ch in orchestrator):
+        orchestrator = ""
+    # Earlier versions stored bare OpenAI model IDs as preferred_model.
+    # Canonicalize that existing selection rather than silently picking an
+    # unrelated provider. New orchestrator_model fields must be qualified.
+    if orchestrator and orchestrator != "auto" and not re.fullmatch(
+        r"[a-z][a-z0-9_-]{0,31}/\S+", orchestrator, flags=re.ASCII
+    ):
+        orchestrator = (
+            f"openai/{orchestrator}"
+            if "orchestrator_model" not in src
+            else ""
+        )
+    worker_routing = str(src.get("worker_routing") or "auto").strip().lower()
+    if worker_routing not in {"auto", "manual"}:
+        worker_routing = "auto"
     return {
         "default_working_folder": str(src.get("default_working_folder") or "").strip(),
-        "preferred_model": str(src.get("preferred_model") or "").strip(),
+        "preferred_model": orchestrator if orchestrator != "auto" else "",
+        "orchestrator_model": orchestrator,
+        "worker_routing": worker_routing,
         "preferred_reasoning_effort": effort,
         "default_mode": mode,
     }
@@ -20619,6 +20654,31 @@ def _normalize_user_settings(prefs: dict[str, Any]) -> dict[str, Any]:
 def _user_settings_for(actor: str) -> dict[str, Any]:
     stored = store.user_settings.get(str(actor or "").strip())
     return _normalize_user_settings(stored or {})
+
+
+def _resolve_primary_orchestrator_binding(
+    *, actor: str, payload: dict[str, Any],
+    agent_definition: AgentDefinition | None, run_id: str = "",
+) -> tuple[str, str]:
+    """Bind the primary model independently from every specialist worker.
+
+    Explicit per-message choices win; continuation reuses the run's pinned
+    orchestrator; a user preference overrides legacy default-agent behavior.
+    This is a *selection* only, not authorization to call a provider.
+    """
+    opts = _composer_options(payload)
+    requested = str(payload.get("orchestrator_model") or opts["model"] or "").strip()
+    if requested:
+        return requested, "request_override"
+    previous = store.run_details.get(run_id) if run_id else None
+    if isinstance(previous, dict):
+        bound = previous.get("orchestrator_binding")
+        if isinstance(bound, dict) and str(bound.get("model") or "").strip():
+            return str(bound["model"]).strip(), "existing_run"
+    saved = str(_user_settings_for(actor).get("orchestrator_model") or "").strip()
+    if saved:
+        return saved, "user_default"
+    return _resolve_agent_chat_model(agent_definition), "legacy_agent_default"
 
 
 def _composer_options(payload: dict[str, Any]) -> dict[str, Any]:
@@ -20659,10 +20719,18 @@ def save_user_settings(
     request: Request, payload: dict[str, Any] = Body(default_factory=dict)
 ) -> dict[str, Any]:
     actor = _enforce_request_authn(request, payload=payload, action="user.settings.save")
-    normalized = _normalize_user_settings(payload)
+    existing = _user_settings_for(actor)
+    # Older clients PUT preferred_model without knowing orchestrator_model.
+    # Do not drop their explicit selection or reset other saved preferences.
+    merged = {**existing, **payload}
+    if "orchestrator_model" not in payload and "preferred_model" in payload:
+        merged["orchestrator_model"] = _normalize_user_settings(
+            {"preferred_model": payload["preferred_model"]}
+        )["orchestrator_model"]
+    normalized = _normalize_user_settings(merged)
     # Only a higher default chat mode widens; the other fields are UI defaults
     # (each run states its own workspace and model) (LOCUS-357).
-    if capability_widening.user_settings_widening(_user_settings_for(actor), normalized):
+    if capability_widening.user_settings_widening(existing, normalized):
         _require_shell_proof(request, action="user.settings.save", actor=actor)
     store.user_settings[str(actor)] = normalized
     _persist_store_state()
@@ -22897,8 +22965,22 @@ def create_workflow_run(
         system_prompt, selected_skill_ids=composer_opts["skill_ids"]
     )
 
-    selected_model = composer_opts["model"] or _resolve_agent_chat_model(selected_agent_definition)
-    explicit_local_chat_model = _admit_explicit_local_chat_model(
+    selected_model, orchestrator_model_source = _resolve_primary_orchestrator_binding(
+        actor=actor, payload=payload,
+        agent_definition=selected_agent_definition, run_id=run_id if existing_run else "",
+    )
+    # Auto orchestrator requires an eligible, policy-admitted server-side
+    # resolver. Until integrated, refuse instead of treating "auto" as OpenAI.
+    if selected_model == "auto":
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "code": "orchestrator_auto_unavailable",
+                "message": "Auto orchestrator admission is not available; select an explicit model.",
+            },
+        )
+    # A locally pinned orchestrator must pass live admission before run creation.
+    _admit_explicit_local_chat_model(
         request=request, payload=payload, selected_model=selected_model
     )
     request_prompt = _with_architecture_contract(
@@ -23023,6 +23105,12 @@ def create_workflow_run(
         "approvals": {"required": False, "pending": False},
         "runtime": {"mode": "live", "state": "queued"},
         "response_text": "",
+        "orchestrator_binding": {
+            "model": selected_model,
+            "source": orchestrator_model_source,
+            "selection_role": "orchestrator",
+        },
+        "worker_routing": _user_settings_for(actor)["worker_routing"],
         "access": access_context,
         "mode": composer_opts["mode"],
         "working_folder": (composer_opts["workspace"] or {}).get("repo_path", ""),
@@ -23046,20 +23134,50 @@ def create_workflow_run(
         mainline client path; a missing user runtime (412) falls back to it. Any
         other policy rejection is re-raised so the run fails closed.
         """
-        if explicit_local_chat_model:
-            # The local candidate has already passed admission. In particular,
-            # a saved preferred hosted account may not override its transport.
-            return None
         explicitly_requested = isinstance(payload.get("runtime"), dict) or bool(
             str(payload.get("provider") or "").strip()
         )
+        selected_provider, selected_bare = _resolve_chat_provider(selected_model)
+        qualified = selected_model.lower().startswith(f"{selected_provider}/")
+        if qualified:
+            requested_provider = str(payload.get("provider") or "").strip().lower()
+            runtime_override = (
+                payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+            )
+            runtime_provider = str(runtime_override.get("provider") or "").strip().lower()
+            if any(
+                provider_name and provider_name != selected_provider
+                for provider_name in (requested_provider, runtime_provider)
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Selected orchestrator model conflicts with its provider runtime",
+                )
+            if selected_provider not in {"openai", "anthropic", "gemini", "openai-compatible"}:
+                # Local Ollama, NIM, etc. use their provider-qualified gated
+                # ModelClient. A saved user credential must not replace them.
+                return None
+            # The credential adapter's model allowlist stores *bare* model IDs;
+            # do not send an entire provider-qualified identifier as the ID.
+            runtime_payload = {
+                **payload,
+                "provider": selected_provider,
+                "model": selected_bare,
+                "runtime": {
+                    **runtime_override,
+                    "provider": selected_provider,
+                    "model": selected_bare,
+                },
+            }
+        else:
+            runtime_payload = payload
         try:
             candidate_runtime = _resolve_request_chat_runtime(
                 request=request,
                 actor=actor,
-                payload=payload,
+                payload=runtime_payload,
                 agent_definition=selected_agent_definition,
-                fallback_model=selected_model,
+                fallback_model=selected_bare if qualified else selected_model,
             )
         except HTTPException as exc:
             if exc.status_code == 412:
@@ -23912,12 +24030,42 @@ def send_run_message(
     if blocked_terms:
         raise HTTPException(status_code=400, detail="Message blocked by keyword policy")
 
-    # Same-run replies obey the same explicit local admission before mutating
-    # the conversation. No implicit hosted credential fallback.
+    # A saved explicit orchestrator remains pinned to this conversation. The
+    # interim Auto choice must not accidentally become an OpenAI model string.
+    requested_primary = str(
+        payload.get("orchestrator_model") or payload.get("model") or ""
+    ).strip()
+    prior = store.run_details.get(run_id)
+    bound_primary = (
+        str((prior.get("orchestrator_binding") or {}).get("model") or "")
+        if isinstance(prior, dict)
+        and isinstance(prior.get("orchestrator_binding"), dict)
+        else ""
+    )
+    tentative_primary = (
+        requested_primary or bound_primary
+        or _user_settings_for(actor)["orchestrator_model"]
+    )
+    if tentative_primary == "auto":
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "code": "orchestrator_auto_unavailable",
+                "message": "Auto orchestrator admission is not available; select an explicit model.",
+            },
+        )
+
+    # An existing run has one primary orchestrator; switching requires a new run.
+    if bound_primary and requested_primary and requested_primary != bound_primary:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "orchestrator_binding_conflict",
+                "message": "The run has a pinned orchestrator; start a new run to change it.",
+            },
+        )
     _admit_explicit_local_chat_model(
-        request=request,
-        payload=payload,
-        selected_model=str(_composer_options(payload)["model"] or ""),
+        request=request, payload=payload, selected_model=tentative_primary
     )
 
     events = store.run_events.setdefault(run_id, [])
@@ -24038,17 +24186,28 @@ def send_run_message(
                 + plan_directive
             )
             followup_work_id = f"work-{uuid4()}"
+            reply_model, reply_model_source = _resolve_primary_orchestrator_binding(
+                actor=actor, payload=payload,
+                agent_definition=captured_agent, run_id=run_id,
+            )
             response_text, model_meta = _run_agent_iterations(
                 run_id,
                 captured_agent,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                model=composer_opts["model"] or _resolve_agent_chat_model(captured_agent),
+                model=reply_model,
                 work_id=followup_work_id,
                 max_iterations=_resolve_agent_max_iterations(captured_agent, payload),
                 temperature=0.3,
                 reasoning_effort=composer_opts["reasoning_effort"],
             )
+            if str(model_meta.get("mode") or "") == "live":
+                details = store.run_details.setdefault(run_id, {})
+                details["orchestrator_binding"] = {
+                    "model": reply_model,
+                    "source": reply_model_source,
+                    "selection_role": "orchestrator",
+                }
             display = (
                 _redact_sensitive_text(response_text)
                 if store.platform_settings.mask_secrets_in_events
@@ -29971,7 +30130,8 @@ def _harness_model_chain(resolution: Any) -> list[model_calls.ModelTier]:
     * ``model_source == "default"`` (the node/agent named no engine) -> the D-21
       agent chain (NIM -> Ollama, ``LOCUS_AGENT_MODEL_CHAIN``);
     * an explicit local engine -> just that engine;
-    * an explicit hosted engine (e.g. NIM) -> it, then the local Ollama tier.
+    * an explicit hosted engine (e.g. NIM) -> it alone, unless a separate
+      operator-authorized fallback scope is deliberately granted.
     """
     provider = str(getattr(resolution, "provider", "") or "ollama").strip().lower()
     if provider not in model_calls.PROVIDERS:
@@ -29982,6 +30142,7 @@ def _harness_model_chain(resolution: Any) -> list[model_calls.ModelTier]:
         str(getattr(resolution, "model", "") or ""),
         explicit=explicit,
         settings=_BACKEND_PROVIDER_SETTINGS,
+        allow_fallback=False,  # Pinned orchestrators/workers require separate reroute consent.
     )
 
 
@@ -29991,8 +30152,9 @@ def _make_harness_chat_client(
     """Build the harness ChatClient for a code/team/chat node (LOCUS-336).
 
     Honours the resolved provider/model (so code and team nodes can run on NIM),
-    walks the D-21 tiers with an explicit, recorded fallback, and authorizes
-    every turn as a gateway ``model_call`` attributed to ``run_id``.
+    uses D-21 fallback only for a separately eligible default/Auto chain.
+    Pinned engines cannot silently switch providers. Every turn remains a
+    gateway ``model_call`` attributed to ``run_id``.
     """
     from locus_runtime.harness.llm import GatedChatClient
 

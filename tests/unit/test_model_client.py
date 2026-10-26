@@ -208,10 +208,18 @@ def test_default_chain_is_nim_then_ollama_and_configurable(
 
 def test_chain_for_honours_explicit_engines(monkeypatch: pytest.MonkeyPatch) -> None:
     assert [t.provider for t in mc.chain_for("ollama", "gpt-oss:20b", explicit=True)] == ["ollama"]
+    # A user-selected hosted orchestrator may not silently become a local
+    # model, even when the legacy environment allows fallback.
     hosted = mc.chain_for("nim", "meta/llama-3.3-70b-instruct", explicit=True)
-    assert [t.provider for t in hosted] == ["nim", "ollama"]
+    assert [t.provider for t in hosted] == ["nim"]
+    # Only a trusted caller with separate routing consent may request fallback.
+    approved = mc.chain_for(
+        "nim", "meta/llama-3.3-70b-instruct",
+        explicit=True, allow_fallback=True,
+    )
+    assert [t.provider for t in approved] == ["nim", "ollama"]
     monkeypatch.setenv(mc.LOCAL_FALLBACK_ENV, "0")
-    assert [t.provider for t in mc.chain_for("nim", "x", explicit=True)] == ["nim"]
+    assert [t.provider for t in mc.chain_for("nim", "x", explicit=True, allow_fallback=True)] == ["nim"]
     assert [t.provider for t in mc.chain_for("ollama", "", explicit=False)] == ["nim", "ollama"]
 
 
@@ -513,6 +521,43 @@ def test_fallback_nim_to_ollama_is_recorded_with_reason() -> None:
     # A failed call is retried on NIM next time (not sticky).
     router.complete([{"role": "user", "content": "again"}])
     assert len(nim.requests) == 2
+
+
+def test_gateway_denial_never_falls_through_to_another_model_or_provider() -> None:
+    """A refusal from the security boundary is not a capacity failure."""
+    events: list[mc.FallbackEvent] = []
+    ollama = MockServer()
+    calls: list[str] = []
+
+    def factory(tier: mc.ModelTier) -> mc.ModelClient:
+        calls.append(tier.provider)
+        if tier.provider == "nim":
+            raise mc.ModelCallDenied(
+                provider=tier.provider,
+                model=tier.model,
+                reason="deny: data ceiling prohibits this model call",
+            )
+        return _client(ollama, "ollama", base_url="http://localhost:11434/v1", model=tier.model)
+
+    router = mc.ModelRouter(
+        [mc.ModelTier("nim", "nvidia/example"), mc.ModelTier("ollama", "local/example")],
+        client_factory=factory,
+        on_fallback=events.append,
+    )
+    with pytest.raises(mc.ModelCallDenied) as denied:
+        router.complete([{"role": "user", "content": "restricted example"}])
+    assert denied.value.code == mc.MODEL_CALL_DENIED
+    assert calls == ["nim"]
+    assert ollama.requests == []
+    assert events == []
+
+    # Even though the next tier exists, retrying on the same route may not
+    # turn a prior denial into a silent local/hosted fallback.
+    with pytest.raises(mc.ModelCallDenied):
+        router.complete([{"role": "user", "content": "retry"}])
+    assert calls == ["nim"]
+    assert ollama.requests == []
+    assert events == []
 
 
 def test_unconfigured_nim_falls_back_once_and_stays_skipped() -> None:
