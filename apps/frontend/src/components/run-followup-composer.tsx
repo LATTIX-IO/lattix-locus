@@ -791,7 +791,7 @@ export function RunFollowupComposer({
             </button>
           ) : null}
 
-          <button type="submit" disabled={isSubmitting || (sameRun && (!modelReadiness.ready || !composerOpts.model))} className="fx-btn-primary h-9 px-3.5 text-xs font-medium disabled:opacity-60">
+          <button type="submit" disabled={isSubmitting || (sameRun ? (!modelReadiness.ready || !composerOpts.model) : (!activeRuntimeOption || !selectedModel || !activeRuntimeOption.models.includes(selectedModel)))} className="fx-btn-primary h-9 px-3.5 text-xs font-medium disabled:opacity-60">
             {isSubmitting ? "Sending..." : "Send"}
           </button>
         </div>
@@ -824,7 +824,7 @@ export function RunFollowupComposer({
                 onChange={(event) => handleModelSelection(event.target.value)}
                 disabled={modelOptions.length === 0}
               >
-                {modelOptions.length === 0 ? <option value="">No configured runtimes</option> : null}
+                {modelOptions.length === 0 ? <option value="">No available chat models</option> : null}
                 {modelOptions.map((option) => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
